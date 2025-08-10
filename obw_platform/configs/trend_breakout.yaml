@@ -1,0 +1,29 @@
+strategy: trend_breakout.TrendBreakout
+
+cache_db: combined_cache_1440.db
+limit_bars: 1440
+
+params:
+  lookback_breakout: 20
+  breakout_mult: 1.4
+  min_momentum_sum: 0.05
+  min_atr_ratio: 0.015
+  tp_atr_mult: 2.0
+  sl_atr_mult: 1.5
+  max_hold_hours: 72
+  max_mae_atr_mult: 1.5
+  trail_start_atr: 1.0
+  trail_dist_atr: 1.0
+  mom_flip_thresh: 0.0
+  min_qv_1h: 10000
+  min_qv_24h: 200000
+
+execution:
+  position_notional: 3
+  max_notional_frac: 0.6
+  fee_rate: 0.001
+  funding_rate_hour: 0.00002
+  slippage_per_side: 0.0003
+
+schedule:
+  open_hour_kyiv: 2

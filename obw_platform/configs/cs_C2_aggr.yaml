@@ -1,0 +1,45 @@
+# Aggressive C2 (LONG-only): push momentum, stricter ATR, looser breadth/vol gate on входи, агресивні SL/TP
+strategy_class: strategies.cross_sectional_rs.CrossSectionalRS
+cache_db: ../combined_cache_1440.db      # або абсолютний шлях до 1h кешу
+limit_bars: 1440                         # 60d на 1h; для швидкого свіпу став 500; для 120d — 2880
+
+strategy_params:
+  # selection / gates
+  top_n: 4
+  side: LONG
+  min_momentum_sum: 0.13                 # було 0.12; агресивніше — 0.13–0.14
+  min_atr_ratio: 0.024                   # було 0.022; агресивніше — 0.024
+  min_vol_surge_mult: 1.20               # було 1.25; трохи вільніше на вході
+  min_breadth: 0.58                      # було 0.60; трохи вільніше, більше сигналів
+
+  # liquidity floor
+  min_qv_24h: 200000
+  min_qv_1h: 10000
+
+  # exits / risk
+  sl_atr_mult: 1.2                       # було 1.4; агресивніше
+  tp_atr_mult: 3.0                       # було 2.6; агресивніше
+  max_hold_hours: 96
+  max_mae_atr_mult: 1.6
+  mom_flip_thresh: 0.02
+  trail_start_atr: 1.2
+  trail_dist_atr: 1.0
+
+portfolio:
+  initial_equity: 200
+  position_notional: 20
+  max_notional_frac: 0.6                 # трохи більше рейджу на розподіл капіталу
+  fee_rate: 0.001
+  funding_rate_hour: 0.00002
+  slippage_per_side: 0.0003
+  tick_pct: 0.0001
+
+session:
+  open_hour_kyiv: 2
+  kyiv_offset_hours: 3
+
+visualize:
+  plot_equity: true
+  show: false
+  save_dir: plots
+  prefix: cs_c2_aggr_1440

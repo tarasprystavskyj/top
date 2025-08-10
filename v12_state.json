@@ -1,0 +1,45 @@
+{
+  "open_positions": {
+    "B-USDT": {
+      "qty": 3.424033,
+      "entry": 0.642517187,
+      "opened_at": "2025-08-10T14:33:18.883265+00:00",
+      "live_resp": {
+        "code": 0,
+        "msg": "",
+        "data": {
+          "order": {
+            "orderId": 1954551636908269568,
+            "orderID": "1954551636908269568",
+            "symbol": "B-USDT",
+            "positionSide": "SHORT",
+            "side": "SELL",
+            "type": "MARKET",
+            "price": 0,
+            "quantity": 3.424033,
+            "stopPrice": 0,
+            "workingType": "MARK_PRICE",
+            "clientOrderID": "",
+            "clientOrderId": "",
+            "timeInForce": "GTC",
+            "priceRate": 0,
+            "stopLoss": "",
+            "takeProfit": "",
+            "reduceOnly": false,
+            "activationPrice": 0,
+            "closePosition": "",
+            "stopGuaranteed": "",
+            "status": "FILLED",
+            "avgPrice": "0.64270",
+            "executedQty": "3.42"
+          }
+        },
+        "_status": 200
+      }
+    }
+  },
+  "last_open_time_by_sym": {
+    "B-USDT": "2025-08-10T14:33:18.937240+00:00"
+  },
+  "_force_used": false
+}

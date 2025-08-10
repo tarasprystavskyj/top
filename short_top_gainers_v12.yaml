@@ -1,0 +1,44 @@
+quote: USDT
+timeframe: "1h"
+open_hour_kyiv: 2
+cooldown_days: 3
+
+# селекція
+top_n: 4
+min_ob: 75
+min_rsi: 60
+min_stoch: 50
+min_mfi: 50
+require_at_least_n_high: 1
+max_atr_ratio: 0.03
+
+# ліквідність
+min_qv_24h: 500000
+min_qv_1h: 20000
+
+# ваги OB (можеш підкрутити)
+w_rsi: 0.4
+w_stoch: 0.2
+w_mfi: 0.2
+w_hcp: 0.1
+
+# ризик / утримання
+risk_pct: 0.04
+hold_hours: 60
+
+# виконання
+position_notional: 2.2
+max_notional_frac: 0.5
+initial_equity: 18.0
+slippage_per_side: 0.0003
+fee_rate: 0.001
+funding_rate_hour: 0.00002
+
+# SL
+sl_trigger: "last"
+sl_mark_offset: 0.0005
+
+# I/O
+logfile: "v12_live.log"
+trades_csv: "v12_live_trades.csv"
+state_path: "v12_state.json"

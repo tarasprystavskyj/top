@@ -1,0 +1,40 @@
+strategy_class: strategies.trend_breakout.TrendBreakout
+cache_db: ../combined_cache_1440.db
+limit_bars: 1440
+
+strategy_params:
+  # breakout logic
+  breakout_lookback: 24                  # агресивний коротший пробій (20–30 добре працює)
+  atr_ratio_min: 0.024                   # відсікаємо «тихий» ринок
+  confirm_ma_fast: 20                    # опційно: тренд-фільтр (вимкни якщо немає у твоїй реалізації)
+  confirm_ma_slow: 50
+
+  # risk / exits
+  sl_atr_mult: 1.2                       # агресивніший стоп
+  tp_atr_mult: 3.0                       # агресивніший тейк
+  trail_start_atr: 1.0                   # ранній трейл (якщо реалізовано)
+  trail_dist_atr: 0.9
+  max_hold_hours: 96
+
+  # liquidity filters (якщо підтримує)
+  min_qv_24h: 200000
+  min_qv_1h: 10000
+
+portfolio:
+  initial_equity: 200
+  position_notional: 20
+  max_notional_frac: 0.6
+  fee_rate: 0.001
+  funding_rate_hour: 0.00002
+  slippage_per_side: 0.0003
+  tick_pct: 0.0001
+
+session:
+  open_hour_kyiv: 2
+  kyiv_offset_hours: 3
+
+visualize:
+  plot_equity: true
+  show: false
+  save_dir: plots
+  prefix: tb_aggr_1440
