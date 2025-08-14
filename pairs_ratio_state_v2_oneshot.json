@@ -1,0 +1,11 @@
+{
+  "positions": {
+    "SKL-USDT": {
+      "entry_time": "2025-08-14T09:10:27.054147Z",
+      "entry_price": 0.0466,
+      "atr_entry": 0.05974497422287302,
+      "notional": 2.2,
+      "side": "SHORT"
+    }
+  }
+}

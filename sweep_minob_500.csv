@@ -1,6 +1,6 @@
-equity_end,trades,profit_factor,max_drawdown_%,win_rate_%,w_rsi,w_stoch,w_mfi,w_hcp,min_ob
-221.56138761932854,16,14.72262306925282,-0.6740550677372892,81.25,0.4,0.2,0.2,0.1,85
-210.3141558544412,10,22.173654886938,-0.1398242920271353,60.0,0.4,0.2,0.2,0.1,90
-204.11863591278853,4,29.19839368932088,-0.07289277843817166,75.0,0.4,0.2,0.2,0.1,92
-201.10964760037703,1,inf,0.0,100.0,0.4,0.2,0.2,0.1,95
-146.88384188663346,16,0.15022586183067746,-26.859092491907454,43.75,0.4,0.2,0.2,0.1,80
+equity_end,trades,profit_factor,max_drawdown_%,win_rate_%,w_rsi,w_stoch,w_mfi,w_hcp,error,min_ob
+200.0,0,0.0,0.0,0.0,0.3,0.2,0.1,0.0,attempted relative import with no known parent package,80
+200.0,0,0.0,0.0,0.0,0.3,0.2,0.1,0.0,attempted relative import with no known parent package,85
+200.0,0,0.0,0.0,0.0,0.3,0.2,0.1,0.0,attempted relative import with no known parent package,90
+200.0,0,0.0,0.0,0.0,0.3,0.2,0.1,0.0,attempted relative import with no known parent package,92
+200.0,0,0.0,0.0,0.0,0.3,0.2,0.1,0.0,attempted relative import with no known parent package,95

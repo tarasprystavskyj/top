@@ -1,0 +1,347 @@
+
+time python3 short_top_gainers_backtest.py \
+  -d history_output \
+  -b optimized.db \
+  -o 23 \
+  -n 4 \
+  --min-overbought-index 70 \
+  --min-rsi 60 \
+  --require-at-least-n-high 2 \
+  --max-atr-ratio 0.05 \
+  --risk-pct 0.03 \
+  --base-tp-multiplier 0 \
+  --max-extra-tp 0 \
+  -u universe.txt
+
+
+python3 short_top_gainers_backtest.py \
+  -d history_output \
+  -b combined_cache.db \
+  -u universe.txt \
+  --fresh
+
+time python3 short_top_gainers_backtest.py \
+  -c combined_cache.db \
+  -b results_cached.db \
+  -o 1 \
+  -n 4 \
+  --min-overbought-index 70 \
+  --min-rsi 60 \
+  --require-at-least-n-high 2 \
+  --max-atr-ratio 0.05 \
+  --risk-pct 0.03 \
+  --base-tp-multiplier 0 \
+  --max-extra-tp 0 \
+  -u universe.txt
+ 
+  
+  
+python3 short_top_gainers_backtest.py \
+  -c combined_cache.db \
+  -b results.db \
+  -o 1 \
+  -n 6 \
+  --hold-hours 45 \
+  --cooldown-days 0 \
+  --min-overbought-index 80 \
+  --min-rsi 60 \
+  --require-at-least-n-high 2 \
+  --max-atr-ratio 0.05 \
+  --risk-pct 0.055 \
+  --base-tp-multiplier 0 \
+  --max-extra-tp 0 \
+  -u universe.txt \
+  --ascii-equity \
+  --show-samples \
+  --quiet
+  
+  
+  
+  
+ python3 grid_search_entry_time.py \
+  --hour 1 \
+  --no-visual \
+  --quiet-backtest
+  
+ python3 multi_param_grid_search.py \
+  --hold-hours 24 36 48 \
+  --cooldown-days 3 5 \
+  --min-overbought-indexes 70 80 90 \
+  --output-csv grid_results.csv \
+  --quiet-backtest \
+  --no-ascii
+  --risk-pcts 0.05
+
+  0.02 0.03 0.05 \
+  
+
+
+
+
+
+
+python3 fetch_history_5000h.py -u universe.txt -t 1h --start-date 2024-01-01T00:00:00 --end-date 2024-09-01T00:00:00 -o history_output_5000
+
+python3 fetch_history_5000h.py -u universe.txt -t 1h --start-date 2024-01-01T00:00:00 --end-date 2024-09-01T00:00:00 -o history_output_5000
+
+
+python3 short_top_gainers_bot_get_futures_history_500h.py \
+  -i universe_symbols_bingx.csv \
+  -t 1h \
+  --limit 1440 \
+  -o history_output_5000 \
+  
+python3 short_top_gainers_bot_v6.py --force-run
+  
+python3 multi_param_grid_search.py \
+  --open-hour 0 2 4 6 8 10 12 14 \
+  --risk-pcts 0.03 \
+  --hold-hours 48 \
+  --cooldown-days 5 \
+  --min-overbought-indexes 80 \
+  --top-n 5 6 \
+  --quiet-backtest \
+  --risk-pcts 0.02 0.03 0.05 \
+  --hold-hours 24 36 48 \
+  --cooldown-days 3 5 7 \
+  --min-overbought-indexes 70 80 \
+  --top-n 3 4 5 6 \
+  --output-csv final_precise_grid_results.csv \
+  --no-ascii
+
+  --open-hour 0 2 4 6 8 10 12 14 
+  
+  python3 pareto_grid_search.py \
+  --risk-pcts 0.05 \
+  --hold-hours 48 \
+  --cooldown-days 5 \
+  --min-overbought-indexes 70 \
+  --top-n 5 6 \
+  --output-csv final_precise_grid_results.csv \
+  --no-ascii
+  --quiet-backtest \
+  
+  python3 short_top_gainers_backtest_v2.py \
+  -c combined_cache.db \
+  -b results.db \
+  -o 1 \
+  -n 6 \
+  --hold-hours 45 \
+  --cooldown-days 5 \
+  --min-overbought-index 70 \
+  --min-rsi 60 \
+  --require-at-least-n-high 2 \
+  --max-atr-ratio 0.05 \
+  --risk-pct 0.055 \
+  --base-tp-multiplier 0 \
+  --max-extra-tp 0 \
+  -u universe.txt \
+  --ascii-equity \
+  --show-samples \
+  --quiet
+  
+  python3  short_top_gainers_bot_v7.py --force-run --debug
+  
+  python3 short_top_gainers_bot_get_futures_history_500h.py \
+  -i universe_symbols_bingx.csv \
+  -t 4h \
+  --limit 1440 \
+  -o history_output_1440_4h \
+
+
+python3 build_indicator_db.py -d history_output_500 -b combined_cache_500.db --fresh
+
+
+python3 short_top_gainers_bot_with_filters.py \
+  -o 23 \
+  -n 4 \
+  --min-overbought-index 70 \
+  --min-rsi 60 \
+  --require-at-least-n-high 2 \
+  --max-atr-ratio 0.05 \
+  --risk-pct 0.03 \
+  --base-tp-multiplier 0 \
+  --max-extra-tp 0 \
+  --force-start \
+  --debug \
+  --test-cached-data \
+  --position-duration-minutes 1 \
+  --cooldown-days 5 \
+  
+  
+python3 short_top_gainers_bot_with_filters_v6_close.py \
+	-o 23 \
+	-n 1 \
+	--min-overbought-index 70 \
+	--min-rsi 60 \
+	--require-at-least-n-high 2 \
+	--max-atr-ratio 0.05 \
+	--risk-pct 0.03 \
+	--base-tp-multiplier 0 \
+	--max-extra-tp 0 \
+	--force-start \
+	--debug \
+	--test-cached-data \
+	--position-duratio-minutes 1 \
+	--cooldown-days 5 \
+	
+-o 23 \
+-n 1 \
+--min-overbought-index 70 \
+--min-rsi 60 \
+--require-at-least-n-high 2 \
+--max-atr-ratio 0.05 \
+--risk-pct 0.03 \
+--cooldown-days 5 \
+
+ python3 short_top_gainers_bot_with_filters.py \  --test-cached-data \
+ -o 23   -n 1   --min-overbought-index 70   --min-rsi 60   --require-at-least-n-high 2   --max-atr-ratio 0.05   --risk-pct 0.03   --base-tp-multiplier 0   --max-extra-tp 0   --force-start --universe-file universe.txt  --cooldown-days 5
+
+python3 short_top_gainers_bot_with_filters_v7.py \  --test-cached-data \
+ -o 23   -n 1   --min-overbought-index 70   --min-rsi 60   --require-at-least-n-high 2   --max-atr-ratio 0.05   --risk-pct 0.03   --base-tp-multiplier 0   --max-extra-tp 0   --force-start --universe-file universe.txt  --cooldown-days 5
+
+
+python3 short_top_gainers_backtest_v1.py \
+  -c combined_cache.db \
+  -b results.db \
+  -o 1 \
+  -n 6 \
+  --hold-hours 45 \
+  --cooldown-days 0 \
+  --min-overbought-index 80 \
+  --min-rsi 60 \
+  --require-at-least-n-high 2 \
+  --max-atr-ratio 0.05 \
+  --risk-pct 0.055 \
+  --base-tp-multiplier 0 \
+  --max-extra-tp 0 \
+  -u universe.txt \
+  --ascii-equity \
+  --show-samples \
+  --min-funding-rate 0.01
+  
+  
+  python3 multi_param_grid_search_v1.py \
+  --risk-pcts 0.03 \
+  --hold-hours 45 \
+  --open-interval-hours 13-24  \
+  --cooldown-days 5 \
+  --min-overbought-indexes 80 \
+  --quiet-backtest \
+  --risk-pcts 0.03 \
+  --cooldown-days 5 \
+  --min-overbought-indexes 80 \
+  --top-n 6 \
+  --output-csv final_precise_grid_results.csv \
+  --no-ascii
+  --cache-db combined_cache.db
+  --backtest-script short_top_gainers_backtest_v1.py
+  
+  
+  python3 prod_backtester.py \
+  --cache-db /mnt/data/combined_cache.db \
+  --initial-equity 200 --position-notional 20 --max-notional-frac 0.5 \
+  --open-hour-kyiv 1 --kyiv-offset-hours 3 \
+  --top-n 6 --preselect-mult 10 --hold-hours 45 --cooldown-days 5 \
+  --min-ob 70 --min-rsi 60 --min-stoch 50 --min-mfi 50 --require-at-least-n-high 2 --max-atr-ratio 0.05 \
+  --risk-pct 0.055 --fee-rate 0.001 --funding-rate-hour 0.00002 \
+  --slippage-per-side 0.0003 --tick-pct 0.0001 \
+  --min-qv-24h 100000 --min-qv-1h 10000 \
+  --out-trades trades.csv --out-summary summary.csv
+  
+  python3 grid_runner.py \
+  --cache-db /mnt/data/combined_cache.db \
+  --initial-equity 200 --position-notional 20 --max-notional-frac 0.5 \
+  --open-hour-kyiv 1 --kyiv-offset-hours 3 \
+  --top-n 6 --preselect-mult 10 --hold-hours 45 --cooldown-days 5 \
+  --min-ob 70 --min-rsi 60 --min-stoch 50 --min-mfi 50 --require-at-least-n-high 2 --max-atr-ratio 0.05 \
+  --risk-pct 0.055 --fee-rate 0.001 --funding-rate-hour 0.00002 \
+  --slippages 0,0.0003,0.0005,0.001 \
+  --qv24 50000,100000,200000,500000 \
+  --qv1h 5000,10000,20000,50000 \
+  --out-csv sensitivity_summary.csv
+  
+  python3 daily_reconcile_report.py \
+  --results-db /mnt/data/results.db \
+  --cache-db /mnt/data/combined_cache.db \
+  --risk-pct 0.055 --hold-hours 45 \
+  --out-csv /mnt/data/backtest_vs_live.csv \
+  --out-summary /mnt/data/backtest_vs_live_summary.csv
+  
+  
+python3 prod_backtester.py \
+  --cache-db ../combined_cache_1440.db \
+  --initial-equity 200 --position-notional 20 --max-notional-frac 0.5 \
+  --open-hour-kyiv 1 --kyiv-offset-hours 3 \
+  --top-n 6 --preselect-mult 10 \
+  --hold-hours 45 --cooldown-days 3 \
+  --min-ob 85 --min-rsi 60 --min-stoch 50 --min-mfi 50 --require-at-least-n-high 1 --max-atr-ratio 0.05 \
+  --risk-pct 0.03 --fee-rate 0.001 --funding-rate-hour 0.00002 \
+  --slippage-per-side 0.0003 --tick-pct 0.0001 \
+  --min-qv-24h 100000 --min-qv-1h 10000 \
+  --sl-trigger last --sl-mark-offset 0.0005 \
+  --out-trades balanced_60d_trades.csv --out-summary balanced_60d_summary.csv
+  
+  python3 grid_runner.py  --cache-db ../combined_cache.db  --initial-equity 200 --position-notional 20 --max-notional-frac 0.5   --open-hour-kyiv 1 --kyiv-offset-hours 3  --top-n-sweep 3:12:3              --risk-pct-sweep 0.03:0.09:0.02    --hold-hours-sweep 24:60:12   --cooldown-days-sweep 2:7:2           --min-ob 80 --require-at-least-n-high 1  --min-qv-24h 100000 --min-qv-1h 10000  --fee-rate 0.001 --funding-rate-hour 0.00002  --slippage-per-side 0.0003 --tick-pct 0.0001 --sl-trigger last --sl-mark-offset 0.0005 --out-csv obfirst_batchA.csv --select-mode ob_only 
+	
+	
+	
+python3 grid_runner.py \
+  --cache-db /opt/topgainers/combined_cache.db \
+  --select-mode ob_only \
+  --initial-equity 200 --position-notional 20 --max-notional-frac 0.5 \
+  --open-hour-kyiv 1 --kyiv-offset-hours 3 \
+  --top-n-sweep 3:12:3 \                 # 3,6,9,12
+  --risk-pct-sweep 0.03:0.09:0.02 \      # 0.03,0.05,0.07,0.09
+  --hold-hours-sweep 24:60:12 \          # 24,36,48,60
+  --cooldown-days-sweep 2:7:2 \          # 2,4,6
+  --min-ob 80 --require-at-least-n-high 1 \
+  --min-qv-24h 100000 --min-qv-1h 10000 \
+  --fee-rate 0.001 --funding-rate-hour 0.00002 \
+  --slippage-per-side 0.0003 --tick-pct 0.0001 \
+  --sl-trigger last --sl-mark-offset 0.0005 \
+  --out-csv obfirst_batchA.csv
+  
+python3 prod_backtester_v3.py \
+  --cache-db ../combined_cache_1440.db \
+  --limit-bars 500 \
+  --select-mode ob_only \
+  --initial-equity 200 --position-notional 20 --max-notional-frac 0.5 \
+  --open-hour-kyiv 1 --kyiv-offset-hours 3 \
+  --top-n 6 --hold-hours 45 --cooldown-days 3 \
+  --min-ob 75 --min-rsi 60 --min-stoch 50 --min-mfi 50 \
+  --require-at-least-n-high 1 --max-atr-ratio 0.05 \
+  --risk-pct 0.03 --fee-rate 0.001 --funding-rate-hour 0.00002 \
+  --slippage-per-side 0.0003 --tick-pct 0.0001 \
+  --min-qv-24h 100000 --min-qv-1h 10000 \
+  --vol-surge-min 1.5 --streak-up-min 3 \
+  --sl-trigger last --sl-mark-offset 0.0005 \
+  --out-trades obfirst_500_trades.csv --out-summary obfirst_500_summary.csv
+
+
+  
+chmod +x run_microgrid_500.sh
+./run_microgrid_500.sh /opt/topgainers/combined_cache.db
+
+python3 prod_backtester.py \
+  --cache-db ./combined_cache_1440.db \
+  --initial-equity 200 --position-notional 20 --max-notional-frac 0.5 \
+  --open-hour-kyiv 1 --kyiv-offset-hours 3 \
+  --top-n 5 --hold-hours 45 --cooldown-days 3 \
+  --min-ob 75 --min-rsi 60 --min-stoch 50 --min-mfi 50 --require-at-least-n-high 1 \
+  --max-atr-ratio 0.03 \
+  --risk-pct 0.03 --fee-rate 0.001 --funding-rate-hour 0.00002 \
+  --slippage-per-side 0.0003 --tick-pct 0.0001 \
+  --min-qv-24h 100000 --min-qv-1h 20000 \
+  --select-mode ob_only \
+  --sl-trigger last --sl-mark-offset 0.0005 \
+  --out-trades A_60d_trades.csv --out-summary A_60d_summary.csv
+
+
+  --vol-surge-min 1.5 --dp6h-min 0.003 \
+  
+  python3 cs_rs_c2_bot_with_filters_v1.py \
+  --config cs_rs_c2_v1.yaml --env-file .env \
+  --source ccxt --ccxt-exchange bingx --ccxt-symbol-format usdtm \
+  --force-start-always --reset-state --debug \
+  --symbols "BTC-USDT,ETH-USDT,SOL-USDT,XRP-USDT"

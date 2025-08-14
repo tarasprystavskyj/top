@@ -11,8 +11,14 @@ def round_tick(x: float, tick_pct: float) -> float:
 
 @dataclass
 class Position:
-    symbol: str; side: str; entry_time: pd.Timestamp; entry_price: float; notional: float
-    stop_price: Optional[float] = None; take_profit: Optional[float] = None; meta: dict = field(default_factory=dict)
+    symbol: str
+    side: str
+    entry_time: pd.Timestamp
+    entry_price: float
+    notional: float
+    stop_price: Optional[float] = None
+    take_profit: Optional[float] = None
+    meta: dict = field(default_factory=dict)
 
 class Portfolio:
     def __init__(self, cfg: dict):
@@ -41,13 +47,15 @@ class Portfolio:
         self.equity -= notional * fee_rate
         return pos
 
-    def open_positions(self): return list(self.positions)
+    def open_positions(self):
+        return list(self.positions)
 
     def close(self, pos: Position, t, last_price, reason="exit"):
         fee_rate = float(self.cfg.get("fee_rate", 0.001))
         slip = float(self.cfg.get("slippage_per_side", 0.0003))
         tick = float(self.cfg.get("tick_pct", 0.0001))
         funding_rate_hour = float(self.cfg.get("funding_rate_hour", 0.00002))
+
         exit_px = round_tick(last_price * (1 + slip) if pos.side=="SHORT" else last_price * (1 - slip), tick)
         gross = (pos.entry_price - exit_px)/max(pos.entry_price,1e-12) if pos.side=="SHORT" else (exit_px - pos.entry_price)/max(pos.entry_price,1e-12)
         holding_hours = max(0.0, (t - pos.entry_time).total_seconds()/3600.0)
@@ -57,8 +65,11 @@ class Portfolio:
         self.equity += pnl
         self.trades.append({
             "open_time_utc": pos.entry_time.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": pos.symbol, "side": pos.side, "entry_price": pos.entry_price,
-            "exit_time_utc": t.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"), "exit_price": exit_px, "reason": reason,
-            "gross_return": gross, "net_return": net, "notional": pos.notional, "realized_pnl": pnl, "equity_after": self.equity
+            "symbol": pos.symbol, "side": pos.side,
+            "entry_price": pos.entry_price,
+            "exit_time_utc": t.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"),
+            "exit_price": exit_px, "reason": reason,
+            "gross_return": gross, "net_return": net,
+            "notional": pos.notional, "realized_pnl": pnl, "equity_after": self.equity
         })
         self.positions = [p for p in self.positions if p is not pos]

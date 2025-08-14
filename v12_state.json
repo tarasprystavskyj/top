@@ -1,45 +1,26 @@
 {
-  "open_positions": {
-    "B-USDT": {
-      "qty": 3.424033,
-      "entry": 0.642517187,
-      "opened_at": "2025-08-10T14:33:18.883265+00:00",
-      "live_resp": {
-        "code": 0,
-        "msg": "",
-        "data": {
-          "order": {
-            "orderId": 1954551636908269568,
-            "orderID": "1954551636908269568",
-            "symbol": "B-USDT",
-            "positionSide": "SHORT",
-            "side": "SELL",
-            "type": "MARKET",
-            "price": 0,
-            "quantity": 3.424033,
-            "stopPrice": 0,
-            "workingType": "MARK_PRICE",
-            "clientOrderID": "",
-            "clientOrderId": "",
-            "timeInForce": "GTC",
-            "priceRate": 0,
-            "stopLoss": "",
-            "takeProfit": "",
-            "reduceOnly": false,
-            "activationPrice": 0,
-            "closePosition": "",
-            "stopGuaranteed": "",
-            "status": "FILLED",
-            "avgPrice": "0.64270",
-            "executedQty": "3.42"
-          }
-        },
-        "_status": 200
-      }
+  "positions": {
+    "ARB-USDT": {
+      "entry_time": "2025-08-13T16:31:43.236617Z",
+      "entry_price": 0.5472,
+      "atr_entry": 0.0241432211763482,
+      "notional": 2.2,
+      "trail_active": false,
+      "trail_stop": null,
+      "high_seen": 0.5472,
+      "low_seen": 0.5472,
+      "side": "short"
+    },
+    "OP-USDT": {
+      "entry_time": "2025-08-13T16:31:43.424427Z",
+      "entry_price": 0.8605,
+      "atr_entry": 0.01936975280823861,
+      "notional": 2.2,
+      "trail_active": false,
+      "trail_stop": null,
+      "high_seen": 0.8605,
+      "low_seen": 0.8605,
+      "side": "short"
     }
-  },
-  "last_open_time_by_sym": {
-    "B-USDT": "2025-08-10T14:33:18.937240+00:00"
-  },
-  "_force_used": false
+  }
 }

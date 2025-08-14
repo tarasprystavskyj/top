@@ -1,44 +1,69 @@
-quote: USDT
+# short_top_gainers_v12_opt.yaml
+# OB-Weighted (SHORT), lock-in сет із нашої найстабільнішої конфігурації.
+# УВАГА: жорсткі momentum/volume фільтри ВИМКНЕНО (нульові), щоб не “вбивати” входи.
+
+# ---- Режим/джерело котирувань ----
+live: true                  # paper-режим; для реального увімкни true
+papertrade: false
+source: ccxt
+ccxt_exchange: bingx
+ccxt_symbol_format: usdtm
+
+# ---- Сесія/таймінг ----
 timeframe: "1h"
 open_hour_kyiv: 2
-cooldown_days: 3
+kyiv_offset_hours: 3
+force_start_always: true     # для тесту — зробити скан/відбір відразу після старту
 
-# селекція
-top_n: 4
-min_ob: 75
+# ---- Universe / ліквідність ----
+quote: "USDT"
+max_universe: 550
+min_qv_24h: 100000           # можна підняти до 200000–500000 для більш “чистих” монет
+min_qv_1h:  10000            # можна підняти до 20000–50000
+
+# ---- OBW ранжування та пороги ----
+top_n: 6
+min_ob: 85
 min_rsi: 60
 min_stoch: 50
 min_mfi: 50
 require_at_least_n_high: 1
-max_atr_ratio: 0.03
 
-# ліквідність
-min_qv_24h: 500000
-min_qv_1h: 20000
+# ---- Волатильність / ATR ----
+min_atr_ratio: 0.0
+max_atr_ratio: 0.03          # за потреби на 2h/4h дозволити 0.035
 
-# ваги OB (можеш підкрутити)
-w_rsi: 0.4
+# ---- Ваги індикаторів у OBW ----
+w_rsi:   0.4
 w_stoch: 0.2
-w_mfi: 0.2
-w_hcp: 0.1
+w_mfi:   0.2
+w_hcp:   0.2                  # вага “overbought/heat” компоненти
 
-# ризик / утримання
-risk_pct: 0.04
+# ---- Ризик-менеджмент ----
+risk_pct: 0.04               # стоп = price * (1 + risk_pct) для шортів
 hold_hours: 60
-
-# виконання
-position_notional: 2.2
-max_notional_frac: 0.5
-initial_equity: 18.0
-slippage_per_side: 0.0003
-fee_rate: 0.001
-funding_rate_hour: 0.00002
-
-# SL
-sl_trigger: "last"
+cooldown_days: 3
+sl_trigger: last
 sl_mark_offset: 0.0005
 
-# I/O
+# ---- Комісії/фандинг/ковзання ----
+fee_rate: 0.001
+funding_rate_hour: 0.00002
+slippage_per_side: 0.0003
+tick_pct: 0.0001
+
+# ---- Фільтри моментуму/«перегріву» (ослаблені!)
+min_momentum_sum: 0.0        # було 0.12 → відсікав усе; залишаємо 0
+min_vol_surge_mult: 0.98      # було 1.25 → теж “різало”; 1.0 = без вимоги сплеску
+min_breadth: 0.0             # було 0.60 → відсікав за шириною ринку
+
+# ---- Позиціювання/портфель ----
+initial_equity: 18
+position_notional: 2.2
+max_notional_frac: 0.5
+
+# ---- Логи/вивід ----
+limit_klines: 500
 logfile: "v12_live.log"
 trades_csv: "v12_live_trades.csv"
 state_path: "v12_state.json"

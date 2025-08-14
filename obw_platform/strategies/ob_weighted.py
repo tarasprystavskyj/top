@@ -1,52 +1,83 @@
+# ob_weighted.py — стратегія на зваженому OB індексі
+import pandas as pd
+import numpy as np
 
-from .base import StrategyBase
-def clamp(v, lo, hi): return max(lo, min(hi, v))
+class OBWeighted:
+    @staticmethod
+    def prepare(df: pd.DataFrame, cfg: dict):
+        """
+        Підготовка індикаторів.
+        df: DataFrame з колонками open, high, low, close, volume.
+        cfg: dict з параметрами стратегії.
+        """
+        close = df["close"].astype(float)
 
-class OBWeighted(StrategyBase):
-    def __init__(self, cfg: dict):
-        super().__init__(cfg)
-        self.top_n = int(self.cfg.get("top_n", 4))
+        # RSI
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df["rsi"] = 100 - (100 / (1 + rs))
 
-    def _weighted_ob(self, row):
-        rsi = float(row.get("rsi") or 0.0)
-        stoch = float(row.get("stochastic") or 0.0)
-        mfi = float(row.get("mfi") or 0.0)
-        hcp = float(row.get("highclose_pct") or 0.0)
-        wr = float(self.cfg.get("w_rsi", 0.4))
-        ws = float(self.cfg.get("w_stoch", 0.2))
-        wm = float(self.cfg.get("w_mfi", 0.2))
-        wh = float(self.cfg.get("w_hcp", 0.1))
-        denom = wr+ws+wm+wh if (wr+ws+wm+wh)>0 else 1.0
-        return clamp((wr*rsi + ws*stoch + wm*mfi + wh*hcp)/denom, 0.0, 100.0)
+        # Stochastic %K
+        low14 = df["low"].rolling(14).min()
+        high14 = df["high"].rolling(14).max()
+        df["stoch"] = 100 * (close - low14) / (high14 - low14).replace(0, np.nan)
 
-    def universe(self, t, md_slice):
-        min_qv24 = float(self.cfg.get("min_qv_24h", 100000.0))
-        min_qv1h = float(self.cfg.get("min_qv_1h", 10000.0))
-        return [s for s,r in md_slice.items()
-                if (r.get("qv_24h") or 0.0)>=min_qv24 and (r.get("quote_volume") or 0.0)>=min_qv1h and (r.get("close") or 0.0)>0]
+        # Money Flow Index (MFI)
+        tp = (df["high"] + df["low"] + close) / 3
+        mf = tp * df["volume"]
+        pos_mf = mf.where(tp > tp.shift(), 0.0)
+        neg_mf = mf.where(tp < tp.shift(), 0.0)
+        pos_sum = pos_mf.rolling(14).sum()
+        neg_sum = neg_mf.rolling(14).sum().abs()
+        mfr = pos_sum / neg_sum.replace(0, np.nan)
+        df["mfi"] = 100 - (100 / (1 + mfr))
 
-    def rank(self, t, md_slice, symbols):
-        symbols = [s for s in symbols if md_slice[s].get("close",0)>0]
-        symbols.sort(key=lambda s: self._weighted_ob(md_slice[s]), reverse=True)
-        return symbols[: self.top_n]
+        # High-close proximity (HCP)
+        df["hcp"] = 100 * (df["high"] - close) / (df["high"] - df["low"]).replace(0, np.nan)
 
-    def entry_signal(self, t, sym, row, ctx):
-        min_ob = float(self.cfg.get("min_ob", 85.0))
-        max_atr_ratio = float(self.cfg.get("max_atr_ratio", 0.03))
-        risk_pct = float(self.cfg.get("risk_pct", 0.04))
-        atrr = float(row.get("atr_ratio") or 0.0)
-        if not (atrr > 0 and atrr <= max_atr_ratio):
-            return None
-        obw = self._weighted_ob(row)
-        if obw >= min_ob:
-            price = float(row["close"])
-            stop_price = price * (1.0 + risk_pct)
-            return {"side":"SHORT","reason":f"obw={obw:.1f}","stop_price":stop_price,
-                    "take_profit":None,"max_hold_hours":int(self.cfg.get("hold_hours", 60))}
-        return None
+        return df
 
-    def manage_position(self, t, sym, pos, row, ctx):
-        max_hold = int(pos.meta.get("max_hold_hours", self.cfg.get("hold_hours", 60)))
-        if (t - pos.entry_time).total_seconds() >= max_hold*3600:
-            return {"action":"EXIT","reason":"time_exit"}
-        return {"action":"HOLD","reason":"hold_ok"}
+    @staticmethod
+    def select(df: pd.DataFrame, cfg: dict):
+        """
+        Повертає True/False, чи входити в шорт по даному символу.
+        Використовує зважений OB індекс.
+        """
+        w_rsi = cfg.get("w_rsi", 0.25)
+        w_stoch = cfg.get("w_stoch", 0.25)
+        w_mfi = cfg.get("w_mfi", 0.25)
+        w_hcp = cfg.get("w_hcp", 0.25)
+
+        # Зважений OB
+        ob = (
+            w_rsi * df["rsi"].iloc[-1] +
+            w_stoch * df["stoch"].iloc[-1] +
+            w_mfi * df["mfi"].iloc[-1] +
+            w_hcp * df["hcp"].iloc[-1]
+        )
+
+        min_ob = cfg.get("min_ob", 85)
+        max_atr_ratio = cfg.get("max_atr_ratio", 0.05)
+
+        # ATR ratio
+        tr1 = df["high"] - df["low"]
+        tr2 = (df["high"] - df["close"].shift()).abs()
+        tr3 = (df["low"] - df["close"].shift()).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean()
+        atr_ratio = (atr.iloc[-1] / df["close"].iloc[-1]) if df["close"].iloc[-1] > 0 else 0
+
+        if ob >= min_ob and atr_ratio <= max_atr_ratio:
+            return True
+        return False
+
+    @staticmethod
+    def direction():
+        """
+        Напрямок угоди: для OB > threshold це шорт.
+        """
+        return "short"

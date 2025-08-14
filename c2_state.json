@@ -1,0 +1,44 @@
+{
+  "positions": {
+    "HIFI-USDT": {
+      "entry_time": "2025-08-12T19:43:05.647125Z",
+      "entry_price": 0.10171,
+      "atr_entry": 0.03825732170802595,
+      "notional": 20.0,
+      "trail_active": false,
+      "trail_stop": null,
+      "high_seen": 0.10238,
+      "low_seen": 0.10171
+    },
+    "JASMY-USDT": {
+      "entry_time": "2025-08-12T20:00:00.857028Z",
+      "entry_price": 0.018939,
+      "atr_entry": 0.02588666167245539,
+      "notional": 20.0,
+      "trail_active": false,
+      "trail_stop": null,
+      "high_seen": 0.018939,
+      "low_seen": 0.018939
+    },
+    "WCT-USDT": {
+      "entry_time": "2025-08-12T20:00:01.045590Z",
+      "entry_price": 0.3476,
+      "atr_entry": 0.022259710335747182,
+      "notional": 20.0,
+      "trail_active": false,
+      "trail_stop": null,
+      "high_seen": 0.3476,
+      "low_seen": 0.3476
+    },
+    "CUDIS-USDT": {
+      "entry_time": "2025-08-12T20:00:01.247404Z",
+      "entry_price": 0.0757,
+      "atr_entry": 0.04823723104290065,
+      "notional": 20.0,
+      "trail_active": false,
+      "trail_stop": null,
+      "high_seen": 0.0757,
+      "low_seen": 0.0757
+    }
+  }
+}

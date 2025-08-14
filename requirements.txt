@@ -1,0 +1,9 @@
+requests
+PyYAML
+pytz
+pandas
+numpy
+pandas>=2.0.0
+numpy>=1.23.0
+ccxt>=4.0.0
+pytz>=2024.1

@@ -20,27 +20,22 @@ def run_backtest(cache_db: str, strategy_cls, strategy_cfg: dict, portfolio_cfg:
     last_open_time = {}
     for t in all_times:
         t = pd.Timestamp(t).tz_convert("UTC") if pd.Timestamp(t).tzinfo else pd.Timestamp(t, tz="UTC")
-        if not is_open_hour(t, open_hour_kyiv, kyiv_offset_hours):
-            continue
+        if not is_open_hour(t, open_hour_kyiv, kyiv_offset_hours): continue
         md = build_md_slice(dfs, t)
         univ = strat.universe(t, md)
         ranked = strat.rank(t, md, univ)
         for sym in ranked:
             lo = last_open_time.get(sym)
-            if lo is not None and (t - lo) < pd.Timedelta(days=cooldown_days):
-                continue
+            if lo is not None and (t - lo) < pd.Timedelta(days=cooldown_days): continue
             sig = strat.entry_signal(t, sym, md[sym], ctx={"portfolio": pf})
-            if not sig:
-                continue
-            if not pf.can_open(portfolio_cfg):
-                break
+            if not sig: continue
+            if not pf.can_open(portfolio_cfg): break
             pos = pf.open(sym, sig, t, md[sym]["close"])
             pos.meta["max_hold_hours"] = sig.get("max_hold_hours", strategy_cfg.get("hold_hours",60))
             last_open_time[sym] = t
         for pos in pf.open_positions():
             row = md.get(pos.symbol)
-            if row is None:
-                continue
+            if row is None: continue
             adj = strat.manage_position(t, pos.symbol, pos, row, ctx={"portfolio": pf})
             if adj["action"] == "EXIT":
                 pf.close(pos, t, row["close"], reason=adj.get("reason","exit"))

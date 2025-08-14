@@ -1,0 +1,25 @@
+{
+  "positions": {
+    "HIFI-USDT": {
+      "entry_time": "2025-08-12T20:49:53.830065Z",
+      "entry_price": 0.11462,
+      "atr_entry": 0.04101953988801098,
+      "notional": 20.0,
+      "side": "SHORT"
+    },
+    "SPK-USDT": {
+      "entry_time": "2025-08-12T20:49:54.449037Z",
+      "entry_price": 0.09207,
+      "atr_entry": 0.03379790940766552,
+      "notional": 20.0,
+      "side": "LONG"
+    },
+    "MLN-USDT": {
+      "entry_time": "2025-08-12T20:49:55.081983Z",
+      "entry_price": 9.749,
+      "atr_entry": 0.028901053622932504,
+      "notional": 20.0,
+      "side": "SHORT"
+    }
+  }
+}

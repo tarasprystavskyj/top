@@ -1,0 +1,31 @@
+cache_db: ../combined_cache_1440.db
+strategy_class: strategies.obw_weighted.OBWeighted
+strategy_params:
+  top_n: 4
+  min_ob: 85
+  min_rsi: 60
+  min_stoch: 50
+  min_mfi: 50
+  require_at_least_n_high: 1
+  max_atr_ratio: 0.03
+  w_rsi: 0.4
+  w_stoch: 0.2
+  w_mfi: 0.2
+  w_ob: 0.2
+  risk_pct: 0.04
+  hold_hours: 60
+  cooldown_days: 3
+  min_qv_24h: 200000
+  min_qv_1h: 20000
+portfolio:
+  initial_equity: 200
+  position_notional: 20
+  max_notional_frac: 0.5
+  fee_rate: 0.001
+  funding_rate_hour: 0.00002
+  slippage_per_side: 0.0003
+  tick_pct: 0.0001
+session:
+  open_hour_kyiv: 2
+  kyiv_offset_hours: 3
+visualize: { plot_equity: true, show: false, save_dir: plots, prefix: obw_1h60d_liqAB }

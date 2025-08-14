@@ -1,0 +1,28 @@
+strategy_class: strategies.vol_breakout.VolatilityBreakout
+cache_db: ../combined_cache_1440.db
+
+session:
+  open_hour_kyiv: 2
+  kyiv_offset_hours: 3
+
+strategy_params:
+  top_n: 4
+  min_qv_24h: 200000
+  min_qv_1h: 10000
+
+  # базові пороги
+  min_atr_ratio: 0.022
+  min_momentum_sum: 0.12
+
+  # строгий сет (який дав PF≈3.97, DD≈−3.22%, ~+10.97%/міс)
+  min_vol_surge_mult: 1.60
+  min_breadth: 0.70
+  max_hold_hours: 60
+
+  # ризик/тейли
+  sl_atr_mult: 1.4
+  tp_atr_mult: 2.6
+  max_mae_atr_mult: 1.6
+  mom_flip_thresh: 0.02
+  trail_start_atr: 1.0
+  trail_dist_atr: 0.9

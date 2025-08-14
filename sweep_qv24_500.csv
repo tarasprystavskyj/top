@@ -1,4 +1,4 @@
-equity_end,trades,profit_factor,max_drawdown_%,win_rate_%,w_rsi,w_stoch,w_mfi,w_hcp,min_qv_24h
-221.56138761932854,16,14.72262306925282,-0.6740550677372892,81.25,0.4,0.2,0.2,0.1,100000
-221.56138761932854,16,14.72262306925282,-0.6740550677372892,81.25,0.4,0.2,0.2,0.1,200000
-221.56138761932854,16,14.72262306925282,-0.6740550677372892,81.25,0.4,0.2,0.2,0.1,500000
+equity_end,trades,profit_factor,max_drawdown_%,win_rate_%,w_rsi,w_stoch,w_mfi,w_hcp,error,min_qv_24h
+200.0,0,0.0,0.0,0.0,0.3,0.2,0.1,0.0,attempted relative import with no known parent package,100000
+200.0,0,0.0,0.0,0.0,0.3,0.2,0.1,0.0,attempted relative import with no known parent package,200000
+200.0,0,0.0,0.0,0.0,0.3,0.2,0.1,0.0,attempted relative import with no known parent package,500000

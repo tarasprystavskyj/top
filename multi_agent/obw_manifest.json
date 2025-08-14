@@ -1,0 +1,242 @@
+{
+  "zip": "/mnt/data/obw_c2_repro_pack+DB.zip",
+  "exists": true,
+  "files": [
+    {
+      "path": "obw_c2_repro_pack_nodb/DEPLOY_GUIDE.md",
+      "size": 1111
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/README_REPRO_C2.md",
+      "size": 1086
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/run_all.sh",
+      "size": 94
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/README_TF.md",
+      "size": 2134
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/backtester_core.py",
+      "size": 3421
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/README_NEW_STRAT.md",
+      "size": 1456
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/README_C2_REPEAT.md",
+      "size": 1341
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/run_c2_repeat_1440.log",
+      "size": 731
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/summary_c2_repeat_1h_1440_abs.csv",
+      "size": 153
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/trades_c2_repeat_1h_1440_abs.csv",
+      "size": 6310
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/trades_cs_C2_2h_1440.csv",
+      "size": 1
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/summary_cs_C2_2h_1440.csv",
+      "size": 97
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/trades_cs_C2_4h_1440.csv",
+      "size": 1
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/summary_cs_C2_4h_1440.csv",
+      "size": 97
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/trades_cs_C2_8h_1440.csv",
+      "size": 1
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/summary_cs_C2_8h_1440.csv",
+      "size": 97
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/summary_cs_C2_2h_oh3_600.csv",
+      "size": 157
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/trades_cs_C2_2h_oh3_600.csv",
+      "size": 11153
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/verify_c2_result.py",
+      "size": 682
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/run_c2_1h_1440.sh",
+      "size": 154
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/configs/alpha_v0.yaml",
+      "size": 593
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/configs/cs_C2_1440.yaml",
+      "size": 669
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/configs/c2_repeat_1h_1440.yaml",
+      "size": 707
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/configs/cs_C2_base_1h.yaml",
+      "size": 707
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/configs/cs_C2_2h.yaml",
+      "size": 710
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/configs/cs_C2_4h.yaml",
+      "size": 710
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/configs/cs_C2_8h.yaml",
+      "size": 710
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/configs/cs_C2_2h_oh3.yaml",
+      "size": 737
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/configs/cs_C2_4h_oh3.yaml",
+      "size": 737
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/engine/data.py",
+      "size": 3480
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/engine/portfolio.py",
+      "size": 5027
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/engine/visualize_results.py",
+      "size": 3480
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/engine/__pycache__/data.cpython-311.pyc",
+      "size": 7584
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/engine/__pycache__/portfolio.cpython-311.pyc",
+      "size": 9512
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/engine/__pycache__/visualize_results.cpython-311.pyc",
+      "size": 7140
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/scripts/run_alpha_500.sh",
+      "size": 173
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/scripts/run_alpha_60d.sh",
+      "size": 156
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/strategies/alpha_v0.py",
+      "size": 4011
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/strategies/base.py",
+      "size": 1123
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/strategies/cross_sectional_rs.py",
+      "size": 7875
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/strategies/__pycache__/cross_sectional_rs.cpython-311.pyc",
+      "size": 11042
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/strategies/__pycache__/base.cpython-311.pyc",
+      "size": 3209
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/plots/run_20250810_075943_equity_vs_trade.png",
+      "size": 66620
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/plots/run_20250810_075943_dd_vs_trade.png",
+      "size": 70922
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/plots/run_20250810_205146_equity_vs_trade.png",
+      "size": 56220
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/plots/run_20250810_205146_dd_vs_trade.png",
+      "size": 68353
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/plots/run_20250810_211315_equity_vs_trade.png",
+      "size": 56220
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/plots/run_20250810_211315_dd_vs_trade.png",
+      "size": 68353
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/plots/run_20250810_213025_equity_vs_trade.png",
+      "size": 72736
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/plots/run_20250810_213025_dd_vs_trade.png",
+      "size": 73623
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/reports/c2_repeat_1h_1440_trades.csv",
+      "size": 6310
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/reports/c2_repeat_1h_1440_summary.csv",
+      "size": 153
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/backtest_SK/reports/c2_repeat_1h_1440_equity.png",
+      "size": 111176
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/reports/c2_repeat_1h_1440_summary.csv",
+      "size": 153
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/reports/c2_repeat_1h_1440_trades.csv",
+      "size": 6310
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/reports/c2_repeat_1h_1440_equity.png",
+      "size": 111176
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/combined_cache.db",
+      "size": 14336000
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/combined_cache_1440.db",
+      "size": 159084544
+    },
+    {
+      "path": "obw_c2_repro_pack_nodb/combined_cache_1440_2h.db",
+      "size": 150523904
+    }
+  ]
+}
