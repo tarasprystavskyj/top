@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-AutoGen multi-agent (OpenAI-only) — v6.8 (Py3.8)
+AutoGen multi-agent (OpenAI-only) — v6.9 (Py3.8)
 
 Що вміє:
-- Стабільний облік вартості для OpenAI SDK 0.x і 1.x (USD) + конвертація у гривні (прапорець --uah-rate).
-- CLI прапорці: --max-tokens, --log-file, --uah-rate, --cycles, --prerun, --project-dir, --code-zip, --tuned-config-name.
+- Облік вартості (USD) + конвертація у грн (--uah-rate).
+- CLI: --max-tokens, --log-file, --uah-rate, --cycles, --prerun, --project-dir, --code-zip, --tuned-config-name.
 - Executor:
-  • Хід 1: автоматично запускає базовий бектест і друкує реальні метрики з CSV.
-  • Хід 2+ (кожен наступний): сам змінює один числовий параметр YAML (спроба 'risk', інакше перший числовий),
-    пише у новий файл (tuned), показує diff, запускає бектест і друкує реальні метрики з нового CSV.
-- Журнал: повний транскрипт + підсумок вартості зберігаються у файл (--log-file).
+  • Хід 1: запускає базовий бектест і друкує реальні метрики з CSV.
+  • Далі: змінює один числовий параметр YAML, ПОВЕРХ попередньої тюненої версії (або бази, якщо tuned ще нема),
+    зберігає у `cs_C2_tuned_1h.yaml`, запускає бектест по tuned і друкує реальні метрики з нового CSV.
+- Пошук найсвіжішого summary у reports (після часу старту), копія у summary_YYYYmmdd_HHMMSS.csv для аудиту.
+- Повний транскрипт чату + підсумок вартості у файл (--log-file).
 
-Примітки:
-- НІКОЛИ не вставляє плейсхолдери типу [значення]; метрики беруться з фактичного CSV.
-- Після запуску шукає найсвіжіший CSV у reports (модифікований після старту прогону) і додатково копіює його як summary_YYYYmmdd_HHMMSS.csv.
+Зміна від v6.8:
+- Важливо: `update_yaml_params(..., cfg_relpath=src_cfg, ...)` → тепер зміни накопичуються в tuned і вже «з другого разу»
+  бектест точно йде по tuned.
 """
 
 import os
@@ -38,7 +39,7 @@ COST_SUM = 0.0
 TOK_IN_SUM = 0
 TOK_OUT_SUM = 0
 TOK_IN_CACHED_SUM = 0
-UAH_RATE = float(os.getenv("UAH_RATE", "40"))  # можна перевизначити прапорцем --uah-rate
+UAH_RATE = float(os.getenv("UAH_RATE", "40"))
 
 def price_for_model(model: str) -> Dict[str, float]:
     key = "gpt-4o" if model.startswith("gpt-4o") else (
@@ -72,7 +73,6 @@ def print_cost(model: str, usage, where: str):
     print(f"\n[COST] {where} -> model={model} | in={prompt_tokens} (cached={cached}) | out={completion_tokens} | est=${cost:.6f}")
 
 def _wrap_openai_v1():
-    # openai>=1.x
     try:
         import openai
         comp_obj = openai.resources.chat.completions.Completions
@@ -99,7 +99,6 @@ def _wrap_openai_v1():
         return False
 
 def _wrap_openai_v0():
-    # openai<1.x
     try:
         import openai
         orig_create = openai.ChatCompletion.create
@@ -147,7 +146,6 @@ def read_text_from_zip(zip_path: str, rel_path: str, max_bytes: int = 20000) -> 
             return None
         with zf.open(rel_path) as fp:
             data = fp.read(max_bytes + 1)
-            _ = fp.read(0)
             text = data.decode("utf-8", errors="replace")
             if len(data) > max_bytes:
                 text += "\n\n[...TRUNCATED...]"
@@ -170,7 +168,7 @@ def build_zip_context(zip_path: Optional[str], max_total_bytes: int = 60000) -> 
         used += len(b)
     return ("=== PROJECT CONTEXT (from ZIP) ===" + "".join(chunks) + "\n=== END CONTEXT ===") if chunks else ""
 
-# ---------- Helpers for project layout ----------
+# ---------- Helpers ----------
 def detect_default_cfg(project_dir: str) -> str:
     p = Path(project_dir).resolve()
     opt2 = p / "configs" / "cs_C2_base_1h.yaml"
@@ -291,7 +289,7 @@ def run_backtest_cfg(project_dir: str, cfg_relpath: str,
 
     script_py = (proj_root / "backtest_SK" / "backtester_core.py")
     if not script_py.exists():
-        script_py = proj_root / "backtester_core.py"  # коли project_dir==backtest_SK
+        script_py = proj_root / "backtester_core.py"
     if not script_py.exists():
         return {"ok": False, "step": "script_missing", "log": f"Not found: backtester_core.py under {proj_root}"}
 
@@ -302,20 +300,16 @@ def run_backtest_cfg(project_dir: str, cfg_relpath: str,
     try:
         rel_cfg = cfg_path.relative_to(proj_root)
     except Exception:
-        rel_cfg = cfg_path  # абс. шлях як фолбек
+        rel_cfg = cfg_path
 
     import time
     t0 = time.time()
-    code, out = _venv_run(proj_root, venv_here, f"python {script_py} --cfg {rel_cfg}", timeout=1800)
+    cmd = f"python {script_py} --cfg {rel_cfg}"
+    code, out = _venv_run(proj_root, venv_here, cmd, timeout=1800)
 
-    # шукаємо найсвіжіший CSV у reports
     cand = summary_candidates or [
-        "backtest_SK/reports/c2_repeat_1h_1440_summary.csv",
-        "reports/c2_repeat_1h_1440_summary.csv",
-        "backtest_SK/summary.csv",
         "summary.csv",
-        "backtest_SK/reports/summary.csv",
-        "reports/summary.csv",
+        
     ]
     found = None
     search_dirs = [proj_root / "reports", proj_root / "backtest_SK" / "reports"]
@@ -339,8 +333,7 @@ def run_backtest_cfg(project_dir: str, cfg_relpath: str,
                 found = f
                 break
 
-    metrics = {}
-    csv_row = {}
+    metrics, csv_row = {}, {}
     if found:
         try:
             with open(found, newline="", encoding="utf-8") as f:
@@ -357,8 +350,7 @@ def run_backtest_cfg(project_dir: str, cfg_relpath: str,
                 ts = datetime.now().strftime('%Y%m%d_%H%M%S')
                 audit = found.parent / f"summary_{ts}.csv"
                 if not audit.exists():
-                    found_link = found.read_text(encoding="utf-8")
-                    Path(audit).write_text(found_link, encoding="utf-8")
+                    audit.write_text(found.read_text(encoding="utf-8"), encoding="utf-8")
             except Exception:
                 pass
         except Exception as e:
@@ -367,6 +359,7 @@ def run_backtest_cfg(project_dir: str, cfg_relpath: str,
     return {
         "ok": code == 0,
         "steps": {"run_code": code},
+        "cmd": cmd,
         "logs_tail": out[-4000:],
         "metrics": metrics,
         "csv_row": csv_row,
@@ -488,8 +481,8 @@ def _fmt_metrics(metrics: Dict) -> str:
     eq  = g("equity_end")
     tr  = g("trades")
     pf  = g("profit_factor", "pf")
-    dd  = g("max_dd")
-    wr  = g("win_rate", "wr")
+    dd  = g("max_dd", "max_drawdown_%")
+    wr  = g("win_rate", "wr", "win_rate_%")
     lines = []
     if eq is not None: lines.append(f"Equity end: {eq}")
     if tr is not None: lines.append(f"Trades: {tr}")
@@ -516,7 +509,6 @@ def _dump_transcript_to_file(group, log_path: str):
 
 # ---------- AutoGen ----------
 def _unpack_reply_args(args, kwargs):
-    """Підтримка обох стилів виклику: (self, messages, sender, config) і через kwargs."""
     self = args[0] if len(args) >= 1 else kwargs.get("self")
     messages = kwargs.get("messages", args[1] if len(args) >= 2 else None)
     sender = kwargs.get("sender", args[2] if len(args) >= 3 else None)
@@ -544,7 +536,6 @@ def _import_autogen_classes():
         return AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
 
 def _pick_param_to_tune(project_dir: str, cfg_relpath: str) -> Optional[str]:
-    """Гевристика: пріоритет 'risk', інакше перший числовий ключ (flattened)."""
     try:
         import yaml
         from collections import deque
@@ -575,13 +566,12 @@ def _pick_param_to_tune(project_dir: str, cfg_relpath: str) -> Optional[str]:
     return None
 
 def _propose_new_value(old, step: float = 0.1):
-    """Множимо на (1+step), зберігаючи тип: int → int, float → округлення; розумні межі."""
     try:
         base = float(old)
     except Exception:
         return old
     newv = base * (1.0 + step)
-    if base <= 1.0:  # ризики/частки
+    if base <= 1.0:
         newv = max(1e-5, min(newv, 1.0))
         return round(newv, 6)
     if isinstance(old, int) or abs(round(base) - base) < 1e-9:
@@ -589,7 +579,6 @@ def _propose_new_value(old, step: float = 0.1):
     return round(newv, 6)
 
 def _norm_metrics(csv_row: Dict) -> Dict[str, float]:
-    """Нормалізація імен/типів метрик для порівняння."""
     if not csv_row:
         return {}
     m = {}
@@ -611,7 +600,6 @@ def _norm_metrics(csv_row: Dict) -> Dict[str, float]:
     return m
 
 def _score(m: Dict[str, float]) -> float:
-    """Проста ціль: ↑equity_end & ↑PF, ↓DD%."""
     if not m: return -1e9
     eq = m.get('equity_end') or 0.0
     pf = m.get('profit_factor') or 0.0
@@ -640,7 +628,8 @@ def run_multi_agent(task: str, work_path: Optional[str], cycles: int, tuned_cfg_
         "Алгоритм:\n"
         f"1) run_backtest_cfg(project_dir='{path_hint}', cfg_relpath='{base_cfg}')\n"
         "2) Виведи метрики (реальні числа) та шлях до summary\n"
-        f"3) Запропонуй і внеси правки YAML у новий файл через update_yaml_params(..., dest_relpath='{tuned_cfg}', ...)\n"
+        f"3) Внеси правки YAML у НОВИЙ/ОНОВЛЕНИЙ файл через update_yaml_params(..., cfg_relpath='<джерело>', dest_relpath='{tuned_cfg}', ...)\n"
+        f"   (джерело: якщо '{tuned_cfg}' існує — використовуй його; інакше — '{base_cfg}')\n"
         f"4) diff_yaml(..., base_relpath='{base_cfg}', tuned_relpath='{tuned_cfg}')\n"
         f"5) run_backtest_cfg(..., cfg_relpath='{tuned_cfg}') і порівняй метрики."
     )
@@ -671,13 +660,12 @@ def run_multi_agent(task: str, work_path: Optional[str], cycles: int, tuned_cfg_
 
     user = UserProxyAgent(
         name="User",
-        human_input_mode="NEVER",           # користувач мовчить — не блокуємо автохід
+        human_input_mode="NEVER",
         is_termination_msg=lambda x: False,
         system_message="Представляє інтереси замовника.",
         code_execution_config=False,
     )
 
-    # ---- Force baseline run on Executor's first turn ----
     baseline_done = {"flag": False}
     def _executor_autorun(*args, **kwargs):
         self, messages, sender, config = _unpack_reply_args(args, kwargs)
@@ -689,36 +677,38 @@ def run_multi_agent(task: str, work_path: Optional[str], cycles: int, tuned_cfg_
         res = run_backtest_cfg(project_dir=path_hint, cfg_relpath=base_cfg)
         m = res.get("metrics") or {}
         summary_path = res.get("summary_path") or "не знайдено"
+        cmd = res.get("cmd", "")
         csv_row = res.get("csv_row") or {}
-        msg = ["Базовий бектест виконано.", "Шлях до summary: " + str(summary_path)]
-        block = _fmt_metrics(m)
-        if block: msg.append(block)
+        msg = [
+            "Базовий бектест виконано.",
+            "Команда запуску: " + cmd,
+            "Шлях до summary: " + str(summary_path),
+            _fmt_metrics(m)
+        ]
         if csv_row:
             extras = {k: v for k, v in csv_row.items()
                       if k.lower() not in ("equity_end","trades","profit_factor","max_dd","win_rate","wr","pf")}
             if extras:
                 msg.append("Додаткові поля CSV: " + ", ".join(f"{k}={v}" for k, v in extras.items()))
-        return True, "\n".join(msg)
+        return True, "\n".join([x for x in msg if x])
 
     # register autorun hook across API variants
     try:
         sig = inspect.signature(executor.register_reply)
         names = [p.name for p in sig.parameters.values()]
         if len(names) >= 2 and names[1] == "reply_func":
-            # legacy: register_reply(trigger, reply_func, ...)
             def _always_trigger(*args, **kwargs):
                 self, messages, sender, config = _unpack_reply_args(args, kwargs)
                 return not baseline_done["flag"]
             executor.register_reply(_always_trigger, _executor_autorun)
             print("[hook] autorun (legacy register_reply)")
         else:
-            # new: register_reply(reply_func, ...)
             executor.register_reply(_executor_autorun)
             print("[hook] autorun (new register_reply)")
     except Exception as e:
         print("[WARN] Failed to add executor autorun hook:", repr(e))
 
-    # ---- Iteration hook: after baseline, one change per Executor turn ----
+    # ---- Iteration hook ----
     state = {"iter": 0, "tried": set()}
 
     def _executor_iterate(*args, **kwargs):
@@ -771,8 +761,8 @@ def run_multi_agent(task: str, work_path: Optional[str], cycles: int, tuned_cfg_
         new_val = _propose_new_value(old_val, step=0.10)
         updates = {key: new_val}
         print(f"[iterate] tuning '{key}': {old_val} -> {new_val}")
-        ures = update_yaml_params(project_dir=path_hint, cfg_relpath=base_cfg, updates=updates, dest_relpath=tuned_cfg)
-
+        # ВАЖЛИВО: тепер джерело — src_cfg (tuned якщо існує), а не завжди base_cfg
+        ures = update_yaml_params(project_dir=path_hint, cfg_relpath=src_cfg, updates=updates, dest_relpath=tuned_cfg)
         if not ures.get("ok"):
             return True, f"Помилка оновлення YAML: {ures.get('log')}"
 
@@ -784,6 +774,7 @@ def run_multi_agent(task: str, work_path: Optional[str], cycles: int, tuned_cfg_
             diff_txt = "; ".join(f"{k}: {v['old']} -> {v['new']}" for k, v in changes.items()) or "(немає змін)"
 
         r2 = run_backtest_cfg(project_dir=path_hint, cfg_relpath=tuned_cfg)
+        print(f"[iterate] tuned cmd: {r2.get('cmd')}")
         print(f"[iterate] tuned summary: {r2.get('summary_path')}")
         csv2 = r2.get("csv_row") or {}
         m2 = _norm_metrics(csv2)
@@ -800,9 +791,11 @@ def run_multi_agent(task: str, work_path: Optional[str], cycles: int, tuned_cfg_
 
         msg_lines = [
             f"Ітерація #{state['iter']}: тюнінг '{key}': {old_val} → {new_val}",
-            f"Зміни: {diff_txt}",
+            f"Джерело для оновлення: {src_cfg}",
+            f"Зміни (diff base→tuned): {diff_txt}",
             "Результати (tuned):",
             metrics_block,
+            f"Команда запуску tuned: {r2.get('cmd')}",
             f"Summary tuned: {r2.get('summary_path') or 'не знайдено'}",
         ]
         return True, "\n".join([x for x in msg_lines if x])
@@ -820,8 +813,6 @@ def run_multi_agent(task: str, work_path: Optional[str], cycles: int, tuned_cfg_
         else:
             executor.register_reply(_executor_iterate)
             print("[hook] iterate (new register_reply)")
-
-        # move iterate hook to front if possible
         try:
             rf = getattr(executor, "_reply_funcs", None)
             if isinstance(rf, list):
@@ -844,10 +835,9 @@ def run_multi_agent(task: str, work_path: Optional[str], cycles: int, tuned_cfg_
     print("\n=== TASK ===\n", task[:4000], "\n")
     tool_hint = ""\
         + (f"\n\n[TOOL HINT] baseline: run_backtest_cfg(project_dir='{path_hint}', cfg_relpath='{base_cfg}')" if path_hint else "")\
-        + (f"\n[TOOL HINT] tuned: update_yaml_params(project_dir='{path_hint}', cfg_relpath='{base_cfg}', dest_relpath='{tuned_cfg}', updates={{...}})" if path_hint else "")
+        + (f"\n[TOOL HINT] tuned: update_yaml_params(project_dir='{path_hint}', cfg_relpath='<src>', dest_relpath='{tuned_cfg}', updates={{...}})" if path_hint else "")
     user.initiate_chat(manager, message=task + tool_hint)
 
-    # dump transcript
     log_path = os.getenv('CHAT_LOG_FILE')
     if not log_path:
         log_path = f"agent_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -857,7 +847,6 @@ def single_call(task: str, max_tokens: int):
     try:
         from openai import OpenAI
     except Exception:
-        # legacy SDK
         import openai
         model = os.getenv("OPENAI_EXECUTOR_MODEL", "gpt-4o-mini")
         sys_prompt = (
@@ -929,7 +918,6 @@ def main():
     args = parse_args()
     UAH_RATE = float(args.uah_rate)
 
-    # лог-файл для транскрипту
     log_path = args.log_file or f"agent_chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     os.environ["CHAT_LOG_FILE"] = log_path
 
@@ -940,7 +928,6 @@ def main():
     work_path = args.code_zip or args.project_dir
     max_tokens = args.max_tokens
 
-    # optional pre-run
     prerun_flag = args.prerun or os.getenv("PRERUN_BACKTEST", "0").lower() in ("1", "true", "yes")
     if work_path and prerun_flag:
         try:
@@ -954,7 +941,6 @@ def main():
         except Exception as e:
             final_task = final_task + f"\n\n[PRE-RUN ERROR] {e}\n"
 
-    # single-call режим (за потреби)
     if os.getenv("SINGLE_CALL", "0").lower() in ("1", "true", "yes"):
         try:
             single_call(final_task, max_tokens=max_tokens); return
@@ -975,7 +961,6 @@ def main():
         print(f"input_tokens={TOK_IN_SUM} (cached={TOK_IN_CACHED_SUM}), output_tokens={TOK_OUT_SUM}")
         print(f"estimated_total_cost=${COST_SUM:.6f}  (~₴{COST_SUM*UAH_RATE:.2f} @ {UAH_RATE} UAH/USD)\n")
 
-    # Append run args + cost to the same log file
     try:
         with open(log_path, "a", encoding="utf-8") as lf:
             lf.write("=== RUN ARGS ===\n")
