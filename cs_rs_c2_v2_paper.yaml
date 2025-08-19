@@ -1,0 +1,11 @@
+# C2 paper-bot config (compatible keys with backtester)
+timeframe: 1h
+top_n: 4
+min_atr_ratio: 0.028
+min_breadth: 0.15
+vol_surge_mult: 1.0
+sl_atr_mult: 3.0
+tp_atr_mult: 6.0
+max_hold_hours: 72
+notional: 2.2
+perp_usdt_only: true
