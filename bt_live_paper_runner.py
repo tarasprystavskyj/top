@@ -210,7 +210,6 @@ class CCXTFetcher:
             raise RuntimeError("ccxt is not installed. pip install 'ccxt<5'")
         self.debug = debug
         self.logfile = logfile
-        # Attach API credentials if present in env (supports --env-file)
         api_k = os.environ.get("BINGX_KEY") or os.environ.get("API_KEY")
         api_s = os.environ.get("BINGX_SECRET") or os.environ.get("API_SECRET")
         opts = {"enableRateLimit": True, "timeout": 20000}
@@ -432,6 +431,24 @@ def cache_out_upsert(cache_path: str, symbol: str, feats_df: pd.DataFrame):
     con.commit()
     con.close()
 
+def read_hour_cache_row(cache_path: str, symbol: str, dt_utc) -> dict:
+    """Return feature dict for exact bar time from price_indicators, or {} if missing."""
+    try:
+        con = sqlite3.connect(cache_path)
+        cur = con.cursor()
+        ts = dt_utc.isoformat()
+        row = cur.execute(
+            "SELECT open,high,low,close,volume,rsi,stochastic,mfi,overbought_index,atr_ratio,gain_24h_before,dp6h,dp12h,quote_volume,qv_24h,vol_surge_mult "
+            "FROM price_indicators WHERE symbol=? AND datetime_utc=? LIMIT 1", (symbol, ts)
+        ).fetchone()
+        con.close()
+        if not row:
+            return {}
+        keys = ["open","high","low","close","volume","rsi","stochastic","mfi","overbought_index","atr_ratio","gain_24h_before","dp6h","dp12h","quote_volume","qv_24h","vol_surge_mult"]
+        return {k: float(v) for k, v in zip(keys, row)}
+    except Exception:
+        return {}
+
 # ---------- PAPER runner (DB replay) ----------
 def run_paper(db_path: str, cfg: dict, results_dir: str, limit_bars: Optional[int] = None):
     assert EnginePortfolio is not None, "engine.portfolio.Portfolio unavailable (place script in repo root)"
@@ -515,6 +532,12 @@ def run_paper_api(cfg: dict, args):
     fetcher = MockFetcher() if use_mock else CCXTFetcher(exchange=args.exchange, symbol_format=args.symbol_format, debug=args.debug)
 
     os.makedirs(args.results_dir, exist_ok=True)
+    # DB & cache targets for LIVE
+    session_db_path = getattr(args, "session_db", None) or getattr(args, "orders_db", None) or os.path.join(args.results_dir, "session.sqlite")
+    cache_out_path = getattr(args, "cache_out", None) or os.path.join(args.results_dir, "combined_cache_session.db")
+    ensure_orders_db(session_db_path)
+    run_id = datetime.utcnow().strftime("LIVE_%Y%m%d_%H%M%S")
+    write_config_snapshot(session_db_path, run_id, cfg)
     orders_db = args.orders_db or os.path.join(args.results_dir, "orders.sqlite")
     ensure_orders_db(orders_db)
     session_db_path, cache_out_path = ensure_session_dbs(args.results_dir, args.session_db, args.cache_out)
@@ -543,9 +566,7 @@ def run_paper_api(cfg: dict, args):
                 feats_df = compute_feats(df)
                 cache_out_upsert(cache_out_path, ccxt_sym, feats_df)
                 md[ccxt_sym] = feats_df.iloc[-1].to_dict()
-                # progress dot per processed symbol (from v2)
                 print(".", end="", flush=True)
-            print("", flush=True)  # newline after progress line
 
             # exits
             for pos in list(pf.positions):
@@ -634,12 +655,6 @@ def qty_for_notional(mkt: dict, notional: float, price: float):
     min_qty = float(mkt.get("limits", {}).get("amount", {}).get("min") or 0.0)
     step = float(mkt.get("precision", {}).get("amount") or 0.0)
     min_notional_req = float(mkt.get("limits", {}).get("cost", {}).get("min") or 0.0)
-    # Fallback: if exchange doesn't provide cost.min, approximate via min_qty * price
-    if (not min_notional_req) and min_qty and price:
-        try:
-            min_notional_req = float(min_qty) * float(price)
-        except Exception:
-            pass
     if step and step > 0:
         qty = max(min_qty, math.floor(notional / max(price, 1e-9) / step) * step)
     else:
@@ -696,10 +711,23 @@ def run_live(cfg: dict, args):
     fetcher = CCXTFetcher(exchange=args.exchange, symbol_format=args.symbol_format, debug=args.debug)
 
     top_n = int(cfg.get("top_n", 4))
-    notional = float(cfg.get("position_notional", cfg.get("notional", 2.2)))
+    notional = float(cfg.get("notional", 2.2))
     position_mode = cfg.get("position_mode", "hedge")
 
     os.makedirs(args.results_dir, exist_ok=True)
+    # LIVE session DB & cache setup
+    session_db_path = getattr(args, "session_db", None) or getattr(args, "orders_db", None) or os.path.join(args.results_dir, "session.sqlite")
+    cache_out_path = getattr(args, "cache_out", None) or os.path.join(args.results_dir, "combined_cache_session.db")
+    try:
+        ensure_orders_db(session_db_path)
+    except Exception:
+        pass
+    run_id = datetime.utcnow().strftime("LIVE_%Y%m%d_%H%M%S")
+    try:
+        write_config_snapshot(session_db_path, run_id, cfg)
+    except Exception:
+        pass
+
     state_path = os.path.join(args.results_dir, "live_state.json")
     state = {}
     if os.path.exists(state_path):
@@ -720,19 +748,34 @@ def run_live(cfg: dict, args):
             universe = sorted(set(fetcher.by_base.values()))
             md = {}
             for ccxt_sym in universe:
-                df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=cfg.get("timeframe", "1h"), limit=max(60, args.limit_klines))
-                if df is None or len(df) < 30:
-                    continue
-                feats = compute_feats(df).iloc[-1].to_dict()
+                feats = {}
+                if args.hour_cache == "load":
+                    feats = read_hour_cache_row(cache_out_path, ccxt_sym, bar_close)
+                if not feats:
+                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=cfg.get("timeframe", "1h"), limit=max(60, args.limit_klines))
+                    if df is None or len(df) < 30:
+                        continue
+                    feats = compute_feats(df).iloc[-1].to_dict()
+                    # save to cache if asked
+                    if args.hour_cache in ("save", "load"):
+                        try:
+                            cache_out_upsert(cache_out_path, ccxt_sym, df)
+                        except Exception:
+                            pass
                 md[ccxt_sym] = feats
-                # progress dot per processed symbol (LIVE)
                 print(".", end="", flush=True)
-            print("", flush=True)  # newline after progress line
 
             # pipeline
             uni = strat.universe(bar_close, md)
             ranked = strat.rank(bar_close, md, uni)[:top_n]
             opened = 0
+            selected_syms = list(ranked)
+            write_decisions(session_db_path, run_id, bar_close, ranked, selected_syms)
+            # simple equity snapshot (positions unrealized not tracked here)
+            write_equity(session_db_path, run_id, bar_close, {
+                "equity": 0.0, "cash": 0.0, "position_value": 0.0,
+                "realized_pnl_cum": 0.0, "unrealized_pnl": 0.0
+            })
             for sym in ranked:
                 row = md.get(sym)
                 if row is None:
@@ -748,8 +791,26 @@ def run_live(cfg: dict, args):
                     print(f"[open FAIL] {sym}: {res}", file=sys.stderr)
                     continue
                 qty = float(res["qty"])
-                # Brackets as reduce-only closes (simplified here)
-                place_reduce_only(fetcher, sym, "sell", qty, position_mode)
+                # log order to DB and print
+                try:
+                    insert_order_row(session_db_path, {
+                        "order_id": f"LIVE-{uuid.uuid4()}",
+                        "ts_utc": datetime.utcnow().isoformat(),
+                        "bar_time_utc": bar_close.isoformat(),
+                        "mode": "live",
+                        "symbol": sym,
+                        "side": "buy",
+                        "type": "market",
+                        "price": float(entry_px),
+                        "qty": float(qty),
+                        "status": "filled",
+                        "reason": "entry",
+                        "run_id": run_id,
+                        "extra": json.dumps({"notional": notional})
+                    })
+                except Exception:
+                    pass
+                print(f"[open OK] {sym} qty={qty:.6g} px={entry_px}", flush=True)
                 state["positions"][sym] = {"entry": entry_px, "qty": qty, "ts": bar_close.isoformat()}
                 json.dump(state, open(state_path, "w", encoding="utf-8"), indent=2)
                 opened += 1
@@ -784,6 +845,7 @@ def main():
     # Session & cache-out
     ap.add_argument("--session-db", default="")
     ap.add_argument("--cache-out", default="")
+    ap.add_argument("--hour-cache", choices=["off","save","load"], default="off", help="Current-hour cache: save (write) or load (read) features from cache_out for live speed-up")
 
     # LIVE / PAPER-API params
     ap.add_argument("--env-file", default="")
