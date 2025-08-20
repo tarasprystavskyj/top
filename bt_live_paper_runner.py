@@ -210,7 +210,13 @@ class CCXTFetcher:
             raise RuntimeError("ccxt is not installed. pip install 'ccxt<5'")
         self.debug = debug
         self.logfile = logfile
-        self.ex = getattr(ccxt, exchange)({"enableRateLimit": True, "timeout": 20000})
+        # Attach API credentials if present in env (supports --env-file)
+        api_k = os.environ.get("BINGX_KEY") or os.environ.get("API_KEY")
+        api_s = os.environ.get("BINGX_SECRET") or os.environ.get("API_SECRET")
+        opts = {"enableRateLimit": True, "timeout": 20000}
+        if api_k and api_s:
+            opts.update({"apiKey": api_k, "secret": api_s})
+        self.ex = getattr(ccxt, exchange)(opts)
         try:
             self.markets = self.ex.load_markets()
         except Exception as e:
@@ -537,6 +543,9 @@ def run_paper_api(cfg: dict, args):
                 feats_df = compute_feats(df)
                 cache_out_upsert(cache_out_path, ccxt_sym, feats_df)
                 md[ccxt_sym] = feats_df.iloc[-1].to_dict()
+                # progress dot per processed symbol (from v2)
+                print(".", end="", flush=True)
+            print("", flush=True)  # newline after progress line
 
             # exits
             for pos in list(pf.positions):
@@ -625,6 +634,12 @@ def qty_for_notional(mkt: dict, notional: float, price: float):
     min_qty = float(mkt.get("limits", {}).get("amount", {}).get("min") or 0.0)
     step = float(mkt.get("precision", {}).get("amount") or 0.0)
     min_notional_req = float(mkt.get("limits", {}).get("cost", {}).get("min") or 0.0)
+    # Fallback: if exchange doesn't provide cost.min, approximate via min_qty * price
+    if (not min_notional_req) and min_qty and price:
+        try:
+            min_notional_req = float(min_qty) * float(price)
+        except Exception:
+            pass
     if step and step > 0:
         qty = max(min_qty, math.floor(notional / max(price, 1e-9) / step) * step)
     else:
@@ -681,7 +696,7 @@ def run_live(cfg: dict, args):
     fetcher = CCXTFetcher(exchange=args.exchange, symbol_format=args.symbol_format, debug=args.debug)
 
     top_n = int(cfg.get("top_n", 4))
-    notional = float(cfg.get("notional", 2.2))
+    notional = float(cfg.get("position_notional", cfg.get("notional", 2.2)))
     position_mode = cfg.get("position_mode", "hedge")
 
     os.makedirs(args.results_dir, exist_ok=True)
@@ -710,6 +725,9 @@ def run_live(cfg: dict, args):
                     continue
                 feats = compute_feats(df).iloc[-1].to_dict()
                 md[ccxt_sym] = feats
+                # progress dot per processed symbol (LIVE)
+                print(".", end="", flush=True)
+            print("", flush=True)  # newline after progress line
 
             # pipeline
             uni = strat.universe(bar_close, md)
