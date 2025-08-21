@@ -210,6 +210,43 @@ def compute_feats(df: pd.DataFrame, tf_seconds: Optional[int] = None) -> pd.Data
             out[k] = 0.0
     return out
 
+
+def _print_heat_from_strategy(strat, mode_label: str, bar_close, md: dict, uni_syms):
+    """
+    Use strategy.best_entry_distance(...) if available to print 'heat' (distance to entry)
+    using thresholds from strategy YAML. Safe no-op if strategy lacks the helper.
+    """
+    try:
+        best_entry_distance = getattr(strat, "best_entry_distance", None)
+        if best_entry_distance is None:
+            return False
+        symbols = list(uni_syms) if uni_syms else list(md.keys())
+        best = best_entry_distance(bar_close, md, symbols=symbols)
+        # Always print a live-like line for time context when opened==0
+        print(f"[{mode_label}] opened=0 at {bar_close.isoformat()}")
+        if not best:
+            return True
+        heat = max(0.0, 1.0 - float(best.get("combined_gap", 1.0)))
+        g = best.get("gaps", {}) or {}
+        th = best.get("thresholds", {}) or {}
+        a = best.get("actuals", {}) or {}
+        print(f"[heat] nearest={best.get('symbol')} heat={heat*100:.1f}% (lower gap is closer to entry)")
+        if "atr" in g:
+            print(f"       atr_ratio {a.get('atr_ratio',0.0):.6f} vs min {th.get('min_atr_ratio',0.0):.6f} -> gap {g.get('atr',0.0)*100:.1f}%")
+        if "volsurge" in g:
+            print(f"       vol_surge_mult req×avg1h -> gap {g.get('volsurge',0.0)*100:.1f}%")
+        if "qv24" in g:
+            print(f"       qv_24h {a.get('qv_24h',0.0):.0f} vs min {th.get('min_qv_24h',0.0):.0f} -> gap {g.get('qv24',0.0)*100:.1f}%")
+        if "qv1h" in g:
+            print(f"       qv_1h  {a.get('qv_1h',0.0):.0f} vs min {th.get('min_qv_1h',0.0):.0f} -> gap {g.get('qv1h',0.0)*100:.1f}%")
+        if "momentum" in g:
+            print(f"       momentum {a.get('mom_sum',0.0):.4f} vs req {th.get('min_momentum_sum',0.0):.4f} -> gap {g.get('momentum',0.0)*100:.1f}%")
+        if "breadth" in g:
+            print(f"       breadth  {a.get('breadth',0.0):.3f} vs min {th.get('min_breadth',0.0):.3f} -> gap {g.get('breadth',0.0)*100:.1f}%")
+        return True
+    except Exception:
+        return False
+
 # ---------- CCXT fetchers ----------
 try:
     import ccxt  # type: ignore
@@ -652,6 +689,7 @@ def run_paper_api(cfg: dict, args):
             ranked = strat.rank(bar_close, md, uni)[:top_n]
             selected_syms = list(ranked)
             write_decisions(session_db_path, run_id, bar_close, ranked, selected_syms)
+            opened = 0
 
             for sym in ranked:
                 row = md.get(sym)
@@ -664,6 +702,7 @@ def run_paper_api(cfg: dict, args):
                     continue
                 entry_px = float(row.get("close") or 0.0) * (1 + port_cfg["slippage_per_side"])  # assume buy
                 pos = pf.open(symbol=sym, signal=sig, t=bar_close, last_price=entry_px)
+                opened += 1
                 insert_order_row(orders_db, {
                     "order_id": str(uuid.uuid4()),
                     "ts_utc": datetime.utcnow().isoformat(),
@@ -696,6 +735,8 @@ def run_paper_api(cfg: dict, args):
             pf.save_summary(summary_csv)
 
             print(f"\n[paper-api] bar {bar_close.isoformat()} processed: positions={len(pf.positions)}")
+            if args.heat_report and opened == 0:
+                _print_heat_from_strategy(strat, "paper-api", bar_close, md, uni)
 
             if iters_left is not None:
                 iters_left -= 1
@@ -825,6 +866,7 @@ def run_live(cfg: dict, args):
             opened = 0
             selected_syms = list(ranked)
             write_decisions(session_db_path, run_id, bar_close, ranked, selected_syms)
+            opened = 0
             # (equity snapshot for bookkeeping; LIVE equity tracked externally)
             write_equity(session_db_path, run_id, bar_close, {
                 "equity": 0.0, "cash": 0.0, "position_value": 0.0,
@@ -865,6 +907,8 @@ def run_live(cfg: dict, args):
                 state["positions"][sym] = {"entry": entry_px, "qty": qty, "ts": bar_close.isoformat()}
                 json.dump(state, open(state_path, "w", encoding="utf-8"), indent=2)
                 opened += 1
+            if args.heat_report and opened == 0:
+                _print_heat_from_strategy(strat, "live", bar_close, md, uni)
             print(f"[live] opened={opened} at {bar_close.isoformat()}")
         else:
             print(".", end="", flush=True)  # heartbeat dot
@@ -909,6 +953,8 @@ def main():
     ap.add_argument("--bar-delay-sec", type=int, default=10)
     ap.add_argument("--limit_klines", type=int, default=180)
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--heat-report", action="store_true", default=False,
+                    help="Print nearest-to-entry (heat) using strategy thresholds when no entries open on a bar.")
 
     args = ap.parse_args()
     cfg = load_yaml_or_json(args.cfg)
