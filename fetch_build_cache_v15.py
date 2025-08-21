@@ -201,6 +201,19 @@ def calc_atr_ratio(df: pd.DataFrame, period: int = 14) -> pd.Series:
     atr = tr.ewm(alpha=1 / period, adjust=False).mean()
     return (atr / df["close"]).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
+def timeframe_to_seconds(tf: str) -> int:
+    """Return seconds represented by a CCXT timeframe string like '5m', '30m', '1h', '1d'."""
+    tf = normalize_timeframe(tf)
+    tf = tf.strip().lower()
+    units = {'m': 60, 'h': 3600, 'd': 86400, 'w': 604800, 'M': 2592000}
+    try:
+        val = int(tf[:-1])
+        unit = tf[-1]
+        return val * units.get(unit, 3600)
+    except Exception:
+        # fallback: default 1h
+        return 3600
+
 def compute_features(df: pd.DataFrame, tf_seconds: int = 3600) -> pd.DataFrame:
     out = df.copy()
     # time-aware windows based on chosen timeframe
@@ -353,7 +366,7 @@ if __name__ == "__main__":
 
 
 def timeframe_to_seconds(tf: str) -> int:
-    Return seconds represented by a CCXT timeframe string like "5m", "30m", "1h", "1d".
+    """Return seconds represented by a CCXT timeframe string like '5m', '30m', '1h', '1d'."""
     tf = normalize_timeframe(tf)
     tf = tf.strip().lower()
     units = {'m': 60, 'h': 3600, 'd': 86400, 'w': 604800, 'M': 2592000}

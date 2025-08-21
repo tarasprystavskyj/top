@@ -6,15 +6,39 @@ bt_live_paper_runner.py
 Unified runner for BACKTEST, PAPER (db), PAPER-API (live prices, simulated fills),
 and LIVE (real orders on BingX via CCXT), using strategies from the `strategies/` folder.
 
-Enhancements vs the 1h sample:
-- Proper multi-timeframe support (e.g., 5m): bar rounding by TF, TF-aware feature windows
-- PAPER-API also respects --hour-cache {off,save,load} (as in LIVE)
-- CCXT timeframe shim: if exchange lacks exact TF, fetch a divisor TF and aggregate
-- Progress dots preserved in PAPER-API & LIVE
-"""
+Key features
+- One config for all modes (YAML/JSON), same strategy_class across modes
+- PAPER (db): replays from a cache DB (price_indicators schema) using engine.* APIs
+- PAPER-API (NEW): pulls live prices from BingX (or a MockFetcher in --dry-run),
+  simulates orders, writes Orders/Decisions/Equity to a session DB,
+  and emits a cache-out DB (price_indicators) of exactly-what-we-saw
+- LIVE: mirrors your live bot flow (BingX + reduce-only brackets in hedge mode)
+- BACKTEST: delegates to backtester_core.py with the provided cfg
 
+Example
+Backtest:
+  python3 bt_live_paper_runner.py --mode backtest --cfg configs/cs_C2_base_1h.yaml --limit-bars 500
+
+Paper (DB):
+  python3 bt_live_paper_runner.py --mode paper --paper-source db --cfg configs/cs_C2_base_1h.yaml \
+    --db combined_cache.db --results-dir paper_results --limit-bars 168
+
+Paper (API, simulated orders + session DB + cache-out):
+  python3 bt_live_paper_runner.py --mode paper --paper-source api --cfg configs/cs_C2_base_1h.yaml \
+    --exchange bingx --symbol-format usdtm --poll-sec 15 --bar-delay-sec 10 --limit_klines 180 \
+    --results-dir paper_api_results --orders-db paper_api_results/session.sqlite \
+    --session-db paper_api_results/session.sqlite \
+    --cache-out paper_api_results/combined_cache_session.db
+
+Paper (API DRY RUN, no internet, generates synthetic OHLCV, 1 step):
+  python3 bt_live_paper_runner.py --mode paper --paper-source api --cfg dryrun_lenient.yaml \
+    --results-dir paper_api_dryrun --orders-db paper_api_dryrun/session.sqlite \
+    --session-db paper_api_dryrun/session.sqlite --cache-out paper_api_dryrun/combined_cache_session.db \
+    --dry-run --iterations 1
+"""
 import os
 import sys
+import re
 import json
 import time
 import math
@@ -62,7 +86,7 @@ def load_yaml_or_json(path: str) -> dict:
                 return yaml.safe_load(f) or {}
     except Exception as e:
         print(f"[cfg] failed to parse {path}: {e}", file=sys.stderr)
-    # naive fallback (best-effort)
+    # naive fallback
     cfg = {}
     try:
         for line in open(path, "r", encoding="utf-8").read().splitlines():
@@ -91,22 +115,6 @@ def mask(s: str) -> str:
 
 def sleep_ms(ms: int):
     time.sleep(max(0.0, float(ms) / 1000.0))
-
-def parse_timeframe_to_seconds(tf: str) -> int:
-    tf = (tf or "1h").strip()
-    unit = tf[-1]
-    try:
-        n = int(tf[:-1])
-    except Exception:
-        n = 1
-    mult = {"m": 60, "h": 3600, "d": 86400, "w": 7*86400, "M": 30*86400}
-    return n * mult.get(unit, 3600)
-
-def round_bar_close(now_utc: datetime, tf: str) -> datetime:
-    sec = parse_timeframe_to_seconds(tf)
-    t = int(now_utc.timestamp())
-    close = t - (t % sec)
-    return datetime.fromtimestamp(close, tz=timezone.utc)
 
 # ---------- strategy loading ----------
 def load_strategy(path_cls: str, cfg: dict):
@@ -167,12 +175,8 @@ def safe_build_md_slice(dfs: dict, t):
         out[sym] = row.iloc[0].to_dict()
     return out
 
-# ---------- features (TF-aware) ----------
-def compute_feats(df: pd.DataFrame, tf_seconds: Optional[int] = None) -> pd.DataFrame:
-    """
-    Computes a minimal set of features; windows scale with timeframe.
-    If tf_seconds is None, defaults to 1h semantics (backward compatible).
-    """
+# ---------- features ----------
+def compute_feats(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     prev_close = out["close"].shift(1)
     tr = pd.concat(
@@ -183,27 +187,9 @@ def compute_feats(df: pd.DataFrame, tf_seconds: Optional[int] = None) -> pd.Data
     atr = tr.ewm(alpha=1 / 14.0, adjust=False).mean()
     out["atr_ratio"] = (atr / out["close"]).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     out["quote_volume"] = (out["volume"] * out["close"]).fillna(0.0)
-
-    if tf_seconds is None:
-        # 1h legacy: 24/6/12 bars
-        out["qv_24h"] = out["quote_volume"].rolling(24, min_periods=1).sum()
-        out["dp6h"] = (out["close"] / out["close"].shift(6) - 1.0).fillna(0.0)
-        out["dp12h"] = (out["close"] / out["close"].shift(12) - 1.0).fillna(0.0)
-        # crude vol surge (legacy)
-        avg1 = out["qv_24h"] / 24.0
-        with np.errstate(divide="ignore", invalid="ignore"):
-            out["vol_surge_mult"] = np.where(avg1 > 0, out["quote_volume"] / avg1, 0.0)
-    else:
-        bars_24h = max(1, int(round(24*3600 / tf_seconds)))
-        bars_6h  = max(1, int(round( 6*3600 / tf_seconds)))
-        bars_12h = max(1, int(round(12*3600 / tf_seconds)))
-        out["qv_24h"] = out["quote_volume"].rolling(bars_24h, min_periods=1).sum()
-        out["dp6h"]  = (out["close"] / out["close"].shift(bars_6h)  - 1.0).fillna(0.0)
-        out["dp12h"] = (out["close"] / out["close"].shift(bars_12h) - 1.0).fillna(0.0)
-        avg_per_bar = out["qv_24h"] / float(bars_24h)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            out["vol_surge_mult"] = np.where(avg_per_bar > 0, out["quote_volume"] / avg_per_bar, 0.0)
-
+    out["qv_24h"] = out["quote_volume"].rolling(24, min_periods=1).sum()
+    out["dp6h"] = (out["close"] / out["close"].shift(6) - 1.0).fillna(0.0)
+    out["dp12h"] = (out["close"] / out["close"].shift(12) - 1.0).fillna(0.0)
     # placeholders for compatibility
     for k in ("rsi", "stochastic", "mfi", "overbought_index", "gain_24h_before"):
         if k not in out.columns:
@@ -261,43 +247,10 @@ class CCXTFetcher:
             return self.by_base[b]
         return None
 
-    def _choose_fetch_tf(self, req_tf: str):
-        """Pick a supported TF to fetch and the aggregation factor."""
-        try:
-            exchange_tfs = set(getattr(self.ex, "timeframes", {}) or {})
-        except Exception:
-            exchange_tfs = set()
-        fetch_tf = req_tf
-        agg = 1
-        if exchange_tfs and req_tf not in exchange_tfs:
-            # try to find a divisor TF to aggregate
-            def sec(tf): 
-                try: return int(self.ex.parse_timeframe(tf))
-                except Exception: return parse_timeframe_to_seconds(tf)
-            s_req = sec(req_tf)
-            cands = []
-            for tf in exchange_tfs:
-                s = sec(tf)
-                if s <= s_req and s_req % s == 0:
-                    cands.append((s, tf))
-            if cands:
-                cands.sort()
-                s_fetch, fetch_tf = cands[-1]
-                agg = s_req // s_fetch
-            else:
-                # fallback to nearest smaller
-                smaller = [(sec(tf), tf) for tf in exchange_tfs if sec(tf) < s_req]
-                if smaller:
-                    smaller.sort()
-                    s_fetch, fetch_tf = smaller[-1]
-                    agg = max(1, s_req // s_fetch)
-        return fetch_tf, agg
-
     def fetch_ohlcv_df(self, sym: str, timeframe="1h", limit=180) -> Optional[pd.DataFrame]:
         ccxt_sym = self.resolve_symbol(sym) or sym
-        fetch_tf, agg = self._choose_fetch_tf(timeframe)
         try:
-            data = self.ex.fetch_ohlcv(ccxt_sym, timeframe=fetch_tf, limit=int(limit)*int(agg)+5)
+            data = self.ex.fetch_ohlcv(ccxt_sym, timeframe=timeframe, limit=limit)
             sleep_ms(RATE_MS)
         except Exception as e:
             print(f"[fetch_ohlcv] {sym}: {e}", file=sys.stderr)
@@ -305,15 +258,9 @@ class CCXTFetcher:
         if not data:
             return None
         df = pd.DataFrame(data, columns=["ts", "open", "high", "low", "close", "volume"])
-        if agg > 1:
-            slot_ms = parse_timeframe_to_seconds(timeframe) * 1000
-            df["slot"] = (df["ts"] // slot_ms) * slot_ms
-            df = df.groupby("slot", as_index=False).agg({
-                "ts":"max","open":"first","high":"max","low":"min","close":"last","volume":"sum"
-            })
         df["datetime_utc"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
         df = df.set_index("datetime_utc")[["open", "high", "low", "close", "volume"]].astype(float)
-        return df.sort_index().tail(limit)
+        return df
 
     def fetch_ticker_price(self, sym: str) -> Optional[float]:
         ccxt_sym = self.resolve_symbol(sym) or sym
@@ -341,8 +288,10 @@ class MockFetcher:
 
     def fetch_ohlcv_df(self, sym: str, timeframe="1h", limit=180):
         now = datetime.utcnow().replace(tzinfo=timezone.utc)
-        sec = parse_timeframe_to_seconds(timeframe)
-        idx = [now - timedelta(seconds=sec*(limit - i)) for i in range(limit)]
+        if timeframe == "1h":
+            idx = [now - timedelta(hours=limit - i) for i in range(limit)]
+        else:
+            idx = [now - timedelta(minutes=limit - i) for i in range(limit)]
         idx = pd.to_datetime(idx, utc=True)
         base = 100.0 + (hash(sym) % 300)
         steps = np.random.normal(0, 0.5, size=limit).cumsum()
@@ -583,6 +532,12 @@ def run_paper_api(cfg: dict, args):
     fetcher = MockFetcher() if use_mock else CCXTFetcher(exchange=args.exchange, symbol_format=args.symbol_format, debug=args.debug)
 
     os.makedirs(args.results_dir, exist_ok=True)
+    # DB & cache targets for LIVE
+    session_db_path = getattr(args, "session_db", None) or getattr(args, "orders_db", None) or os.path.join(args.results_dir, "session.sqlite")
+    cache_out_path = getattr(args, "cache_out", None) or os.path.join(args.results_dir, "combined_cache_session.db")
+    ensure_orders_db(session_db_path)
+    run_id = datetime.utcnow().strftime("LIVE_%Y%m%d_%H%M%S")
+    write_config_snapshot(session_db_path, run_id, cfg)
     orders_db = args.orders_db or os.path.join(args.results_dir, "orders.sqlite")
     ensure_orders_db(orders_db)
     session_db_path, cache_out_path = ensure_session_dbs(args.results_dir, args.session_db, args.cache_out)
@@ -591,35 +546,26 @@ def run_paper_api(cfg: dict, args):
     write_config_snapshot(session_db_path, run_id, cfg)
 
     top_n = int(cfg.get("top_n", 4))
-    tf = str(cfg.get("timeframe", "1h"))
-    tf_sec = parse_timeframe_to_seconds(tf)
     print(f"[paper-api] polling every {args.poll_sec}s; entries at bar close +{args.bar_delay_sec}s; orders -> {orders_db}")
     last_bar_ts = None
     iters_left = getattr(args, "iterations", None) if getattr(args, "dry_run", False) else None
 
     while True:
         now = datetime.utcnow().replace(tzinfo=timezone.utc)
-        bar_close = round_bar_close(now, tf)
+        bar_close = now.replace(minute=0, second=0, microsecond=0) if cfg.get("timeframe", "1h") == "1h" else now.replace(second=0, microsecond=0)
         if (last_bar_ts is None or bar_close > last_bar_ts) and (now - bar_close).total_seconds() >= args.bar_delay_sec:
             last_bar_ts = bar_close
 
-            # Build real-time md (with hour-cache support)
+            # Build real-time md
             universe = sorted(set(fetcher.by_base.values()))
             md = {}
             for ccxt_sym in universe:
-                feats = {}
-                if args.hour_cache == "load":
-                    feats = read_hour_cache_row(cache_out_path, ccxt_sym, bar_close)
-                if not feats:
-                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=tf, limit=max(60, args.limit_klines))
-                    if df is None or len(df) < 30:
-                        continue
-                    feats_df = compute_feats(df, tf_seconds=tf_sec)
-                    if args.hour_cache in ("save", "load"):
-                        try: cache_out_upsert(cache_out_path, ccxt_sym, feats_df)
-                        except Exception: pass
-                    feats = feats_df.iloc[-1].to_dict()
-                md[ccxt_sym] = feats
+                df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=cfg.get("timeframe", "1h"), limit=max(60, args.limit_klines))
+                if df is None or len(df) < 30:
+                    continue
+                feats_df = compute_feats(df)
+                cache_out_upsert(cache_out_path, ccxt_sym, feats_df)
+                md[ccxt_sym] = feats_df.iloc[-1].to_dict()
                 print(".", end="", flush=True)
 
             # exits
@@ -695,14 +641,13 @@ def run_paper_api(cfg: dict, args):
             pf.save_trades(trades_csv)
             pf.save_summary(summary_csv)
 
-            print(f"\n[paper-api] bar {bar_close.isoformat()} processed: positions={len(pf.positions)}")
+            print(f"[paper-api] bar {bar_close.isoformat()} processed: positions={len(pf.positions)}")
 
             if iters_left is not None:
                 iters_left -= 1
                 if iters_left <= 0:
                     break
-        else:
-            print(".", end="", flush=True)  # heartbeat dot
+
         time.sleep(args.poll_sec)
 
 # ---------- LIVE runner (BingX via CCXT; simplified bracket flow) ----------
@@ -759,13 +704,7 @@ def run_live(cfg: dict, args):
     strat_path = cfg.get("strategy_class", "strategies.cross_sectional_rs.CrossSectionalRS")
     strat = load_strategy(strat_path, cfg)
 
-    # Auth (.env support)
-    if args.env_file and os.path.exists(args.env_file):
-        for line in open(args.env_file, "r", encoding="utf-8").read().splitlines():
-            if "=" in line and not line.strip().startswith("#"):
-                k, v = line.split("=", 1)
-                os.environ[k.strip()] = v.strip()
-
+    # Auth
     api_k = os.environ.get("BINGX_KEY", "")
     api_s = os.environ.get("BINGX_SECRET", "")
     print(f'[LIVE API] key="{mask(api_k)}", secret="{mask(api_s)}"')
@@ -774,15 +713,20 @@ def run_live(cfg: dict, args):
     top_n = int(cfg.get("top_n", 4))
     notional = float(cfg.get("notional", 2.2))
     position_mode = cfg.get("position_mode", "hedge")
-    tf = str(cfg.get("timeframe", "1h"))
-    tf_sec = parse_timeframe_to_seconds(tf)
 
     os.makedirs(args.results_dir, exist_ok=True)
     # LIVE session DB & cache setup
-    session_db_path, cache_out_path = ensure_session_dbs(args.results_dir, args.session_db, args.cache_out)
-
+    session_db_path = getattr(args, "session_db", None) or getattr(args, "orders_db", None) or os.path.join(args.results_dir, "session.sqlite")
+    cache_out_path = getattr(args, "cache_out", None) or os.path.join(args.results_dir, "combined_cache_session.db")
+    try:
+        ensure_orders_db(session_db_path)
+    except Exception:
+        pass
     run_id = datetime.utcnow().strftime("LIVE_%Y%m%d_%H%M%S")
-    write_config_snapshot(session_db_path, run_id, cfg)
+    try:
+        write_config_snapshot(session_db_path, run_id, cfg)
+    except Exception:
+        pass
 
     state_path = os.path.join(args.results_dir, "live_state.json")
     state = {}
@@ -797,7 +741,7 @@ def run_live(cfg: dict, args):
     print(f"[live] polling every {args.poll_sec}s; entries at bar close +{args.bar_delay_sec}s")
     while True:
         now = datetime.utcnow().replace(tzinfo=timezone.utc)
-        bar_close = round_bar_close(now, tf)
+        bar_close = now.replace(minute=0, second=0, microsecond=0)
         if (last_bar_ts is None or bar_close > last_bar_ts) and (now - bar_close).total_seconds() >= args.bar_delay_sec:
             last_bar_ts = bar_close
             # md
@@ -808,14 +752,16 @@ def run_live(cfg: dict, args):
                 if args.hour_cache == "load":
                     feats = read_hour_cache_row(cache_out_path, ccxt_sym, bar_close)
                 if not feats:
-                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=tf, limit=max(60, args.limit_klines))
+                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=cfg.get("timeframe", "1h"), limit=max(60, args.limit_klines))
                     if df is None or len(df) < 30:
                         continue
-                    feats_df = compute_feats(df, tf_seconds=tf_sec)
-                    if args.hour_cache in ("save","load"):
-                        try: cache_out_upsert(cache_out_path, ccxt_sym, feats_df)
-                        except Exception: pass
-                    feats = feats_df.iloc[-1].to_dict()
+                    feats = compute_feats(df).iloc[-1].to_dict()
+                    # save to cache if asked
+                    if args.hour_cache in ("save", "load"):
+                        try:
+                            cache_out_upsert(cache_out_path, ccxt_sym, df)
+                        except Exception:
+                            pass
                 md[ccxt_sym] = feats
                 print(".", end="", flush=True)
 
@@ -825,7 +771,7 @@ def run_live(cfg: dict, args):
             opened = 0
             selected_syms = list(ranked)
             write_decisions(session_db_path, run_id, bar_close, ranked, selected_syms)
-            # (equity snapshot for bookkeeping; LIVE equity tracked externally)
+            # simple equity snapshot (positions unrealized not tracked here)
             write_equity(session_db_path, run_id, bar_close, {
                 "equity": 0.0, "cash": 0.0, "position_value": 0.0,
                 "realized_pnl_cum": 0.0, "unrealized_pnl": 0.0
@@ -835,7 +781,7 @@ def run_live(cfg: dict, args):
                 if row is None:
                     continue
                 sig = strat.entry_signal(bar_close, sym, row, ctx={})
-                if sig is None or getattr(sig, "side", "LONG") != "LONG":
+                if sig is None or sig.side != "LONG":
                     continue
                 entry_px = fetcher.fetch_ticker_price(sym) or float(row.get("close") or 0.0)
                 if not entry_px:
@@ -846,28 +792,29 @@ def run_live(cfg: dict, args):
                     continue
                 qty = float(res["qty"])
                 # log order to DB and print
-                insert_order_row(session_db_path, {
-                    "order_id": f"LIVE-{uuid.uuid4()}",
-                    "ts_utc": datetime.utcnow().isoformat(),
-                    "bar_time_utc": bar_close.isoformat(),
-                    "mode": "live",
-                    "symbol": sym,
-                    "side": "buy",
-                    "type": "market",
-                    "price": float(entry_px),
-                    "qty": float(qty),
-                    "status": "filled",
-                    "reason": "entry",
-                    "run_id": run_id,
-                    "extra": json.dumps({"notional": notional})
-                })
+                try:
+                    insert_order_row(session_db_path, {
+                        "order_id": f"LIVE-{uuid.uuid4()}",
+                        "ts_utc": datetime.utcnow().isoformat(),
+                        "bar_time_utc": bar_close.isoformat(),
+                        "mode": "live",
+                        "symbol": sym,
+                        "side": "buy",
+                        "type": "market",
+                        "price": float(entry_px),
+                        "qty": float(qty),
+                        "status": "filled",
+                        "reason": "entry",
+                        "run_id": run_id,
+                        "extra": json.dumps({"notional": notional})
+                    })
+                except Exception:
+                    pass
                 print(f"[open OK] {sym} qty={qty:.6g} px={entry_px}", flush=True)
                 state["positions"][sym] = {"entry": entry_px, "qty": qty, "ts": bar_close.isoformat()}
                 json.dump(state, open(state_path, "w", encoding="utf-8"), indent=2)
                 opened += 1
             print(f"[live] opened={opened} at {bar_close.isoformat()}")
-        else:
-            print(".", end="", flush=True)  # heartbeat dot
         time.sleep(args.poll_sec)
 
 # ---------- BACKTEST delegator ----------
@@ -898,8 +845,7 @@ def main():
     # Session & cache-out
     ap.add_argument("--session-db", default="")
     ap.add_argument("--cache-out", default="")
-    ap.add_argument("--hour-cache", choices=["off","save","load"], default="off",
-                    help="Current-bar cache: save (write) or load (read) features from cache_out for speed-up")
+    ap.add_argument("--hour-cache", choices=["off","save","load"], default="off", help="Current-hour cache: save (write) or load (read) features from cache_out for live speed-up")
 
     # LIVE / PAPER-API params
     ap.add_argument("--env-file", default="")
@@ -925,6 +871,11 @@ def main():
             return run_paper(args.db, cfg, args.results_dir, args.limit_bars if args.limit_bars > 0 else None)
 
     # LIVE
+    if args.env_file and os.path.exists(args.env_file):
+        for line in open(args.env_file, "r", encoding="utf-8").read().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ[k.strip()] = v.strip()
     return run_live(cfg, args)
 
 if __name__ == "__main__":
