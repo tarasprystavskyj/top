@@ -901,7 +901,7 @@ def run_live(cfg: dict, args):
                     "status": "filled",
                     "reason": "entry",
                     "run_id": run_id,
-                    "extra": json.dumps({"notional": notional})
+                    "extra": json.dumps({"notional": notional}) 
                 })
                 print(f"[open OK] {sym} qty={qty:.6g} px={entry_px}", flush=True)
                 state["positions"][sym] = {"entry": entry_px, "qty": qty, "ts": bar_close.isoformat()}
