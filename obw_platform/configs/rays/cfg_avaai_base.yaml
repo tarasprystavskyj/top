@@ -1,0 +1,28 @@
+# configs/cfg_speed3_breakout_avaai_full.yaml
+# Full Pine-like breakout adapter (requires core with veto: respects sig.take=False).
+cache_db: "../combined_cache_5m_500b.db"
+strategy_class: strategies.breakout_avaai_full.BreakoutAVAAIFull
+strategy_params:
+  side: BOTH
+  top_n: 12
+
+  # bias the engine toward trend quality:
+  length: 10
+  macd_filter: 1
+  volume_length: 20
+  adx_length: 14
+  adx_threshold: 15
+  atr_threshold_ratio: 0.0022
+
+  # start from your good risk targets
+  tp_atr_mult: 3.4
+  sl_atr_mult: 1.1
+
+min_atr_ratio: 0.0
+min_momentum_sum: 0.02
+
+portfolio:
+  position_notional: 80.0
+  initial_equity: 100.0
+
+

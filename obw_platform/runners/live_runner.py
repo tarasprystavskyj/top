@@ -613,109 +613,106 @@ def run_live(cfg: dict, args):
             uni = strat.universe(bar_close, md)
             ranked = strat.rank(bar_close, md, uni)[:top_n]
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
-            opened = 0
-            for sym in ranked:
-                if sym in positions:
-                    _dbg(sym, 'skip: already tracked')
-                    log_skip_reason(sym, 'already open by THIS bot')
-                    continue
-                row = md.get(sym)
-                if row is None:
-                    _dbg(sym, 'skip: no md row (key mismatch)')
-                    log_skip_reason(sym, 'no md row')
-                    continue
-                sig = strat.entry_signal(bar_close, sym, row, ctx={})
-                if sig is None:
-                    _dbg(sym, 'skip: entry_signal is None')
-                    log_skip_reason(sym, 'no entry_signal')
-                    continue
-                side_attr = getattr(sig, 'side', 'LONG')
-                try:
-                    if isinstance(sig, bool) and sig:
-                        side_attr = 'LONG'
-                except Exception:
-                    pass
-                side_up = str(side_attr).upper()
-                if open_side == 'SHORT':
-                    entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
-                    if not entry_px:
-                        log_skip_reason(sym, 'no price available'); continue
-                    tp_price = _sig_get(sig, 'tp_price', None) or _sig_get(sig, 'tp', None)
-                    sl_price = _sig_get(sig, 'sl_price', None) or _sig_get(sig, 'sl', None)
-                    res = place_open_short(res = place_open_short(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price)
-                    if not res.get('ok'):
-                        cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr); continue
-                    qty = float(res['qty'])
-                    ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '') if (res.get('order')) else None
-                     _warn_side_mismatch(open_side if 'open_side' in locals() else side_str, res)
-                            cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
-                    rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id}
-                    positions[sym] = rec; save_positions(args.results_dir, positions)
-                    try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
-                    except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
-                    opened += 1
-                    continue
-                elif side_up not in ('LONG','BUY','TRUE','1'):
-                    _dbg(sym, 'skip: side neither LONG nor SHORT'); log_skip_reason(sym, f'entry side not LONG/SHORT (got {side_attr})'); continue
+            
+opened = 0
+for sym in ranked:
+    if sym in positions:
+        _dbg(sym, 'skip: already tracked')
+        log_skip_reason(sym, 'already open by THIS bot')
+        continue
 
-                entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
-                if not entry_px:
-                    _dbg(sym, 'skip: no price available')
-                    log_skip_reason(sym, 'no price available')
-                    continue
+    row = md.get(sym)
+    if row is None:
+        _dbg(sym, 'skip: no md row (key mismatch)')
+        log_skip_reason(sym, 'no md row')
+        continue
 
-                tp_price = _sig_get(sig, 'tp_price', None) or _sig_get(sig, 'tp', None)
-                sl_price = _sig_get(sig, 'sl_price', None) or _sig_get(sig, 'sl', None)
-                tp_pct = _sig_get(sig, 'tp_pct', None)
-                sl_pct = _sig_get(sig, 'sl_pct', None)
-                try:
-                    if tp_price is None and tp_pct is not None:
-                        tp_price = float(entry_px) * (1.0 + float(tp_pct))
-                    if sl_price is None and sl_pct is not None:
-                        sl_price = float(entry_px) * (1.0 - float(sl_pct))
-                except Exception:
-                    pass
+    # Strategy owns decision-making (heat, side, tp/sl). Runner just executes.
+    sig = strat.entry_signal(bar_close, sym, row, ctx={})
+    if sig is None:
+        _dbg(sym, 'skip: entry_signal is None')
+        log_skip_reason(sym, 'no entry_signal')
+        continue
 
-                res = place_open_long(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price)
-                if not res.get('ok'):
-                    reason = res.get('skip_reason') or res.get('error') or 'unknown'
-                    _dbg(sym, 'open FAIL:', reason)
-                    cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr)
-                    continue
-                qty = float(res['qty'])
-                ex_order_id = None
-                try:
-                    ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '')
-                except Exception:
-                    ex_order_id = None
-                side_str = 'LONG'
-                 _warn_side_mismatch(open_side if 'open_side' in locals() else side_str, res)
-                            cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'
+    side_attr = _sig_get(sig, 'side', 'LONG')
+    side_up = str(side_attr).upper()
+    if side_up in ('BUY','TRUE','1'):
+        side_up = 'LONG'
+    elif side_up == 'SELL':
+        side_up = 'SHORT'
+    if side_up not in ('LONG','SHORT'):
+        _dbg(sym, f'skip: side neither LONG nor SHORT (got {side_attr})')
+        log_skip_reason(sym, f'entry side not LONG/SHORT (got {side_attr})')
+        continue
+
+    entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
+    if not entry_px:
+        _dbg(sym, 'skip: no price available')
+        log_skip_reason(sym, 'no price available')
+        continue
+
+    # TP/SL preferred attribute names from Signal; also support tp/sl pct fallbacks
+    tp_price = (_sig_get(sig, 'take_profit', None)
+                or _sig_get(sig, 'tp_price', None)
+                or _sig_get(sig, 'tp', None))
+    sl_price = (_sig_get(sig, 'stop_price', None)
+                or _sig_get(sig, 'sl_price', None)
+                or _sig_get(sig, 'sl', None))
+    tp_pct = _sig_get(sig, 'tp_pct', None)
+    sl_pct = _sig_get(sig, 'sl_pct', None)
+    try:
+        if tp_price is None and tp_pct is not None:
+            tp_price = float(entry_px) * (1.0 + float(tp_pct)) if side_up == 'LONG' else float(entry_px) * (1.0 - float(tp_pct))
+        if sl_price is None and sl_pct is not None:
+            sl_price = float(entry_px) * (1.0 - float(sl_pct)) if side_up == 'LONG' else float(entry_px) * (1.0 + float(sl_pct))
+    except Exception:
+        pass
+
+    if side_up == 'SHORT':
+        res = place_open_short(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price)
+        side_str = 'SHORT'
+    else:
+        res = place_open_long(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price)
+        side_str = 'LONG'
+
+    if not res.get('ok'):
+        reason = res.get('skip_reason') or res.get('error') or 'unknown'
+        _dbg(sym, 'open FAIL:', reason)
+        cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr)
+        continue
+
+    qty = float(res['qty'])
+    try:
+        ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '')
+    except Exception:
+        ex_order_id = None
+
+    _warn_side_mismatch(side_str, res)
+    cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'
            + (f' tp={tp_price:.6g}' if tp_price is not None else ' tp=-')
            + (f' sl={sl_price:.6g}' if sl_price is not None else ' sl=-')
            + (f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
 
-                rec = {
-                    'symbol': sym,
-                    'side': 'LONG',
-                    'qty': qty,
-                    'entry': float(entry_px),
-                    'tp_price': float(tp_price) if tp_price is not None else None,
-                    'sl_price': float(sl_price) if sl_price is not None else None,
-                    'ts_open': bar_close.isoformat(),
-                    'run_id': run_id,
-                    'order_id': str(uuid.uuid4()),
-                    'exchange_order_id': ex_order_id
-                }
-                positions[sym] = rec
-                save_positions(args.results_dir, positions)
-                try:
-                    db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
-                except Exception as e:
-                    cprint('[db upsert OPEN]', e, fg='red')
-                opened += 1
-
-            if args.heat_report and opened == 0:
+    rec = {
+        'symbol': sym,
+        'side': side_str,
+        'qty': qty,
+        'entry': float(entry_px),
+        'tp_price': float(tp_price) if tp_price is not None else None,
+        'sl_price': float(sl_price) if sl_price is not None else None,
+        'ts_open': bar_close.isoformat(),
+        'run_id': run_id,
+        'order_id': str(uuid.uuid4()),
+        'exchange_order_id': ex_order_id
+    }
+    positions[sym] = rec
+    save_positions(args.results_dir, positions)
+    try:
+        db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
+    except Exception as e:
+        cprint('[db upsert OPEN]', e, fg='red')
+    opened += 1
+if args.heat_report and opened == 0:
                 print_and_save_heat_from_strategy(strat, 'live', bar_close, md, uni, cache_out_path)
             cprint('[live]', f'opened={opened} at {bar_close.isoformat()}', fg='cyan', bold=(opened>0))
         else:

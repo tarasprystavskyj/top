@@ -1,0 +1,2 @@
+equity_start,equity_end,trades,profit_factor,win_rate_%,elapsed_sec,max_dd_frac,max_dd_%,monotonicity_sign,monotonicity_mag
+100.0,100.0,0,0.0,0.0,8.089572191238403,0.0,0.0,0.0,0.0

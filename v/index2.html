@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <title>Crypto Flow 3D — Live (v2.3.1 DEBUG)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { height: 100%; margin: 0; background: #0b0f14; color: #d6e1ff; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell; }
+    #scene { position: absolute; inset: 0; }
+    .hud { position: fixed; left: 12px; top: 12px; background: rgba(20,24,32,0.7); padding: 10px 12px; border-radius: 10px; backdrop-filter: blur(6px); box-shadow: 0 6px 22px rgba(0,0,0,0.35); z-index: 5; }
+    .hud h1 { margin: 0 0 6px; font-size: 14px; font-weight: 700; letter-spacing: 0.3px; max-width: 68vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hud .row { font-size: 12px; opacity: 0.9; margin: 2px 0; }
+    .hud .controls { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+    .btn { font-size: 12px; border: 1px solid #2a3444; background: #101621; color: #cfe3ff; padding: 4px 8px; border-radius: 8px; cursor: pointer; }
+    .btn:active { transform: translateY(1px); }
+    .legend { position: fixed; right: 12px; top: 12px; background: rgba(20,24,32,0.7); padding: 8px 10px; border-radius: 10px; font-size: 12px; z-index: 6; }
+    .legend div { margin: 3px 0; }
+    .pill { display: inline-block; padding: 2px 6px; border-radius: 999px; background: #162030; }
+    .panel { position: fixed; right: 12px; bottom: 12px; z-index: 7; background: rgba(20,24,32,0.85); border-radius: 12px; padding: 10px; width: 320px; max-height: 62vh; overflow:auto; box-shadow: 0 6px 22px rgba(0,0,0,0.35); }
+    .panel h3{ margin: 4px 0 6px; font-size: 13px; }
+    .rowFlex{ display:flex; gap:8px; align-items:center; }
+    input[type="text"], input[type="search"]{ width:100%; padding:6px 8px; border-radius:8px; border:1px solid #2a3444; background:#101621; color:#cfe3ff; font-size:12px; }
+    #altsList{ margin-top:6px; display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    label.altItem{ display:flex; align-items:center; gap:6px; font-size:12px; }
+    #version { position: fixed; left: 12px; top: 88px; font-size: 11px; opacity: .8; z-index: 6; }
+  </style>
+</head>
+<body>
+  <div id="scene"></div>
+  <div class="hud">
+    <h1>Crypto Flow 3D — BTC ↔ <span id="altsLabel">...</span></h1>
+    <div class="row">t = <span id="t">0</span> / <span id="tmax">0</span> (0.1s = 1 бар)</div>
+    <div class="row">Шкали: висота = ціна (log), товщина лінка = обʼєм потоку (USD)</div>
+    <div class="controls">
+      <button id="playBtn" class="btn">⏸︎ Пауза</button>
+      <button id="stepBtn" class="btn">⏭︎ +1 бар</button>
+      <button id="resetBtn" class="btn">↺ На початок</button>
+    </div>
+  </div>
+  <div class="legend">
+    <div><span class="pill">Лінк синій</span> — net BTC → ALT</div>
+    <div><span class="pill">Лінк рожевий</span> — net ALT → BTC</div>
+    <div><span class="pill">Частинки</span> — інтенсивність потоку</div>
+  </div>
+  <div id="version"></div>
+
+  <div class="panel" id="panel">
+    <h3>Налаштування</h3>
+    <div class="rowFlex">
+      <label style="font-size:12px">Top-N:</label>
+      <input id="topN" type="range" min="0" max="80" step="5" value="0" style="flex:1">
+      <span id="topNVal" style="font-size:12px; width:38px; text-align:right">всі</span>
+    </div>
+    <div class="rowFlex" style="margin-top:8px">
+      <label style="font-size:12px">Пошук:</label>
+      <input id="searchAlt" type="search" placeholder="ETH, SOL, ...">
+    </div>
+    <div id="altsList"></div>
+    <div class="rowFlex" style="margin-top:8px">
+      <button id="btnAll" class="btn" style="flex:1">Всі</button>
+      <button id="btnNone" class="btn" style="flex:1">Жодного</button>
+    </div>
+    <div class="rowFlex" style="margin-top:8px">
+      <button id="btnApply" class="btn" style="flex:1">Застосувати</button>
+      <button id="btnReload" class="btn" style="flex:1">Перезавантажити</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/d3"></script>
+  <script src="https://unpkg.com/3d-force-graph"></script>
+  <script>
+  // ===== DEBUG =====
+  const APP_VERSION = 'v2.3.1 DEBUG';
+  const log = (...a)=>console.log('[CF3D]', ...a);
+  const warn = (...a)=>console.warn('[CF3D]', ...a);
+  const err = (...a)=>console.error('[CF3D]', ...a);
+  log('Version', APP_VERSION); document.getElementById('version').textContent = 'Версія: '+APP_VERSION;
+
+  // ===== CONFIG =====
+  const params = new URLSearchParams(location.search);
+  const API_URL = params.get('api') || 'http://vps2.happyuser.info:8000';
+  let ALT_PARAM = params.get('alts'); // 'ALL' | "ETH,SOL" | null
+  let TOP_N = parseInt(params.get('top') || '0', 10);
+  const BAR_MS = 100; // 0.1s = 1 бар
+  const G_STEP = 10; const GRAVITY_SCALE = 0.1;
+
+  log('API_URL', API_URL, 'ALT_PARAM', ALT_PARAM, 'TOP_N', TOP_N);
+
+  const statusEl = { t: document.getElementById('t'), tmax: document.getElementById('tmax'), alts: document.getElementById('altsLabel') };
+
+  // Globals
+  let Graph = null, times=[], coins=[], alts=[], priceSeries={}, flowSeries={}, flowsArr={}, priceArr={};
+  let allPairs=[]; // from /pairs
+  let t=0, timer=null, tickCounter=0;
+
+  // helpers
+  const getId = v => (v && typeof v === 'object') ? v.id : v;
+  function percentile(arr, p){ const vals=(arr||[]).filter(v=>Number.isFinite(v)).sort((a,b)=>a-b); if(!vals.length) return 0; const idx=(p/100)*(vals.length-1); const lo=Math.floor(idx), hi=Math.ceil(idx); if(lo===hi) return vals[lo]; const w=idx-lo; return vals[lo]*(1-w)+vals[hi]*w; }
+  function formatUSD(x){ if(x==null || isNaN(x)) return '—'; const v=+x; if (v>=1e12) return '$'+(v/1e12).toFixed(2)+'T'; if (v>=1e9) return '$'+(v/1e9).toFixed(2)+'B'; if (v>=1e6) return '$'+(v/1e6).toFixed(2)+'M'; if (v>=1e3) return '$'+(v/1e3).toFixed(1)+'K'; return '$'+v.toFixed(2); }
+  const yScale = price => (!price || price<=0) ? 0 : 10*Math.log(price);
+
+  init().catch(e=>err('init failed', e));
+
+  async function init(){
+    log('init() fetching /pairs…');
+    const pairs = await fetch(`${API_URL}/pairs`).then(r=>r.json());
+    allPairs = (pairs||[]).map(p=>p.alt);
+    log('/pairs ok:', pairs?.length, 'alts sample:', allPairs.slice(0,6));
+    if (!ALT_PARAM || ALT_PARAM.toUpperCase()==='ALL') ALT_PARAM = allPairs.join(',');
+    await loadData(ALT_PARAM);
+    buildPanel(allPairs, alts);
+  }
+
+  async function loadData(altsParam){
+    const url = (!altsParam || altsParam.toUpperCase()==='ALL') ? `${API_URL}/series` : `${API_URL}/series?alts=${encodeURIComponent(altsParam)}`;
+    log('loadData()', {url});
+    const t0 = performance.now();
+    const data = await fetch(url).then(r=>{ if(!r.ok){ throw new Error('API '+r.status); } return r.json(); });
+    log('series fetched in', Math.round(performance.now()-t0)+'ms');
+
+    times = data.times || [];
+    priceSeries = data.priceSeries || {};
+    flowSeries = data.flowSeries || {};
+    coins = (data.nodes || []).map(n=>n.id);
+    alts = coins.filter(id=>id!=='BTC');
+
+    log('series sizes:', {times: times.length, coins: coins.length, alts: alts.length});
+    if (!times.length) { warn('EMPTY times[] — no animation'); }
+    else { log('time range:', times[0], '…', times[times.length-1]); }
+
+    // Build aligned arrays (carry-forward)
+    priceArr = {}; 
+    coins.forEach(sym=>{
+      let last=null; 
+      priceArr[sym] = times.map(ts=>{
+        const v = priceSeries[sym]?.[ts];
+        if(v!=null && !isNaN(v)) { last=v; return v; }
+        return last;
+      });
+    });
+
+    flowsArr = {}; const volsAll=[];
+    alts.forEach(alt=>{
+      const key=`BTC_${alt}`;
+      const arr=(flowSeries[key]||[]).map(o=>({vol:+o.vol||0, dir:+o.dir||0}));
+      flowsArr[key]=arr; arr.forEach(f=>volsAll.push(f.vol));
+    });
+    const p95 = percentile(volsAll, 95) || 1;
+    log('volumes p95=', p95, 'sample for first alt', alts[0], flowsArr['BTC_'+alts[0]]?.slice(0,3));
+
+    const linkWidthScale = v => 0.5 + Math.min(1, v/p95) * 5.5; // 0.5..6
+    const particleScale = v => Math.round(Math.min(1, v/p95) * 6); // 0..6
+
+    // Mass proxy for node size
+    const mass = {}; alts.forEach(a=>{ const sum = (flowsArr[`BTC_${a}`]||[]).reduce((s,f)=>s+f.vol,0); mass[a]=sum; }); 
+    mass['BTC'] = Object.values(mass).reduce((s,v)=>s+v,0);
+    const mVals = Object.values(mass).filter(Number.isFinite); const mMin=Math.min(...mVals), mMax=Math.max(...mVals)||1;
+    const nodeSize = id => 6 + 22 * ((Math.log(Math.max(1,mass[id]||0)) - Math.log(Math.max(1,mMin))) / Math.max(1e-6, Math.log(Math.max(1,mMax)) - Math.log(Math.max(1,mMin))));
+
+    // Scene
+    const elem = document.getElementById('scene');
+    if (!Graph){
+      log('create ForceGraph3D()');
+      Graph = ForceGraph3D()(elem)
+        .backgroundColor('#0b0f14')
+        .showNavInfo(false)
+        .nodeOpacity(0.96)
+        .nodeColor(n => n.id==='BTC' ? '#ffd166' : '#90e0ef')
+        .nodeVal(n => n.size)
+        .nodeLabel(n => n.tooltip || n.id)
+        .linkColor(l => l.dir>0 ? '#5ec8ff' : '#ff79c6')
+        .linkOpacity(0.9)
+        .linkWidth(l => l.width)
+        .linkCurvature(0.18)
+        .linkLabel(l => l.tooltip || '')
+        .linkDirectionalParticles(l => l.particles)
+        .linkDirectionalParticleWidth(l => Math.max(1, Math.round(l.width*0.65)))
+        .linkDirectionalParticleSpeed(0.006)
+        .d3VelocityDecay(0.85);
+
+      const charge = d3.forceManyBody().strength(n => n.id==='BTC' ? -220 : -120);
+      const collide = d3.forceCollide().radius(n=>Math.max(4, (n.size||4)*0.9));
+      const linkForce = d3.forceLink().id(d=>d.id).distance(l=>l.len).strength(l=>l.str);
+      Graph.d3Force('charge', charge);
+      Graph.d3Force('collide', collide);
+      Graph.d3Force('link', linkForce);
+      log('forces created: charge, collide, link');
+    }
+
+    // Init graph data
+    const R = 200; const N = alts.length; let i=0;
+    const nodes0 = coins.map(id=>{
+      let x=0,y=0,z=0; if(id!=='BTC'){ const a=(i++)*(2*Math.PI/Math.max(1,N)); x=R*Math.cos(a); z=R*Math.sin(a); }
+      return { id, x, y, z, size: nodeSize(id) };
+    });
+    const links0 = alts.map(alt=>({ source:'BTC', target:alt, width:1, dir:0, particles:0, len:R, str:0.1 }));
+
+    log('set graphData', {nodes:nodes0.length, links:links0.length});
+    Graph.graphData({ nodes:nodes0, links:links0 });
+    // важливо: не викликаємо linkForce.links(...) — це і спричиняло "node not found: BTC"
+
+    Graph.cameraPosition({ x: 300, y: 150, z: 300 });
+
+    statusEl.tmax.textContent = Math.max(0, times.length - 1);
+    statusEl.alts.textContent = alts.join(', ');
+    if (timer) clearInterval(timer);
+
+    if (!times.length) return;
+    timer = setInterval(()=>{ 
+      t=(t+1)%times.length; tickCounter++; statusEl.t.textContent=t; 
+      if (tickCounter % 50 === 1) log('tick', tickCounter, 't=', t);
+      renderFrame(linkWidthScale, particleScale); 
+    }, BAR_MS);
+  }
+
+  function renderFrame(linkWidthScale, particleScale){
+    const data = Graph.graphData();
+
+    // nodes
+    data.nodes.forEach(n=>{
+      const p = (priceArr[n.id]||[])[t];
+      n.y = yScale(p);
+      n.tooltip = n.id + ' — ' + (p ? ('$'+(+p).toFixed(2)) : '—') + ' · t=' + t;
+    });
+
+    // links
+    data.links.forEach(l=>{
+      const tgt = getId(l.target), src = getId(l.source);
+      if (!tgt || !src) { warn('link has empty ends', l); return; }
+      const key='BTC_'+tgt; const F=(flowsArr[key]||[]); const f=F[t]||{vol:0,dir:0};
+      l.width = linkWidthScale(f.vol);
+      l.dir = f.dir;
+      l.particles = particleScale(f.vol);
+      l.tooltip = src + ' ⇄ ' + tgt + ' · vol: ' + formatUSD(f.vol) + ' · dir: ' + (f.dir>0?'BTC→ALT':'ALT→BTC');
+    });
+
+    if (tickCounter % G_STEP === 0) {
+      const sums = {}; const vols=[];
+      const win = 50;
+      alts.forEach(a=>{ const arr=flowsArr['BTC_'+a]||[]; let s=0; for(let i=0;i<win;i++){ const idx=(t-i+arr.length)%arr.length; s += (arr[idx]?.vol)||0; } sums[a]=s; vols.push(s); });
+      const p95 = percentile(vols,95)||1;
+      data.links.forEach(l=>{ const tgt=getId(l.target); const norm=Math.min(1,(sums[tgt]||0)/p95); l.len = 240 - 180*norm; l.str = GRAVITY_SCALE * (0.2 + 0.6*norm); });
+      // НЕ викликаємо linkForce.links(...) — просто reheating
+      Graph.d3ReheatSimulation();
+      log('gravity update', {tick: tickCounter, p95, example: data.links[0] && {len:data.links[0].len, str:data.links[0].str}});
+    }
+
+    // refresh draw
+    Graph.linkWidth(Graph.linkWidth());
+    Graph.linkColor(Graph.linkColor());
+    Graph.linkDirectionalParticles(Graph.linkDirectionalParticles());
+    Graph.nodeVal(Graph.nodeVal());
+  }
+
+  // ====== UI Panel ======
+  function buildPanel(all, selected){
+    const list = document.getElementById('altsList');
+    const search = document.getElementById('searchAlt');
+    const topN = document.getElementById('topN');
+    const topNVal = document.getElementById('topNVal');
+    topN.value = TOP_N; topNVal.textContent = TOP_N>0?TOP_N:'всі';
+
+    let chosen = new Set(selected);
+    const render = ()=>{
+      const q = (search.value||'').trim().toUpperCase();
+      list.innerHTML='';
+      (all||[]).filter(a=>!q || a.includes(q)).forEach(a=>{
+        const id='alt_'+a; const wrap=document.createElement('label'); wrap.className='altItem';
+        wrap.innerHTML = `<input type="checkbox" id="${id}"> <span>${a}</span>`;
+        const cb=wrap.querySelector('input'); cb.checked = chosen.has(a);
+        cb.onchange = ()=>{ if(cb.checked) chosen.add(a); else chosen.delete(a); };
+        list.appendChild(wrap);
+      });
+    };
+
+    render();
+
+    document.getElementById('btnAll').onclick = ()=>{ chosen = new Set(all); render(); };
+    document.getElementById('btnNone').onclick = ()=>{ chosen = new Set(); render(); };
+    document.getElementById('btnApply').onclick = async ()=>{
+      const arr = Array.from(chosen); if(arr.length===0) { alert('Вибери хоча б 1 альт або натисни Всі'); return; }
+      ALT_PARAM = arr.join(',');
+      log('Apply clicked, new ALTs count:', arr.length);
+      await loadData(ALT_PARAM);
+      if (TOP_N>0) filterTopN(TOP_N);
+    };
+    document.getElementById('btnReload').onclick = async ()=>{ log('Reload clicked'); await loadData(ALT_PARAM); if (TOP_N>0) filterTopN(TOP_N); };
+    topN.oninput = ()=>{ TOP_N = parseInt(topN.value||'0',10); topNVal.textContent = TOP_N>0?TOP_N:'всі'; log('topN change', TOP_N); filterTopN(TOP_N); };
+  }
+
+  function filterTopN(N){
+    if (!Graph || !N || N<=0) { statusEl.alts.textContent = alts.join(', '); log('filterTopN cleared'); return; }
+    const scores = alts.map(a=>({a, score:(flowsArr['BTC_'+a]||[]).reduce((s,f)=>s+f.vol,0)})).sort((x,y)=>y.score-x.score);
+    const keep = new Set(scores.slice(0,N).map(s=>s.a));
+    const newAlts = alts.filter(a=>keep.has(a));
+
+    const data = Graph.graphData();
+    const before = {nodes:data.nodes.length, links:data.links.length};
+    data.nodes = data.nodes.filter(n=>n.id==='BTC' || keep.has(n.id));
+    data.links = data.links.filter(l=> keep.has(getId(l.target)) );
+    Graph.graphData(data);
+    statusEl.alts.textContent = 'top'+N+': ' + newAlts.join(', ');
+    Graph.d3ReheatSimulation();
+    log('filterTopN applied', {before, after:{nodes:data.nodes.length, links:data.links.length}});
+  }
+  </script>
+</body>
+</html>

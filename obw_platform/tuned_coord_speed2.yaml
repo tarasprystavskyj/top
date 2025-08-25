@@ -1,0 +1,26 @@
+timeframe: 5m
+cache_db: /mnt/data/combined_cache_5m_500_min.db
+strategy_class: strategies.cross_sectional_rs_heat_v2.CrossSectionalRSHeat
+open_on_heat: false
+min_atr_ratio: '0.001'
+min_momentum_sum: '0.015'
+min_vol_surge_mult: 0.05
+min_qv_24h: 200000
+min_qv_1h: 10000
+portfolio:
+  initial_equity: 100.0
+  position_notional: 20.0
+  max_notional_frac: 0.5
+  fee_rate: 0.001
+  slippage_per_side: 0.0003
+session:
+  open_every_bar: true
+  open_hour_kyiv: '0'
+  kyiv_offset_hours: 3
+strategy_params:
+  side: BOTH
+  tp_atr_mult: '2.6'
+  sl_atr_mult: '1.0'
+  max_hold_hours: 48
+  cooldown_days: 0
+  top_n: 8
