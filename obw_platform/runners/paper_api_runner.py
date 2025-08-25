@@ -87,7 +87,18 @@ def run_paper_api(cfg: dict, args):
         if (last_bar_ts is None or bar_close > last_bar_ts) and (now - bar_close).total_seconds() >= args.bar_delay_sec:
             last_bar_ts = bar_close
 
-            universe = sorted(set(fetcher.by_base.values()))
+            # Build universe with allow-list filtering (ENV or cfg['universe'].allow)
+            allow = []
+            try:
+                allow_env = os.getenv('RS_UNIVERSE_ALLOW', '')
+                if allow_env:
+                    allow = [s.strip() for s in allow_env.split(',') if s.strip()]
+                if not allow:
+                    allow = list((cfg.get('universe', {}) or {}).get('allow', []) or [])
+            except Exception:
+                allow = []
+            all_syms = sorted(set(fetcher.by_base.values()))
+            universe = [s for s in all_syms if (not allow or s in allow)]
             md = {}
             for ccxt_sym in universe:
                 feats = {}
