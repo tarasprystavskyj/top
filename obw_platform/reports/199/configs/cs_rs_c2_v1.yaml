@@ -1,0 +1,56 @@
+strategy_class: strategies.cross_sectional_rs.CrossSectionalRS
+cache_db: ../combined_cache_1440.db
+
+source: ccxt
+ccxt_exchange: bingx
+ccxt_symbol_format: usdtm
+papertrade: true
+force_start_always: true
+reset_state: true
+debug: true
+symbols: ''
+quote: USDT
+timeframe: 1h
+limit_klines: 180
+max_universe: 550
+top_n: 4
+min_qv_24h: 200000
+min_qv_1h: 10000
+min_atr_ratio: 0.022
+min_momentum_sum: 0.12
+min_vol_surge_mult: 1.25
+min_breadth: 0.6
+sl_atr_mult: 1.4
+tp_atr_mult: 2.6
+max_hold_hours: 96
+max_mae_atr_mult: 1.6
+mom_flip_thresh: 0.02
+trail_start_atr: 1.2
+trail_dist_atr: 1.0
+position_notional: 20.0
+max_notional_frac: 0.5
+initial_equity: 200.0
+slippage_per_side: 0.0003
+fee_rate: 0.001
+funding_rate_hour: 2.0e-05
+logfile: c2_bot.log
+trades_csv: c2_trades.csv
+state_path: c2_state.json
+
+
+# --- Symbol/markets caching ---
+symbols_cache_enable: true
+symbols_cache_path: c2_symbols_bingx_usdtm.json   # окремий файл під біржу/режим
+symbols_cache_ttl_hours: 12                        # 0 = не протухає
+symbols_cache_only_usdt_swaps: true                # лише лінеарні USDT-перпи
+symbols_cache_refresh_on_start: false              # true = форс-оновити при старті
+symbols_cache_quote: USDT
+
+# (необов’язково) кешування побудованого всесвіту
+universe_cache_enable: true
+universe_cache_path: c2_universe_bingx_usdtm.txt
+universe_cache_ttl_hours: 6
+
+# (рекомендації для CCXT)
+ccxt_enable_rate_limit: true
+ccxt_load_markets_on_start: true

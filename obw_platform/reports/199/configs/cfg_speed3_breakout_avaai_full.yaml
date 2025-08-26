@@ -1,0 +1,35 @@
+# configs/cfg_speed3_breakout_avaai_full.yaml
+# Full Pine-like breakout adapter (requires core with veto: respects sig.take=False).
+cache_db: "../combined_cache_5m_5000.db"
+strategy_class: strategies.breakout_avaai_full.BreakoutAVAAIFull
+limit_bars: 2880
+
+portfolio:
+  initial_equity: 100.0
+  position_notional: 80.0
+  fee_rate: 0.0007
+  slippage_per_side: 0.0003
+  max_notional_frac: 0.6
+
+strategy_params:
+  top_n: 12
+  side: "BOTH"
+  tp_atr_mult: 3.4
+  sl_atr_mult: 1.1
+  # Pine-like controls
+  length: 10
+  atr_period: 14
+  atr_threshold_ratio: 0.00    # like Pine's atrThreshold (in ATR/close units)
+  require_trending: true
+  volatility_length: 0          # 0 disables ATR>SMA(ATR)
+  volume_length: 0              # 0 disables Volume>SMA(Volume)
+  adx_length: 0                 # 0 disables ADX
+  adx_threshold: 1.0
+  macd_filter: 0                # 1 to require MACD bullish/bearish in direction
+  tick_size: 0.0
+
+# Core prefilters can remain mild when using full adapter veto:
+min_atr_ratio: 0.0
+min_momentum_sum: 0.02
+min_qv_24h: 0.0
+min_qv_1h: 0.0

@@ -1,0 +1,24 @@
+# configs/cfg_speed3_breakout_avaai_short.yaml
+# SHORT-only run: core uses the SHORT gating path (needed to enable shorts).
+cache_db: "../combined_cache_5m_500b.db"
+strategy_class: strategies.breakout_avaai_adapter.BreakoutAVAAI
+
+portfolio:
+  initial_equity: 100.0
+  position_notional: 90.0
+  fee_rate: 0.0007
+  slippage_per_side: 0.0003
+  max_notional_frac: 0.6
+
+strategy_params:
+  top_n: 12
+  side: "SHORT"         # core gating path for shorts
+  tp_atr_mult: 2.8
+  sl_atr_mult: 1.2
+  bias: "AUTO"          # adapter still picks side, but SHORT path is required to pass prefilter
+  mom_threshold: 0.0
+
+min_atr_ratio: 0.0015
+min_momentum_sum: 0.015
+min_qv_24h: 0.0
+min_qv_1h: 0.0

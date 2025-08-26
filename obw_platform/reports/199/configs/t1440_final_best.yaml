@@ -1,0 +1,23 @@
+cache_db: ../combined_cache_5m_5000.db
+strategy_class: strategies.breakout_avaai_full.BreakoutAVAAIFull
+strategy_params:
+  side: LONG
+  top_n: 10
+  length: 10
+  macd_filter: 1
+  volume_length: 20
+  adx_length: 14
+  adx_threshold: 15
+  atr_threshold_ratio: 0.0022
+  tp_atr_mult: 3.73
+  sl_atr_mult: 1.12
+min_atr_ratio: 0
+min_momentum_sum: 0
+portfolio:
+  position_notional: 60
+  initial_equity: 100.0
+open_on_heat: false
+session:
+  open_every_bar: true
+side: LONG
+top-n: 8

@@ -1,0 +1,33 @@
+# configs/breakout_avaai_5m.yaml
+# Example params for 5m crypto futures (use with your engine).
+strategy_module: strategies.breakout_avaai
+strategy_fn: compute   # call compute(df, params) -> DataFrame
+warmup_fn: warmup_bars
+
+params:
+  timeframe: "5m"             # info only
+  length: 10
+  take_profit_pct: 2.0        # 200% TP (set to 0.0 to disable)
+  stop_loss_pct: 0.10         # 10% SL  (set to 0.0 to disable)
+  trade_direction: "BOTH"     # LONG | SHORT | BOTH
+  atr_period: 14
+  atr_threshold: 0.002        # absolute; set atr_normalize=1 to treat as relative
+  atr_normalize: 0            # 1 => compare atr/close to threshold
+  volatility_length: 0        # 0 disables
+  adx_length: 0               # 0 disables
+  adx_threshold: 1.0
+  volume_length: 0            # 0 disables
+  macd_filter: 0              # 1 to require macd>signal for LONG and macd<signal for SHORT
+  tick_size: 0.0
+
+# (Optional) Data/config used by your engine — example only:
+data:
+  cache_db: "../combined_cache_5m_500b.db"   # uploaded by you
+  table: "price_indicators"                         # adjust to your schema
+  limit_bars: 500
+
+# Engine hints (optional — adapt to your runner)
+engine:
+  execution: "stop_breakout_prev_levels"  # informative
+  tp_mode: "percent"
+  sl_mode: "percent"
