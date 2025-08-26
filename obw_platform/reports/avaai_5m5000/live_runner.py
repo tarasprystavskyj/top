@@ -532,8 +532,8 @@ def run_live(cfg: dict, args):
     tf_sec = _tf_to_seconds(tf)
 
     # Optional: open entries based on heat (even if entry_signal is None)
-    open_on_heat_v, open_on_heat_origin = _cfg_pick(cfg, ['open_on_heat','runner.open_on_heat','live.open_on_heat'], False)
-    open_heat_min_v, open_heat_min_origin = _cfg_pick(cfg, ['open_heat_min','runner.open_heat_min','live.open_heat_min'], 0.80)
+    open_on_heat_v, open_on_heat_origin = _cfg_pick(cfg, ['open_on_heat','runner.open_on_heat','live.open_on_heat','strategy_params.open_on_heat'], False)
+    open_heat_min_v, open_heat_min_origin = _cfg_pick(cfg, ['open_heat_min','runner.open_heat_min','live.open_heat_min','heat_min','strategy_params.heat_min'], 0.80)
     open_on_heat = bool(open_on_heat_v)
     open_heat_min = float(open_heat_min_v)
     cprint('[cfg]', f'top_n={top_n}, notional={notional}, timeframe={tf}, position_mode={position_mode}, open_on_heat={open_on_heat}, heat_min={open_heat_min}', fg='magenta')
@@ -789,25 +789,12 @@ def run_live(cfg: dict, args):
                 side_up = str(side_attr).upper()
                 if side_up in ('SHORT','SELL'):
                     _dbg(sym, 'skip: SHORT disabled (oneway-long-only)'); log_skip_reason(sym, 'short disabled'); continue
-                # if side_up in ('SHORT','SELL'):  # fallback disabled above
-                    entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
-                    if not entry_px:
-                        log_skip_reason(sym, 'no price available'); continue
-                    tp_price = _sig_get(sig, 'tp_price', None) or _sig_get(sig, 'tp', None)
-                    sl_price = _sig_get(sig, 'sl_price', None) or _sig_get(sig, 'sl', None)
-                    res = place_open_short(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price)
-                    if not res.get('ok'):
-                        cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr); continue
-                    qty = float(res['qty'])
-                    ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '') if (res.get('order')) else None
-                    cprint('[open OK]', f'{sym} SHORT qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
-                    rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id}
-                    positions[sym] = rec; save_positions(args.results_dir, positions)
-                    try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
-                    except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
-                    opened += 1
-                    continue
                 elif side_up not in ('LONG','BUY','TRUE','1'):
+                    # Fallback: treat missing/None side as LONG (oneway long-only alignment)
+                    desired = str((getattr(strat, 'cfg', {}) or {}).get('strategy_params', {}).get('side', 'LONG')).upper()
+                    if desired in ('SHORT','SELL'):
+                        _dbg(sym, 'skip: SHORT disabled (oneway-long-only)'); log_skip_reason(sym, 'short disabled'); continue
+                    side_up = 'LONG'
                     _dbg(sym, 'skip: side neither LONG nor SHORT'); log_skip_reason(sym, f'entry side not LONG/SHORT (got {side_attr})'); continue
 
                 entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)

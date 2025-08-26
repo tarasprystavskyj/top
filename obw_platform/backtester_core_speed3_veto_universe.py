@@ -30,6 +30,10 @@ class Position:
     sl: float
     tp: float
 
+def _split_csv_list(s):
+    if not s: return []
+    return [x.strip() for x in str(s).split(",") if x.strip()]
+
 def main():
     ap = argparse.ArgumentParser(description="Ultra-fast backtester (CSV + optional plots + DD/monotonicity)")
     ap.add_argument("--cfg", required=True)
@@ -38,12 +42,59 @@ def main():
     ap.add_argument("--no-export-csv", dest="export_csv", action="store_false", help="Disable CSV exports")
     ap.add_argument("--plots", dest="plots_dir", help="If set, save charts into this directory (e.g. 'plots')")
     ap.add_argument("--plots-dir", dest="plots_dir", help="Alias for --plots")
+    # --- NEW: universe controls ---
+    ap.add_argument("--symbols-file", dest="symbols_file",
+                    help="Path to a file with allowed symbols (one per line). Overrides YAML universe_file if set.")
+    ap.add_argument("--allow-symbols", dest="allow_symbols",
+                    help="Comma-separated allowlist of symbols (overrides YAML universe_include).")
+    ap.add_argument("--deny-symbols", dest="deny_symbols",
+                    help="Comma-separated blocklist of symbols (overrides YAML universe_exclude).")
     ap.set_defaults(export_csv=True)
     args = ap.parse_args()
 
     t0 = time.time()
     cfg = yaml.safe_load(open(args.cfg))
     con = connect_db(cfg["cache_db"])
+
+    # --- NEW: load universe allow/deny sets ---
+    allow_syms, deny_syms = set(), set()
+
+    # 1) CLI CSV lists
+    allow_syms |= set(_split_csv_list(args.allow_symbols))
+    deny_syms  |= set(_split_csv_list(args.deny_symbols))
+
+    # 2) CLI file
+    if args.symbols_file:
+        try:
+            with open(args.symbols_file, "r", encoding="utf-8") as f:
+                for ln in f:
+                    ln = ln.strip()
+                    if ln and not ln.startswith("#"):
+                        allow_syms.add(ln)
+        except Exception as e:
+            print(f"[universe] failed to read --symbols-file: {e}")
+
+    # 3) YAML file (only if CLI file not provided)
+    if not args.symbols_file:
+        u_file = cfg.get("universe_file")
+        if u_file:
+            try:
+                with open(u_file, "r", encoding="utf-8") as f:
+                    for ln in f:
+                        ln = ln.strip()
+                        if ln and not ln.startswith("#"):
+                            allow_syms.add(ln)
+            except Exception as e:
+                print(f"[universe] failed to read universe_file: {e}")
+
+    # 4) YAML inline lists
+    allow_syms |= set(cfg.get("universe_include", []) or [])
+    deny_syms  |= set(cfg.get("universe_exclude", []) or [])
+
+    if allow_syms:
+        print(f"[universe] allow list size = {len(allow_syms)}")
+    if deny_syms:
+        print(f"[universe] deny list  size = {len(deny_syms)}")
 
     # threshold time for last N distinct bars
     th_row = con.execute(
@@ -110,10 +161,11 @@ def main():
     tr_rows = []  # trades.csv
     eq_curve_vals = [initial_equity]
 
-    for t, bucket in slices:
-        px_map = {sym: close for (sym, close, atr, dp6, dp12, qv1h, qv24) in bucket}
+    for t, bucket_all in slices:
+        # Map цін для екзитів — БЕЗ фільтру!
+        px_map = {sym: close for (sym, close, atr, dp6, dp12, qv1h, qv24) in bucket_all}
 
-        # exits
+        # exits (без урахування юніверсу; закриватися завжди можна)
         if positions:
             for sym, pos in list(positions.items()):
                 px = px_map.get(sym)
@@ -150,10 +202,22 @@ def main():
                     })
                     del positions[sym]; pos_time.pop(sym, None)
 
-        # rank top_n by momentum sum
+        # --- NEW: фільтр юніверсу лише для відкриттів
+        if allow_syms or deny_syms:
+            bucket_open = [
+                row for row in bucket_all
+                if ((not allow_syms) or (row[0] in allow_syms)) and (row[0] not in deny_syms)
+            ]
+            if not bucket_open:
+                # Нема допустимих символів для відкриття — ідемо далі
+                continue
+        else:
+            bucket_open = bucket_all
+
+        # rank top_n by momentum sum (на відкриттях використовуємо bucket_open)
         invert = (side_pref=="SHORT")
         best = []
-        for idx, (sym, close, atr, dp6, dp12, qv1h, qv24) in enumerate(bucket):
+        for idx, (sym, close, atr, dp6, dp12, qv1h, qv24) in enumerate(bucket_open):
             mom_sum = dp6 + dp12
             score = -mom_sum if invert else mom_sum
             if len(best)<top_n:
@@ -170,7 +234,7 @@ def main():
         row = {"close":0.0,"atr_ratio":0.0,"dp6h":0.0,"dp12h":0.0,"quote_volume":0.0,"qv_24h":0.0}
         shared_ctx = {}
         for _, idx in best:
-            sym, close, atr, dp6, dp12, qv1h, qv24 = bucket[idx]
+            sym, close, atr, dp6, dp12, qv1h, qv24 = bucket_open[idx]
             if sym in positions: continue
             mom_sum = dp6 + dp12
             if atr < min_atr: continue
@@ -183,7 +247,7 @@ def main():
                 desired_side = "SHORT"
             row["close"]=close; row["atr_ratio"]=atr; row["dp6h"]=dp6; row["dp12h"]=dp12; row["quote_volume"]=qv1h; row["qv_24h"]=qv24
             sig = strat.entry_signal(t, sym, row, ctx=shared_ctx)
-            # Veto support: if strategy says take=False or returns None, skip entry
+            # Veto support
             if sig is None:
                 continue
             take = getattr(sig, 'take', True)
