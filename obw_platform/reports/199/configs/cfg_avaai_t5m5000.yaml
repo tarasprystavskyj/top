@@ -20,7 +20,7 @@ strategy_params:
 min_atr_ratio: 0
 min_momentum_sum: 0
 portfolio:
-  position_notional: 100
+  position_notional: 80
   initial_equity: 100.0
 session:
   open_every_bar: true
