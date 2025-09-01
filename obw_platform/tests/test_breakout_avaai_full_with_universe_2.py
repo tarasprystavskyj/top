@@ -64,7 +64,6 @@ def test_entry_distance_reason_and_heat():
     heat = strat.heat(0, "AAA", row)
     assert heat < 1.0
 
-
 @pytest.mark.parametrize(
     "cfg,row,breadth,expected",
     [
@@ -104,7 +103,6 @@ def test_entry_distance_filters(cfg, row, breadth, expected):
     strat = make_strategy(cfg)
     dist = strat.entry_distance(0, "AAA", row, breadth=breadth)
     assert expected in dist["reason"]
-
 
 def test_best_entry_distance_selects_smallest_gap():
     strat = make_strategy()
