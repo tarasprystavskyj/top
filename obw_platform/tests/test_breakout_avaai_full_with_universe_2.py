@@ -64,6 +64,45 @@ def test_entry_distance_reason_and_heat():
     heat = strat.heat(0, "AAA", row)
     assert heat < 1.0
 
+@pytest.mark.parametrize(
+    "cfg,row,breadth,expected",
+    [
+        (
+            {"min_atr_ratio": 0.03},
+            {"dp6h": 0.05, "dp12h": 0.05, "atr_ratio": 0.02, "qv_24h": 300000, "quote_volume": 20000},
+            1.0,
+            "atr low",
+        ),
+        (
+            {},
+            {"dp6h": 0.05, "dp12h": 0.05, "atr_ratio": 0.02, "qv_24h": 240000, "quote_volume": 11000},
+            1.0,
+            "volsurge low",
+        ),
+        (
+            {},
+            {"dp6h": 0.05, "dp12h": 0.05, "atr_ratio": 0.02, "qv_24h": 150000, "quote_volume": 12000},
+            1.0,
+            "qv24 low",
+        ),
+        (
+            {"min_momentum_sum": 0.08},
+            {"dp6h": 0.01, "dp12h": 0.01, "atr_ratio": 0.02, "qv_24h": 300000, "quote_volume": 20000},
+            1.0,
+            "momentum low",
+        ),
+        (
+            {"min_breadth": 0.5},
+            {"dp6h": 0.05, "dp12h": 0.05, "atr_ratio": 0.02, "qv_24h": 300000, "quote_volume": 20000},
+            0.3,
+            "breadth low",
+        ),
+    ],
+)
+def test_entry_distance_filters(cfg, row, breadth, expected):
+    strat = make_strategy(cfg)
+    dist = strat.entry_distance(0, "AAA", row, breadth=breadth)
+    assert expected in dist["reason"]
 
 def test_best_entry_distance_selects_smallest_gap():
     strat = make_strategy()
