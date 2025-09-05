@@ -166,10 +166,23 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
         if sl_price is not None:
             sl_trigger = float(sl_price)
             prec = mkt.get('precision', {}).get('price')
+
+            tick = None
             try:
-                tick = 10 ** (-int(prec))
+                if isinstance(prec, int):
+                    tick = 10 ** (-prec)
+                else:
+                    precf = float(prec)
+                    tick = 10 ** (-int(precf)) if precf >= 1 else precf
             except Exception:
+                tick = None
+            if not tick or tick <= 0:
                 tick = max(abs(sl_trigger) * 1e-4, 1e-8)
+            try:
+                _dbg('sl_tick', tick, 'sl_trigger', sl_trigger, 'sl_price', max(sl_trigger - tick, 0.0))
+            except Exception:
+                pass
+
             p['stopLoss'] = sl_trigger
             p['stopPrice'] = sl_trigger
             p['stopLossPrice'] = max(sl_trigger - tick, 0.0)
@@ -188,7 +201,9 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
     except Exception:
         pass
 
-    for params in param_candidates:
+    first_error = None
+    for idx, params in enumerate(param_candidates):
+
         try:
             _dbg('try_params', params)
         except Exception:
@@ -206,9 +221,18 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
             pass
         last_res = res
         if res['ok']:
+            if idx > 0 and first_error:
+                try:
+                    _dbg('tp_sl_attach_err', first_error)
+                except Exception:
+                    pass
+                res['tp_sl_error'] = first_error
             res['tp_price'] = tp_price
             res['sl_price'] = sl_price
             return res
+
+        if idx == 0:
+            first_error = res.get('error')
 
         msg = (res.get('error') or '').lower()
         if ('one-way mode' in msg) or ('positionside' in msg):
@@ -270,10 +294,21 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
         if sl_price is not None:
             sl_trigger = float(sl_price)
             prec = mkt.get('precision', {}).get('price')
+            tick = None
             try:
-                tick = 10 ** (-int(prec))
+                if isinstance(prec, int):
+                    tick = 10 ** (-prec)
+                else:
+                    precf = float(prec)
+                    tick = 10 ** (-int(precf)) if precf >= 1 else precf
             except Exception:
+                tick = None
+            if not tick or tick <= 0:
                 tick = max(abs(sl_trigger) * 1e-4, 1e-8)
+            try:
+                _dbg('sl_tick', tick, 'sl_trigger', sl_trigger, 'sl_price', sl_trigger + tick)
+            except Exception:
+                pass
             p['stopLoss'] = sl_trigger
             p['stopPrice'] = sl_trigger
             p['stopLossPrice'] = sl_trigger + tick
@@ -292,7 +327,8 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
     except Exception:
         pass
 
-    for params in param_candidates:
+    first_error = None
+    for idx, params in enumerate(param_candidates):
         try:
             _dbg('try_params', params)
         except Exception:
@@ -310,9 +346,18 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
             pass
         last_res = res
         if res['ok']:
+            if idx > 0 and first_error:
+                try:
+                    _dbg('tp_sl_attach_err', first_error)
+                except Exception:
+                    pass
+                res['tp_sl_error'] = first_error
             res['tp_price'] = tp_price
             res['sl_price'] = sl_price
             return res
+
+        if idx == 0:
+            first_error = res.get('error')
 
         msg = (res.get('error') or '').lower()
         if ('one-way mode' in msg) or ('positionside' in msg):
