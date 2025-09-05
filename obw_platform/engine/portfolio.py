@@ -73,3 +73,35 @@ class Portfolio:
             "notional": pos.notional, "realized_pnl": pnl, "equity_after": self.equity
         })
         self.positions = [p for p in self.positions if p is not pos]
+
+    def save_trades(self, path: str):
+        pd.DataFrame(self.trades).to_csv(path, index=False)
+
+    def save_summary(self, path: str):
+        if not self.trades:
+            sm = {
+                "equity_start": float(self.initial_equity),
+                "equity_end": float(self.equity),
+                "trades": 0,
+                "profit_factor": 0.0,
+                "max_drawdown_%": 0.0,
+                "win_rate_%": 0.0,
+            }
+            pd.DataFrame([sm]).to_csv(path, index=False)
+            return
+        df = pd.DataFrame(self.trades)
+        wins = df.loc[df["realized_pnl"] > 0, "realized_pnl"].sum()
+        losses = -df.loc[df["realized_pnl"] < 0, "realized_pnl"].sum()
+        pf = (wins / max(losses, 1e-12)) if losses > 0 else float("inf")
+        eq = df["equity_after"].values
+        peak = np.maximum.accumulate(eq)
+        dd = (eq / np.maximum(peak, 1e-12)) - 1.0
+        sm = {
+            "equity_start": float(self.initial_equity),
+            "equity_end": float(self.equity),
+            "trades": int(len(df)),
+            "profit_factor": float(pf),
+            "max_drawdown_%": float(np.min(dd)) * 100.0 if len(dd) else 0.0,
+            "win_rate_%": float((df["realized_pnl"] > 0).mean() * 100.0),
+        }
+        pd.DataFrame([sm]).to_csv(path, index=False)

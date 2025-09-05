@@ -23,6 +23,7 @@ class Sig:
     confidence: float = 0.0
     size: Optional[float] = None
     reason: Optional[str] = None
+    tags: Optional[Dict[str, Any]] = None
     heat: Optional[float] = None
 
     # --- aliases for compatibility ---
