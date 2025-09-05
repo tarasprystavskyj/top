@@ -118,6 +118,8 @@ def test_entry_signal_heat_fallback():
     cfg = {
         "open_on_heat": True,
         "open_heat_min": 0.8,
+        "tp_atr_mult": 2.0,
+        "sl_atr_mult": 1.0,
     }
     strat = make_strategy(cfg)
     row = {
@@ -128,7 +130,8 @@ def test_entry_signal_heat_fallback():
         "quote_volume": 20000,
         "close": 100,
     }
-    sig = strat.entry_signal(0, "AAA", row)
+    sig = strat.entry_signal(True, "AAA", row)
     assert sig is not None
-    assert sig["side"] == "LONG"
-    assert sig["heat"] >= 0.8
+    assert sig.side == "LONG"
+    assert isinstance(sig.take_profit, float)
+    assert isinstance(sig.stop_price, float)

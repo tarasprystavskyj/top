@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Mapping, Literal
 
 try:
     # Import the original class from your project
@@ -21,96 +21,42 @@ except Exception:
     from breakout_avaai_full import BreakoutAVAAIFull as _OrigBreakout
 
 
+Side = Literal["LONG", "SHORT"]
+ExitAction = Literal["HOLD", "TP", "SL", "EXIT"]
+
+
 @dataclass
 class Sig:
-    side: str
+    side: Side
+    take_profit: float
+    stop_price: float
     confidence: float = 0.0
     size: Optional[float] = None
-    take_profit: Optional[float] = None
-    stop_price: Optional[float] = None
-    take: bool = False
     reason: Optional[str] = None
-    heat: Optional[float] = None
 
-    # --- synonyms for backward-compat ---
+    # synonyms
     @property
-    def tp(self) -> Optional[float]:
+    def tp(self) -> float:
         return self.take_profit
 
-    @tp.setter
-    def tp(self, v: Optional[float]) -> None:
-        self.take_profit = v
-
     @property
-    def tp_price(self) -> Optional[float]:
+    def tp_price(self) -> float:
         return self.take_profit
 
-    @tp_price.setter
-    def tp_price(self, v: Optional[float]) -> None:
-        self.take_profit = v
-
     @property
-    def sl(self) -> Optional[float]:
+    def sl(self) -> float:
         return self.stop_price
 
-    @sl.setter
-    def sl(self, v: Optional[float]) -> None:
-        self.stop_price = v
-
     @property
-    def sl_price(self) -> Optional[float]:
+    def sl_price(self) -> float:
         return self.stop_price
 
-    @sl_price.setter
-    def sl_price(self, v: Optional[float]) -> None:
-        self.stop_price = v
 
-
-def _to_sig(sig: Any) -> Optional[Sig]:
-    """Ensure returned object is `Sig` with TP/SL attributes."""
-    if sig is None:
-        return None
-    if isinstance(sig, Sig):
-        # make sure aliases populate main fields
-        if sig.take_profit is None and getattr(sig, "tp_price", None) is not None:
-            sig.take_profit = getattr(sig, "tp_price")
-        if sig.stop_price is None and getattr(sig, "sl_price", None) is not None:
-            sig.stop_price = getattr(sig, "sl_price")
-        return sig
-    if isinstance(sig, dict):
-        tp = sig.get("take_profit")
-        if tp is None:
-            tp = sig.get("tp_price", sig.get("tp"))
-        sl = sig.get("stop_price")
-        if sl is None:
-            sl = sig.get("sl_price", sig.get("sl"))
-        return Sig(
-            side=sig.get("side"),
-            confidence=sig.get("confidence", 0.0),
-            size=sig.get("size"),
-            take_profit=tp,
-            stop_price=sl,
-            take=sig.get("take", True),
-            reason=sig.get("reason"),
-            heat=sig.get("heat"),
-        )
-    # generic object with attributes
-    tp = getattr(sig, "take_profit", None)
-    if tp is None:
-        tp = getattr(sig, "tp_price", getattr(sig, "tp", None))
-    sl = getattr(sig, "stop_price", None)
-    if sl is None:
-        sl = getattr(sig, "sl_price", getattr(sig, "sl", None))
-    return Sig(
-        side=getattr(sig, "side", None),
-        confidence=getattr(sig, "confidence", 0.0),
-        size=getattr(sig, "size", None),
-        take_profit=tp,
-        stop_price=sl,
-        take=getattr(sig, "take", True),
-        reason=getattr(sig, "reason", None),
-        heat=getattr(sig, "heat", None),
-    )
+@dataclass
+class ExitSig:
+    action: ExitAction
+    exit_price: Optional[float] = None
+    reason: Optional[str] = None
 
 
 class BreakoutAVAAIFull(_OrigBreakout):
@@ -454,77 +400,95 @@ class BreakoutAVAAIFull(_OrigBreakout):
         except Exception:
             return 0.0
 
-    def entry_signal(self, t, sym: str, row: Dict[str, Any], ctx: Optional[Dict[str, Any]] = None):
-        """
-        If base rules say 'no entry' but open_on_heat is enabled and heat >= threshold,
-        open immediately in the same bar. Returns a dict or None.
-        Expected keys: 'side', optional 'tp_price'/'sl_price', 'reason', 'heat'.
-        """
-        # Try original logic first
+    def entry_signal(self, bar_close: bool, symbol: str, row: Mapping[str, Any], ctx: Optional[Mapping[str, Any]] = None) -> Optional[Sig]:
+        """Return entry `Sig` with explicit TP/SL or None."""
+        # --- try base breakout logic first ---
+        base_sig = None
         try:
-            base_sig = super().entry_signal(t, sym, row, ctx=ctx)
-            if base_sig is not None:
-                return _to_sig(base_sig)
+            base_sig = super().entry_signal(bar_close, symbol, dict(row), ctx=ctx)
         except Exception:
-            pass
+            base_sig = None
+        if base_sig is not None and getattr(base_sig, "take", False) and getattr(base_sig, "side", None) in ("LONG", "SHORT"):
+            side = getattr(base_sig, "side")
+            close = self._float(row, "close", 0.0)
+            atrr = self._float(row, "atr_ratio", 0.0)
+            tp_mult = self._cfg_top("tp_atr_mult", None)
+            sl_mult = self._cfg_top("sl_atr_mult", None)
+            if tp_mult is None or sl_mult is None or atrr <= 0 or close <= 0:
+                return None
+            atr_abs = max(1e-12, close * float(atrr))
+            if side == "SHORT":
+                tp_price = close - float(tp_mult) * atr_abs
+                sl_price = close + float(sl_mult) * atr_abs
+            else:
+                tp_price = close + float(tp_mult) * atr_abs
+                sl_price = close - float(sl_mult) * atr_abs
+            return Sig(side=side, take_profit=tp_price, stop_price=sl_price, reason="base_entry")
 
-        # Heat-based entry
-        if not self._cfg_bool(['open_on_heat','strategy_params.open_on_heat'], False):
+        # --- heat-based entry ---
+        if not self._cfg_bool(["open_on_heat", "strategy_params.open_on_heat"], False):
             return None
 
-        th = self._cfg_top('open_heat_min', None)
+        th = self._cfg_top("open_heat_min", None)
         if th is None:
-            th = self._cfg_top('heat_min', 0.80)
+            th = self._cfg_top("heat_min", 0.80)
         try:
             heat_min = float(th)
         except Exception:
             heat_min = 0.80
 
         try:
-            dist = self.entry_distance(t, sym, row, breadth=getattr(self, '_last_breadth', 1.0))
-            heat = max(0.0, 1.0 - float(dist.get('combined_gap', 1.0)))
+            dist = self.entry_distance(bar_close, symbol, row, breadth=getattr(self, "_last_breadth", 1.0))
+            heat = max(0.0, 1.0 - float(dist.get("combined_gap", 1.0)))
         except Exception:
             return None
 
         if heat < heat_min:
             return None
 
-        # Determine side
-        side_pref = str(self._cfg_top('side', 'BOTH')).upper()
-        dp6  = self._float(row, 'dp6h', 0.0)
-        dp12 = self._float(row, 'dp12h', 0.0)
+        side_pref = str(self._cfg_top("side", "BOTH")).upper()
+        dp6 = self._float(row, "dp6h", 0.0)
+        dp12 = self._float(row, "dp12h", 0.0)
         mom_sum = dp6 + dp12
-        if side_pref == 'LONG':
-            side = 'LONG'
-        elif side_pref == 'SHORT':
-            side = 'SHORT'
-        else:  # BOTH: follow momentum
-            side = 'SHORT' if mom_sum < 0 else 'LONG'
+        if side_pref == "LONG":
+            side = "LONG"
+        elif side_pref == "SHORT":
+            side = "SHORT"
+        else:
+            side = "SHORT" if mom_sum < 0 else "LONG"
 
-        # Optional TP/SL using ATR multiples at current close
-        close = self._float(row, 'close', 0.0)
-        atrr  = self._float(row, 'atr_ratio', 0.0)
-        tp_mult = self._cfg_top('tp_atr_mult', None)
-        sl_mult = self._cfg_top('sl_atr_mult', None) 
-        tp_price = sl_price = None
-        try:
-            if tp_mult is not None and sl_mult is not None and atrr > 0 and close > 0:
-                atr_abs = max(1e-12, close * float(atrr))
-                if side == 'SHORT':
-                    tp_price = close - float(tp_mult) * atr_abs
-                    sl_price = close + float(sl_mult) * atr_abs
-                else:
-                    tp_price = close + float(tp_mult) * atr_abs
-                    sl_price = close - float(sl_mult) * atr_abs
-        except Exception:
-            tp_price = sl_price = None
+        close = self._float(row, "close", 0.0)
+        atrr = self._float(row, "atr_ratio", 0.0)
+        tp_mult = self._cfg_top("tp_atr_mult", None)
+        sl_mult = self._cfg_top("sl_atr_mult", None)
+        if tp_mult is None or sl_mult is None or atrr <= 0 or close <= 0:
+            return None
+        atr_abs = max(1e-12, close * float(atrr))
+        if side == "SHORT":
+            tp_price = close - float(tp_mult) * atr_abs
+            sl_price = close + float(sl_mult) * atr_abs
+        else:
+            tp_price = close + float(tp_mult) * atr_abs
+            sl_price = close - float(sl_mult) * atr_abs
 
-        return Sig(
-            side=side,
-            take_profit=tp_price,
-            stop_price=sl_price,
-            take=True,
-            reason=f'open_on_heat >= {heat_min:.4f}',
-            heat=heat,
-        )
+        return Sig(side=side, take_profit=tp_price, stop_price=sl_price, reason=f"open_on_heat >= {heat_min:.4f}")
+
+    def manage_position(self, symbol: str, row: Mapping[str, Any], pos: Any, ctx: Optional[Mapping[str, Any]] = None) -> ExitSig:
+        """Decide whether to close the position based on TP/SL."""
+        high = self._float(row, "high", self._float(row, "close", 0.0))
+        low = self._float(row, "low", self._float(row, "close", 0.0))
+        side = getattr(pos, "side", None)
+        tp = getattr(pos, "tp", getattr(pos, "take_profit", None))
+        sl = getattr(pos, "sl", getattr(pos, "stop_price", None))
+        if side == "LONG":
+            if sl is not None and low <= float(sl):
+                return ExitSig("SL", exit_price=float(sl), reason="stop_loss")
+            if tp is not None and high >= float(tp):
+                return ExitSig("TP", exit_price=float(tp), reason="take_profit")
+        elif side == "SHORT":
+            if sl is not None and high >= float(sl):
+                return ExitSig("SL", exit_price=float(sl), reason="stop_loss")
+            if tp is not None and low <= float(tp):
+                return ExitSig("TP", exit_price=float(tp), reason="take_profit")
+        return ExitSig("HOLD")
     

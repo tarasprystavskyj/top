@@ -107,7 +107,7 @@ def main():
 
     # fetch rows >= min_time
     rows = con.execute(
-        "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h "
+        "SELECT symbol, datetime_utc, close, high, low, atr_ratio, dp6h, dp12h, quote_volume, qv_24h "
         "FROM price_indicators WHERE datetime_utc >= ? ORDER BY datetime_utc ASC, symbol ASC",
         (min_time,)
     ).fetchall()
@@ -120,9 +120,13 @@ def main():
         if cur_t is None: cur_t = t
         if t != cur_t:
             slices.append((cur_t, bucket)); bucket = []; cur_t = t
+        high = r["high"] if r["high"] is not None else r["close"]
+        low  = r["low"]  if r["low"]  is not None else r["close"]
         bucket.append((
             r["symbol"],
             float(r["close"] or 0.0),
+            float(high or 0.0),
+            float(low or 0.0),
             float(r["atr_ratio"] or 0.0),
             float(r["dp6h"] or 0.0),
             float(r["dp12h"] or 0.0),
@@ -143,8 +147,6 @@ def main():
     slippage = float(portfolio.get("slippage_per_side", 0.0003))
     top_n    = int(sp.get("top_n", 8))
     side_pref= str(sp.get("side","BOTH")).upper()
-    tp_mult  = float(sp.get("tp_atr_mult", 2.6))
-    sl_mult  = float(sp.get("sl_atr_mult", 1.0))
     max_notional_frac = float(portfolio.get("max_notional_frac", 0.5))
 
     # prefilters
@@ -162,26 +164,36 @@ def main():
     eq_curve_vals = [initial_equity]
 
     for t, bucket_all in slices:
-        # Map цін для екзитів — БЕЗ фільтру!
-        px_map = {sym: close for (sym, close, atr, dp6, dp12, qv1h, qv24) in bucket_all}
+        md_map = {
+            sym: {
+                "open": close,
+                "close": close,
+                "high": high,
+                "low": low,
+                "atr_ratio": atr,
+                "dp6h": dp6,
+                "dp12h": dp12,
+                "quote_volume": qv1h,
+                "qv_24h": qv24,
+            }
+            for (sym, close, high, low, atr, dp6, dp12, qv1h, qv24) in bucket_all
+        }
 
-        # exits (без урахування юніверсу; закриватися завжди можна)
         if positions:
+            shared_ctx = {}
             for sym, pos in list(positions.items()):
-                px = px_map.get(sym)
-                if px is None: continue
-                if pos.side=="LONG":
-                    hit_tp = px >= pos.tp; hit_sl = px <= pos.sl
-                    hit = hit_tp or hit_sl
-                    gross_ret = (px - pos.entry)/pos.entry
-                else:
-                    hit_tp = px <= pos.tp; hit_sl = px >= pos.sl
-                    hit = hit_tp or hit_sl
-                    gross_ret = (pos.entry - px)/pos.entry
-                if hit:
+                row = md_map.get(sym)
+                if row is None:
+                    continue
+                ex = strat.manage_position(sym, row, pos, ctx=shared_ctx)
+                if ex.action != "HOLD":
+                    if not isinstance(ex.exit_price, (int, float)):
+                        raise RuntimeError(f"Strategy must supply exit_price for {sym}")
+                    px = float(ex.exit_price)
+                    gross_ret = (px - pos.entry)/pos.entry if pos.side=="LONG" else (pos.entry - px)/pos.entry
                     net_ret = gross_ret - 2*slippage - 2*fee
                     pnl = net_ret
-                    trades+=1
+                    trades += 1
                     if pnl>0: wins+=1; pnl_pos += pnl
                     else: losses+=1; pnl_neg += pnl
                     equity *= (1.0 + (pnl * pos_notional / equity))
@@ -194,7 +206,7 @@ def main():
                         "entry": pos.entry,
                         "exit": px,
                         "tp": pos.tp, "sl": pos.sl,
-                        "reason": "TP" if hit_tp else "SL",
+                        "reason": ex.action,
                         "gross_return": gross_ret,
                         "net_return": net_ret,
                         "notional": pos_notional,
@@ -217,7 +229,7 @@ def main():
         # rank top_n by momentum sum (на відкриттях використовуємо bucket_open)
         invert = (side_pref=="SHORT")
         best = []
-        for idx, (sym, close, atr, dp6, dp12, qv1h, qv24) in enumerate(bucket_open):
+        for idx, (sym, close, high, low, atr, dp6, dp12, qv1h, qv24) in enumerate(bucket_open):
             mom_sum = dp6 + dp12
             score = -mom_sum if invert else mom_sum
             if len(best)<top_n:
@@ -231,10 +243,10 @@ def main():
                         best.sort(key=lambda x:x[0], reverse=True)
 
         # opens
-        row = {"close":0.0,"atr_ratio":0.0,"dp6h":0.0,"dp12h":0.0,"quote_volume":0.0,"qv_24h":0.0}
+        row = {"open":0.0,"high":0.0,"low":0.0,"close":0.0,"atr_ratio":0.0,"dp6h":0.0,"dp12h":0.0,"quote_volume":0.0,"qv_24h":0.0}
         shared_ctx = {}
         for _, idx in best:
-            sym, close, atr, dp6, dp12, qv1h, qv24 = bucket_open[idx]
+            sym, close, high, low, atr, dp6, dp12, qv1h, qv24 = bucket_open[idx]
             if sym in positions: continue
             mom_sum = dp6 + dp12
             if atr < min_atr: continue
@@ -245,33 +257,22 @@ def main():
             else:
                 if -mom_sum < min_mom: continue
                 desired_side = "SHORT"
-            row["close"]=close; row["atr_ratio"]=atr; row["dp6h"]=dp6; row["dp12h"]=dp12; row["quote_volume"]=qv1h; row["qv_24h"]=qv24
-            sig = strat.entry_signal(t, sym, row, ctx=shared_ctx)
-            # Veto support
+            row.update({"open": close, "high": high, "low": low, "close": close, "atr_ratio": atr,
+                        "dp6h": dp6, "dp12h": dp12, "quote_volume": qv1h, "qv_24h": qv24})
+            sig = strat.entry_signal(True, sym, row, ctx=shared_ctx)
             if sig is None:
                 continue
-            take = getattr(sig, 'take', True)
-            if not take:
-                continue
-            class _S: pass
-            sig = sig or _S()
-            if not hasattr(sig, 'side') or sig.side is None:
-                sig.side = desired_side
-            if getattr(sig, "side", desired_side) not in ("LONG","SHORT"):
-                sig.side = desired_side
-            if (len(positions)+1)*pos_notional > max_notional_frac * equity: break
-            atr_abs = max(1e-12, atr*close)
-            if sig.side=="LONG":
-                sl = close - sl_mult*atr_abs; tp = close + tp_mult*atr_abs
-            else:
-                sl = close + sl_mult*atr_abs; tp = close - tp_mult*atr_abs
-            positions[sym] = Position(sig.side, close, sl, tp)
+            if not (isinstance(sig.take_profit, (int, float)) and isinstance(sig.stop_price, (int, float))):
+                raise RuntimeError(f"Strategy must supply numeric TP/SL; got tp={sig.take_profit}, sl={sig.stop_price}, symbol={sym}")
+            if (len(positions)+1)*pos_notional > max_notional_frac * equity:
+                break
+            positions[sym] = Position(sig.side, close, float(sig.stop_price), float(sig.take_profit))
             pos_time[sym] = t
 
     # mark-to-market
     if slices:
         last_t = slices[-1][0]
-        last_px = {sym: close for (sym, close, atr, dp6, dp12, qv1h, qv24) in slices[-1][1]}
+        last_px = {sym: close for (sym, close, high, low, atr, dp6, dp12, qv1h, qv24) in slices[-1][1]}
         for sym, pos in list(positions.items()):
             px = last_px.get(sym)
             if px is None: continue
