@@ -28,6 +28,12 @@ from typing import Optional, List, Dict, Any
 import pandas as pd
 import numpy as np
 
+# ANSI colors for order-close reporting
+RESET = "\033[0m"
+GRAY = "\033[90m"
+RED = "\033[91m"
+GREEN = "\033[92m"
+
 try:
     import yaml  # optional
 except Exception:
@@ -588,7 +594,9 @@ def run_paper(db_path: str, cfg: dict, results_dir: str, limit_bars: Optional[in
                 continue
             adj = strat.manage_position(t, pos.symbol, pos, row, ctx={"portfolio": pf})
             if adj.action == "EXIT":
-                pf.close(pos, t, row["close"], reason=adj.reason)
+                pnl = pf.close(pos, t, row["close"], reason=adj.reason)
+                color = GREEN if pnl >= 0 else RED
+                print(f"{GRAY}[close] {pos.symbol} reason={adj.reason} pnl={color}{pnl:+.2f}{GRAY} eq={pf.equity:.2f}{RESET}")
             elif adj.action == "MOVE_SL" and adj.new_stop is not None:
                 pos.stop_price = adj.new_stop
             elif adj.action == "MOVE_TP" and adj.new_tp is not None:
@@ -686,7 +694,7 @@ def run_paper_api(cfg: dict, args):
                 adj = strat.manage_position(bar_close, pos.symbol, pos, row, ctx={"portfolio": pf})
                 if adj.action == "EXIT":
                     px = float(row.get("close") or 0.0) * (1 - port_cfg["slippage_per_side"])  # assume sell
-                    pf.close(pos, bar_close, px, reason=adj.reason)
+                    pnl = pf.close(pos, bar_close, px, reason=adj.reason)
                     insert_order_row(orders_db, {
                         "order_id": str(uuid.uuid4()),
                         "ts_utc": datetime.utcnow().isoformat(),
@@ -702,6 +710,8 @@ def run_paper_api(cfg: dict, args):
                         "run_id": run_id,
                         "extra": json.dumps({"sim": True})
                     })
+                    color = GREEN if pnl >= 0 else RED
+                    print(f"{GRAY}[close] {pos.symbol} reason={adj.reason} pnl={color}{pnl:+.2f}{GRAY} eq={pf.equity:.2f}{RESET}")
 
             # entries + decisions logging
             uni = strat.universe(bar_close, md)

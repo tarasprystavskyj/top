@@ -15,7 +15,12 @@ def dot():
     if _dot:
         return _dot()
     print(".", end="", flush=True)
-
+ 
+# ANSI colors for order-close reporting
+RESET = "\033[0m"
+GRAY = "\033[90m"
+RED = "\033[91m"
+GREEN = "\033[92m"
 
 def _fmt_float(val: Any) -> str:
     """Format float to at most two decimal places without trailing zeros."""
@@ -517,57 +522,36 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
         if tp is not None and px >= tp:
             od = place_reduce_only(fetcher, sym, 'sell', qty, position_mode)
             if od:
-                cprint(
-                    '[tp close]', sym, side,
-                    f"qty={_fmt_float(qty)}",
-                    f"exit={_fmt_float(px)}",
-                    'reason=TP',
-                    fg='green', bold=True)
+                pnl = (px - float(pos_rec.get('entry', 0.0))) * qty
+                color = GREEN if pnl >= 0 else RED
+                print(f"{GRAY}[close] {sym} {side} qty={_fmt_float(qty)} exit={_fmt_float(px)} reason=TP "
+                      f"pnl={color}{pnl:+.2f}{GRAY}{RESET}")
                 return True
         if sl is not None and px <= sl:
             od = place_reduce_only(fetcher, sym, 'sell', qty, position_mode)
             if od:
-                cprint(
-                    '[sl close]', sym, side,
-                    f"qty={_fmt_float(qty)}",
-                    f"exit={_fmt_float(px)}",
-                    'reason=SL',
-                    fg='red', bold=True)
+                pnl = (px - float(pos_rec.get('entry', 0.0))) * qty
+                color = GREEN if pnl >= 0 else RED
+                print(f"{GRAY}[close] {sym} {side} qty={_fmt_float(qty)} exit={_fmt_float(px)} reason=SL "
+                      f"pnl={color}{pnl:+.2f}{GRAY}{RESET}")
                 return True
     elif side == 'SHORT':
         if tp is not None and px <= tp:
             od = place_reduce_only(fetcher, sym, 'buy', qty, position_mode)
             if od:
-                cprint(
-                    '[TP close]', sym, side,
-                    f"qty={_fmt_float(qty)}",
-                    f"exit={_fmt_float(px)}",
-                    'reason=TP',
-                    fg='green', bold=True)
+                pnl = (float(pos_rec.get('entry', 0.0)) - px) * qty
+                color = GREEN if pnl >= 0 else RED
+                print(f"{GRAY}[close] {sym} {side} qty={_fmt_float(qty)} exit={_fmt_float(px)} reason=TP "
+                      f"pnl={color}{pnl:+.2f}{GRAY}{RESET}")
                 return True
         if sl is not None and px >= sl:
             od = place_reduce_only(fetcher, sym, 'buy', qty, position_mode)
             if od:
-                cprint(
-                    '[sl close]', sym, side,
-                    f"qty={_fmt_float(qty)}",
-                    f"exit={_fmt_float(px)}",
-                    'reason=SL',
-                    fg='red', bold=True)
+                pnl = (float(pos_rec.get('entry', 0.0)) - px) * qty
+                color = GREEN if pnl >= 0 else RED
+                print(f"{GRAY}[close] {sym} {side} qty={_fmt_float(qty)} exit={_fmt_float(px)} reason=SL "
+                      f"pnl={color}{pnl:+.2f}{GRAY}{RESET}")
                 return True
-    return False
-    tp = float(pos_rec.get('tp_price') or 0.0) or None
-    sl = float(pos_rec.get('sl_price') or 0.0) or None
-    if tp is not None and px >= tp:
-        od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
-        if od:
-            cprint('[tp close]', sym, f'@~{_fmt_float(px)} tp={_fmt_float(tp)}', fg='green', bold=True)
-            return True
-    if sl is not None and px <= sl:
-        od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
-        if od:
-            cprint('[sl close]', sym, f'@~{_fmt_float(px)} sl={_fmt_float(sl)}', fg='red', bold=True)
-            return True
     return False
 
 def run_live(cfg: dict, args):
@@ -777,7 +761,15 @@ def run_live(cfg: dict, args):
                     if px:
                         od = place_reduce_only(fetcher, sym, 'sell', float(rec.get('qty', 0.0)), position_mode)
                         if od:
-                            cprint('[exit close]', sym, f'@~{_fmt_float(px)}', fg='yellow')
+                            qty = float(rec.get('qty', 0.0))
+                            entry = float(rec.get('entry', 0.0))
+                            side = str(rec.get('side', 'LONG')).upper()
+                            pnl = (px - entry) * qty if side == 'LONG' else (entry - px) * qty
+                            color = GREEN if pnl >= 0 else RED
+                            print(
+                                f"{GRAY}[close] {sym} {side} qty={_fmt_float(qty)} exit={_fmt_float(px)} "
+                                f"reason={getattr(adj, 'reason', 'EXIT')} pnl={color}{pnl:+.2f}{GRAY}{RESET}"
+                            )
                             try:
                                 db_mark_closed(session_db_path, bot_id, rec.get('order_id'), now.isoformat())
                             except Exception:

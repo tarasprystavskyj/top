@@ -11,6 +11,12 @@ from datetime import datetime, timezone
 import pandas as pd
 from typing import Any, Mapping
 
+# ANSI colors for order-close reporting
+RESET = "\033[0m"
+GRAY = "\033[90m"
+RED = "\033[91m"
+GREEN = "\033[92m"
+
 # --- imports from runners.common (with fallbacks) ----------------------------------
 try:
     # package-style
@@ -238,18 +244,12 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     qty = float(getattr(pos, 'qty', 0.0))
                     reason = getattr(adj, 'action', 'exit')
 
-                    pf.close(pos, bar_close, px, reason=reason)
-
-                    cprint(
-                        "[close]",
-                        bar_close.isoformat(),
-                        pos.symbol,
-                        side,
-                        f"qty={_fmt_float(qty)}",
-                        f"exit={_fmt_float(px)}",
-                        f"reason={reason}",
-                        fg="magenta",
-                        bold=True,
+                    pnl = pf.close(pos, bar_close, px, reason=reason)
+                    color = GREEN if pnl >= 0 else RED
+                    print(
+                        f"{GRAY}[close] {bar_close.isoformat()} {pos.symbol} {side} "
+                        f"qty={_fmt_float(qty)} exit={_fmt_float(px)} reason={reason} "
+                        f"pnl={color}{pnl:+.2f}{GRAY} eq={pf.equity:.2f}{RESET}"
                     )
 
                     insert_order_row(orders_db, {

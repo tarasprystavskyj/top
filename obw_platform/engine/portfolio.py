@@ -110,6 +110,7 @@ class Portfolio:
             "realized_pnl": pnl, "equity_after": self.equity
         })
         self.positions = [p for p in self.positions if p is not pos]
+        return pnl
 
     def save_trades(self, path: str):
         pd.DataFrame(self.trades).to_csv(path, index=False)
