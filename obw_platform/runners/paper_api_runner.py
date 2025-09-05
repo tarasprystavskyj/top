@@ -279,7 +279,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     'extra': json.dumps({'sim': True, 'tags': getattr(sig, 'tags', [])})
                 })
 
-            # Equity snapshot
+            # Equity snapshot 
             try:
                 eq = {
                     'equity': float(getattr(pf, 'equity', 0.0)),
@@ -301,33 +301,34 @@ def run_paper_api(cfg: Mapping[str, Any], args):
             except Exception:
                 pass
 
+            # Pretty-print currently open positions in YELLOW (diagnostics)
+            try:
+                npos = len(getattr(pf, 'positions', []))
+                if npos > 0:
+                    for _pos in list(pf.positions):
+                        _sym = getattr(_pos, 'symbol', '?')
+                        _side = str(getattr(_pos, 'side', '?')).upper()
+                        _qty = getattr(_pos, 'qty', None)
+                        _entry = (getattr(_pos, 'entry', None) 
+                                  if hasattr(_pos, 'entry') else getattr(_pos, 'entry_price', getattr(_pos, 'price', None)))
+                        _tp = (getattr(_pos, 'tp', None) 
+                               if hasattr(_pos, 'tp') else getattr(_pos, 'take_profit', getattr(_pos, 'tp_price', None)))
+                        _sl = (getattr(_pos, 'sl', None) 
+                               if hasattr(_pos, 'sl') else getattr(_pos, 'stop_price', getattr(_pos, 'sl_price', None)))
+                        cprint("[open]", bar_close.isoformat(), _sym, _side,
+                               f"qty={_qty}", f"entry={_entry}", f"tp={_tp}", f"sl={_sl}",
+                               fg="yellow", bold=True)
+            except Exception:
+                pass
+
+                if getattr(args, 'heat_report', False) and len(pf.positions) == 0:
+                    try:
+                        _print_heat_from_strategy(strat, 'paper-api', bar_close, md, uni)
+                    except Exception:
+                        pass
             cprint("[paper-api]", f"bar {bar_close.isoformat()} processed: positions={len(pf.positions)}", fg="cyan")
 
-    # Pretty-print currently open positions in YELLOW (diagnostics)
-    try:
-        npos = len(getattr(pf, 'positions', []))
-        if npos > 0:
-            for _pos in list(pf.positions):
-                _sym = getattr(_pos, 'symbol', '?')
-                _side = str(getattr(_pos, 'side', '?')).upper()
-                _qty = getattr(_pos, 'qty', None)
-                _entry = (getattr(_pos, 'entry', None) 
-                          if hasattr(_pos, 'entry') else getattr(_pos, 'entry_price', getattr(_pos, 'price', None)))
-                _tp = (getattr(_pos, 'tp', None) 
-                       if hasattr(_pos, 'tp') else getattr(_pos, 'take_profit', getattr(_pos, 'tp_price', None)))
-                _sl = (getattr(_pos, 'sl', None)
-                       if hasattr(_pos, 'sl') else getattr(_pos, 'stop_price', getattr(_pos, 'sl_price', None)))
-                cprint("[open]", bar_close.isoformat(), _sym, _side,
-                       f"qty={_qty}", f"entry={_entry}", f"tp={_tp}", f"sl={_sl}",
-                       fg="yellow", bold=True)
-    except Exception:
-        pass
 
-    if getattr(args, 'heat_report', False) and len(pf.positions) == 0:
-        try:
-            _print_heat_from_strategy(strat, 'paper-api', bar_close, md, uni)
-        except Exception:
-            pass
-    else:
-        dot()
-    time.sleep(getattr(args, 'poll_sec', 10))
+        else:
+            dot()
+        time.sleep(getattr(args, 'poll_sec', 10))
