@@ -93,9 +93,11 @@ class Portfolio:
         costs = 2*self.fee_rate + funding_rate_hour * holding_hours
         net = gross - costs
         pnl = pos.notional * net
+        fees_paid = pos.notional * costs
         self.equity += pnl
         self.position_value -= pos.notional
         self.realized_pnl_cum += pnl
+        self.total_fees += fees_paid
         self.trades.append({
             "open_time_utc": pos.entry_time.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"),
             "symbol": pos.symbol, "side": pos.side,
