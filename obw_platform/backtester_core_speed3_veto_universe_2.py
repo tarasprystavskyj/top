@@ -297,7 +297,7 @@ def main():
             cols = ["symbol","side","entry_time","exit_time","entry","exit","tp","sl","reason","gross_return","net_return","notional","fees_paid","realized_pnl"]
             with open("trades.csv","w",newline="") as f:
                 w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(tr_rows)
-        pd.DataFrame([{
+        pd.DataFrame([{ 
             "equity_start": initial_equity, "equity_end": equity, "trades": trades,
             "profit_factor": pf, "win_rate_%": win_rate_pct,
             "elapsed_sec": elapsed,

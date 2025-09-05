@@ -90,12 +90,15 @@ class Portfolio:
         exit_px = round_tick(last_price * (1 + slip) if pos.side=="SHORT" else last_price * (1 - slip), tick)
         gross = (pos.entry_price - exit_px)/max(pos.entry_price,1e-12) if pos.side=="SHORT" else (exit_px - pos.entry_price)/max(pos.entry_price,1e-12)
         holding_hours = max(0.0, (t - pos.entry_time).total_seconds()/3600.0)
+        # total trading costs including entry/exit fees and funding
         costs = 2*self.fee_rate + funding_rate_hour * holding_hours
+        fees_paid = pos.notional * costs
         net = gross - costs
         pnl = pos.notional * net
         self.equity += pnl
         self.position_value -= pos.notional
         self.realized_pnl_cum += pnl
+        self.total_fees += fees_paid
         self.trades.append({
             "open_time_utc": pos.entry_time.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"),
             "symbol": pos.symbol, "side": pos.side,
