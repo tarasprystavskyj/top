@@ -17,10 +17,8 @@ strategy_params:
   sl_atr_mult: 1.04
   min_qv_24h: 200000.0
   min_qv_1h: 10000.0
-  min_momentum_sum: 0.022
-  min_atr_ratio: 0.020
-min_atr_ratio: 0.020
-min_momentum_sum: 0.0
+  min_atr_ratio: 0.008 #0.020
+  min_momentum_sum: 0.0
 portfolio:
   position_notional: 45
   initial_equity: 100.0

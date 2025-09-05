@@ -276,6 +276,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     except Exception:
                         qty = 0.0
                     setattr(pos, 'qty', qty)
+
                 insert_order_row(orders_db, {
                     'order_id': str(uuid.uuid4()),
                     'ts_utc': datetime.utcnow().isoformat(),
