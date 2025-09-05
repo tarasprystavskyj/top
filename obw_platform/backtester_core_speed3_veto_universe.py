@@ -185,7 +185,6 @@ def main():
                     if pnl>0: wins+=1; pnl_pos += pnl
                     else: losses+=1; pnl_neg += pnl
                     equity *= (1.0 + (pnl * pos_notional / equity))
-                    eq_curve_vals.append(equity)
                     tr_rows.append({
                         "symbol": sym,
                         "side": pos.side,
@@ -201,6 +200,20 @@ def main():
                         "realized_pnl": net_ret * pos_notional,
                     })
                     del positions[sym]; pos_time.pop(sym, None)
+
+        # compute current equity including unrealized PnL
+        unrealized = 0.0
+        for sym, pos in positions.items():
+            px = px_map.get(sym)
+            if px is None:
+                continue
+            if pos.side == "LONG":
+                gross_ret = (px - pos.entry) / pos.entry
+            else:
+                gross_ret = (pos.entry - px) / pos.entry
+            net_ret = gross_ret - 2 * slippage - 2 * fee
+            unrealized += net_ret * pos_notional
+        equity_mtm = equity + unrealized
 
         # --- NEW: фільтр юніверсу лише для відкриттів
         if allow_syms or deny_syms:
@@ -259,7 +272,8 @@ def main():
                 sig.side = desired_side
             if getattr(sig, "side", desired_side) not in ("LONG","SHORT"):
                 sig.side = desired_side
-            if len(positions)*pos_notional >= max_notional_frac * equity: break
+            if (len(positions)+1)*pos_notional > max_notional_frac * equity_mtm:
+                break
             atr_abs = max(1e-12, atr*close)
             if sig.side=="LONG":
                 sl = close - sl_mult*atr_abs; tp = close + tp_mult*atr_abs
@@ -267,6 +281,9 @@ def main():
                 sl = close + sl_mult*atr_abs; tp = close - tp_mult*atr_abs
             positions[sym] = Position(sig.side, close, sl, tp)
             pos_time[sym] = t
+
+        # snapshot equity after this bar
+        eq_curve_vals.append(equity_mtm)
 
     # mark-to-market
     if slices:

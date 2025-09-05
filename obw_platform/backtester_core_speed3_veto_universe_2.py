@@ -159,7 +159,6 @@ def main():
                     if pnl>0: wins+=1; pnl_pos += pnl
                     else: losses+=1; pnl_neg += pnl
                     equity *= (1.0 + (pnl * pos_notional / equity))
-                    eq_curve_vals.append(equity)
                     tr_rows.append({
                         "symbol": sym,
                         "side": pos.side,
@@ -176,6 +175,20 @@ def main():
                     })
                     del positions[sym]; pos_time.pop(sym, None)
 
+        # compute current equity including unrealized PnL
+        unrealized = 0.0
+        for sym, pos in positions.items():
+            px = px_map.get(sym)
+            if px is None:
+                continue
+            if pos.side == "LONG":
+                gross_ret = (px - pos.entry) / pos.entry
+            else:
+                gross_ret = (pos.entry - px) / pos.entry
+            net_ret = gross_ret - 2 * slippage - 2 * fee
+            unrealized += net_ret * pos_notional
+        equity_mtm = equity + unrealized
+
         # --- Universe filtering for OPENINGS only (allow/deny) ---
         # Build md_map for all symbols in this bucket
         md_map_all = {
@@ -186,6 +199,7 @@ def main():
             md_map_open = {s:row for s,row in md_map_all.items()
                            if ((not allow_syms) or (s in allow_syms)) and (s not in deny_syms)}
             if not md_map_open:
+                eq_curve_vals.append(equity_mtm)
                 continue
         else:
             md_map_open = md_map_all
@@ -196,13 +210,13 @@ def main():
 
         # --- OPEN entries via strategy ---
         for sym in ranked_syms:
-            if sym in positions: 
+            if sym in positions:
                 continue
             # Budget check
-            if (len(positions)+1)*pos_notional > max_notional_frac * equity:
+            if (len(positions)+1)*pos_notional > max_notional_frac * equity_mtm:
                 break
             row = md_map_open.get(sym)
-            if not row: 
+            if not row:
                 continue
             sig = strat.entry_signal(True, sym, row, ctx=None)
             if sig is None:
@@ -226,6 +240,9 @@ def main():
                 heat = None
             #if heat is not None:
             #    print(f"[open] {t} {sym} {sig.side} heat={heat:.3f} tp={tp:.4f} sl={sl:.4f}")
+
+        # snapshot equity after this bar
+        eq_curve_vals.append(equity_mtm)
 
     # Mark-to-market finalization
     if slices:
