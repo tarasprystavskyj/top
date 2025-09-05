@@ -269,6 +269,14 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     'reason': getattr(sig, 'reason', None),
                 }
                 pos = pf.open(symbol=sym, signal=sig_map, t=bar_close, last_price=entry_px)
+                qty = getattr(pos, 'qty', None)
+                if qty is None:
+                    try:
+                        qty = float(getattr(pos, 'notional', 0.0)) / max(float(getattr(pos, 'entry_price', entry_px)), 1e-12)
+                    except Exception:
+                        qty = 0.0
+                    setattr(pos, 'qty', qty)
+
                 insert_order_row(orders_db, {
                     'order_id': str(uuid.uuid4()),
                     'ts_utc': datetime.utcnow().isoformat(),
@@ -278,7 +286,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     'side': 'buy' if str(sig.side).upper()=='LONG' else 'sell',
                     'type': 'market',
                     'price': float(entry_px),
-                    'qty': float(getattr(pos, 'qty', 0.0)),
+                    'qty': float(qty),
                     'status': 'filled',
                     'reason': 'entry',
                     'run_id': run_id,
@@ -315,6 +323,11 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                         _sym = getattr(_pos, 'symbol', '?')
                         _side = str(getattr(_pos, 'side', '?')).upper()
                         _qty = getattr(_pos, 'qty', None)
+                        if _qty is None:
+                            try:
+                                _qty = float(getattr(_pos, 'notional', 0.0)) / max(float(getattr(_pos, 'entry_price', getattr(_pos, 'entry', 0.0))), 1e-12)
+                            except Exception:
+                                _qty = None
                         _entry = (getattr(_pos, 'entry', None)
                                   if hasattr(_pos, 'entry') else getattr(_pos, 'entry_price', getattr(_pos, 'price', None)))
                         _tp = (getattr(_pos, 'tp', None)
