@@ -49,7 +49,7 @@ def dot():
 def _fmt_float(val: Any) -> str:
     """Format float to at most two decimal places without trailing zeros."""
     try:
-        return ("{:.2f}".format(float(val))).rstrip("0").rstrip(".")
+        return ("{:.3f}".format(float(val))).rstrip("0").rstrip(".")
     except Exception:
         return str(val)
 
