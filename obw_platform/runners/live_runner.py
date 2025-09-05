@@ -171,8 +171,33 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
     param_candidates.append(dict(base_params))
 
     last_res = None
+    try:
+        _dbg(
+            'place_open_long', sym,
+            f'qty={qty:.6g}', f'price={price:.6g}',
+            f'tp={tp_price if tp_price is not None else "-"}',
+            f'sl={sl_price if sl_price is not None else "-"}',
+            f'candidates={len(param_candidates)}'
+        )
+    except Exception:
+        pass
+
     for params in param_candidates:
+        try:
+            _dbg('try_params', params)
+        except Exception:
+            pass
         res = _try(params)
+        try:
+            _dbg(
+                'result',
+                'ok' if res.get('ok') else 'ERR',
+                (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId')))
+                 if res.get('ok') else ''),
+                res.get('error', '')
+            )
+        except Exception:
+            pass
         last_res = res
         if res['ok']:
             res['tp_price'] = tp_price
@@ -244,8 +269,33 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
     param_candidates.append(dict(base_params))
 
     last_res = None
+    try:
+        _dbg(
+            'place_open_short', sym,
+            f'qty={qty:.6g}', f'price={price:.6g}',
+            f'tp={tp_price if tp_price is not None else "-"}',
+            f'sl={sl_price if sl_price is not None else "-"}',
+            f'candidates={len(param_candidates)}'
+        )
+    except Exception:
+        pass
+
     for params in param_candidates:
+        try:
+            _dbg('try_params', params)
+        except Exception:
+            pass
         res = _try(params)
+        try:
+            _dbg(
+                'result',
+                'ok' if res.get('ok') else 'ERR',
+                (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId')))
+                 if res.get('ok') else ''),
+                res.get('error', '')
+            )
+        except Exception:
+            pass
         last_res = res
         if res['ok']:
             res['tp_price'] = tp_price
