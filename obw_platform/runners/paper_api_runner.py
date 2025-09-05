@@ -45,6 +45,14 @@ def dot():
     except Exception:
         print(".", end="", flush=True)
 
+
+def _fmt_float(val: Any) -> str:
+    """Format float to at most two decimal places without trailing zeros."""
+    try:
+        return ("{:.2f}".format(float(val))).rstrip("0").rstrip(".")
+    except Exception:
+        return str(val)
+
 # --- strategy loader ---------------------------------------------------------------
 def load_strategy(path_cls: str, cfg: Mapping[str, Any]):
     mod_path, cls_name = path_cls.rsplit('.', 1)
@@ -338,9 +346,18 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                                if hasattr(_pos, 'tp') else getattr(_pos, 'take_profit', getattr(_pos, 'tp_price', None)))
                         _sl = (getattr(_pos, 'sl', None)
                                if hasattr(_pos, 'sl') else getattr(_pos, 'stop_price', getattr(_pos, 'sl_price', None)))
-                        cprint("[open]", bar_close.isoformat(), _sym, _side,
-                               f"qty={_qty}", f"entry={_entry}", f"tp={_tp}", f"sl={_sl}",
-                               fg="yellow", bold=True)
+                        cprint(
+                            "[open]",
+                            bar_close.isoformat(),
+                            _sym,
+                            _side,
+                            f"qty={_fmt_float(_qty)}",
+                            f"entry={_fmt_float(_entry)}",
+                            f"tp={_fmt_float(_tp)}",
+                            f"sl={_fmt_float(_sl)}",
+                            fg="yellow",
+                            bold=True,
+                        )
             except Exception:
                 pass
 
