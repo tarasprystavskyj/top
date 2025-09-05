@@ -179,7 +179,7 @@ class BreakoutAVAAIFull:
     def manage_position(self, symbol: str, row: Mapping[str, Any], pos: Any, ctx: Optional[Mapping[str, Any]] = None):
         """CLOSE-based TP/SL (match the old behaviour)."""
         close = _f(row.get("close", 0.0))
-        side  = getattr(pos, "side", "LONG")
+        side  = str(getattr(pos, "side", "LONG")).upper()
         tp    = _f(getattr(pos, "tp", getattr(pos, "take_profit", getattr(pos, "tp_price", None))), None)
         sl    = _f(getattr(pos, "sl", getattr(pos, "stop_price", getattr(pos, "sl_price", None))), None)
 
