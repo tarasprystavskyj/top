@@ -60,6 +60,14 @@ class GreedyBreakoutUniverse:
         self.tp_mult: float = _f(sp.get("tp_atr_mult", 3.8), 3.8)
         self.sl_mult: float = _f(sp.get("sl_atr_mult", 1.04), 1.04)
 
+        # optional exit conditions
+        self.max_bars_in_position: int = int(sp.get("max_bars_in_position", 0))
+        self.exit_macd_flip: bool = bool(sp.get("exit_on_macd_flip", False))
+        self.adx_exit_threshold: float = _f(sp.get("adx_exit_threshold", 0.0), 0.0)
+        self.rsi_exit_long: float = _f(sp.get("rsi_exit_long", 0.0), 0.0)
+        self.rsi_exit_short: float = _f(sp.get("rsi_exit_short", 0.0), 0.0)
+        self.heat_exit_threshold: float = _f(sp.get("heat_exit_threshold", 0.0), 0.0)
+
     # --- Helpers ---
     def _mom_sum(self, row: Mapping[str, Any]) -> float:
         return _f(row.get("dp6h", 0.0)) + _f(row.get("dp12h", 0.0))
@@ -114,18 +122,73 @@ class GreedyBreakoutUniverse:
         return Sig(side=side, take_profit=float(tp), stop_price=float(sl), confidence=0.0)
 
     # --- Contract: Manage/Exit ---
-    def manage_position(self, symbol: str, row: Mapping[str, Any], pos: Any, ctx: Optional[Mapping[str, Any]] = None) -> ExitSig:
+    def manage_position(self, symbol: str, row: Mapping[str, Any], pos: Any,
+                        ctx: Optional[Mapping[str, Any]] = None) -> ExitSig:
         # CLOSE-based exits (match the old backtester behavior)
         close = _f(row.get("close", 0.0))
         side: str = getattr(pos, "side", "LONG")
         tp = _f(getattr(pos, "tp", getattr(pos, "take_profit", getattr(pos, "tp_price", None))), None)
         sl = _f(getattr(pos, "sl", getattr(pos, "stop_price", getattr(pos, "sl_price", None))), None)
 
+        # TP/SL checks first
         if side == "LONG":
-            if sl is not None and close <= sl: return ExitSig("SL", exit_price=sl)
-            if tp is not None and close >= tp: return ExitSig("TP", exit_price=tp)
+            if sl is not None and close <= sl:
+                return ExitSig("SL", exit_price=sl)
+            if tp is not None and close >= tp:
+                return ExitSig("TP", exit_price=tp)
         else:  # SHORT
-            if sl is not None and close >= sl: return ExitSig("SL", exit_price=sl)
-            if tp is not None and close <= tp: return ExitSig("TP", exit_price=tp)
+            if sl is not None and close >= sl:
+                return ExitSig("SL", exit_price=sl)
+            if tp is not None and close <= tp:
+                return ExitSig("TP", exit_price=tp)
+
+        # time in position (count bars)
+        bars = int(getattr(pos, "meta", {}).get("bars_held", 0)) + 1
+        if getattr(pos, "meta", None) is not None:
+            pos.meta["bars_held"] = bars
+        if self.max_bars_in_position > 0 and bars >= self.max_bars_in_position:
+            return ExitSig("EXIT", reason="time")
+
+        # indicator-based exits
+        if self.exit_macd_flip:
+            macd = row.get("macd")
+            macd_sig = row.get("macd_signal")
+            try:
+                if macd is not None and macd_sig is not None:
+                    m = float(macd)
+                    ms = float(macd_sig)
+                    if side == "LONG" and m < ms:
+                        return ExitSig("EXIT", reason="macd_flip")
+                    if side == "SHORT" and m > ms:
+                        return ExitSig("EXIT", reason="macd_flip")
+            except Exception:
+                pass
+
+        if self.adx_exit_threshold > 0.0:
+            adx = row.get("adx")
+            try:
+                if adx is not None and float(adx) < self.adx_exit_threshold:
+                    return ExitSig("EXIT", reason="adx_drop")
+            except Exception:
+                pass
+
+        rsi = row.get("rsi")
+        try:
+            if rsi is not None:
+                r = float(rsi)
+                if side == "LONG" and self.rsi_exit_long > 0 and r < self.rsi_exit_long:
+                    return ExitSig("EXIT", reason="rsi_drop")
+                if side == "SHORT" and self.rsi_exit_short > 0 and r > self.rsi_exit_short:
+                    return ExitSig("EXIT", reason="rsi_rise")
+        except Exception:
+            pass
+
+        if self.heat_exit_threshold > 0.0:
+            heat = row.get("heat")
+            try:
+                if heat is not None and float(heat) < self.heat_exit_threshold:
+                    return ExitSig("EXIT", reason="heat_drop")
+            except Exception:
+                pass
 
         return ExitSig("HOLD")

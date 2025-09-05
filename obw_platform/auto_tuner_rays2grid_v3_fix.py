@@ -84,6 +84,13 @@ ALIASES = {
     "strategy_params.min_qv_1h": ["strategy_params.min_qv_1h"],
     "open_on_heat": ["open_on_heat"],
     "open_heat_min": ["open_heat_min"],
+    # exit-related aliases
+    "max-bars": ["strategy_params.max_bars_in_position"],
+    "exit-macd": ["strategy_params.exit_on_macd_flip"],
+    "adx-exit": ["strategy_params.adx_exit_threshold"],
+    "rsi-exit-long": ["strategy_params.rsi_exit_long"],
+    "rsi-exit-short": ["strategy_params.rsi_exit_short"],
+    "heat-exit": ["strategy_params.heat_exit_threshold"],
 }
 
 def get_current(cfg, pname):
