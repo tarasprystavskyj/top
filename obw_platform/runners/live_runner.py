@@ -158,46 +158,21 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
         base_params['positionSide'] = 'LONG'
 
     param_candidates = []
-    # On BingX (one-way), inline SL in create_order('market') often fails.
-    # We'll avoid inline SL here and place it as a separate reduce-only order after open.
-    pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
-    if tp_price is not None:
+    if tp_price is not None or sl_price is not None:
         p = dict(base_params)
-        p['takeProfit'] = float(tp_price)
-        p['takeProfitPrice'] = float(tp_price)
-        if pos_oneway:
-            p = dict(p)  # copy
-            param_candidates.append(dict(p, positionSide='BOTH'))
-            param_candidates.append({k:v for k,v in p.items() if k!='positionSide'})
-        else:
-            param_candidates.append(p)
-    # Always add a clean base candidate (no TP/SL inline)
-    if pos_oneway:
-        param_candidates.append({'reduceOnly': False, 'positionSide': 'BOTH'})
-        param_candidates.append({'reduceOnly': False})
-    else:
-        param_candidates.append(dict(base_params))
+        if tp_price is not None:
+            p['takeProfit'] = float(tp_price)
+            p['takeProfitPrice'] = float(tp_price)
+        if sl_price is not None:
+            p['stopLoss'] = float(sl_price)
+            p['stopLossPrice'] = float(sl_price)
+            p['stopPrice'] = float(sl_price)
+        param_candidates.append(p)
+    param_candidates.append(dict(base_params))
 
     last_res = None
-    try:
-        _dbg(
-            'place_open_long', sym,
-            f'qty={qty:.6g}', f'price={price:.6g}',
-            f'tp={tp_price if tp_price is not None else "-"}',
-            f'sl={sl_price if sl_price is not None else "-"}',
-            f'candidates={len(param_candidates)}'
-        )
-    except Exception:
-        pass
-
     for params in param_candidates:
-        _dbg('try_params', params)
         res = _try(params)
-        _dbg('try_params', params)
-        try:
-            _dbg('result', ('ok' if res.get('ok') else 'ERR'), (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId'))) if res.get('ok') else ''), res.get('error',''))
-        except Exception:
-            pass
         last_res = res
         if res['ok']:
             res['tp_price'] = tp_price
@@ -269,24 +244,8 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
     param_candidates.append(dict(base_params))
 
     last_res = None
-    try:
-        _dbg(
-            'place_open_short', sym,
-            f'qty={qty:.6g}', f'price={price:.6g}',
-            f'tp={tp_price if tp_price is not None else "-"}',
-            f'sl={sl_price if sl_price is not None else "-"}',
-            f'candidates={len(param_candidates)}'
-        )
-    except Exception:
-        pass
-
     for params in param_candidates:
         res = _try(params)
-        _dbg('try_params', params)
-        try:
-            _dbg('result', ('ok' if res.get('ok') else 'ERR'), (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId'))) if res.get('ok') else ''), res.get('error',''))
-        except Exception:
-            pass
         last_res = res
         if res['ok']:
             res['tp_price'] = tp_price
@@ -349,9 +308,6 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
 
 
 def _report_close_cooldown(sym: str, pos_rec: dict, px: float):
-    # print close-check only in debug mode
-    if not globals().get('DEBUG_OPEN'):
-        return
     try:
         side = str(pos_rec.get('side', 'LONG')).upper()
         tp = pos_rec.get('tp_price'); sl = pos_rec.get('sl_price')
@@ -446,64 +402,6 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
             return True
     return False
 
-
-def _place_tp_sl_after_open(fetcher: CCXTFetcher, sym: str, side: str, qty: float, tp_price, sl_price, position_mode: str):
-    """Place TP/SL as separate reduce-only orders after a market open (safer for BingX oneway)."""
-    try:
-        ccxt_sym = fetcher.resolve_symbol(sym)
-        pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
-        base = {'reduceOnly': True}
-        base['positionSide'] = 'BOTH' if pos_oneway else ('LONG' if side=='LONG' else 'SHORT')
-
-        def _try(order_type, order_side, amount, price, params):
-            try:
-                od = fetcher.ex.create_order(ccxt_sym, order_type, order_side, amount, price, params)
-                sleep_ms(RATE_MS)
-                return {'ok': True, 'order': od, 'params': params}
-            except Exception as e:
-                return {'ok': False, 'error': str(e), 'params': params}
-
-        # ---- TP ----
-        if tp_price is not None and tp_price > 0:
-            tp_side = 'sell' if side=='LONG' else 'buy'
-            tp_candidates = [
-                ('take_profit', tp_side, float(tp_price), dict(base)),
-                ('take_profit_market', tp_side, None, {**base, 'triggerPrice': float(tp_price)}),
-                ('limit', tp_side, float(tp_price), {**base, 'takeProfit': True}),
-                ('market', tp_side, None, {**base, 'takeProfitPrice': float(tp_price)}),
-            ]
-            _dbg('tp_fallback', sym, f'side={side}', f'qty={qty:.6g}', f'price={tp_price}', f'pos_mode={position_mode}', f'candidates={len(tp_candidates)}')
-            for otype, oside, oprice, pms in tp_candidates:
-                r = _try(otype, oside, qty, oprice, pms)
-                _dbg('tp_try', {'type': otype, 'side': oside, 'price': oprice, 'params': pms})
-                _dbg('tp_res', ('ok' if r.get('ok') else 'ERR'), r.get('error',''),
-                     ('order_id=' + str((r.get('order') or {}).get('id') or (r.get('order') or {}).get('orderId'))) if r.get('ok') else '')
-                if r.get('ok'):
-                    break
-
-        # ---- SL ----
-        if sl_price is not None and sl_price > 0:
-            sl_side = 'sell' if side=='LONG' else 'buy'
-            sl_candidates = [  # prefer stop_market with triggerPrice only to avoid "SL Price must be lower than Trigger Price"
-                ('stop_market', sl_side, None, {**base, 'triggerPrice': float(sl_price)}),
-                ('stop_market', sl_side, None, {**base, 'stopPrice': float(sl_price)}),
-                ('market', sl_side, None, {**base, 'stopLossPrice': float(sl_price)}),
-                ('stop', sl_side, float(sl_price), dict(base)),
-            ]
-            _dbg('sl_fallback', sym, f'side={side}', f'qty={qty:.6g}', f'price={sl_price}', f'pos_mode={position_mode}', f'candidates={len(sl_candidates)}')
-            for otype, oside, oprice, pms in sl_candidates:
-                r = _try(otype, oside, qty, oprice, pms)
-                _dbg('sl_try', {'type': otype, 'side': oside, 'price': oprice, 'params': pms})
-                _dbg('sl_res', ('ok' if r.get('ok') else 'ERR'), r.get('error',''),
-                     ('order_id=' + str((r.get('order') or {}).get('id') or (r.get('order') or {}).get('orderId'))) if r.get('ok') else '')
-                if r.get('ok'):
-                    break
-    except Exception as e:
-        _dbg('post_open_error', str(e))
-
-
-
-
 def run_live(cfg: dict, args):
     assert ccxt is not None, 'ccxt required for LIVE mode'
     strat_path = cfg.get('strategy_class', 'strategies.cross_sectional_rs.CrossSectionalRS')
@@ -520,6 +418,18 @@ def run_live(cfg: dict, args):
     cprint('[LIVE API]', f'key="{mask(api_k)}", secret="{mask(api_s)}"', fg='cyan')
 
     fetcher = CCXTFetcher(exchange=args.exchange, symbol_format=args.symbol_format, debug=args.debug)
+
+    # Load allow-list from --universe-file if provided
+    allowed_universe = None
+    try:
+        uf = getattr(args, 'universe_file', '') or ''
+        if uf:
+            with open(uf, 'r', encoding='utf-8') as fh:
+                allowed_universe = set([ln.strip() for ln in fh.read().splitlines() if ln.strip() and not ln.strip().startswith('#')])
+            cprint('[universe]', f'allow list size = {len(allowed_universe)}', fg='cyan')
+    except Exception as _e:
+        cprint('[universe]', f'failed to read universe file: {uf} -> {_e}', fg='red')
+        allowed_universe = None
 
     top_n_v, top_n_origin = _cfg_pick(cfg, ['top_n','runner.top_n','live.top_n','strategy_params.top_n','strategy.top_n'], 4)
     notional_v, notional_origin = _cfg_pick(cfg, ['notional','runner.notional','live.notional','portfolio.position_notional'], 2.2)
@@ -639,18 +549,8 @@ def run_live(cfg: dict, args):
         now = _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc)
         bar_close = _align_bar_close(now, tf_sec)
 
-        # Build universe with allow-list filtering (ENV or cfg['universe'].allow)
-        allow = []
-        try:
-            allow_env = os.getenv('RS_UNIVERSE_ALLOW', '')
-            if allow_env:
-                allow = [s.strip() for s in allow_env.split(',') if s.strip()]
-            if not allow:
-                allow = list((cfg.get('universe', {}) or {}).get('allow', []) or [])
-        except Exception:
-            allow = []
         all_syms = sorted(set(fetcher.by_base.values()))
-        universe = [s for s in all_syms if (not allow or s in allow)]
+        universe = [sym for sym in all_syms if (allowed_universe is None or sym in allowed_universe)]
         for sym, rec in list(positions.items()):
             px = fetcher.fetch_ticker_price(sym)
             if px is not None:
@@ -712,6 +612,12 @@ def run_live(cfg: dict, args):
                             save_positions(args.results_dir, positions)
 
             uni = strat.universe(bar_close, md)
+
+
+            if 'allowed_universe' in locals() and allowed_universe is not None:
+
+
+                uni = [sym for sym in uni if sym in allowed_universe]
             ranked = strat.rank(bar_close, md, uni)[:top_n]
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
             opened = 0
@@ -765,9 +671,6 @@ def run_live(cfg: dict, args):
                             cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
                             rec = {'symbol': sym,'side': side_str,'qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id}
                             positions[sym] = rec; save_positions(args.results_dir, positions)
-                            # Fallback TP/SL placement as separate orders (reduce-only)
-                            try: _place_tp_sl_after_open(fetcher, sym, 'LONG', qty, tp_price, sl_price, position_mode)
-                            except Exception as e: _dbg('post_open_error', str(e))
                             try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                             except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
                             opened += 1
@@ -788,8 +691,6 @@ def run_live(cfg: dict, args):
                     pass
                 side_up = str(side_attr).upper()
                 if side_up in ('SHORT','SELL'):
-                    _dbg(sym, 'skip: SHORT disabled (oneway-long-only)'); log_skip_reason(sym, 'short disabled'); continue
-                # if side_up in ('SHORT','SELL'):  # fallback disabled above
                     entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
                     if not entry_px:
                         log_skip_reason(sym, 'no price available'); continue
@@ -859,18 +760,16 @@ def run_live(cfg: dict, args):
                     'exchange_order_id': ex_order_id
                 }
                 positions[sym] = rec
-                save_positions(args.results_dir, positions)
-                # Fallback TP/SL placement as separate orders (reduce-only)
-                try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode)
-                except Exception as e: _dbg('post_open_error', str(e))
+                save_positions(args.results_dir, positions) 
                 try:
                     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                 except Exception as e:
                     cprint('[db upsert OPEN]', e, fg='red')
                 opened += 1
-
             if args.heat_report and opened == 0:
+                cprint(f"line 666", fg="yellow", dim=True)
                 print_and_save_heat_from_strategy(strat, 'live', bar_close, md, uni, cache_out_path)
+
             cprint('[live]', f'opened={opened} at {bar_close.isoformat()}', fg='cyan', bold=(opened>0))
         else:
             dot()

@@ -1,0 +1,35 @@
+timeframe: 5m
+cache_db: ../combined_cache_5m_5000_04.09.db
+strategy_class: strategies.breakout_avaai_full_with_universe_2.BreakoutAVAAIFull
+open_on_heat: 0.0
+open_heat_min: 0.01
+position_mode: oneway
+strategy_params:
+  side: LONG
+  top_n: 10
+  length: 10.0
+  macd_filter: 1
+  volume_length: 20
+  adx_length: 14
+  adx_threshold: 15
+  atr_threshold_ratio: 0.0022
+  tp_atr_mult: 3.8
+  sl_atr_mult: 1.04
+  min_qv_24h: 200000.0
+  min_qv_1h: 10000.0
+  min_momentum_sum: 0.012
+  min_atr_ratio: 0.0005
+min_atr_ratio: 0.0
+min_momentum_sum: 0.0
+portfolio:
+  position_notional: 45
+  initial_equity: 100.0
+  max_notional_frac: 0.7
+session:
+  open_every_bar: true
+top_n: 8.0
+side: BOTH
+position_notional: 60.0
+top-n: 8.0
+
+#121,1.039453,-0.250003,0.019345,652

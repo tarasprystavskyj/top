@@ -152,7 +152,7 @@ def compute_feats(df: pd.DataFrame, tf_seconds: Optional[int] = None) -> pd.Data
             avg1 = out['qv_24h'] / 24.0
             with np.errstate(divide='ignore', invalid='ignore'):
                 out['vol_surge_mult'] = np.where(avg1 > 0, out['quote_volume'] / avg1, 0.0)
-else:
+    else:
         bars_24h = max(1, int(round(24*3600 / tf_seconds)))
         bars_6h  = max(1, int(round( 6*3600 / tf_seconds)))
         bars_12h = max(1, int(round(12*3600 / tf_seconds)))
@@ -165,7 +165,7 @@ else:
             avg_per_bar = out['qv_24h'] / float(bars_24h)
             with np.errstate(divide='ignore', invalid='ignore'):
                 out['vol_surge_mult'] = np.where(avg_per_bar > 0, out['quote_volume'] / avg_per_bar, 0.0)
-for k in ('rsi','stochastic','mfi','overbought_index','gain_24h_before'):
+    for k in ('rsi','stochastic','mfi','overbought_index','gain_24h_before'):
         if k not in out.columns:
             out[k] = 0.0
     return out

@@ -328,11 +328,16 @@ def main():
     if args.plots_dir:
         try:
             import matplotlib.pyplot as plt
+            import matplotlib.dates as mdates
+            cfg_name = os.path.basename(args.cfg) if hasattr(args, 'cfg') else 'cfg:n/a'
+            _dbn = os.path.basename(cfg.get('cache_db','')) if isinstance(cfg, dict) else ''
+            _tf = '5m' if '5m' in _dbn else ('1440' if '1440' in _dbn else ('60m' if '60m' in _dbn else ('1h' if '1h' in _dbn else '?')))
+            legend_label = f"{cfg_name} | TF: {_tf} | bars: {args.limit_bars}"
             os.makedirs(args.plots_dir, exist_ok=True)
             # Equity by trade
             import numpy as np
             eq_curve = np.array(eq_curve_vals, dtype=float)
-            plt.figure(); plt.plot(range(len(eq_curve)), eq_curve)
+            plt.figure(); plt.plot(range(len(eq_curve)), eq_curve, label=legend_label); plt.legend()
             plt.title("Equity vs Trade #"); plt.xlabel("Trade #"); plt.ylabel("Equity")
             plt.tight_layout(); plt.savefig(os.path.join(args.plots_dir, "equity_by_trade.png"), dpi=140); plt.close()
 
@@ -340,7 +345,7 @@ def main():
             if len(eq_curve)>1:
                 peaks = np.maximum.accumulate(eq_curve)
                 dd = (eq_curve - peaks) / peaks
-                plt.figure(); plt.plot(range(len(dd)), dd)
+                plt.figure(); plt.plot(range(len(dd)), dd, label=legend_label); plt.legend()
                 plt.title("Drawdown vs Trade #"); plt.xlabel("Trade #"); plt.ylabel("Drawdown (fraction)")
                 plt.tight_layout(); plt.savefig(os.path.join(args.plots_dir, "drawdown_by_trade.png"), dpi=140); plt.close()
 
@@ -348,7 +353,27 @@ def main():
             if tr_rows and tr_rows[0].get("exit_time", None) is not None:
                 dft = pd.DataFrame(tr_rows).sort_values("exit_time")
                 eq_time = (float(initial_equity) + dft["realized_pnl"].cumsum())
-                plt.figure(); plt.plot(pd.to_datetime(dft["exit_time"]), eq_time.values)
+                plt.figure()
+                ts_raw = dft['exit_time'].astype(str).str.strip()
+                ts = pd.Series(pd.NaT, index=dft.index)
+                for _fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                    parsed = pd.to_datetime(ts_raw, format=_fmt, errors='coerce')
+                    ts = ts.fillna(parsed)
+                try:
+                    mask = ts.isna()
+                    if mask.any():
+                        ts.loc[mask] = pd.to_datetime(ts_raw[mask], format='mixed', errors='coerce')
+                except Exception:
+                    pass
+                mask = ts.isna()
+                if mask.any():
+                    ts.loc[mask] = ts_raw[mask].map(lambda x: pd.to_datetime(x, errors='coerce'))
+                plt.plot(ts, eq_time.values, label=legend_label)
+                ax = plt.gca()
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+                plt.xticks(rotation=45)
+                plt.legend()
+
                 plt.title("Equity vs Time"); plt.xlabel("Time"); plt.ylabel("Equity")
                 plt.tight_layout(); plt.savefig(os.path.join(args.plots_dir, "equity_by_time.png"), dpi=160); plt.close()
 
