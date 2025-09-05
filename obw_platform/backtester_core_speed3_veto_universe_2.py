@@ -274,6 +274,7 @@ def main():
 
     elapsed = time.time() - t0
     pf = (pnl_pos / max(1e-12, -pnl_neg)) if (pnl_pos>0 and pnl_neg<0) else 0.0
+    win_rate_pct = (wins * 100.0 / max(1, trades)) if trades else 0.0
 
     # Metrics
     import numpy as _np
@@ -298,9 +299,9 @@ def main():
                 w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(tr_rows)
         pd.DataFrame([{ 
             "equity_start": initial_equity, "equity_end": equity, "trades": trades,
-            "profit_factor": pf, "win_rate_%": (wins*100.0/max(1,trades) if trades else 0.0),
+            "profit_factor": pf, "win_rate_%": win_rate_pct,
             "elapsed_sec": elapsed,
-            "max_dd_frac": max_dd_frac, "max_dd_%": (max_dd_frac*100.0),
+            "max_dd_frac": max_dd_frac, "max_dd_%": (max_dd_frac * 100.0),
             "monotonicity_sign": mono_sign, "monotonicity_mag": mono_mag,
             "total_fees": fees_cum
         }]).to_csv("summary.csv", index=False)
@@ -370,7 +371,12 @@ def main():
         except Exception as e:
             print(f"[plots] failed: {e}")
 
-    print(f"equity_end={equity:.6f} trades={trades} pf={pf:.6f} fees={fees_cum:.6f} max_dd={max_dd_frac:.6f} mono={mono_mag:.6f} elapsed_sec={elapsed:.6f}")
+    max_dd_pct = max_dd_frac * 100.0
+    mono_pct = mono_mag * 100.0
+    print(
+        f"equity_end={equity:.6f} trades={trades} pf={pf:.6f} fees={fees_cum:.6f} "
+        f"win_rate={win_rate_pct:.3f}% max_dd={max_dd_pct:.3f}% mono={mono_pct:.3f}% elapsed_sec={elapsed:.6f}"
+    )
 
 if __name__ == "__main__":
     main()
