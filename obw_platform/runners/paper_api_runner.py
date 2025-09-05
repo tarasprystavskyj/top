@@ -314,7 +314,6 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                         _tp = (getattr(_pos, 'tp', None)
                                if hasattr(_pos, 'tp') else getattr(_pos, 'take_profit', getattr(_pos, 'tp_price', None)))
                         _sl = (getattr(_pos, 'sl', None)
-
                                if hasattr(_pos, 'sl') else getattr(_pos, 'stop_price', getattr(_pos, 'sl_price', None)))
                         cprint("[open]", bar_close.isoformat(), _sym, _side,
                                f"qty={_qty}", f"entry={_entry}", f"tp={_tp}", f"sl={_sl}",
