@@ -262,9 +262,35 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
             p['takeProfit'] = float(tp_price)
             p['takeProfitPrice'] = float(tp_price)
         if sl_price is not None:
-            p['stopLoss'] = float(sl_price)
-            p['stopLossPrice'] = float(sl_price)
-            p['stopPrice'] = float(sl_price)
+            sl_trigger = float(sl_price)
+            # --- robust tick detection (same as live_runner) ---
+            tick = None
+            try:
+                lim_tick = float(mkt.get('limits', {}).get('price', {}).get('min') or 0.0)
+                if lim_tick > 0:
+                    tick = lim_tick
+            except Exception:
+                pass
+            if not tick or tick <= 0:
+                prec = mkt.get('precision', {}).get('price')
+                try:
+                    if isinstance(prec, int) and prec >= 0:
+                        tick = 10 ** (-prec)
+                except Exception:
+                    pass
+            if not tick or tick <= 0:
+                try:
+                    step = float(mkt.get('info', {}).get('priceStep') or 0.0)
+                    if step > 0:
+                        tick = step
+                except Exception:
+                    pass
+            if not tick or tick <= 0:
+                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
+            # --- enforce relation: SHORT needs SL > trigger ---
+            p['stopPrice'] = sl_trigger                # trigger
+            p['stopLoss'] = sl_trigger + tick          # order price ABOVE trigger
+            # do NOT send stopLossPrice to avoid conflicting checks
         param_candidates.append(p)
     param_candidates.append(dict(base_params))
 
