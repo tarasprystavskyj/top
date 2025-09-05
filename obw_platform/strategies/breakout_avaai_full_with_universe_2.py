@@ -166,101 +166,62 @@ class BreakoutAVAAIFull(_OrigBreakout):
         return ok, gap, dict(qv_24h=qv24, qv_1h=qv1h, avg1h=avg1h, need=need)
 
     # ---------- scoring helpers (for universe/rank) ----------
-    def _score_row(self, row: Dict[str, Any], side_pref: str, min_mom: float) -> Optional[Tuple[float, float, float]]:
-        """Return (score, qv24, atrp) or None if filtered out."""
-        dp6  = self._float(row, "dp6h", 0.0)
+    # ------------------ core helpers ------------------
+    def _mom_sum(self, row: Mapping[str, Any]) -> float:
+        dp6 = self._float(row, "dp6h", 0.0)
         dp12 = self._float(row, "dp12h", 0.0)
-        mom_sum = dp6 + dp12
+        return dp6 + dp12
 
-        atrp = self._float(row, "atr_ratio", 0.0)  # ATR/close
+    def _passes_filters(self, row: Mapping[str, Any], side_pref: str, min_mom: float,
+                         min_atr: float, min_qv24: float, min_qv1h: float) -> bool:
+        atr = self._float(row, "atr_ratio", 0.0)
         qv24 = self._float(row, "qv_24h", 0.0)
-        qv1  = self._float(row, "quote_volume", 0.0)
+        qv1 = self._float(row, "quote_volume", 0.0)
         if qv1 <= 0.0:
-            vol = self._float(row, "volume", 0.0)
-            close = self._float(row, "close", 0.0)
-            qv1 = vol * close
-
-        # Thresholds
-        min_atr  = float(self._cfg_top("min_atr_ratio", 0.0))
-        min_qv24 = float(self._cfg_top("min_qv_24h", 200000.0))
-        min_qv1h = float(self._cfg_top("min_qv_1h", 10000.0))
-        if atrp < min_atr or qv24 < min_qv24 or qv1 < min_qv1h:
-            return None
-
-        # Directional threshold & score
-        if side_pref == "LONG":
-            if mom_sum < +min_mom:
-                return None
-            score = mom_sum
-        elif side_pref == "SHORT":
-            if mom_sum > -min_mom:
-                return None
-            score = -mom_sum  # more negative mom -> larger score for shorts
-        else:  # BOTH
-            if abs(mom_sum) < min_mom:
-                return None
-            score = abs(mom_sum)
-
-        return (score, qv24, atrp)
+            qv1 = self._float(row, "volume", 0.0) * self._float(row, "close", 0.0)
+        mom_sum = self._mom_sum(row)
+        if atr < min_atr or qv24 < min_qv24 or qv1 < min_qv1h:
+            return False
+        if side_pref == "SHORT":
+            return mom_sum <= -min_mom
+        else:  # LONG or BOTH behave like LONG
+            return mom_sum >= +min_mom
 
     # ---------- required by runner ----------
     def universe(self, t, md_slice: Dict[str, Dict[str, Any]] | None) -> List[str]:
-        side_pref  = str(self._cfg_top("side", "BOTH")).upper()
-        top_n      = int(self._cfg_top("top-n", 12))
-        min_mom    = float(self._cfg_top("min_momentum_sum", 0.02))
-
+        """Return symbols that pass hard filters."""
         if not md_slice:
             return []
 
-        scored: List[Tuple[str, float, float, float]] = []  # (sym, score, qv24, atrp)
-        for sym, row in md_slice.items():
-            s = self._score_row(row, side_pref, min_mom)
-            if s is None:
-                continue
-            score, qv24, atrp = s
-            scored.append((sym, score, qv24, atrp))
+        side_pref = str(self._cfg_top("side", "BOTH")).upper()
+        min_atr = float(self._cfg_top("min_atr_ratio", 0.0))
+        min_qv24 = float(self._cfg_top("min_qv_24h", 0.0))
+        min_qv1h = float(self._cfg_top("min_qv_1h", 0.0))
+        min_mom = float(self._cfg_top("min_momentum_sum", 0.0))
 
-        # sort by score desc, then qv24 desc, then atrp desc
-        scored.sort(key=lambda x: (x[1], x[2], x[3]), reverse=True)
-        return [sym for sym, *_ in scored[:max(1, top_n)]]
+        out: List[str] = []
+        for sym, row in md_slice.items():
+            if self._passes_filters(row, side_pref, min_mom, min_atr, min_qv24, min_qv1h):
+                out.append(sym)
+        return out
 
     def rank(self, t, md_slice: Dict[str, Dict[str, Any]] | None, universe: List[str] | None = None) -> List[str]:
-        """Return symbols ordered by desirability (best first). If `universe` is provided,
-        only those symbols are considered."""
-        side_pref  = str(self._cfg_top("side", "BOTH")).upper()
-        min_mom    = float(self._cfg_top("min_momentum_sum", 0.02))
-
+        """Rank symbols strictly by momentum sum (score)."""
         if not md_slice:
             return []
 
+        side_pref = str(self._cfg_top("side", "BOTH")).upper()
         symbols = list(universe) if universe else list(md_slice.keys())
 
-        scored: List[Tuple[str, float, float, float]] = []  # (sym, score, qv24, atrp)
+        scored: List[Tuple[str, float]] = []
         for sym in symbols:
             row = md_slice.get(sym, {})
-            s = self._score_row(row, side_pref, min_mom)
-            if s is None:
-                continue
-            score, qv24, atrp = s
-            scored.append((sym, score, qv24, atrp))
+            mom_sum = self._mom_sum(row)
+            score = -mom_sum if side_pref == "SHORT" else mom_sum
+            scored.append((sym, score))
 
-        scored.sort(key=lambda x: (x[1], x[2], x[3]), reverse=True)
-        return [sym for sym, *_ in scored]
-
-        # Fallback: if filtered list is empty but open_on_heat is enabled, use HEAT ranking
-        if not scored and self._cfg_bool(['open_on_heat','strategy_params.open_on_heat'], False):
-            heats = []
-            for sym in symbols:
-                row2 = md_slice.get(sym, {})
-                try:
-                    d2 = self.entry_distance(t, sym, row2)
-                    h2 = max(0.0, 1.0 - float(d2.get('combined_gap', 1.0)))
-                except Exception:
-                    h2 = 0.0
-                heats.append((sym, h2))
-            heats.sort(key=lambda x: x[1], reverse=True)
-            top_n = int(self._cfg_top('top-n', 12))
-            return [s for s,_ in heats[:max(1, top_n)]]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [sym for sym, _ in scored]
 
     # ---------- HEAT utilities ----------
     def entry_distance(self, t, sym: str, row: Dict[str, Any], breadth: Optional[float] = None) -> Dict[str, Any]:
@@ -401,94 +362,50 @@ class BreakoutAVAAIFull(_OrigBreakout):
             return 0.0
 
     def entry_signal(self, bar_close: bool, symbol: str, row: Mapping[str, Any], ctx: Optional[Mapping[str, Any]] = None) -> Optional[Sig]:
-        """Return entry `Sig` with explicit TP/SL or None."""
-        # --- try base breakout logic first ---
-        base_sig = None
-        try:
-            base_sig = super().entry_signal(bar_close, symbol, dict(row), ctx=ctx)
-        except Exception:
-            base_sig = None
-        if base_sig is not None and getattr(base_sig, "take", False) and getattr(base_sig, "side", None) in ("LONG", "SHORT"):
-            side = getattr(base_sig, "side")
-            close = self._float(row, "close", 0.0)
-            atrr = self._float(row, "atr_ratio", 0.0)
-            tp_mult = self._cfg_top("tp_atr_mult", None)
-            sl_mult = self._cfg_top("sl_atr_mult", None)
-            if tp_mult is None or sl_mult is None or atrr <= 0 or close <= 0:
-                return None
-            atr_abs = max(1e-12, close * float(atrr))
-            if side == "SHORT":
-                tp_price = close - float(tp_mult) * atr_abs
-                sl_price = close + float(sl_mult) * atr_abs
-            else:
-                tp_price = close + float(tp_mult) * atr_abs
-                sl_price = close - float(sl_mult) * atr_abs
-            return Sig(side=side, take_profit=tp_price, stop_price=sl_price, reason="base_entry")
-
-        # --- heat-based entry ---
-        if not self._cfg_bool(["open_on_heat", "strategy_params.open_on_heat"], False):
-            return None
-
-        th = self._cfg_top("open_heat_min", None)
-        if th is None:
-            th = self._cfg_top("heat_min", 0.80)
-        try:
-            heat_min = float(th)
-        except Exception:
-            heat_min = 0.80
-
-        try:
-            dist = self.entry_distance(bar_close, symbol, row, breadth=getattr(self, "_last_breadth", 1.0))
-            heat = max(0.0, 1.0 - float(dist.get("combined_gap", 1.0)))
-        except Exception:
-            return None
-
-        if heat < heat_min:
-            return None
-
+        """Generate mandatory entry signals with TP/SL calculated from ATR multipliers."""
         side_pref = str(self._cfg_top("side", "BOTH")).upper()
-        dp6 = self._float(row, "dp6h", 0.0)
-        dp12 = self._float(row, "dp12h", 0.0)
-        mom_sum = dp6 + dp12
-        if side_pref == "LONG":
-            side = "LONG"
-        elif side_pref == "SHORT":
-            side = "SHORT"
-        else:
-            side = "SHORT" if mom_sum < 0 else "LONG"
+        side = "SHORT" if side_pref == "SHORT" else "LONG"
 
         close = self._float(row, "close", 0.0)
         atrr = self._float(row, "atr_ratio", 0.0)
         tp_mult = self._cfg_top("tp_atr_mult", None)
         sl_mult = self._cfg_top("sl_atr_mult", None)
-        if tp_mult is None or sl_mult is None or atrr <= 0 or close <= 0:
-            return None
-        atr_abs = max(1e-12, close * float(atrr))
-        if side == "SHORT":
-            tp_price = close - float(tp_mult) * atr_abs
-            sl_price = close + float(sl_mult) * atr_abs
-        else:
-            tp_price = close + float(tp_mult) * atr_abs
-            sl_price = close - float(sl_mult) * atr_abs
 
-        return Sig(side=side, take_profit=tp_price, stop_price=sl_price, reason=f"open_on_heat >= {heat_min:.4f}")
+        try:
+            tp_mult = float(tp_mult)
+            sl_mult = float(sl_mult)
+        except Exception:
+            return None
+
+        if close <= 0 or atrr <= 0:
+            return None
+
+        atr_abs = max(1e-12, close * atrr)
+        if side == "SHORT":
+            tp_price = close - tp_mult * atr_abs
+            sl_price = close + sl_mult * atr_abs
+        else:
+            tp_price = close + tp_mult * atr_abs
+            sl_price = close - sl_mult * atr_abs
+
+        return Sig(side=side, take_profit=float(tp_price), stop_price=float(sl_price))
 
     def manage_position(self, symbol: str, row: Mapping[str, Any], pos: Any, ctx: Optional[Mapping[str, Any]] = None) -> ExitSig:
-        """Decide whether to close the position based on TP/SL."""
-        high = self._float(row, "high", self._float(row, "close", 0.0))
-        low = self._float(row, "low", self._float(row, "close", 0.0))
+        """Exit only on TP/SL using close price."""
+        close = self._float(row, "close", 0.0)
         side = getattr(pos, "side", None)
         tp = getattr(pos, "tp", getattr(pos, "take_profit", None))
         sl = getattr(pos, "sl", getattr(pos, "stop_price", None))
+
         if side == "LONG":
-            if sl is not None and low <= float(sl):
-                return ExitSig("SL", exit_price=float(sl), reason="stop_loss")
-            if tp is not None and high >= float(tp):
-                return ExitSig("TP", exit_price=float(tp), reason="take_profit")
+            if tp is not None and close >= float(tp):
+                return ExitSig("TP", exit_price=float(tp))
+            if sl is not None and close <= float(sl):
+                return ExitSig("SL", exit_price=float(sl))
         elif side == "SHORT":
-            if sl is not None and high >= float(sl):
-                return ExitSig("SL", exit_price=float(sl), reason="stop_loss")
-            if tp is not None and low <= float(tp):
-                return ExitSig("TP", exit_price=float(tp), reason="take_profit")
+            if tp is not None and close <= float(tp):
+                return ExitSig("TP", exit_price=float(tp))
+            if sl is not None and close >= float(sl):
+                return ExitSig("SL", exit_price=float(sl))
         return ExitSig("HOLD")
     
