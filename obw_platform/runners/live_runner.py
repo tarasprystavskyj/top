@@ -764,11 +764,28 @@ def run_live(cfg: dict, args):
                 try:
                     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                 except Exception as e:
-                    cprint('[db upsert OPEN]', e, fg='red')
-                opened += 1
-            if args.heat_report and opened == 0:
-                cprint(f"line 666", fg="yellow", dim=True)
-                print_and_save_heat_from_strategy(strat, 'live', bar_close, md, uni, cache_out_path)
+                  cprint('[db upsert OPEN]', e, fg='red')
+                  opened += 1
+            # Pretty-print currently open positions in YELLOW (diagnostics)
+            try:
+                if positions:
+                    for _sym, _rec in positions.items():
+                        _side = str(_rec.get('side', '?')).upper()
+                        _qty = _rec.get('qty', None)
+                        _entry = _rec.get('entry', None)
+                        _tp = _rec.get('tp_price', None)
+                        _sl = _rec.get('sl_price', None)
+                        cprint("[open]", bar_close.isoformat(), _sym, _side,
+                               f"qty={_qty}", f"entry={_entry}", f"tp={_tp}", f"sl={_sl}",
+                               fg="yellow", bold=True)
+            except Exception:
+                pass
+
+            if args.heat_report and len(positions) == 0:
+                try:
+                    print_and_save_heat_from_strategy(strat, 'live', bar_close, md, uni, cache_out_path)
+                except Exception:
+                    pass
 
             cprint('[live]', f'opened={opened} at {bar_close.isoformat()}', fg='cyan', bold=(opened>0))
         else:

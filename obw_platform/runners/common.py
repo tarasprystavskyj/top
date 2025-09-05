@@ -626,18 +626,35 @@ def print_and_save_heat_from_strategy(strat, mode_label: str, bar_close, md: dic
         th = best.get('thresholds', {}) or {}
         a = best.get('actuals', {}) or {}
         cprint(f"[heat] nearest={best.get('symbol')} heat={heat*100:.1f}% (lower gap is closer to entry)", fg="yellow", bold=True)
-        if 'atr' in g:
-            cprint(f"       atr_ratio {a.get('atr_ratio',0.0):.6f} vs min {th.get('min_atr_ratio',0.0):.6f} -> gap {g.get('atr',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'volsurge' in g:
-            cprint(f"       vol_surge_mult req×avg1h -> gap {g.get('volsurge',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'qv24' in g:
-            cprint(f"       qv_24h {a.get('qv_24h',0.0):.0f} vs min {th.get('min_qv_24h',0.0):.0f} -> gap {g.get('qv24',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'qv1h' in g:
-            cprint(f"       qv_1h  {a.get('qv_1h',0.0):.0f} vs min {th.get('min_qv_1h',0.0):.0f} -> gap {g.get('qv1h',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'momentum' in g:
-            cprint(f"       momentum {a.get('mom_sum',0.0):.4f} vs req {th.get('min_momentum_sum',0.0):.4f} -> gap {g.get('momentum',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'breadth' in g:
-            cprint(f"       breadth  {a.get('breadth',0.0):.3f} vs min {th.get('min_breadth',0.0):.3f} -> gap {g.get('breadth',0.0)*100:.1f}%", fg="yellow", dim=True)
+        if g.get('atr', 0.0) > 0:
+            cprint(
+                f"       min_atr_ratio {a.get('atr_ratio',0.0):.6f} vs {th.get('min_atr_ratio',0.0):.6f} -> gap {g.get('atr',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
+        if g.get('volsurge', 0.0) > 0:
+            if 'vol_surge_mult' in a and 'min_vol_surge_mult' in th:
+                cprint(
+                    f"       min_vol_surge_mult {a.get('vol_surge_mult',0.0):.2f} vs {th.get('min_vol_surge_mult',0.0):.2f} -> gap {g.get('volsurge',0.0)*100:.1f}%",
+                    fg="yellow", dim=True)
+            else:
+                cprint(
+                    f"       min_vol_surge_mult gap {g.get('volsurge',0.0)*100:.1f}%",
+                    fg="yellow", dim=True)
+        if g.get('qv24', 0.0) > 0:
+            cprint(
+                f"       min_qv_24h {a.get('qv_24h',0.0):.0f} vs {th.get('min_qv_24h',0.0):.0f} -> gap {g.get('qv24',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
+        if g.get('qv1h', 0.0) > 0:
+            cprint(
+                f"       min_qv_1h  {a.get('qv_1h',0.0):.0f} vs {th.get('min_qv_1h',0.0):.0f} -> gap {g.get('qv1h',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
+        if g.get('momentum', 0.0) > 0:
+            cprint(
+                f"       min_momentum_sum {a.get('mom_sum',0.0):.4f} vs {th.get('min_momentum_sum',0.0):.4f} -> gap {g.get('momentum',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
+        if g.get('breadth', 0.0) > 0:
+            cprint(
+                f"       min_breadth  {a.get('breadth',0.0):.3f} vs {th.get('min_breadth',0.0):.3f} -> gap {g.get('breadth',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
         if cache_path:
             save_heat_stats(cache_path, bar_close, mode_label, best)
         return True
