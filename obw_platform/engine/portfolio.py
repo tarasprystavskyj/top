@@ -31,12 +31,17 @@ class Portfolio:
         self.position_value = 0.0
         self.unrealized_pnl = 0.0
         self.realized_pnl_cum = 0.0
+        # cache frequently used config knobs
+        self.fee_rate = float(cfg.get("fee_rate", 0.001))
+        self.slippage_per_side = float(cfg.get("slippage_per_side", 0.0003))
+        self.tick_pct = float(cfg.get("tick_pct", 0.0001))
+        self.default_notional = float(cfg.get("position_notional", 20.0))
         self.total_fees = 0.0
 
     def mark_equity(self, price_map: dict) -> float:
         """Mark portfolio equity to market using provided symbol->price map."""
-        fee = float(self.cfg.get("fee_rate", 0.001))
-        slip = float(self.cfg.get("slippage_per_side", 0.0003))
+        fee = self.fee_rate
+        slip = self.slippage_per_side
         unreal = 0.0
         for p in self.positions:
             px = price_map.get(p.symbol)
@@ -54,7 +59,7 @@ class Portfolio:
 
     def can_open(self, port_cfg: dict, price_map: Optional[dict] = None) -> bool:
         max_frac = float(port_cfg.get("max_notional_frac", self.cfg.get("max_notional_frac", 0.5)))
-        notional = float(port_cfg.get("position_notional", self.cfg.get("position_notional", 20.0)))
+        notional = float(port_cfg.get("position_notional", self.default_notional))
         eq = self.equity
         if price_map:
             eq = self.mark_equity(price_map)
@@ -62,38 +67,35 @@ class Portfolio:
         return (current_open + notional) <= max_frac * eq
 
     def open(self, symbol, signal, t, last_price) -> Position:
-        slip = float(self.cfg.get("slippage_per_side", 0.0003))
-        tick = float(self.cfg.get("tick_pct", 0.0001))
-        notional = float(self.cfg.get("position_notional", 20.0))
+        slip = self.slippage_per_side
+        tick = self.tick_pct
+        notional = float(self.cfg.get("position_notional", self.default_notional))
         entry = round_tick(last_price * (1 - slip) if signal["side"]=="SHORT" else last_price * (1 + slip), tick)
         pos = Position(symbol=symbol, side=signal["side"], entry_time=t, entry_price=entry, notional=notional,
                        stop_price=signal.get("stop_price"), take_profit=signal.get("take_profit"),
                        meta={"reason": signal.get("reason","")})
         self.positions.append(pos)
         self.position_value += notional
-        self.equity -= notional * fee_rate
+        self.equity -= notional * self.fee_rate
         return pos
 
     def open_positions(self):
         return list(self.positions)
 
     def close(self, pos: Position, t, last_price, reason="exit"):
-        fee_rate = float(self.cfg.get("fee_rate", 0.001))
-        slip = float(self.cfg.get("slippage_per_side", 0.0003))
-        tick = float(self.cfg.get("tick_pct", 0.0001))
+        slip = self.slippage_per_side
+        tick = self.tick_pct
         funding_rate_hour = float(self.cfg.get("funding_rate_hour", 0.00002))
 
         exit_px = round_tick(last_price * (1 + slip) if pos.side=="SHORT" else last_price * (1 - slip), tick)
         gross = (pos.entry_price - exit_px)/max(pos.entry_price,1e-12) if pos.side=="SHORT" else (exit_px - pos.entry_price)/max(pos.entry_price,1e-12)
         holding_hours = max(0.0, (t - pos.entry_time).total_seconds()/3600.0)
-        costs = 2*fee_rate + funding_rate_hour * holding_hours
+        costs = 2*self.fee_rate + funding_rate_hour * holding_hours
         net = gross - costs
         pnl = pos.notional * net
         self.equity += pnl
         self.position_value -= pos.notional
         self.realized_pnl_cum += pnl
-        fees_paid = pos.notional * (2 * fee_rate)
-        self.total_fees += fees_paid
         self.trades.append({
             "open_time_utc": pos.entry_time.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"),
             "symbol": pos.symbol, "side": pos.side,
