@@ -33,6 +33,8 @@ class Sig:
     confidence: float = 0.0
     size: Optional[float] = None
     reason: Optional[str] = None
+    tags: Optional[Dict[str, Any]] = None
+    heat: Optional[float] = None
 
     # synonyms
     @property
@@ -183,9 +185,9 @@ class BreakoutAVAAIFull(_OrigBreakout):
         if atr < min_atr or qv24 < min_qv24 or qv1 < min_qv1h:
             return False
         if side_pref == "SHORT":
-            return mom_sum <= -min_mom
+            return mom_sum < -min_mom
         else:  # LONG or BOTH behave like LONG
-            return mom_sum >= +min_mom
+            return mom_sum > +min_mom
 
     # ---------- required by runner ----------
     def universe(self, t, md_slice: Dict[str, Dict[str, Any]] | None) -> List[str]:

@@ -23,6 +23,7 @@ class Sig:
     confidence: float = 0.0
     size: Optional[float] = None
     reason: Optional[str] = None
+    tags: Optional[Dict[str, Any]] = None
     heat: Optional[float] = None
 
     # --- aliases for compatibility ---
@@ -87,6 +88,32 @@ class BreakoutAVAAIFull:
             # allow derived 1h volume if provided
             qv1 = _f(row.get("volume", 0.0)) * _f(row.get("close", 0.0))
         return (qv24 >= self.min_qv_24h) and (qv1 >= self.min_qv_1h)
+
+    @staticmethod
+    def _pct_gap(actual: float, thresh: float) -> float:
+        """Percentage gap for checks of the form ``actual >= thresh``."""
+        try:
+            a = float(actual); t = float(thresh)
+        except Exception:
+            return 1.0
+        if t <= 0:
+            return 0.0
+        if a >= t:
+            return 0.0
+        return max(0.0, min(1.0, (t - a) / t))
+
+    @staticmethod
+    def _pct_gap_rev(actual: float, thresh: float) -> float:
+        """Reverse variant used for directional momentum thresholds."""
+        try:
+            a = float(actual); t = float(thresh)
+        except Exception:
+            return 1.0
+        if t <= 0:
+            return 0.0
+        if a >= t:
+            return 0.0
+        return max(0.0, min(1.0, (t - a) / t))
 
     # ---------- universe & ranking ----------
     def universe(self, t: Any, md_map: Mapping[str, Mapping[str, Any]]) -> List[str]:
@@ -165,14 +192,102 @@ class BreakoutAVAAIFull:
         return ExitSig("HOLD")
 
     # ---------- optional: heat reporting only (no decisions here) ----------
-    def heat(self, t: Any, symbol: str, row: Mapping[str, Any]) -> Optional[float]:
-        """Purely reporting helper. For now: normalized |momentum| with soft cap."""
-        try:
-            m = abs(self._mom_sum(row))
-            # normalize by a soft scale so it ends in [0..1)-ish for reports
-            scale = max(1e-9, self.min_momentum_sum if self.min_momentum_sum>0 else 0.08)
-            h = m / (scale * 2.0)
-            if h > 1.0: h = 1.0
-            return float(h)
-        except Exception:
+    def entry_distance(self, t: Any, sym: str, row: Mapping[str, Any]) -> Dict[str, Any]:
+        """Compute gaps against the strategy's filters for a single symbol."""
+        m = self._mom_sum(row)
+        atrr = _f(row.get("atr_ratio", 0.0))
+        qv24 = _f(row.get("qv_24h", 0.0))
+        qv1  = _f(row.get("quote_volume", 0.0))
+        if qv1 <= 0.0:
+            qv1 = _f(row.get("volume", 0.0)) * _f(row.get("close", 0.0))
+
+        min_atr = float(self.min_atr_ratio)
+        min_qv24 = float(self.min_qv_24h)
+        min_qv1h = float(self.min_qv_1h)
+        min_mom = float(self.min_momentum_sum)
+
+        if self.side == "LONG":
+            gap_mom = self._pct_gap_rev(m, +min_mom)
+        elif self.side == "SHORT":
+            gap_mom = self._pct_gap_rev(-m, +min_mom)
+        else:
+            gap_mom = self._pct_gap_rev(abs(m), +min_mom)
+
+        gap_atr = self._pct_gap(atrr, min_atr)
+        gap_qv24 = self._pct_gap(qv24, min_qv24)
+        gap_qv1 = self._pct_gap(qv1, min_qv1h)
+
+        combined_gap = max(gap_atr, gap_qv24, gap_qv1, gap_mom)
+
+        gaps_map = {
+            "atr": gap_atr,
+            "qv24": gap_qv24,
+            "qv1h": gap_qv1,
+            "momentum": gap_mom,
+        }
+        worst_key = max(gaps_map, key=lambda k: gaps_map[k])
+        reason = ""
+        if worst_key == "atr":
+            reason = f"atr low: {atrr:.4f} < {min_atr:.4f}"
+        elif worst_key == "qv24":
+            reason = f"qv24 low: {qv24:.0f} < {min_qv24:.0f}"
+        elif worst_key == "qv1h":
+            reason = f"qv1h low: {qv1:.0f} < {min_qv1h:.0f}"
+        elif worst_key == "momentum":
+            reason = f"momentum low: {m:.4f} < {min_mom:.4f}"
+
+        return {
+            "symbol": sym,
+            "combined_gap": float(combined_gap),
+            "gaps": {
+                "atr": float(gap_atr),
+                "qv24": float(gap_qv24),
+                "qv1h": float(gap_qv1),
+                "momentum": float(gap_mom),
+            },
+            "actuals": {
+                "atr_ratio": float(atrr),
+                "qv_24h": float(qv24),
+                "qv_1h": float(qv1),
+                "mom_sum": float(m),
+            },
+            "thresholds": {
+                "min_atr_ratio": float(min_atr),
+                "min_qv_24h": float(min_qv24),
+                "min_qv_1h": float(min_qv1h),
+                "min_momentum_sum": float(min_mom),
+            },
+            "reason": reason,
+        }
+
+    def best_entry_distance(self, t: Any, md_slice: dict, symbols=None) -> Optional[Dict[str, Any]]:
+        """Evaluate distances for many symbols and return the nearest-to-entry one."""
+        if not md_slice:
             return None
+        if symbols is None:
+            symbols = list(md_slice.keys())
+
+        best = None
+        best_gap = 1.0
+        for sym in symbols:
+            row = md_slice.get(sym)
+            if not row:
+                continue
+            dist = self.entry_distance(t, sym, row)
+            gap = float(dist.get("combined_gap", 1.0))
+            if gap < best_gap:
+                best_gap = gap
+                best = dist
+        return best
+
+    def heat(self, t: Any, symbol: str, row: Mapping[str, Any]) -> float:
+        """Return heat in [0..1] computed as ``1 - max(gaps)``."""
+        try:
+            dist = self.entry_distance(t, symbol, row)
+            gaps = (dist or {}).get("gaps") or {}
+            if not gaps:
+                return 0.0
+            worst = max(float(v) for v in gaps.values() if v is not None)
+            return max(0.0, min(1.0, 1.0 - worst))
+        except Exception:
+            return 0.0
