@@ -759,11 +759,12 @@ def run_live(cfg: dict, args):
                 if getattr(adj, 'action', None) == 'EXIT':
                     px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
                     if px:
-                        od = place_reduce_only(fetcher, sym, 'sell', float(rec.get('qty', 0.0)), position_mode)
+                        side = str(rec.get('side', 'LONG')).upper()
+                        close_side = 'sell' if side == 'LONG' else 'buy'
+                        od = place_reduce_only(fetcher, sym, close_side, float(rec.get('qty', 0.0)), position_mode)
                         if od:
                             qty = float(rec.get('qty', 0.0))
                             entry = float(rec.get('entry', 0.0))
-                            side = str(rec.get('side', 'LONG')).upper()
                             pnl = (px - entry) * qty if side == 'LONG' else (entry - px) * qty
                             color = GREEN if pnl >= 0 else RED
                             print(

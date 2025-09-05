@@ -112,13 +112,14 @@ def run_paper_api(cfg: dict, args):
                 if getattr(adj, 'action', None) == 'EXIT':
                     px = float(row.get('close') or 0.0) * (1 - port_cfg['slippage_per_side'])
                     pf.close(pos, bar_close, px, reason=adj.reason)
+                    order_side = 'sell' if str(getattr(pos, 'side', 'LONG')).upper() == 'LONG' else 'buy'
                     insert_order_row(orders_db, {
                         'order_id': str(uuid.uuid4()),
                         'ts_utc': datetime.utcnow().isoformat(),
                         'bar_time_utc': bar_close.isoformat(),
                         'mode': 'paper_api',
                         'symbol': pos.symbol,
-                        'side': 'sell',
+                        'side': order_side,
                         'type': 'market',
                         'price': float(px),
                         'qty': float(pos.qty),
