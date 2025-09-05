@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os, sys, json, time, uuid, importlib
 from datetime import datetime, timezone
+import pandas as pd
 from typing import Any, Mapping
 
 # --- imports from runners.common (with fallbacks) ----------------------------------
@@ -178,8 +179,8 @@ def run_paper_api(cfg: Mapping[str, Any], args):
     last_bar_ts = None
 
     while True:
-        now = datetime.utcnow().replace(tzinfo=timezone.utc)
-        bar_close = _align_bar_close(now, tf_seconds)
+        now = pd.Timestamp.now(tz="UTC")
+        bar_close = pd.Timestamp(_align_bar_close(now.to_pydatetime(), tf_seconds))
 
         # trigger on closed bar (+delay)
         if (last_bar_ts is None or bar_close > last_bar_ts) and (now - bar_close).total_seconds() >= args.bar_delay_sec:
