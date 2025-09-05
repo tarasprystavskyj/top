@@ -179,7 +179,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
     last_bar_ts = None
 
     while True:
-        now = pd.Timestamp.utcnow().tz_localize("UTC")
+        now = pd.Timestamp.now(tz="UTC")
         bar_close = pd.Timestamp(_align_bar_close(now.to_pydatetime(), tf_seconds))
 
         # trigger on closed bar (+delay)
