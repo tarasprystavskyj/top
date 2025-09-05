@@ -134,6 +134,7 @@ def run_paper_api(cfg: dict, args):
             selected_syms = list(ranked)
             write_decisions(session_db_path, run_id, bar_close, ranked, selected_syms)
 
+            price_map = {s: float(md[s].get('close') or 0.0) for s in md}
             for sym in ranked:
                 row = md.get(sym)
                 if row is None:
@@ -141,7 +142,7 @@ def run_paper_api(cfg: dict, args):
                 sig = strat.entry_signal(bar_close, sym, row, ctx={'portfolio': pf})
                 if sig is None:
                     continue
-                if not pf.can_open(port_cfg):
+                if not pf.can_open(port_cfg, price_map=price_map):
                     continue
                 entry_px = float(row.get('close') or 0.0) * (1 + port_cfg['slippage_per_side'])
                 pos = pf.open(symbol=sym, signal=sig, t=bar_close, last_price=entry_px)
@@ -161,10 +162,11 @@ def run_paper_api(cfg: dict, args):
                     'extra': json.dumps({'sim': True})
                 })
 
-            # equity snapshot
+            # equity snapshot (mark-to-market)
+            pf.mark_equity(price_map)
             eq = {
-                'equity': getattr(pf, 'equity', 0.0),
-                'cash': getattr(pf, 'cash', 0.0),
+                'equity': getattr(pf, 'equity', 0.0) + getattr(pf, 'unrealized_pnl', 0.0),
+                'cash': getattr(pf, 'equity', 0.0),
                 'position_value': getattr(pf, 'position_value', 0.0),
                 'realized_pnl_cum': getattr(pf, 'realized_pnl_cum', 0.0),
                 'unrealized_pnl': getattr(pf, 'unrealized_pnl', 0.0)
