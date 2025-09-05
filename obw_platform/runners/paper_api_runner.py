@@ -279,7 +279,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     'extra': json.dumps({'sim': True, 'tags': getattr(sig, 'tags', [])})
                 })
 
-            # Equity snapshot
+            # Equity snapshot 
             try:
                 eq = {
                     'equity': float(getattr(pf, 'equity', 0.0)),
