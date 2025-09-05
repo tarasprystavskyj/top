@@ -210,6 +210,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                         cache_out_upsert(cache_out_path, ccxt_sym, feats_df)
                     feats = feats_df.iloc[-1].to_dict()
                 md[ccxt_sym] = feats
+            price_map = {s: float(md[s].get('close') or 0.0) for s in md}
 
             # ---- Exits (strategy) ----
             for pos in list(pf.positions):
@@ -251,7 +252,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                 pass
 
             for sym in ranked:
-                if not pf.can_open(port_cfg):
+                if not pf.can_open(port_cfg, price_map=price_map):
                     break
                 row = md.get(sym)
                 if not row:
@@ -293,11 +294,13 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     'extra': json.dumps({'sim': True, 'tags': getattr(sig, 'tags', [])})
                 })
 
-            # Equity snapshot 
+            # Equity snapshot (mark-to-market)
             try:
+                pf.mark_equity(price_map)
+                cash_val = float(getattr(pf, 'equity', getattr(pf, 'cash', 0.0)))
                 eq = {
-                    'equity': float(getattr(pf, 'equity', 0.0)),
-                    'cash': float(getattr(pf, 'cash', 0.0)),
+                    'equity': cash_val + float(getattr(pf, 'unrealized_pnl', 0.0)),
+                    'cash': cash_val,
                     'position_value': float(getattr(pf, 'position_value', 0.0)),
                     'realized_pnl_cum': float(getattr(pf, 'realized_pnl_cum', 0.0)),
                     'unrealized_pnl': float(getattr(pf, 'unrealized_pnl', 0.0)),
