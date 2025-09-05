@@ -16,8 +16,17 @@ def dot():
         return _dot()
     print(".", end="", flush=True)
 
+
+def _fmt_float(val: Any) -> str:
+    """Format float to at most two decimal places without trailing zeros."""
+    try:
+        return ("{:.2f}".format(float(val))).rstrip("0").rstrip(".")
+    except Exception:
+        return str(val)
+
 import importlib
 import os, sys, math, uuid, datetime as _dt, os
+from typing import Any
 
 def _cfg_get_nested(cfg: dict, dotted: str, _missing=object()):
     """Return cfg value by dotted path like "runner.top_n" or _missing."""
@@ -143,7 +152,11 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
     mkt = fetcher.markets.get(ccxt_sym, {})
     qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, price)
     if min_notional_req > notional + 1e-9:
-        return {'ok': False, 'skip_reason': f'min_notional {min_notional_req:.6g} > {notional:.6g}', 'qty': qty}
+        return {
+            'ok': False,
+            'skip_reason': f'min_notional {_fmt_float(min_notional_req)} > {_fmt_float(notional)}',
+            'qty': qty,
+        }
 
     def _try(params):
         try:
@@ -202,11 +215,13 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
     last_res = None
     try:
         _dbg(
-            'place_open_long', sym,
-            f'qty={qty:.6g}', f'price={price:.6g}',
-            f'tp={tp_price if tp_price is not None else "-"}',
-            f'sl={sl_price if sl_price is not None else "-"}',
-            f'candidates={len(param_candidates)}'
+            'place_open_long',
+            sym,
+            f'qty={_fmt_float(qty)}',
+            f'price={_fmt_float(price)}',
+            f'tp={_fmt_float(tp_price)}' if tp_price is not None else 'tp=-',
+            f'sl={_fmt_float(sl_price)}' if sl_price is not None else 'sl=-',
+            f'candidates={len(param_candidates)}',
         )
     except Exception:
         pass
@@ -281,7 +296,11 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
     mkt = fetcher.markets.get(ccxt_sym, {})
     qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, price)
     if min_notional_req > notional + 1e-9:
-        return {'ok': False, 'skip_reason': f'min_notional {min_notional_req:.6g} > {notional:.6g}', 'qty': qty}
+        return {
+            'ok': False,
+            'skip_reason': f'min_notional {_fmt_float(min_notional_req)} > {_fmt_float(notional)}',
+            'qty': qty,
+        }
 
     def _try(params):
         try:
@@ -337,11 +356,13 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
     last_res = None
     try:
         _dbg(
-            'place_open_short', sym,
-            f'qty={qty:.6g}', f'price={price:.6g}',
-            f'tp={tp_price if tp_price is not None else "-"}',
-            f'sl={sl_price if sl_price is not None else "-"}',
-            f'candidates={len(param_candidates)}'
+            'place_open_short',
+            sym,
+            f'qty={_fmt_float(qty)}',
+            f'price={_fmt_float(price)}',
+            f'tp={_fmt_float(tp_price)}' if tp_price is not None else 'tp=-',
+            f'sl={_fmt_float(sl_price)}' if sl_price is not None else 'sl=-',
+            f'candidates={len(param_candidates)}',
         )
     except Exception:
         pass
@@ -491,41 +512,49 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
         sl = float(sl) if sl is not None else None
     except Exception:
         tp, sl = None, None
+    qty = float(pos_rec.get('qty', 0.0))
     if side == 'LONG':
         if tp is not None and px >= tp:
-            od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
+            od = place_reduce_only(fetcher, sym, 'sell', qty, position_mode)
             if od:
-                cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
+                cprint(
+                    '[close]', sym, side,
+                    f"qty={_fmt_float(qty)}",
+                    f"exit={_fmt_float(px)}",
+                    'reason=TP',
+                    fg='green', bold=True)
                 return True
         if sl is not None and px <= sl:
-            od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
+            od = place_reduce_only(fetcher, sym, 'sell', qty, position_mode)
             if od:
-                cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
+                cprint(
+                    '[close]', sym, side,
+                    f"qty={_fmt_float(qty)}",
+                    f"exit={_fmt_float(px)}",
+                    'reason=SL',
+                    fg='red', bold=True)
                 return True
     elif side == 'SHORT':
         if tp is not None and px <= tp:
-            od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
+            od = place_reduce_only(fetcher, sym, 'buy', qty, position_mode)
             if od:
-                cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
+                cprint(
+                    '[close]', sym, side,
+                    f"qty={_fmt_float(qty)}",
+                    f"exit={_fmt_float(px)}",
+                    'reason=TP',
+                    fg='green', bold=True)
                 return True
         if sl is not None and px >= sl:
-            od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
+            od = place_reduce_only(fetcher, sym, 'buy', qty, position_mode)
             if od:
-                cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
+                cprint(
+                    '[close]', sym, side,
+                    f"qty={_fmt_float(qty)}",
+                    f"exit={_fmt_float(px)}",
+                    'reason=SL',
+                    fg='red', bold=True)
                 return True
-    return False
-    tp = float(pos_rec.get('tp_price') or 0.0) or None
-    sl = float(pos_rec.get('sl_price') or 0.0) or None
-    if tp is not None and px >= tp:
-        od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
-        if od:
-            cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
-            return True
-    if sl is not None and px <= sl:
-        od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
-        if od:
-            cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
-            return True
     return False
 
 def run_live(cfg: dict, args):
@@ -642,7 +671,13 @@ def run_live(cfg: dict, args):
             continue
     cprint('[exchange]', f'open positions: {len(ex_list)}', fg='cyan')
     for es in ex_list:
-        cprint('   -', es['symbol'], f"qty={es['qty']} entry={es['entry']}", fg='cyan', dim=True)
+        cprint(
+            '   -',
+            es['symbol'],
+            f"qty={_fmt_float(es['qty'])} entry={_fmt_float(es['entry'])}",
+            fg='cyan',
+            dim=True,
+        )
 
     def _match_ex(sym, qty, entry):
         for e in ex_list:
@@ -729,7 +764,7 @@ def run_live(cfg: dict, args):
                     if px:
                         od = place_reduce_only(fetcher, sym, 'sell', float(rec.get('qty', 0.0)), position_mode)
                         if od:
-                            cprint('[exit close]', sym, f'@~{px:.6g}', fg='yellow')
+                            cprint('[exit close]', sym, f'@~{_fmt_float(px)}', fg='yellow')
                             try:
                                 db_mark_closed(session_db_path, bot_id, rec.get('order_id'), now.isoformat())
                             except Exception:
@@ -794,7 +829,13 @@ def run_live(cfg: dict, args):
                             ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '') if (res.get('order')) else None
                             side_str = 'SHORT' if side_cfg=='SHORT' else 'LONG'
                             side_str = 'LONG'
-                            cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
+                            cprint(
+                                '[open OK]',
+                                f'{sym} {side_str} qty={_fmt_float(qty)} px={_fmt_float(entry_px)}'
+                                + (f' id={ex_order_id}' if ex_order_id else ''),
+                                fg='green',
+                                bold=True,
+                            )
                             rec = {'symbol': sym,'side': side_str,'qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id}
                             positions[sym] = rec; save_positions(args.results_dir, positions)
                             try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
@@ -827,7 +868,13 @@ def run_live(cfg: dict, args):
                         cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr); continue
                     qty = float(res['qty'])
                     ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '') if (res.get('order')) else None
-                    cprint('[open OK]', f'{sym} SHORT qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
+                    cprint(
+                        '[open OK]',
+                        f'{sym} SHORT qty={_fmt_float(qty)} px={_fmt_float(entry_px)}'
+                        + (f' id={ex_order_id}' if ex_order_id else ''),
+                        fg='green',
+                        bold=True,
+                    )
                     rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id}
                     positions[sym] = rec; save_positions(args.results_dir, positions)
                     try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
@@ -868,10 +915,15 @@ def run_live(cfg: dict, args):
                 except Exception:
                     ex_order_id = None
                 side_str = 'LONG'
-                cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'
-           + (f' tp={tp_price:.6g}' if tp_price is not None else ' tp=-')
-           + (f' sl={sl_price:.6g}' if sl_price is not None else ' sl=-')
-           + (f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
+                cprint(
+                    '[open OK]',
+                    f'{sym} {side_str} qty={_fmt_float(qty)} px={_fmt_float(entry_px)}'
+                    + (f' tp={_fmt_float(tp_price)}' if tp_price is not None else ' tp=-')
+                    + (f' sl={_fmt_float(sl_price)}' if sl_price is not None else ' sl=-')
+                    + (f' id={ex_order_id}' if ex_order_id else ''),
+                    fg='green',
+                    bold=True,
+                )
 
                 rec = {
                     'symbol': sym,
@@ -901,9 +953,18 @@ def run_live(cfg: dict, args):
                         _entry = _rec.get('entry', None)
                         _tp = _rec.get('tp_price', None)
                         _sl = _rec.get('sl_price', None)
-                        cprint("[open]", bar_close.isoformat(), _sym, _side,
-                               f"qty={_qty}", f"entry={_entry}", f"tp={_tp}", f"sl={_sl}",
-                               fg="yellow", bold=True)
+                        cprint(
+                            "[open]",
+                            bar_close.isoformat(),
+                            _sym,
+                            _side,
+                            f"qty={_fmt_float(_qty)}",
+                            f"entry={_fmt_float(_entry)}",
+                            f"tp={_fmt_float(_tp)}",
+                            f"sl={_fmt_float(_sl)}",
+                            fg="yellow",
+                            bold=True,
+                        )
             except Exception:
                 pass
 
