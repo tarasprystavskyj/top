@@ -27,12 +27,38 @@ class Portfolio:
         self.equity = float(self.initial_equity)
         self.positions: List[Position] = []
         self.trades = []
+        # running metrics for equity accounting
+        self.position_value = 0.0
+        self.unrealized_pnl = 0.0
+        self.realized_pnl_cum = 0.0
 
-    def can_open(self, port_cfg: dict) -> bool:
-        max_frac = float(self.cfg.get("max_notional_frac", 0.5))
-        max_open = max_frac * self.equity
+    def mark_equity(self, price_map: dict) -> float:
+        """Mark portfolio equity to market using provided symbol->price map."""
+        fee = float(self.cfg.get("fee_rate", 0.001))
+        slip = float(self.cfg.get("slippage_per_side", 0.0003))
+        unreal = 0.0
+        for p in self.positions:
+            px = price_map.get(p.symbol)
+            if px is None:
+                continue
+            if p.side == "LONG":
+                gross = (px - p.entry_price) / max(p.entry_price, 1e-12)
+            else:
+                gross = (p.entry_price - px) / max(p.entry_price, 1e-12)
+            net = gross - 2 * fee - 2 * slip
+            unreal += net * p.notional
+        self.unrealized_pnl = unreal
+        self.position_value = sum(p.notional for p in self.positions)
+        return self.equity + self.unrealized_pnl
+
+    def can_open(self, port_cfg: dict, price_map: Optional[dict] = None) -> bool:
+        max_frac = float(port_cfg.get("max_notional_frac", self.cfg.get("max_notional_frac", 0.5)))
+        notional = float(port_cfg.get("position_notional", self.cfg.get("position_notional", 20.0)))
+        eq = self.equity
+        if price_map:
+            eq = self.mark_equity(price_map)
         current_open = sum(p.notional for p in self.positions)
-        return (current_open + float(self.cfg.get("position_notional", 20.0))) <= max_open
+        return (current_open + notional) <= max_frac * eq
 
     def open(self, symbol, signal, t, last_price) -> Position:
         fee_rate = float(self.cfg.get("fee_rate", 0.001))
@@ -44,6 +70,7 @@ class Portfolio:
                        stop_price=signal.get("stop_price"), take_profit=signal.get("take_profit"),
                        meta={"reason": signal.get("reason","")})
         self.positions.append(pos)
+        self.position_value += notional
         self.equity -= notional * fee_rate
         return pos
 
@@ -63,6 +90,8 @@ class Portfolio:
         net = gross - costs
         pnl = pos.notional * net
         self.equity += pnl
+        self.position_value -= pos.notional
+        self.realized_pnl_cum += pnl
         self.trades.append({
             "open_time_utc": pos.entry_time.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"),
             "symbol": pos.symbol, "side": pos.side,
