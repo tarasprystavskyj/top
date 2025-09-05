@@ -10,6 +10,7 @@
 #   heat = 1 - max(gaps). Lower gap -> closer to threshold; heat -> higher = better.
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, Tuple
 
 try:
@@ -18,6 +19,98 @@ try:
 except Exception:
     # Fallback import path if used outside a package context
     from breakout_avaai_full import BreakoutAVAAIFull as _OrigBreakout
+
+
+@dataclass
+class Sig:
+    side: str
+    confidence: float = 0.0
+    size: Optional[float] = None
+    take_profit: Optional[float] = None
+    stop_price: Optional[float] = None
+    take: bool = False
+    reason: Optional[str] = None
+    heat: Optional[float] = None
+
+    # --- synonyms for backward-compat ---
+    @property
+    def tp(self) -> Optional[float]:
+        return self.take_profit
+
+    @tp.setter
+    def tp(self, v: Optional[float]) -> None:
+        self.take_profit = v
+
+    @property
+    def tp_price(self) -> Optional[float]:
+        return self.take_profit
+
+    @tp_price.setter
+    def tp_price(self, v: Optional[float]) -> None:
+        self.take_profit = v
+
+    @property
+    def sl(self) -> Optional[float]:
+        return self.stop_price
+
+    @sl.setter
+    def sl(self, v: Optional[float]) -> None:
+        self.stop_price = v
+
+    @property
+    def sl_price(self) -> Optional[float]:
+        return self.stop_price
+
+    @sl_price.setter
+    def sl_price(self, v: Optional[float]) -> None:
+        self.stop_price = v
+
+
+def _to_sig(sig: Any) -> Optional[Sig]:
+    """Ensure returned object is `Sig` with TP/SL attributes."""
+    if sig is None:
+        return None
+    if isinstance(sig, Sig):
+        # make sure aliases populate main fields
+        if sig.take_profit is None and getattr(sig, "tp_price", None) is not None:
+            sig.take_profit = getattr(sig, "tp_price")
+        if sig.stop_price is None and getattr(sig, "sl_price", None) is not None:
+            sig.stop_price = getattr(sig, "sl_price")
+        return sig
+    if isinstance(sig, dict):
+        tp = sig.get("take_profit")
+        if tp is None:
+            tp = sig.get("tp_price", sig.get("tp"))
+        sl = sig.get("stop_price")
+        if sl is None:
+            sl = sig.get("sl_price", sig.get("sl"))
+        return Sig(
+            side=sig.get("side"),
+            confidence=sig.get("confidence", 0.0),
+            size=sig.get("size"),
+            take_profit=tp,
+            stop_price=sl,
+            take=sig.get("take", True),
+            reason=sig.get("reason"),
+            heat=sig.get("heat"),
+        )
+    # generic object with attributes
+    tp = getattr(sig, "take_profit", None)
+    if tp is None:
+        tp = getattr(sig, "tp_price", getattr(sig, "tp", None))
+    sl = getattr(sig, "stop_price", None)
+    if sl is None:
+        sl = getattr(sig, "sl_price", getattr(sig, "sl", None))
+    return Sig(
+        side=getattr(sig, "side", None),
+        confidence=getattr(sig, "confidence", 0.0),
+        size=getattr(sig, "size", None),
+        take_profit=tp,
+        stop_price=sl,
+        take=getattr(sig, "take", True),
+        reason=getattr(sig, "reason", None),
+        heat=getattr(sig, "heat", None),
+    )
 
 
 class BreakoutAVAAIFull(_OrigBreakout):
@@ -371,7 +464,7 @@ class BreakoutAVAAIFull(_OrigBreakout):
         try:
             base_sig = super().entry_signal(t, sym, row, ctx=ctx)
             if base_sig is not None:
-                return base_sig
+                return _to_sig(base_sig)
         except Exception:
             pass
 
@@ -426,11 +519,12 @@ class BreakoutAVAAIFull(_OrigBreakout):
         except Exception:
             tp_price = sl_price = None
 
-        return {
-            'side': side,
-            'tp_price': tp_price,
-            'sl_price': sl_price,
-            'reason': f'open_on_heat >= {heat_min:.4f}',
-            'heat': heat,
-        }
+        return Sig(
+            side=side,
+            take_profit=tp_price,
+            stop_price=sl_price,
+            take=True,
+            reason=f'open_on_heat >= {heat_min:.4f}',
+            heat=heat,
+        )
     
