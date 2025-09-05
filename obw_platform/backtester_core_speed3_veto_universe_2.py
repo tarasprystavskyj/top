@@ -140,20 +140,11 @@ def main():
     strat = Strat(cfg)
 
     portfolio = cfg.get("portfolio", {})
-    sp = cfg.get("strategy_params", {})
     initial_equity = float(portfolio.get("initial_equity", 100.0))
     pos_notional   = float(portfolio.get("position_notional", 20.0))
     fee      = float(portfolio.get("fee_rate", 0.001))
     slippage = float(portfolio.get("slippage_per_side", 0.0003))
-    top_n    = int(sp.get("top_n", 8))
-    side_pref= str(sp.get("side","BOTH")).upper()
     max_notional_frac = float(portfolio.get("max_notional_frac", 0.5))
-
-    # prefilters
-    min_atr = float(cfg.get('min_atr_ratio', 0.0))
-    min_mom = float(cfg.get('min_momentum_sum', 0.0))
-    min_qv24= float(cfg.get('min_qv_24h', 0.0))
-    min_qv1h= float(cfg.get('min_qv_1h', 0.0))
 
     equity = initial_equity
     positions = {}
@@ -214,59 +205,47 @@ def main():
                     })
                     del positions[sym]; pos_time.pop(sym, None)
 
-        # --- NEW: фільтр юніверсу лише для відкриттів
+        # --- universe filter for openings ---
         if allow_syms or deny_syms:
-            bucket_open = [
-                row for row in bucket_all
-                if ((not allow_syms) or (row[0] in allow_syms)) and (row[0] not in deny_syms)
-            ]
-            if not bucket_open:
-                # Нема допустимих символів для відкриття — ідемо далі
+            open_map = {
+                sym: row for sym, row in md_map.items()
+                if ((not allow_syms or sym in allow_syms) and (sym not in deny_syms))
+            }
+            if not open_map:
                 continue
         else:
-            bucket_open = bucket_all
+            open_map = md_map
 
-        # rank top_n by momentum sum (на відкриттях використовуємо bucket_open)
-        invert = (side_pref=="SHORT")
-        best = []
-        for idx, (sym, close, high, low, atr, dp6, dp12, qv1h, qv24) in enumerate(bucket_open):
-            mom_sum = dp6 + dp12
-            score = -mom_sum if invert else mom_sum
-            if len(best)<top_n:
-                best.append((score, idx))
-                if len(best)==top_n:
-                    best.sort(key=lambda x:x[0], reverse=True)
-            else:
-                if score > best[-1][0]:
-                    best[-1] = (score, idx)
-                    if best[-2][0] < best[-1][0]:
-                        best.sort(key=lambda x:x[0], reverse=True)
+        # Delegate symbol selection to strategy
+        univ_fn = getattr(strat, "universe", None)
+        rank_fn = getattr(strat, "rank", None)
+        if callable(univ_fn):
+            universe_syms = list(univ_fn(t, open_map))
+        else:
+            universe_syms = list(open_map.keys())
+        if callable(rank_fn):
+            symbols = list(rank_fn(t, open_map, universe_syms))
+        else:
+            symbols = list(universe_syms)
 
-        # opens
-        row = {"open":0.0,"high":0.0,"low":0.0,"close":0.0,"atr_ratio":0.0,"dp6h":0.0,"dp12h":0.0,"quote_volume":0.0,"qv_24h":0.0}
         shared_ctx = {}
-        for _, idx in best:
-            sym, close, high, low, atr, dp6, dp12, qv1h, qv24 = bucket_open[idx]
-            if sym in positions: continue
-            mom_sum = dp6 + dp12
-            if atr < min_atr: continue
-            if qv24 < min_qv24 or qv1h < min_qv1h: continue
-            if side_pref in ('BOTH','LONG'):
-                if mom_sum < min_mom: continue
-                desired_side = "LONG"
-            else:
-                if -mom_sum < min_mom: continue
-                desired_side = "SHORT"
-            row.update({"open": close, "high": high, "low": low, "close": close, "atr_ratio": atr,
-                        "dp6h": dp6, "dp12h": dp12, "quote_volume": qv1h, "qv_24h": qv24})
+        for sym in symbols:
+            if sym in positions:
+                continue
+            row = open_map.get(sym)
+            if row is None:
+                continue
             sig = strat.entry_signal(True, sym, row, ctx=shared_ctx)
             if sig is None:
                 continue
             if not (isinstance(sig.take_profit, (int, float)) and isinstance(sig.stop_price, (int, float))):
                 raise RuntimeError(f"Strategy must supply numeric TP/SL; got tp={sig.take_profit}, sl={sig.stop_price}, symbol={sym}")
+            if getattr(sig, "side", None) not in ("LONG", "SHORT"):
+                continue
             if (len(positions)+1)*pos_notional > max_notional_frac * equity:
                 break
-            positions[sym] = Position(sig.side, close, float(sig.stop_price), float(sig.take_profit))
+            price = float(row.get("open", row.get("close", 0.0)))
+            positions[sym] = Position(sig.side, price, float(sig.stop_price), float(sig.take_profit))
             pos_time[sym] = t
 
     # mark-to-market
