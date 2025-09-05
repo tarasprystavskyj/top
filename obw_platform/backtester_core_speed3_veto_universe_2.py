@@ -120,11 +120,13 @@ def main():
         if cur_t is None: cur_t = t
         if t != cur_t:
             slices.append((cur_t, bucket)); bucket = []; cur_t = t
+        high = r["high"] if r["high"] is not None else r["close"]
+        low  = r["low"]  if r["low"]  is not None else r["close"]
         bucket.append((
             r["symbol"],
             float(r["close"] or 0.0),
-            float(r.get("high", r["close"]) or 0.0),
-            float(r.get("low", r["close"]) or 0.0),
+            float(high or 0.0),
+            float(low or 0.0),
             float(r["atr_ratio"] or 0.0),
             float(r["dp6h"] or 0.0),
             float(r["dp12h"] or 0.0),
