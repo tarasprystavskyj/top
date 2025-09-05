@@ -6,6 +6,23 @@ import pathlib as _p
 import yaml
 import pandas as pd
 
+try:
+    import ccxt  # type: ignore
+except Exception:
+    ccxt = None
+
+def fetch_bingx_fee_rate() -> float:
+    try:
+        ex = ccxt.bingx() if ccxt else None
+        if ex:
+            ex.load_markets()
+            fee = ex.fees.get('trading', {}).get('taker')
+            if fee is not None:
+                return float(fee)
+    except Exception:
+        pass
+    return 0.0006
+
 def import_by_path(path: str):
     mod_name, cls_name = path.rsplit(".", 1)
     root = str((_p.Path(__file__).parent).resolve())
@@ -88,7 +105,7 @@ def main():
     sp = cfg.get("strategy_params", {})
     initial_equity = float(portfolio.get("initial_equity", 100.0))
     pos_notional   = float(portfolio.get("position_notional", 20.0))
-    fee      = float(portfolio.get("fee_rate", 0.001))
+    fee      = float(portfolio.get("fee_rate", fetch_bingx_fee_rate()))
     slippage = float(portfolio.get("slippage_per_side", 0.0003))
     top_n    = int(sp.get("top_n", 8))
     side_pref= str(sp.get("side","BOTH")).upper()
@@ -105,7 +122,7 @@ def main():
     equity = initial_equity
     positions = {}
     pos_time = {}
-    wins=losses=trades=0; pnl_pos=0.0; pnl_neg=0.0
+    wins=losses=trades=0; pnl_pos=0.0; pnl_neg=0.0; fees_cum=0.0
 
     tr_rows = []  # trades.csv
     eq_curve_vals = [initial_equity]
@@ -129,6 +146,7 @@ def main():
                 if hit:
                     net_ret = gross_ret - 2*slippage - 2*fee
                     pnl = net_ret
+                    fees_cum += fee * 2 * pos_notional
                     trades+=1
                     if pnl>0: wins+=1; pnl_pos += pnl
                     else: losses+=1; pnl_neg += pnl
@@ -146,6 +164,7 @@ def main():
                         "gross_return": gross_ret,
                         "net_return": net_ret,
                         "notional": pos_notional,
+                        "fees_paid": fee * 2 * pos_notional,
                         "realized_pnl": net_ret * pos_notional,
                     })
                     del positions[sym]; pos_time.pop(sym, None)
@@ -208,6 +227,7 @@ def main():
             net_ret = gross_ret - 2*slippage - 2*fee
             pnl = net_ret
             trades += 1
+            fees_cum += fee * 2 * pos_notional
             if pnl>0: wins+=1; pnl_pos += pnl
             else: losses+=1; pnl_neg += pnl
             equity *= (1.0 + (pnl * pos_notional / equity))
@@ -217,7 +237,8 @@ def main():
                 "entry_time": pos_time.get(sym, last_t), "exit_time": last_t,
                 "entry": pos.entry, "exit": px, "tp": pos.tp, "sl": pos.sl,
                 "reason": "EOD", "gross_return": gross_ret, "net_return": net_ret,
-                "notional": pos_notional, "realized_pnl": net_ret * pos_notional
+                "notional": pos_notional, "fees_paid": fee * 2 * pos_notional,
+                "realized_pnl": net_ret * pos_notional
             })
             del positions[sym]; pos_time.pop(sym, None)
 
@@ -242,7 +263,7 @@ def main():
     # CSV exports
     if args.export_csv:
         if tr_rows:
-            cols = ["symbol","side","entry_time","exit_time","entry","exit","tp","sl","reason","gross_return","net_return","notional","realized_pnl"]
+            cols = ["symbol","side","entry_time","exit_time","entry","exit","tp","sl","reason","gross_return","net_return","notional","fees_paid","realized_pnl"]
             with open("trades.csv","w",newline="") as f:
                 w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(tr_rows)
         pd.DataFrame([{
@@ -250,7 +271,8 @@ def main():
             "profit_factor": pf, "win_rate_%": (wins*100.0/max(1,trades) if trades else 0.0),
             "elapsed_sec": elapsed,
             "max_dd_frac": max_dd_frac, "max_dd_%": (max_dd_frac*100.0),
-            "monotonicity_sign": mono_sign, "monotonicity_mag": mono_mag
+            "monotonicity_sign": mono_sign, "monotonicity_mag": mono_mag,
+            "total_fees": fees_cum
         }]).to_csv("summary.csv", index=False)
 
     # Optional plots
@@ -298,7 +320,7 @@ def main():
         except Exception as e:
             print(f"[plots] failed: {e}")
 
-    print(f"equity_end={equity:.6f} trades={trades} pf={pf:.6f} max_dd={max_dd_frac:.6f} mono={mono_mag:.6f} elapsed_sec={elapsed:.6f}")
+    print(f"equity_end={equity:.6f} trades={trades} pf={pf:.6f} fees={fees_cum:.6f} max_dd={max_dd_frac:.6f} mono={mono_mag:.6f} elapsed_sec={elapsed:.6f}")
 
 if __name__ == "__main__":
     main()
