@@ -62,7 +62,8 @@ class GreedyBreakoutUniverse:
 
         # optional exit conditions
         self.max_bars_in_position: int = int(sp.get("max_bars_in_position", 0))
-        self.exit_macd_flip: bool = bool(sp.get("exit_on_macd_flip", False))
+        # treat as numeric so tuner can pass 0/1; 0 disables
+        self.exit_macd_flip: float = _f(sp.get("exit_on_macd_flip", 0.0), 0.0)
         self.adx_exit_threshold: float = _f(sp.get("adx_exit_threshold", 0.0), 0.0)
         self.rsi_exit_long: float = _f(sp.get("rsi_exit_long", 0.0), 0.0)
         self.rsi_exit_short: float = _f(sp.get("rsi_exit_short", 0.0), 0.0)
@@ -150,7 +151,7 @@ class GreedyBreakoutUniverse:
             return ExitSig("EXIT", reason="time")
 
         # indicator-based exits
-        if self.exit_macd_flip:
+        if self.exit_macd_flip > 0.0:
             macd = row.get("macd")
             macd_sig = row.get("macd_signal")
             try:

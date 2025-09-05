@@ -13,6 +13,7 @@ BACKTESTER = Path("backtester_core_speed3_veto_universe_2.py")
 INIT_CFG = None
 GLOBAL_BEST_S = -1e18
 GLOBAL_BEST_REC = None
+BT_SLEEP_SEC = 0
 
 
 KV_RE = re.compile(r'(?:\x1b\[[0-9;]*m)?(equity_end|pf|profit_factor|max_dd|mono|monotonicity|trades)\s*=\s*([-+]?[0-9]*\.?[0-9]+)', re.IGNORECASE)
@@ -41,6 +42,8 @@ def run_backtest(cfg_path: Path, limit_bars: int, plots_dir: str = ""):
     if not stats:
         raise RuntimeError(f"Could not parse metrics from backtester output. Tail: {out[-800:]}")
     stats["elapsed_sec"] = elapsed
+    if BT_SLEEP_SEC > 0:
+        time.sleep(BT_SLEEP_SEC)
     return stats
 
 
@@ -362,11 +365,14 @@ def main():
     ap.add_argument("--min-trades", type=int, default=50)
     ap.add_argument("--target-trades", type=int, default=300)
     ap.add_argument("--plan", help="Path to external plan module (default_plan used if omitted)")
+    ap.add_argument("--sleep-sec", type=float, default=60.0, help="pause between backtests in seconds")
     args = ap.parse_args()
 
     global INIT_CFG
     INIT_CFG = read_yaml(Path(args.cfg))
     weights = (args.w_equity, args.w_pf, args.w_dd, args.w_mono, args.dd_target)
+    global BT_SLEEP_SEC
+    BT_SLEEP_SEC = args.sleep_sec
     
 
 

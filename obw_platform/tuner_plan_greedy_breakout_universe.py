@@ -14,7 +14,7 @@ def default_plan(limit_bars: int = None):
     """
     rays = [
         ("rays", {"max-bars": [0, 24, 28, 32]}),
-        ("rays", {"exit-macd": [False, True]}),
+        ("rays", {"exit-macd": [0, 1]}),
         ("rays", {"adx-exit": [0.0, 15.0, 20.0, 25.0]}),
         ("rays", {"rsi-exit-long": [0.0, 40.0, 45.0, 50.0]}),
         ("rays", {"rsi-exit-short": [0.0, 50.0, 55.0, 60.0]}),
@@ -23,7 +23,7 @@ def default_plan(limit_bars: int = None):
 
     grid1 = ("grid", {
         "max-bars": "around:4",
-        "exit-macd": [False, True],
+        "exit-macd": [0, 1],
         "adx-exit": "around:2",
         "rsi-exit-long": "around:2",
         "rsi-exit-short": "around:2",
@@ -32,7 +32,7 @@ def default_plan(limit_bars: int = None):
 
     grid2 = ("grid", {
         "max-bars": "around:2",
-        "exit-macd": [False, True],
+        "exit-macd": [0, 1],
         "adx-exit": "around:1",
         "rsi-exit-long": "around:1",
         "rsi-exit-short": "around:1",
