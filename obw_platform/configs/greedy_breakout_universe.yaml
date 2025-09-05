@@ -15,6 +15,12 @@ strategy_params:
   min_atr_ratio: 0.02
   tp_atr_mult: 3.8
   sl_atr_mult: 1.04
+  max_bars_in_position: 24   # закривати через 20-30 барів
+  exit_on_macd_flip: false   # вихід при розвороті MACD
+  adx_exit_threshold: 0.0    # ADX нижче порогу -> вихід (0 вимикає)
+  rsi_exit_long: 45.0        # RSI нижче при лонгу -> вихід
+  rsi_exit_short: 55.0       # RSI вище при шорті -> вихід
+  heat_exit_threshold: 0.15  # падіння heat
 
 portfolio:
   initial_equity: 100.0
