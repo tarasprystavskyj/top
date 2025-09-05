@@ -36,6 +36,7 @@ class Portfolio:
         self.slippage_per_side = float(cfg.get("slippage_per_side", 0.0003))
         self.tick_pct = float(cfg.get("tick_pct", 0.0001))
         self.default_notional = float(cfg.get("position_notional", 20.0))
+        self.total_fees = 0.0
 
     def mark_equity(self, price_map: dict) -> float:
         """Mark portfolio equity to market using provided symbol->price map."""
@@ -102,7 +103,8 @@ class Portfolio:
             "exit_time_utc": t.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"),
             "exit_price": exit_px, "reason": reason,
             "gross_return": gross, "net_return": net,
-            "notional": pos.notional, "realized_pnl": pnl, "equity_after": self.equity
+            "notional": pos.notional, "fees_paid": fees_paid,
+            "realized_pnl": pnl, "equity_after": self.equity
         })
         self.positions = [p for p in self.positions if p is not pos]
 
@@ -118,6 +120,7 @@ class Portfolio:
                 "profit_factor": 0.0,
                 "max_drawdown_%": 0.0,
                 "win_rate_%": 0.0,
+                "total_fees": float(self.total_fees),
             }
             pd.DataFrame([sm]).to_csv(path, index=False)
             return
@@ -135,5 +138,6 @@ class Portfolio:
             "profit_factor": float(pf),
             "max_drawdown_%": float(np.min(dd)) * 100.0 if len(dd) else 0.0,
             "win_rate_%": float((df["realized_pnl"] > 0).mean() * 100.0),
+            "total_fees": float(self.total_fees),
         }
         pd.DataFrame([sm]).to_csv(path, index=False)
