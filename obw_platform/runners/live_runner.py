@@ -164,9 +164,15 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
             p['takeProfit'] = float(tp_price)
             p['takeProfitPrice'] = float(tp_price)
         if sl_price is not None:
-            p['stopLoss'] = float(sl_price)
-            p['stopLossPrice'] = float(sl_price)
-            p['stopPrice'] = float(sl_price)
+            sl_trigger = float(sl_price)
+            prec = mkt.get('precision', {}).get('price')
+            try:
+                tick = 10 ** (-int(prec))
+            except Exception:
+                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
+            p['stopLoss'] = sl_trigger
+            p['stopPrice'] = sl_trigger
+            p['stopLossPrice'] = max(sl_trigger - tick, 0.0)
         param_candidates.append(p)
     param_candidates.append(dict(base_params))
 
@@ -262,9 +268,15 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
             p['takeProfit'] = float(tp_price)
             p['takeProfitPrice'] = float(tp_price)
         if sl_price is not None:
-            p['stopLoss'] = float(sl_price)
-            p['stopLossPrice'] = float(sl_price)
-            p['stopPrice'] = float(sl_price)
+            sl_trigger = float(sl_price)
+            prec = mkt.get('precision', {}).get('price')
+            try:
+                tick = 10 ** (-int(prec))
+            except Exception:
+                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
+            p['stopLoss'] = sl_trigger
+            p['stopPrice'] = sl_trigger
+            p['stopLossPrice'] = sl_trigger + tick
         param_candidates.append(p)
     param_candidates.append(dict(base_params))
 
