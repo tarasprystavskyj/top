@@ -262,7 +262,13 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                 sig = _normalize_sig(sig)  # ensure .tags, .take_profit, .stop_price exist
 
                 entry_px = float(row.get('close') or 0.0) * (1 + port_cfg['slippage_per_side'])
-                pos = pf.open(symbol=sym, signal=sig, t=bar_close, last_price=entry_px)
+                sig_map = {
+                    'side': str(getattr(sig, 'side', 'LONG')).upper(),
+                    'take_profit': getattr(sig, 'take_profit', None),
+                    'stop_price': getattr(sig, 'stop_price', None),
+                    'reason': getattr(sig, 'reason', None),
+                }
+                pos = pf.open(symbol=sym, signal=sig_map, t=bar_close, last_price=entry_px)
                 insert_order_row(orders_db, {
                     'order_id': str(uuid.uuid4()),
                     'ts_utc': datetime.utcnow().isoformat(),
