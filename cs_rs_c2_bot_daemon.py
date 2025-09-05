@@ -311,9 +311,12 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
     try:
         od = fetcher.ex.create_order(ccxt_sym, "market", side_close, qty, None, params)
         sleep_ms(RATE_MS)
+        if not od or not od.get("id"):
+            # ccxt didn't raise but response looks suspicious – log for debugging
+            log(f"[live reduceOnly] {sym}: unexpected response {od}")
         return od
     except Exception as e:
-        log(f"[live reduceOnly] {sym}: {e}")
+        log(f"[live reduceOnly] {sym}: {e} params={params}")
         return None
 
 # -------------- daemon loop --------------
@@ -430,10 +433,16 @@ def main():
                     if args.place_brackets and (sl_px or tp_px):
                         if sl_px:
                             sl_od = place_reduce_only(fetcher, sym, "sell", qty, sl_px, args.position_mode)
-                            log(f"[live SL] {sym} -> {sl_od.get('id') if sl_od else 'ERR'}")
+                            if not sl_od or not sl_od.get("id"):
+                                log(f"[live SL] {sym} -> ERR qty={qty} px={sl_px} resp={sl_od}")
+                            else:
+                                log(f"[live SL] {sym} -> {sl_od.get('id')}")
                         if tp_px:
                             tp_od = place_reduce_only(fetcher, sym, "sell", qty, tp_px, args.position_mode)
-                            log(f"[live TP] {sym} -> {tp_od.get('id') if tp_od else 'ERR'}")
+                            if not tp_od or not tp_od.get("id"):
+                                log(f"[live TP] {sym} -> ERR qty={qty} px={tp_px} resp={tp_od}")
+                            else:
+                                log(f"[live TP] {sym} -> {tp_od.get('id')}")
 
                     state = load_state(args.state_path)
                     state["positions"][sym] = {
