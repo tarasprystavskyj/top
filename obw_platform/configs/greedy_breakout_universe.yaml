@@ -1,0 +1,25 @@
+timeframe: "5m"
+cache_db: ../combined_cache_5m_5000_04.09.db #combined_cache_5m_5000_01.09.db #combined_cache_5m_500b.db 
+#paper_api_results_5m/combined_cache_session_5m_26.08_1100.db 
+open_on_heat: false 
+open_heat_min: 0.01   # трохи нижчий поріг
+position_mode: oneway
+
+strategy_class: strategies.greedy_breakout_universe.GreedyBreakoutUniverse
+timeframe: 5m
+symbols_file: universe_v5_avaai_5m_5000.txt
+
+strategy_params:
+  side: BOTH
+  top_n: 8
+  min_atr_ratio: 0.02
+  tp_atr_mult: 3.8
+  sl_atr_mult: 1.04
+
+portfolio:
+  initial_equity: 100.0
+  position_notional: 45
+  max_notional_frac: 0.9
+
+session:
+  open_every_bar: true
