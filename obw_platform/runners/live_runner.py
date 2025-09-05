@@ -164,15 +164,46 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
             p['takeProfit'] = float(tp_price)
             p['takeProfitPrice'] = float(tp_price)
         if sl_price is not None:
-            p['stopLoss'] = float(sl_price)
-            p['stopLossPrice'] = float(sl_price)
-            p['stopPrice'] = float(sl_price)
+            sl_trigger = float(sl_price)
+            prec = mkt.get('precision', {}).get('price')
+            try:
+                tick = 10 ** (-int(prec))
+            except Exception:
+                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
+            p['stopLoss'] = sl_trigger
+            p['stopPrice'] = sl_trigger
+            p['stopLossPrice'] = max(sl_trigger - tick, 0.0)
         param_candidates.append(p)
     param_candidates.append(dict(base_params))
 
     last_res = None
+    try:
+        _dbg(
+            'place_open_long', sym,
+            f'qty={qty:.6g}', f'price={price:.6g}',
+            f'tp={tp_price if tp_price is not None else "-"}',
+            f'sl={sl_price if sl_price is not None else "-"}',
+            f'candidates={len(param_candidates)}'
+        )
+    except Exception:
+        pass
+
     for params in param_candidates:
+        try:
+            _dbg('try_params', params)
+        except Exception:
+            pass
         res = _try(params)
+        try:
+            _dbg(
+                'result',
+                'ok' if res.get('ok') else 'ERR',
+                (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId')))
+                 if res.get('ok') else ''),
+                res.get('error', '')
+            )
+        except Exception:
+            pass
         last_res = res
         if res['ok']:
             res['tp_price'] = tp_price
@@ -237,15 +268,46 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
             p['takeProfit'] = float(tp_price)
             p['takeProfitPrice'] = float(tp_price)
         if sl_price is not None:
-            p['stopLoss'] = float(sl_price)
-            p['stopLossPrice'] = float(sl_price)
-            p['stopPrice'] = float(sl_price)
+            sl_trigger = float(sl_price)
+            prec = mkt.get('precision', {}).get('price')
+            try:
+                tick = 10 ** (-int(prec))
+            except Exception:
+                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
+            p['stopLoss'] = sl_trigger
+            p['stopPrice'] = sl_trigger
+            p['stopLossPrice'] = sl_trigger + tick
         param_candidates.append(p)
     param_candidates.append(dict(base_params))
 
     last_res = None
+    try:
+        _dbg(
+            'place_open_short', sym,
+            f'qty={qty:.6g}', f'price={price:.6g}',
+            f'tp={tp_price if tp_price is not None else "-"}',
+            f'sl={sl_price if sl_price is not None else "-"}',
+            f'candidates={len(param_candidates)}'
+        )
+    except Exception:
+        pass
+
     for params in param_candidates:
+        try:
+            _dbg('try_params', params)
+        except Exception:
+            pass
         res = _try(params)
+        try:
+            _dbg(
+                'result',
+                'ok' if res.get('ok') else 'ERR',
+                (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId')))
+                 if res.get('ok') else ''),
+                res.get('error', '')
+            )
+        except Exception:
+            pass
         last_res = res
         if res['ok']:
             res['tp_price'] = tp_price
