@@ -512,27 +512,48 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
         sl = float(sl) if sl is not None else None
     except Exception:
         tp, sl = None, None
+    qty = float(pos_rec.get('qty', 0.0))
     if side == 'LONG':
         if tp is not None and px >= tp:
-            od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
+            od = place_reduce_only(fetcher, sym, 'sell', qty, position_mode)
             if od:
-                cprint('[tp close]', sym, f'@~{_fmt_float(px)} tp={_fmt_float(tp)}', fg='green', bold=True)
+                cprint(
+                    '[tp close]', sym, side,
+                    f"qty={_fmt_float(qty)}",
+                    f"exit={_fmt_float(px)}",
+                    'reason=TP',
+                    fg='green', bold=True)
                 return True
         if sl is not None and px <= sl:
-            od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
+            od = place_reduce_only(fetcher, sym, 'sell', qty, position_mode)
             if od:
-                cprint('[sl close]', sym, f'@~{_fmt_float(px)} sl={_fmt_float(sl)}', fg='red', bold=True)
+                cprint(
+                    '[sl close]', sym, side,
+                    f"qty={_fmt_float(qty)}",
+                    f"exit={_fmt_float(px)}",
+                    'reason=SL',
+                    fg='red', bold=True)
                 return True
     elif side == 'SHORT':
         if tp is not None and px <= tp:
-            od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
+            od = place_reduce_only(fetcher, sym, 'buy', qty, position_mode)
             if od:
-                cprint('[tp close]', sym, f'@~{_fmt_float(px)} tp={_fmt_float(tp)}', fg='green', bold=True)
+                cprint(
+                    '[TP close]', sym, side,
+                    f"qty={_fmt_float(qty)}",
+                    f"exit={_fmt_float(px)}",
+                    'reason=TP',
+                    fg='green', bold=True)
                 return True
         if sl is not None and px >= sl:
-            od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
+            od = place_reduce_only(fetcher, sym, 'buy', qty, position_mode)
             if od:
-                cprint('[sl close]', sym, f'@~{_fmt_float(px)} sl={_fmt_float(sl)}', fg='red', bold=True)
+                cprint(
+                    '[sl close]', sym, side,
+                    f"qty={_fmt_float(qty)}",
+                    f"exit={_fmt_float(px)}",
+                    'reason=SL',
+                    fg='red', bold=True)
                 return True
     return False
     tp = float(pos_rec.get('tp_price') or 0.0) or None

@@ -227,25 +227,43 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                 if row is None:
                     continue
                 adj = _call_manage_position(strat, bar_close, pos.symbol, pos, row, pf)
-                if getattr(adj, 'action', None) in ('TP','SL','EXIT'):
+                if getattr(adj, 'action', None) in ('TP', 'SL', 'EXIT'):
                     # derive exit price (prefer explicit)
                     exit_price = getattr(adj, 'exit_price', None)
                     if exit_price is None:
                         exit_price = float(row.get('close') or 0.0)
                     px = float(exit_price) * (1 - port_cfg['slippage_per_side'])
-                    pf.close(pos, bar_close, px, reason=getattr(adj, 'action', 'exit'))
+
+                    side = str(getattr(pos, 'side', 'LONG')).upper()
+                    qty = float(getattr(pos, 'qty', 0.0))
+                    reason = getattr(adj, 'action', 'exit')
+
+                    pf.close(pos, bar_close, px, reason=reason)
+
+                    cprint(
+                        "[close]",
+                        bar_close.isoformat(),
+                        pos.symbol,
+                        side,
+                        f"qty={_fmt_float(qty)}",
+                        f"exit={_fmt_float(px)}",
+                        f"reason={reason}",
+                        fg="magenta",
+                        bold=True,
+                    )
+
                     insert_order_row(orders_db, {
                         'order_id': str(uuid.uuid4()),
                         'ts_utc': datetime.utcnow().isoformat(),
                         'bar_time_utc': bar_close.isoformat(),
                         'mode': 'paper_api',
                         'symbol': pos.symbol,
-                        'side': 'sell' if str(pos.side).upper()=='LONG' else 'buy',
+                        'side': 'sell' if side == 'LONG' else 'buy',
                         'type': 'market',
                         'price': float(px),
-                        'qty': float(getattr(pos, 'qty', 0.0)),
+                        'qty': float(qty),
                         'status': 'filled',
-                        'reason': getattr(adj, 'action', 'exit'),
+                        'reason': reason,
                         'run_id': run_id,
                         'extra': json.dumps({'sim': True})
                     })
