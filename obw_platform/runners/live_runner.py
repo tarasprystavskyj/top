@@ -31,7 +31,7 @@ def _fmt_float(val: Any) -> str:
 
 import importlib
 import os, sys, math, uuid, datetime as _dt, os
-from typing import Any
+from typing import Any, Dict
 
 def _cfg_get_nested(cfg: dict, dotted: str, _missing=object()):
     """Return cfg value by dotted path like "runner.top_n" or _missing."""
@@ -129,15 +129,49 @@ def get_exchange_open_positions(fetcher: CCXTFetcher):
             continue
     return pos_map
 
-def qty_for_notional(mkt: dict, notional: float, price: float):
-    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
-    step = float(mkt.get('precision', {}).get('amount') or 0.0)
-    min_notional_req = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
-    if step and step > 0:
-        qty = max(min_qty, math.floor(notional / max(price, 1e-9) / step) * step)
-    else:
-        qty = max(min_qty, notional / max(price, 1e-9))
-    return qty, min_notional_req, step, min_qty
+
+def cleanup_stale_orders(fetcher: CCXTFetcher, positions: Dict[str, Any]):
+    try:
+        orders = fetcher.ex.fetch_open_orders()
+    except Exception as e:
+        cprint('[cleanup]', e, fg='red')
+        return
+    pos_syms = set(positions.keys())
+    for od in orders or []:
+        try:
+            sym0 = od.get('symbol')
+            sym = fetcher.resolve_symbol(sym0) or sym0
+            if sym not in pos_syms:
+                oid = od.get('id') or od.get('orderId')
+                try:
+                    fetcher.ex.cancel_order(oid, sym0)
+                    cprint('[cleanup]', sym, fg='yellow', dim=True)
+                except Exception as ce:
+                    cprint('[cleanup]', sym, ce, fg='red', dim=True)
+        except Exception:
+            continue
+
+
+def qty_for_notional(mkt: dict, notional: float, price: float, max_notional: float = None):
+    if max_notional is not None and notional > max_notional:
+        notional = max_notional
+    min_amt = (m.get('limits', {}).get('amount', {}) or {}).get('min') if (m := mkt) else 0.0
+    min_amt = float(min_amt or 0.0)
+    step = (mkt.get('precision', {}) or {}).get('amount', None)
+    min_notional_req = (mkt.get('limits', {}).get('cost', {}) or {}).get('min', 0.0)
+    min_notional_req = float(min_notional_req or 0.0)
+    qty = notional / max(price, 1e-9)
+    if qty < min_amt:
+        qty = float(min_amt)
+    if step is not None:
+        qstep = 10 ** (-step) if isinstance(step, int) else float(step)
+        qty = (int(qty / qstep)) * qstep
+    if price * qty < min_notional_req:
+        qty = max(qty, (min_notional_req / max(price, 1e-9)))
+        if step is not None:
+            qstep = 10 ** (-step) if isinstance(step, int) else float(step)
+            qty = (int(qty / qstep)) * qstep
+    return qty, min_notional_req, step, min_amt
 
 def _sig_get(sig, key, default=None):
     try:
@@ -152,14 +186,14 @@ def _sig_get(sig, key, default=None):
         pass
     return default
 
-def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None):
+def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None, notional_max: float = None):
     ccxt_sym = fetcher.resolve_symbol(sym)
     mkt = fetcher.markets.get(ccxt_sym, {})
-    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, price)
-    if min_notional_req > notional + 1e-9:
+    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, price, max_notional=notional_max)
+    if qty < float(min_qty) - 1e-9 or price * qty < float(min_notional_req) - 1e-9:
         return {
             'ok': False,
-            'skip_reason': f'min_notional {_fmt_float(min_notional_req)} > {_fmt_float(notional)}',
+            'skip_reason': 'min_qty/min_notional',
             'qty': qty,
         }
 
@@ -296,14 +330,14 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
                 return {'ok': False, 'error': str(e2), 'qty': qty2, 'params': params}
     return last_res or {'ok': False, 'error': 'unknown error'}
 
-def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None):
+def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None, notional_max: float = None):
     ccxt_sym = fetcher.resolve_symbol(sym)
     mkt = fetcher.markets.get(ccxt_sym, {})
-    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, price)
-    if min_notional_req > notional + 1e-9:
+    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, price, max_notional=notional_max)
+    if qty < float(min_qty) - 1e-9 or price * qty < float(min_notional_req) - 1e-9:
         return {
             'ok': False,
-            'skip_reason': f'min_notional {_fmt_float(min_notional_req)} > {_fmt_float(notional)}',
+            'skip_reason': 'min_qty/min_notional',
             'qty': qty,
         }
 
@@ -585,10 +619,12 @@ def run_live(cfg: dict, args):
 
     top_n_v, top_n_origin = _cfg_pick(cfg, ['top_n','runner.top_n','live.top_n','strategy_params.top_n','strategy.top_n'], 4)
     notional_v, notional_origin = _cfg_pick(cfg, ['notional','position_notional','runner.notional','live.notional','portfolio.position_notional'], 2.2)
+    notional_max_v, notional_max_origin = _cfg_pick(cfg, ['position_notional_max','runner.position_notional_max','live.position_notional_max','portfolio.position_notional_max'], None)
     position_mode_v, position_mode_origin = _cfg_pick(cfg, ['position_mode','runner.position_mode','live.position_mode','session.position_mode'], 'hedge')
     tf_v, tf_origin = _cfg_pick(cfg, ['timeframe','runner.timeframe','live.timeframe'], '1h')
     top_n = int(top_n_v)
     notional = float(notional_v)
+    position_notional_max = float(notional_max_v) if notional_max_v is not None else None
     position_mode = str(position_mode_v)
     tf = str(tf_v)
     tf_sec = _tf_to_seconds(tf)
@@ -598,12 +634,13 @@ def run_live(cfg: dict, args):
     open_heat_min_v, open_heat_min_origin = _cfg_pick(cfg, ['open_heat_min','runner.open_heat_min','live.open_heat_min'], 0.80)
     open_on_heat = bool(open_on_heat_v)
     open_heat_min = float(open_heat_min_v)
-    cprint('[cfg]', f'top_n={top_n}, notional={notional}, timeframe={tf}, position_mode={position_mode}, open_on_heat={open_on_heat}, heat_min={open_heat_min}', fg='magenta')
+    cprint('[cfg]', f'top_n={top_n}, notional={notional}, notional_max={position_notional_max}, timeframe={tf}, position_mode={position_mode}, open_on_heat={open_on_heat}, heat_min={open_heat_min}', fg='magenta')
     if getattr(args, 'debug', False):
         _debug_dump_effective(cfg, strat, args,
             resolved={
                 'top_n': (top_n, top_n_origin),
                 'notional': (notional, notional_origin),
+                'position_notional_max': (position_notional_max, notional_max_origin),
                 'position_mode': (position_mode, position_mode_origin),
                 'timeframe': (tf, tf_origin),
                 'open_on_heat': (bool(open_on_heat_v), open_on_heat_origin),
@@ -699,6 +736,7 @@ def run_live(cfg: dict, args):
             except Exception:
                 pass
             positions.pop(sym, None)
+    cleanup_stale_orders(fetcher, positions)
     save_positions(args.results_dir, positions)
 
     last_bar_ts = None
@@ -719,6 +757,7 @@ def run_live(cfg: dict, args):
                     except Exception:
                         pass
                     positions.pop(sym, None)
+                    cleanup_stale_orders(fetcher, positions)
                     save_positions(args.results_dir, positions)
                     continue
 
@@ -776,6 +815,7 @@ def run_live(cfg: dict, args):
                             except Exception:
                                 pass
                             positions.pop(sym, None)
+                            cleanup_stale_orders(fetcher, positions)
                             save_positions(args.results_dir, positions)
 
             uni = strat.universe(bar_close, md)
@@ -826,11 +866,16 @@ def run_live(cfg: dict, args):
                                     tp_price = entry_px + float(tp_mult)*atr_abs
                                     sl_price = entry_px - float(sl_mult)*atr_abs
                             if side_cfg == 'SHORT':
-                                res = place_open_short(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price)
+                                res = place_open_short(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price, notional_max=position_notional_max)
                             else:
-                                res = place_open_long(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price)
+                                res = place_open_long(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price, notional_max=position_notional_max)
                             if not res.get('ok'):
-                                cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr); continue
+                                reason = res.get('skip_reason') or res.get('error') or 'unknown'
+                                if res.get('skip_reason'):
+                                    log_skip_reason(sym, reason)
+                                else:
+                                    cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr)
+                                continue
                             qty = float(res['qty'])
                             ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '') if (res.get('order')) else None
                             side_str = 'SHORT' if side_cfg=='SHORT' else 'LONG'
@@ -846,6 +891,7 @@ def run_live(cfg: dict, args):
                             positions[sym] = rec; save_positions(args.results_dir, positions)
                             try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                             except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
+                            cleanup_stale_orders(fetcher, positions)
                             opened += 1
                             continue
                         else:
@@ -869,9 +915,14 @@ def run_live(cfg: dict, args):
                         log_skip_reason(sym, 'no price available'); continue
                     tp_price = _sig_get(sig, 'tp_price', None) or _sig_get(sig, 'tp', None)
                     sl_price = _sig_get(sig, 'sl_price', None) or _sig_get(sig, 'sl', None)
-                    res = place_open_short(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price)
+                    res = place_open_short(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price, notional_max=position_notional_max)
                     if not res.get('ok'):
-                        cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr); continue
+                        reason = res.get('skip_reason') or res.get('error') or 'unknown'
+                        if res.get('skip_reason'):
+                            log_skip_reason(sym, reason)
+                        else:
+                            cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr)
+                        continue
                     qty = float(res['qty'])
                     ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '') if (res.get('order')) else None
                     cprint(
@@ -885,6 +936,7 @@ def run_live(cfg: dict, args):
                     positions[sym] = rec; save_positions(args.results_dir, positions)
                     try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                     except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
+                    cleanup_stale_orders(fetcher, positions)
                     opened += 1
                     continue
                 elif side_up not in ('LONG','BUY','TRUE','1'):
@@ -908,11 +960,14 @@ def run_live(cfg: dict, args):
                 except Exception:
                     pass
 
-                res = place_open_long(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price)
+                res = place_open_long(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price, notional_max=position_notional_max)
                 if not res.get('ok'):
                     reason = res.get('skip_reason') or res.get('error') or 'unknown'
                     _dbg(sym, 'open FAIL:', reason)
-                    cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr)
+                    if res.get('skip_reason'):
+                        log_skip_reason(sym, reason)
+                    else:
+                        cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr)
                     continue
                 qty = float(res['qty'])
                 ex_order_id = None
@@ -944,12 +999,13 @@ def run_live(cfg: dict, args):
                     'exchange_order_id': ex_order_id
                 }
                 positions[sym] = rec
-                save_positions(args.results_dir, positions) 
+                save_positions(args.results_dir, positions)
                 try:
                     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                 except Exception as e:
-                  cprint('[db upsert OPEN]', e, fg='red')
-                  opened += 1
+                    cprint('[db upsert OPEN]', e, fg='red')
+                cleanup_stale_orders(fetcher, positions)
+                opened += 1
             # Pretty-print currently open positions in YELLOW (diagnostics)
             try:
                 if positions:
