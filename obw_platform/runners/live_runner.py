@@ -708,7 +708,13 @@ def run_live(cfg: dict, args):
                 if getattr(adj, 'action', None) == 'EXIT':
                     px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
                     if px:
-                        od = place_reduce_only(fetcher, sym, 'sell', float(rec.get('qty', 0.0)), position_mode)
+                        side_close = 'sell'
+                        try:
+                            if str(rec.get('side', 'LONG')).upper() == 'SHORT':
+                                side_close = 'buy'
+                        except Exception:
+                            pass
+                        od = place_reduce_only(fetcher, sym, side_close, float(rec.get('qty', 0.0)), position_mode)
                         if od:
                             cprint('[exit close]', sym, f'@~{px:.6g}', fg='yellow')
                             try:
