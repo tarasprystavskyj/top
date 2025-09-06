@@ -31,7 +31,7 @@ def _fmt_float(val: Any) -> str:
 
 import importlib
 import os, sys, math, uuid, datetime as _dt, os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 CLOSE_CHECK_LOGGED = set()
 def _cfg_get_nested(cfg: dict, dotted: str, _missing=object()):
@@ -503,7 +503,7 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
         return None
 
 
-def _report_close_cooldown(sym: str, pos_rec: dict, px: float, bar_close: _dt.datetime | None = None):
+def _report_close_cooldown(sym: str, pos_rec: dict, px: float, bar_close: Optional[_dt.datetime] = None):
     """Log a summary of the position we're waiting to close.
 
     ``run_live`` calls this once per bar for every open position to help
