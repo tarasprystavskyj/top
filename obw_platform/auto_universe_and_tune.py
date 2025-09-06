@@ -79,6 +79,11 @@ def main():
     def rays(param_path: str, values_csv: str, tag: str) -> None:
         if not values_csv:
             return
+        # Always include value '0' to test the configuration without this filter.
+        vals = [v.strip() for v in values_csv.split(',') if v.strip()]
+        if '0' not in vals:
+            vals.insert(0, '0')
+        values_csv = ','.join(vals)
         cmd = (
             f"{shlex.quote(sys.executable)} {shlex.quote(args.runner)} "
             f"--mode rays {base} "
