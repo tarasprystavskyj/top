@@ -503,10 +503,36 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
         return None
 
 
-def _report_close_cooldown(sym: str, pos_rec: dict, px: float):
+def _report_close_cooldown(sym: str, pos_rec: dict, px: float, bar_close: _dt.datetime | None = None):
+    """Log a summary of the position we're waiting to close.
+
+    ``run_live`` calls this once per bar for every open position to help
+    diagnose why a trade remains open.  Older runners invoked this helper
+    with only three arguments, so ``bar_close`` is optional to retain
+    backwards compatibility.
+
+    Parameters
+    ----------
+    sym: str
+        Symbol of the position.
+    pos_rec: dict
+        Position record stored in the session DB.
+    px: float
+        Current price of the symbol.
+    bar_close: datetime, optional
+        The timestamp of the bar close that triggered the check.  When
+        provided we store it in the position record so callers can avoid
+        duplicate reports within the same bar.
+    """
     if sym in CLOSE_CHECK_LOGGED:
         return
     CLOSE_CHECK_LOGGED.add(sym)
+
+    if bar_close is not None:
+        try:
+            pos_rec['_last_close_report_ts'] = bar_close.isoformat()
+        except Exception:
+            pass
 
     try:
         side = str(pos_rec.get('side', 'LONG')).upper()
