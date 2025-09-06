@@ -19,6 +19,7 @@ def dot():
 import importlib
 import os, sys, math, uuid, datetime as _dt, os
 
+CLOSE_CHECK_LOGGED = set()
 def _cfg_get_nested(cfg: dict, dotted: str, _missing=object()):
     """Return cfg value by dotted path like "runner.top_n" or _missing."""
     cur = cfg
@@ -378,6 +379,9 @@ def _report_close_cooldown(sym: str, pos_rec: dict, px: float):
     # print close-check only in debug mode
     if not globals().get('DEBUG_OPEN'):
         return
+    if sym in CLOSE_CHECK_LOGGED:
+        return
+    CLOSE_CHECK_LOGGED.add(sym)
     try:
         side = str(pos_rec.get('side', 'LONG')).upper()
         tp = pos_rec.get('tp_price'); sl = pos_rec.get('sl_price')
@@ -657,6 +661,7 @@ def run_live(cfg: dict, args):
             except Exception:
                 pass
             positions.pop(sym, None)
+            CLOSE_CHECK_LOGGED.discard(sym)
     save_positions(args.results_dir, positions)
 
     last_bar_ts = None
@@ -687,6 +692,7 @@ def run_live(cfg: dict, args):
                     except Exception:
                         pass
                     positions.pop(sym, None)
+                    CLOSE_CHECK_LOGGED.discard(sym)
                     save_positions(args.results_dir, positions)
                     continue
 
@@ -737,6 +743,7 @@ def run_live(cfg: dict, args):
                             except Exception:
                                 pass
                             positions.pop(sym, None)
+                            CLOSE_CHECK_LOGGED.discard(sym)
                             save_positions(args.results_dir, positions)
 
             uni = strat.universe(bar_close, md)

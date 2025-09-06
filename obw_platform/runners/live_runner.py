@@ -33,6 +33,7 @@ import importlib
 import os, sys, math, uuid, datetime as _dt, os
 from typing import Any, Dict
 
+CLOSE_CHECK_LOGGED = set()
 def _cfg_get_nested(cfg: dict, dotted: str, _missing=object()):
     """Return cfg value by dotted path like "runner.top_n" or _missing."""
     cur = cfg
@@ -493,7 +494,11 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
         return None
 
 
-def _report_close_cooldown(sym: str, pos_rec: dict, px: float, bar_close):
+def _report_close_cooldown(sym: str, pos_rec: dict, px: float):
+    if sym in CLOSE_CHECK_LOGGED:
+        return
+    CLOSE_CHECK_LOGGED.add(sym)
+
     try:
         side = str(pos_rec.get('side', 'LONG')).upper()
         tp = pos_rec.get('tp_price'); sl = pos_rec.get('sl_price')
@@ -737,6 +742,7 @@ def run_live(cfg: dict, args):
             except Exception:
                 pass
             positions.pop(sym, None)
+            CLOSE_CHECK_LOGGED.discard(sym)
     cleanup_stale_orders(fetcher, positions)
     save_positions(args.results_dir, positions)
 
@@ -761,6 +767,7 @@ def run_live(cfg: dict, args):
                     except Exception:
                         pass
                     positions.pop(sym, None)
+                    CLOSE_CHECK_LOGGED.discard(sym)
                     cleanup_stale_orders(fetcher, positions)
                     save_positions(args.results_dir, positions)
                     continue
@@ -819,6 +826,7 @@ def run_live(cfg: dict, args):
                             except Exception:
                                 pass
                             positions.pop(sym, None)
+                            CLOSE_CHECK_LOGGED.discard(sym)
                             cleanup_stale_orders(fetcher, positions)
                             save_positions(args.results_dir, positions)
 
