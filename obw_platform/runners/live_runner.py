@@ -351,6 +351,15 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
                 return od
             except Exception:
                 pass
+
+        # If the exchange reports that reduce-only cannot open a position,
+        # it likely means there is no open position to close. Treat this as
+        # a no-op so the caller can clear the local position and move on.
+        err_msg = msg
+        if 'reduce only order can only decrease' in err_msg or 'code":80001' in err_msg or 'code":101290' in err_msg:
+            cprint('[live reduceOnly missing]', sym, ':', e, fg='yellow')
+            return {'error': 'no_position'}
+
         cprint('[live reduceOnly]', sym, ':', e, fg='red', file=sys.stderr)
         return None
 
