@@ -1,0 +1,1 @@
+import useSWR from 'swr'; import Link from 'next/link'; const f=(u:string)=>fetch(u).then(r=>r.json()); export default function P(){const {data}=useSWR('/api/configs',f); if(!data) return 'Loading...'; return <ul>{data.map((c:any)=>(<li key={c.name}><Link href={'/configs/'+c.name}>{c.name}</Link></li>))}</ul>}
