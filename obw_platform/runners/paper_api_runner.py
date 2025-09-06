@@ -8,7 +8,14 @@ from __future__ import annotations
 
 import os, sys, json, time, uuid, importlib
 from datetime import datetime, timezone
+import pandas as pd
 from typing import Any, Mapping
+
+# ANSI colors for order-close reporting
+RESET = "\033[0m"
+GRAY = "\033[90m"
+RED = "\033[91m"
+GREEN = "\033[92m"
 
 # --- imports from runners.common (with fallbacks) ----------------------------------
 try:
@@ -43,6 +50,14 @@ def dot():
         return _dot()
     except Exception:
         print(".", end="", flush=True)
+
+
+def _fmt_float(val: Any) -> str:
+    """Format float to at most two decimal places without trailing zeros."""
+    try:
+        return ("{:.3f}".format(float(val))).rstrip("0").rstrip(".")
+    except Exception:
+        return str(val)
 
 # --- strategy loader ---------------------------------------------------------------
 def load_strategy(path_cls: str, cfg: Mapping[str, Any]):
@@ -178,8 +193,8 @@ def run_paper_api(cfg: Mapping[str, Any], args):
     last_bar_ts = None
 
     while True:
-        now = datetime.utcnow().replace(tzinfo=timezone.utc)
-        bar_close = _align_bar_close(now, tf_seconds)
+        now = pd.Timestamp.now(tz="UTC")
+        bar_close = pd.Timestamp(_align_bar_close(now.to_pydatetime(), tf_seconds))
 
         # trigger on closed bar (+delay)
         if (last_bar_ts is None or bar_close > last_bar_ts) and (now - bar_close).total_seconds() >= args.bar_delay_sec:
@@ -210,6 +225,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                         cache_out_upsert(cache_out_path, ccxt_sym, feats_df)
                     feats = feats_df.iloc[-1].to_dict()
                 md[ccxt_sym] = feats
+            price_map = {s: float(md[s].get('close') or 0.0) for s in md}
 
             # ---- Exits (strategy) ----
             for pos in list(pf.positions):
@@ -217,25 +233,37 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                 if row is None:
                     continue
                 adj = _call_manage_position(strat, bar_close, pos.symbol, pos, row, pf)
-                if getattr(adj, 'action', None) in ('TP','SL','EXIT'):
+                if getattr(adj, 'action', None) in ('TP', 'SL', 'EXIT'):
                     # derive exit price (prefer explicit)
                     exit_price = getattr(adj, 'exit_price', None)
                     if exit_price is None:
                         exit_price = float(row.get('close') or 0.0)
                     px = float(exit_price) * (1 - port_cfg['slippage_per_side'])
-                    pf.close(pos, bar_close, px, reason=getattr(adj, 'action', 'exit'))
+
+                    side = str(getattr(pos, 'side', 'LONG')).upper()
+                    qty = float(getattr(pos, 'qty', 0.0))
+                    reason = getattr(adj, 'action', 'exit')
+
+                    pnl = pf.close(pos, bar_close, px, reason=reason)
+                    color = GREEN if pnl >= 0 else RED
+                    print(
+                        f"{GRAY}[close] {bar_close.isoformat()} {pos.symbol} {side} "
+                        f"qty={_fmt_float(qty)} exit={_fmt_float(px)} reason={reason} "
+                        f"pnl={color}{pnl:+.2f}{GRAY} eq={pf.equity:.2f}{RESET}"
+                    )
+
                     insert_order_row(orders_db, {
                         'order_id': str(uuid.uuid4()),
                         'ts_utc': datetime.utcnow().isoformat(),
                         'bar_time_utc': bar_close.isoformat(),
                         'mode': 'paper_api',
                         'symbol': pos.symbol,
-                        'side': 'sell' if str(pos.side).upper()=='LONG' else 'buy',
+                        'side': 'sell' if side == 'LONG' else 'buy',
                         'type': 'market',
                         'price': float(px),
-                        'qty': float(getattr(pos, 'qty', 0.0)),
+                        'qty': float(qty),
                         'status': 'filled',
-                        'reason': getattr(adj, 'action', 'exit'),
+                        'reason': reason,
                         'run_id': run_id,
                         'extra': json.dumps({'sim': True})
                     })
@@ -251,7 +279,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                 pass
 
             for sym in ranked:
-                if not pf.can_open(port_cfg):
+                if not pf.can_open(port_cfg, price_map=price_map):
                     break
                 row = md.get(sym)
                 if not row:
@@ -293,11 +321,13 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     'extra': json.dumps({'sim': True, 'tags': getattr(sig, 'tags', [])})
                 })
 
-            # Equity snapshot 
+            # Equity snapshot (mark-to-market)
             try:
+                pf.mark_equity(price_map)
+                cash_val = float(getattr(pf, 'equity', getattr(pf, 'cash', 0.0)))
                 eq = {
-                    'equity': float(getattr(pf, 'equity', 0.0)),
-                    'cash': float(getattr(pf, 'cash', 0.0)),
+                    'equity': cash_val + float(getattr(pf, 'unrealized_pnl', 0.0)),
+                    'cash': cash_val,
                     'position_value': float(getattr(pf, 'position_value', 0.0)),
                     'realized_pnl_cum': float(getattr(pf, 'realized_pnl_cum', 0.0)),
                     'unrealized_pnl': float(getattr(pf, 'unrealized_pnl', 0.0)),
@@ -334,9 +364,18 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                                if hasattr(_pos, 'tp') else getattr(_pos, 'take_profit', getattr(_pos, 'tp_price', None)))
                         _sl = (getattr(_pos, 'sl', None)
                                if hasattr(_pos, 'sl') else getattr(_pos, 'stop_price', getattr(_pos, 'sl_price', None)))
-                        cprint("[open]", bar_close.isoformat(), _sym, _side,
-                               f"qty={_qty}", f"entry={_entry}", f"tp={_tp}", f"sl={_sl}",
-                               fg="yellow", bold=True)
+                        cprint(
+                            "[open]",
+                            bar_close.isoformat(),
+                            _sym,
+                            _side,
+                            f"qty={_fmt_float(_qty)}",
+                            f"entry={_fmt_float(_entry)}",
+                            f"tp={_fmt_float(_tp)}",
+                            f"sl={_fmt_float(_sl)}",
+                            fg="yellow",
+                            bold=True,
+                        )
             except Exception:
                 pass
 

@@ -131,7 +131,7 @@ def main():
     equity = initial_equity
     positions: Dict[str, Position] = {}
     pos_time: Dict[str, str] = {}
-    wins=losses=trades=0; pnl_pos=0.0; pnl_neg=0.0
+    wins=losses=trades=0; pnl_pos=0.0; pnl_neg=0.0; fees_cum=0.0
     tr_rows: list[Dict[str, Any]] = []
     eq_curve_vals = [initial_equity]
 
@@ -156,10 +156,10 @@ def main():
                     net_ret = gross_ret - 2*slippage - 2*fee
                     pnl = net_ret
                     trades+=1
+                    fees_cum += fee * 2 * pos_notional
                     if pnl>0: wins+=1; pnl_pos += pnl
                     else: losses+=1; pnl_neg += pnl
                     equity *= (1.0 + (pnl * pos_notional / equity))
-                    eq_curve_vals.append(equity)
                     tr_rows.append({
                         "symbol": sym,
                         "side": pos.side,
@@ -172,9 +172,24 @@ def main():
                         "gross_return": gross_ret,
                         "net_return": net_ret,
                         "notional": pos_notional,
+                        "fees_paid": fee * 2 * pos_notional,
                         "realized_pnl": net_ret * pos_notional,
                     })
                     del positions[sym]; pos_time.pop(sym, None)
+
+        # compute current equity including unrealized PnL
+        unrealized = 0.0
+        for sym, pos in positions.items():
+            px = px_map.get(sym)
+            if px is None:
+                continue
+            if pos.side == "LONG":
+                gross_ret = (px - pos.entry) / pos.entry
+            else:
+                gross_ret = (pos.entry - px) / pos.entry
+            net_ret = gross_ret - 2 * slippage - 2 * fee
+            unrealized += net_ret * pos_notional
+        equity_mtm = equity + unrealized
 
         # --- Universe filtering for OPENINGS only (allow/deny) ---
         # Build md_map for all symbols in this bucket
@@ -186,6 +201,7 @@ def main():
             md_map_open = {s:row for s,row in md_map_all.items()
                            if ((not allow_syms) or (s in allow_syms)) and (s not in deny_syms)}
             if not md_map_open:
+                eq_curve_vals.append(equity_mtm)
                 continue
         else:
             md_map_open = md_map_all
@@ -196,13 +212,13 @@ def main():
 
         # --- OPEN entries via strategy ---
         for sym in ranked_syms:
-            if sym in positions: 
+            if sym in positions:
                 continue
             # Budget check
-            if (len(positions)+1)*pos_notional > max_notional_frac * equity:
+            if (len(positions)+1)*pos_notional > max_notional_frac * equity_mtm:
                 break
             row = md_map_open.get(sym)
-            if not row: 
+            if not row:
                 continue
             sig = strat.entry_signal(True, sym, row, ctx=None)
             if sig is None:
@@ -227,6 +243,9 @@ def main():
             #if heat is not None:
             #    print(f"[open] {t} {sym} {sig.side} heat={heat:.3f} tp={tp:.4f} sl={sl:.4f}")
 
+        # snapshot equity after this bar
+        eq_curve_vals.append(equity_mtm)
+
     # Mark-to-market finalization
     if slices:
         last_t = slices[-1][0]
@@ -238,6 +257,7 @@ def main():
             net_ret = gross_ret - 2*slippage - 2*fee
             pnl = net_ret
             trades += 1
+            fees_cum += fee * 2 * pos_notional
             if pnl>0: wins+=1; pnl_pos += pnl
             else: losses+=1; pnl_neg += pnl
             equity *= (1.0 + (pnl * pos_notional / equity))
@@ -247,12 +267,14 @@ def main():
                 "entry_time": pos_time.get(sym, last_t), "exit_time": last_t,
                 "entry": pos.entry, "exit": px, "tp": pos.tp, "sl": pos.sl,
                 "reason": "EOD", "gross_return": gross_ret, "net_return": net_ret,
-                "notional": pos_notional, "realized_pnl": net_ret * pos_notional
+                "notional": pos_notional, "fees_paid": fee * 2 * pos_notional,
+                "realized_pnl": net_ret * pos_notional
             })
             del positions[sym]; pos_time.pop(sym, None)
 
     elapsed = time.time() - t0
     pf = (pnl_pos / max(1e-12, -pnl_neg)) if (pnl_pos>0 and pnl_neg<0) else 0.0
+    win_rate_pct = (wins * 100.0 / max(1, trades)) if trades else 0.0
 
     # Metrics
     import numpy as _np
@@ -272,15 +294,16 @@ def main():
     # CSV exports
     if args.export_csv:
         if tr_rows:
-            cols = ["symbol","side","entry_time","exit_time","entry","exit","tp","sl","reason","gross_return","net_return","notional","realized_pnl"]
+            cols = ["symbol","side","entry_time","exit_time","entry","exit","tp","sl","reason","gross_return","net_return","notional","fees_paid","realized_pnl"]
             with open("trades.csv","w",newline="") as f:
                 w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(tr_rows)
-        pd.DataFrame([{
+        pd.DataFrame([{ 
             "equity_start": initial_equity, "equity_end": equity, "trades": trades,
-            "profit_factor": pf, "win_rate_%": (wins*100.0/max(1,trades) if trades else 0.0),
+            "profit_factor": pf, "win_rate_%": win_rate_pct,
             "elapsed_sec": elapsed,
-            "max_dd_frac": max_dd_frac, "max_dd_%": (max_dd_frac*100.0),
-            "monotonicity_sign": mono_sign, "monotonicity_mag": mono_mag
+            "max_dd_frac": max_dd_frac, "max_dd_%": (max_dd_frac * 100.0),
+            "monotonicity_sign": mono_sign, "monotonicity_mag": mono_mag,
+            "total_fees": fees_cum
         }]).to_csv("summary.csv", index=False)
 
     # Plots (same as before)
@@ -348,7 +371,12 @@ def main():
         except Exception as e:
             print(f"[plots] failed: {e}")
 
-    print(f"equity_end={equity:.6f} trades={trades} pf={pf:.6f} max_dd={max_dd_frac:.6f} mono={mono_mag:.6f} elapsed_sec={elapsed:.6f}")
+    max_dd_pct = max_dd_frac * 100.0
+    mono_pct = mono_mag * 100.0
+    print(
+        f"equity_end={equity:.6f} trades={trades} pf={pf:.6f} fees={fees_cum:.6f} "
+        f"win_rate={win_rate_pct:.3f}% max_dd={max_dd_pct:.3f}% mono={mono_pct:.3f}% elapsed_sec={elapsed:.6f}"
+    )
 
 if __name__ == "__main__":
     main()

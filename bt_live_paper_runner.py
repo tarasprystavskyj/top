@@ -28,10 +28,21 @@ from typing import Optional, List, Dict, Any
 import pandas as pd
 import numpy as np
 
+# ANSI colors for order-close reporting
+RESET = "\033[0m"
+GRAY = "\033[90m"
+RED = "\033[91m"
+GREEN = "\033[92m"
+
 try:
     import yaml  # optional
 except Exception:
     yaml = None
+
+try:
+    import ccxt  # type: ignore
+except Exception:
+    ccxt = None
 
 # ---------- optional engine imports (from backtester core) ----------
 def _try_import(mod_path, names: List[str]):
@@ -107,6 +118,18 @@ def round_bar_close(now_utc: datetime, tf: str) -> datetime:
     t = int(now_utc.timestamp())
     close = t - (t % sec)
     return datetime.fromtimestamp(close, tz=timezone.utc)
+
+def fetch_bingx_fee_rate() -> float:
+    try:
+        ex = ccxt.bingx() if ccxt else None
+        if ex:
+            ex.load_markets()
+            fee = ex.fees.get('trading', {}).get('taker')
+            if fee is not None:
+                return float(fee)
+    except Exception:
+        pass
+    return 0.0006
 
 # ---------- strategy loading ----------
 def load_strategy(path_cls: str, cfg: dict):
@@ -547,9 +570,10 @@ def run_paper(db_path: str, cfg: dict, results_dir: str, limit_bars: Optional[in
     if limit_bars is not None and limit_bars > 0:
         times = times[-int(limit_bars):]
 
+    fee_rate = float(cfg.get("fee_rate", fetch_bingx_fee_rate()))
     port_cfg = {
         "initial_equity": float(cfg.get("initial_equity", cfg.get("start_cash", 200.0))),
-        "fee_rate": float(cfg.get("fee_rate", 0.0006)),
+        "fee_rate": fee_rate,
         "slippage_per_side": float(cfg.get("slippage_per_side", cfg.get("slip_bps", 1.5) / 10000.0
                                            if isinstance(cfg.get("slip_bps", 0), (int, float)) else 0.0003)),
         "tick_pct": float(cfg.get("tick_pct", 0.0001)),
@@ -570,7 +594,9 @@ def run_paper(db_path: str, cfg: dict, results_dir: str, limit_bars: Optional[in
                 continue
             adj = strat.manage_position(t, pos.symbol, pos, row, ctx={"portfolio": pf})
             if adj.action == "EXIT":
-                pf.close(pos, t, row["close"], reason=adj.reason)
+                pnl = pf.close(pos, t, row["close"], reason=adj.reason)
+                color = GREEN if pnl >= 0 else RED
+                print(f"{GRAY}[close] {pos.symbol} reason={adj.reason} pnl={color}{pnl:+.2f}{GRAY} eq={pf.equity:.2f}{RESET}")
             elif adj.action == "MOVE_SL" and adj.new_stop is not None:
                 pos.stop_price = adj.new_stop
             elif adj.action == "MOVE_TP" and adj.new_tp is not None:
@@ -604,9 +630,10 @@ def run_paper_api(cfg: dict, args):
     strat_path = cfg.get("strategy_class", "strategies.cross_sectional_rs.CrossSectionalRS")
     strat = load_strategy(strat_path, cfg)
 
+    fee_rate = float(cfg.get("fee_rate", fetch_bingx_fee_rate()))
     port_cfg = {
         "initial_equity": float(cfg.get("initial_equity", cfg.get("start_cash", 200.0))),
-        "fee_rate": float(cfg.get("fee_rate", 0.0006)),
+        "fee_rate": fee_rate,
         "slippage_per_side": float(cfg.get("slippage_per_side", cfg.get("slip_bps", 1.5) / 10000.0
                                            if isinstance(cfg.get("slip_bps", 0), (int, float)) else 0.0003)),
         "tick_pct": float(cfg.get("tick_pct", 0.0001)),
@@ -667,7 +694,7 @@ def run_paper_api(cfg: dict, args):
                 adj = strat.manage_position(bar_close, pos.symbol, pos, row, ctx={"portfolio": pf})
                 if adj.action == "EXIT":
                     px = float(row.get("close") or 0.0) * (1 - port_cfg["slippage_per_side"])  # assume sell
-                    pf.close(pos, bar_close, px, reason=adj.reason)
+                    pnl = pf.close(pos, bar_close, px, reason=adj.reason)
                     insert_order_row(orders_db, {
                         "order_id": str(uuid.uuid4()),
                         "ts_utc": datetime.utcnow().isoformat(),
@@ -683,6 +710,8 @@ def run_paper_api(cfg: dict, args):
                         "run_id": run_id,
                         "extra": json.dumps({"sim": True})
                     })
+                    color = GREEN if pnl >= 0 else RED
+                    print(f"{GRAY}[close] {pos.symbol} reason={adj.reason} pnl={color}{pnl:+.2f}{GRAY} eq={pf.equity:.2f}{RESET}")
 
             # entries + decisions logging
             uni = strat.universe(bar_close, md)
@@ -811,6 +840,7 @@ def run_live(cfg: dict, args):
     api_s = os.environ.get("BINGX_SECRET", "")
     print(f'[LIVE API] key="{mask(api_k)}", secret="{mask(api_s)}"')
     fetcher = CCXTFetcher(exchange=args.exchange, symbol_format=args.symbol_format, debug=args.debug)
+    fee_rate = float(cfg.get("fee_rate", fetch_bingx_fee_rate()))
 
     top_n = int(cfg.get("top_n", 4))
     notional = float(cfg.get("notional", 2.2))
@@ -887,6 +917,7 @@ def run_live(cfg: dict, args):
                     print(f"[open FAIL] {sym}: {res}", file=sys.stderr)
                     continue
                 qty = float(res["qty"])
+                fee_paid = notional * fee_rate
                 # log order to DB and print
                 insert_order_row(session_db_path, {
                     "order_id": f"LIVE-{uuid.uuid4()}",
@@ -901,9 +932,9 @@ def run_live(cfg: dict, args):
                     "status": "filled",
                     "reason": "entry",
                     "run_id": run_id,
-                    "extra": json.dumps({"notional": notional}) 
+                    "extra": json.dumps({"notional": notional, "fee": fee_paid})
                 })
-                print(f"[open OK] {sym} qty={qty:.6g} px={entry_px}", flush=True)
+                print(f"[open OK] {sym} qty={qty:.6g} px={entry_px} fee={fee_paid:.6g}", flush=True)
                 state["positions"][sym] = {"entry": entry_px, "qty": qty, "ts": bar_close.isoformat()}
                 json.dump(state, open(state_path, "w", encoding="utf-8"), indent=2)
                 opened += 1

@@ -121,19 +121,21 @@ class BreakoutAVAAIFull:
         defaults to 0.0 (disabled) to match the profitable setting discovered earlier."""
         out: List[str] = []
         for sym, row in md_map.items():
-            if _f(row.get("atr_ratio", 0.0)) < self.min_atr_ratio:
+            atr = _f(row.get("atr_ratio", 0.0))
+            if self.min_atr_ratio > 0 and atr < self.min_atr_ratio:
                 continue
             if not self._liq_ok(row):
                 continue
-            # Optional momentum threshold
+            # Optional momentum threshold (mm<=0 disables)
             m = self._mom_sum(row)
             mm = self.min_momentum_sum
-            if self.side == "LONG" and m < +mm: 
-                continue
-            if self.side == "SHORT" and m > -mm:
-                continue
-            if self.side == "BOTH" and abs(m) < mm:
-                continue
+            if mm > 0:
+                if self.side == "LONG" and m < +mm:
+                    continue
+                if self.side == "SHORT" and m > -mm:
+                    continue
+                if self.side == "BOTH" and abs(m) < mm:
+                    continue
             out.append(sym)
         return out
 
@@ -146,8 +148,10 @@ class BreakoutAVAAIFull:
             score = (-m) if invert else (m)
             scored.append((score, idx, sym))
         scored.sort(key=lambda x: x[0], reverse=True)  # stable via index
-        # CUT to top_n here (moved from backtester)
-        take = max(1, int(self.top_n))
+        # CUT to top_n here (moved from backtester); top_n<=0 disables the limit
+        take = int(self.top_n)
+        if take <= 0:
+            return [sym for _, __, sym in scored]
         return [sym for _, __, sym in scored[:take]]
 
     # ---------- entry / exit ----------
@@ -179,7 +183,7 @@ class BreakoutAVAAIFull:
     def manage_position(self, symbol: str, row: Mapping[str, Any], pos: Any, ctx: Optional[Mapping[str, Any]] = None):
         """CLOSE-based TP/SL (match the old behaviour)."""
         close = _f(row.get("close", 0.0))
-        side  = getattr(pos, "side", "LONG")
+        side  = str(getattr(pos, "side", "LONG")).upper()
         tp    = _f(getattr(pos, "tp", getattr(pos, "take_profit", getattr(pos, "tp_price", None))), None)
         sl    = _f(getattr(pos, "sl", getattr(pos, "stop_price", getattr(pos, "sl_price", None))), None)
 
