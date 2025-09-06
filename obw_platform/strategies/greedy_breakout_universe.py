@@ -79,8 +79,10 @@ class GreedyBreakoutUniverse:
         out: List[str] = []
         for sym, row in md_map.items():
             atr_ratio = _f(row.get("atr_ratio", 0.0))
-            if atr_ratio >= self.min_atr_ratio:
-                out.append(sym)
+            # Allow disabling the filter via min_atr_ratio=0
+            if self.min_atr_ratio > 0 and atr_ratio < self.min_atr_ratio:
+                continue
+            out.append(sym)
         return out
 
     # --- Contract: Rank ---
