@@ -187,7 +187,144 @@ def _sig_get(sig, key, default=None):
         pass
     return default
 
-def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None, notional_max: float = None):
+def _top_of_book(fetcher, ccxt_sym: str):
+    ob = fetcher.ex.fetch_order_book(ccxt_sym, 5)
+    best_bid = ob['bids'][0][0] if ob.get('bids') else None
+    best_ask = ob['asks'][0][0] if ob.get('asks') else None
+    return best_bid, best_ask
+
+def _price_tick(mkt: dict):
+    tick = float(mkt.get('limits', {}).get('price', {}).get('min') or 0) or 0.0
+    if tick <= 0:
+        prec = mkt.get('precision', {}).get('price')
+        if isinstance(prec, int) and prec >= 0:
+            tick = 10 ** (-prec)
+    if tick <= 0:
+        step = float(mkt.get('info', {}).get('priceStep') or 0.0)
+        if step > 0:
+            tick = step
+    return tick if tick > 0 else 1e-6
+
+def _place_limit_aggressive(fetcher, sym, side, qty, tif_ioc=True,
+                            offset_ticks=1, chase_steps=0, chase_delay_ms=200,
+                            chase_extra_ticks=1, params=None):
+    """Ліміт 'в бік руху' з IOC і парою підгонів. Повертає (ok, order)."""
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    mkt = fetcher.ex.market(ccxt_sym)
+    tick = _price_tick(mkt)
+    best_bid, best_ask = _top_of_book(fetcher, ccxt_sym)
+    assert best_bid and best_ask, "order book empty"
+    if side.lower() == 'buy':
+        price = (best_ask or best_bid) + offset_ticks * tick
+    else:
+        price = (best_bid or best_ask) - offset_ticks * tick
+    base = dict(params or {})
+    if tif_ioc:
+        base['timeInForce'] = 'IOC'
+    try:
+        od = fetcher.ex.create_order(ccxt_sym, 'limit', side, qty, float(price), base)
+        sleep_ms(120)
+    except Exception as e:
+        return False, {'error': str(e)}
+    try:
+        info = fetcher.ex.fetch_order(od.get('id'), ccxt_sym)
+        filled = float(info.get('filled') or info.get('amount') or 0.0)
+        amount = float(info.get('amount') or od.get('amount') or qty)
+    except Exception:
+        filled, amount = 0.0, float(od.get('amount') or qty)
+    remain = max(amount - filled, 0.0)
+    step = 0
+    while remain > 0 and step < int(chase_steps):
+        step += 1
+        sleep_ms(int(chase_delay_ms))
+        best_bid, best_ask = _top_of_book(fetcher, ccxt_sym)
+        if side.lower() == 'buy':
+            price = (best_ask or best_bid) + (offset_ticks + step * chase_extra_ticks) * tick
+        else:
+            price = (best_bid or best_ask) - (offset_ticks + step * chase_extra_ticks) * tick
+        try:
+            try:
+                fetcher.ex.cancel_order(od.get('id'), ccxt_sym)
+            except Exception:
+                pass
+            od = fetcher.ex.create_order(ccxt_sym, 'limit', side, remain, float(price), base)
+            sleep_ms(100)
+            info = fetcher.ex.fetch_order(od.get('id'), ccxt_sym)
+            filled_now = float(info.get('filled') or info.get('amount') or 0.0)
+            remain = max(remain - filled_now, 0.0)
+        except Exception:
+            break
+    return True, od
+
+def _place_tp_sl_after_open(fetcher, sym, entry_side, qty, tp_price, sl_price, position_mode):
+    """Надійний fallback: окремі reduceOnly тригери (видно у Open Orders → Trigger)."""
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    pos_oneway = str(position_mode or '').lower().startswith('one')
+    base = {
+        'reduceOnly': True,
+        'positionSide': (
+            'BOTH' if pos_oneway else ('LONG' if entry_side == 'LONG' else 'SHORT')
+        ),
+    }
+
+    def try_o(typ, side, amount, price, p):
+        try:
+            return True, fetcher.ex.create_order(ccxt_sym, typ, side, amount, price, p)
+        except Exception as e:
+            return False, str(e)
+
+    if tp_price:
+        tp_side = 'sell' if entry_side == 'LONG' else 'buy'
+        for cand in [
+            ('take_profit', tp_side, qty, float(tp_price), dict(base)),
+            (
+                'take_profit_market',
+                tp_side,
+                None,
+                {**base, 'triggerPrice': float(tp_price)},
+            ),
+            (
+                'limit',
+                tp_side,
+                qty,
+                float(tp_price),
+                {**base, 'takeProfit': True},
+            ),
+        ]:
+            ok, _ = try_o(*cand)
+            if ok:
+                break
+
+    if sl_price:
+        sl_side = 'sell' if entry_side == 'LONG' else 'buy'
+        for cand in [
+            (
+                'stop_market',
+                sl_side,
+                None,
+                {**base, 'triggerPrice': float(sl_price)},
+            ),
+            (
+                'market',
+                sl_side,
+                None,
+                {**base, 'stopLossPrice': float(sl_price)},
+            ),
+            ('stop', sl_side, qty, float(sl_price), dict(base)),
+        ]:
+            ok, _ = try_o(*cand)
+            if ok:
+                break
+
+    try:
+        if getattr(fetcher.ex, 'id', '') == 'bingx' and False:
+            pass  # TODO: optional BingX position TP/SL endpoint
+    except Exception:
+        pass
+
+def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: float,
+                    position_mode: str, tp_price=None, sl_price=None,
+                    notional_max: float = None, cfg: dict = None):
     ccxt_sym = fetcher.resolve_symbol(sym)
     mkt = fetcher.markets.get(ccxt_sym, {})
     mkt_price = None
@@ -199,7 +336,9 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
     mkt_price = float(mkt_price or price or 0.0)
     if mkt_price <= 0:
         return {'ok': False, 'skip_reason': 'no_price', 'qty': 0}
-    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, mkt_price, max_notional=notional_max)
+    qty, min_notional_req, step, min_qty = qty_for_notional(
+        mkt, notional, mkt_price, max_notional=notional_max
+    )
     if qty < float(min_qty) - 1e-9 or mkt_price * qty < float(min_notional_req) - 1e-9:
         return {
             'ok': False,
@@ -207,140 +346,64 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
             'qty': qty,
         }
 
-    def _try(params):
-        try:
-            od = fetcher.ex.create_order(ccxt_sym, 'market', 'buy', qty, None, params)
-            sleep_ms(RATE_MS)
-            return {'ok': True, 'order': od, 'qty': qty, 'params': params}
-        except Exception as e:
-            return {'ok': False, 'error': str(e), 'params': params}
-
     base_params = {'reduceOnly': False}
     if position_mode == 'hedge':
         base_params['positionSide'] = 'LONG'
 
-    param_candidates = []
-    if tp_price is not None or sl_price is not None:
-        p = dict(base_params)
-        if tp_price is not None:
-            p['takeProfit'] = float(tp_price)
-            p['takeProfitPrice'] = float(tp_price)
-        if sl_price is not None:
-            sl_trigger = float(sl_price)
-            # --- robust tick detection ---
-            tick = None
-            # limits.price.min as increment
-            try:
-                lim_tick = float(mkt.get('limits', {}).get('price', {}).get('min') or 0.0)
-                if lim_tick > 0:
-                    tick = lim_tick
-            except Exception:
-                pass
-            # precision.price as decimals count
-            if not tick or tick <= 0:
-                prec = mkt.get('precision', {}).get('price')
-                try:
-                    if isinstance(prec, int) and prec >= 0:
-                        tick = 10 ** (-prec)
-                except Exception:
-                    pass
-            # info.priceStep
-            if not tick or tick <= 0:
-                try:
-                    step = float(mkt.get('info', {}).get('priceStep') or 0.0)
-                    if step > 0:
-                        tick = step
-                except Exception:
-                    pass
-            if not tick or tick <= 0:
-                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
-            # --- enforce relation: LONG needs SL < trigger ---
-            p['stopPrice'] = sl_trigger               # trigger
-            p['stopLoss'] = max(sl_trigger - tick, 0)  # order price BELOW trigger
-            # do NOT send stopLossPrice to avoid conflicting checks
-        param_candidates.append(p)
-    param_candidates.append(dict(base_params))
+    entry_cfg = (cfg or {}).get('entry') or {}
+    entry_type = str(entry_cfg.get('type', 'market')).lower()
 
-    last_res = None
-    try:
-        _dbg(
-            'place_open_long',
+    if entry_type == 'limit_aggressive':
+        ok, od = _place_limit_aggressive(
+            fetcher,
             sym,
-            f'qty={_fmt_float(qty)}',
-            f'price={_fmt_float(mkt_price)}',
-            f'tp={_fmt_float(tp_price)}' if tp_price is not None else 'tp=-',
-            f'sl={_fmt_float(sl_price)}' if sl_price is not None else 'sl=-',
-            f'candidates={len(param_candidates)}',
+            'buy',
+            qty,
+            tif_ioc=True,
+            offset_ticks=int(entry_cfg.get('offset_ticks', 1) or 1),
+            chase_steps=int(entry_cfg.get('chase_steps', 0) or 0),
+            chase_delay_ms=int(entry_cfg.get('chase_delay_ms', 250) or 250),
+            chase_extra_ticks=int(entry_cfg.get('chase_extra_ticks', 1) or 1),
+            params=base_params,
         )
-    except Exception:
-        pass
+        if not ok:
+            return {'ok': False, 'error': f"limit_aggressive failed: {od.get('error','')}", 'qty': qty}
+        res = {'ok': True, 'order': od, 'qty': qty}
+    else:
+        def _try(params):
+            try:
+                od = fetcher.ex.create_order(ccxt_sym, 'market', 'buy', qty, None, params)
+                sleep_ms(RATE_MS)
+                return {'ok': True, 'order': od, 'qty': qty, 'params': params}
+            except Exception as e:
+                return {'ok': False, 'error': str(e), 'params': params}
 
-    first_error = None
-    for idx, params in enumerate(param_candidates):
-
-        try:
-            _dbg('try_params', params)
-        except Exception:
-            pass
-        res = _try(params)
-        try:
-            _dbg(
-                'result',
-                'ok' if res.get('ok') else 'ERR',
-                (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId')))
-                 if res.get('ok') else ''),
-                res.get('error', '')
-            )
-        except Exception:
-            pass
-        last_res = res
-        if res['ok']:
-            if idx > 0 and first_error:
+        res = _try(base_params)
+        if not res.get('ok'):
+            msg = (res.get('error') or '').lower()
+            if ('one-way mode' in msg) or ('positionside' in msg):
+                p2 = {k: v for k, v in base_params.items() if k != 'positionSide'}
+                res = _try(p2)
+                if not res.get('ok'):
+                    p3 = dict(p2, positionSide='BOTH')
+                    res = _try(p3)
+            elif ('min amount' in msg) and step > 0:
                 try:
-                    _dbg('tp_sl_attach_err', first_error)
-                except Exception:
-                    pass
-                res['tp_sl_error'] = first_error
-            res['tp_price'] = tp_price
-            res['sl_price'] = sl_price
+                    qty2 = max(min_qty, qty + step)
+                    od = fetcher.ex.create_order(ccxt_sym, 'market', 'buy', qty2, None, base_params)
+                    sleep_ms(RATE_MS)
+                    res = {'ok': True, 'order': od, 'qty': qty2, 'params': base_params, 'retry': True}
+                except Exception as e2:
+                    res = {'ok': False, 'error': str(e2), 'qty': qty2, 'params': base_params}
+        if not res.get('ok'):
             return res
 
-        if idx == 0:
-            first_error = res.get('error')
+    _place_tp_sl_after_open(fetcher, sym, 'LONG', qty, tp_price, sl_price, position_mode)
+    return res
 
-        msg = (res.get('error') or '').lower()
-        if ('one-way mode' in msg) or ('positionside' in msg):
-            p2 = {k: v for k, v in params.items() if k != 'positionSide'}
-            res2 = _try(p2)
-            if res2['ok']:
-                res2['tp_price'] = tp_price
-                res2['sl_price'] = sl_price
-                res2['retry'] = True
-                res2['note'] = 'auto: one-way detected (no positionSide)'
-                return res2
-            p3 = dict(p2, positionSide='BOTH')
-            res3 = _try(p3)
-            if res3['ok']:
-                res3['tp_price'] = tp_price
-                res3['sl_price'] = sl_price
-                res3['retry'] = True
-                res3['note'] = 'auto: one-way detected (BOTH)'
-                return res3
-            last_res = res3
-        elif ('min amount' in msg) and step > 0:
-            try:
-                qty2 = max(min_qty, qty + step)
-                od = fetcher.ex.create_order(ccxt_sym, 'market', 'buy', qty2, None, params)
-                sleep_ms(RATE_MS)
-                r = {'ok': True, 'order': od, 'qty': qty2, 'params': params, 'retry': True}
-                r['tp_price'] = tp_price
-                r['sl_price'] = sl_price
-                return r
-            except Exception as e2:
-                return {'ok': False, 'error': str(e2), 'qty': qty2, 'params': params}
-    return last_res or {'ok': False, 'error': 'unknown error'}
-
-def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None, notional_max: float = None):
+def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: float,
+                     position_mode: str, tp_price=None, sl_price=None,
+                     notional_max: float = None, cfg: dict = None):
     ccxt_sym = fetcher.resolve_symbol(sym)
     mkt = fetcher.markets.get(ccxt_sym, {})
     mkt_price = None
@@ -352,7 +415,9 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
     mkt_price = float(mkt_price or price or 0.0)
     if mkt_price <= 0:
         return {'ok': False, 'skip_reason': 'no_price', 'qty': 0}
-    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, mkt_price, max_notional=notional_max)
+    qty, min_notional_req, step, min_qty = qty_for_notional(
+        mkt, notional, mkt_price, max_notional=notional_max
+    )
     if qty < float(min_qty) - 1e-9 or mkt_price * qty < float(min_notional_req) - 1e-9:
         return {
             'ok': False,
@@ -360,134 +425,60 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
             'qty': qty,
         }
 
-    def _try(params):
-        try:
-            od = fetcher.ex.create_order(ccxt_sym, 'market', 'sell', qty, None, params)
-            sleep_ms(RATE_MS)
-            return {'ok': True, 'order': od, 'qty': qty, 'params': params}
-        except Exception as e:
-            return {'ok': False, 'error': str(e), 'params': params}
-
     base_params = {'reduceOnly': False}
     if position_mode == 'hedge':
         base_params['positionSide'] = 'SHORT'
 
-    param_candidates = []
-    if tp_price is not None or sl_price is not None:
-        p = dict(base_params)
-        if tp_price is not None:
-            p['takeProfit'] = float(tp_price)
-            p['takeProfitPrice'] = float(tp_price)
-        if sl_price is not None:
-            sl_trigger = float(sl_price)
-            # --- robust tick detection (same as LONG) ---
-            tick = None
-            try:
-                lim_tick = float(mkt.get('limits', {}).get('price', {}).get('min') or 0.0)
-                if lim_tick > 0:
-                    tick = lim_tick
-            except Exception:
-                pass
-            if not tick or tick <= 0:
-                prec = mkt.get('precision', {}).get('price')
-                try:
-                    if isinstance(prec, int) and prec >= 0:
-                        tick = 10 ** (-prec)
-                except Exception:
-                    pass
-            if not tick or tick <= 0:
-                try:
-                    step = float(mkt.get('info', {}).get('priceStep') or 0.0)
-                    if step > 0:
-                        tick = step
-                except Exception:
-                    pass
-            if not tick or tick <= 0:
-                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
-            # --- enforce relation: SHORT needs SL > trigger ---
-            p['stopPrice'] = sl_trigger                # trigger
-            p['stopLoss'] = sl_trigger + tick          # order price ABOVE trigger
-            # do NOT send stopLossPrice to avoid conflicting checks
-        param_candidates.append(p)
-    param_candidates.append(dict(base_params))
+    entry_cfg = (cfg or {}).get('entry') or {}
+    entry_type = str(entry_cfg.get('type', 'market')).lower()
 
-    last_res = None
-    try:
-        _dbg(
-            'place_open_short',
+    if entry_type == 'limit_aggressive':
+        ok, od = _place_limit_aggressive(
+            fetcher,
             sym,
-            f'qty={_fmt_float(qty)}',
-            f'price={_fmt_float(mkt_price)}',
-            f'tp={_fmt_float(tp_price)}' if tp_price is not None else 'tp=-',
-            f'sl={_fmt_float(sl_price)}' if sl_price is not None else 'sl=-',
-            f'candidates={len(param_candidates)}',
+            'sell',
+            qty,
+            tif_ioc=True,
+            offset_ticks=int(entry_cfg.get('offset_ticks', 1) or 1),
+            chase_steps=int(entry_cfg.get('chase_steps', 0) or 0),
+            chase_delay_ms=int(entry_cfg.get('chase_delay_ms', 250) or 250),
+            chase_extra_ticks=int(entry_cfg.get('chase_extra_ticks', 1) or 1),
+            params=base_params,
         )
-    except Exception:
-        pass
+        if not ok:
+            return {'ok': False, 'error': f"limit_aggressive failed: {od.get('error','')}", 'qty': qty}
+        res = {'ok': True, 'order': od, 'qty': qty}
+    else:
+        def _try(params):
+            try:
+                od = fetcher.ex.create_order(ccxt_sym, 'market', 'sell', qty, None, params)
+                sleep_ms(RATE_MS)
+                return {'ok': True, 'order': od, 'qty': qty, 'params': params}
+            except Exception as e:
+                return {'ok': False, 'error': str(e), 'params': params}
 
-    first_error = None
-    for idx, params in enumerate(param_candidates):
-        try:
-            _dbg('try_params', params)
-        except Exception:
-            pass
-        res = _try(params)
-        try:
-            _dbg(
-                'result',
-                'ok' if res.get('ok') else 'ERR',
-                (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId')))
-                 if res.get('ok') else ''),
-                res.get('error', '')
-            )
-        except Exception:
-            pass
-        last_res = res
-        if res['ok']:
-            if idx > 0 and first_error:
+        res = _try(base_params)
+        if not res.get('ok'):
+            msg = (res.get('error') or '').lower()
+            if ('one-way mode' in msg) or ('positionside' in msg):
+                p2 = {k: v for k, v in base_params.items() if k != 'positionSide'}
+                res = _try(p2)
+                if not res.get('ok'):
+                    p3 = dict(p2, positionSide='BOTH')
+                    res = _try(p3)
+            elif ('min amount' in msg) and step > 0:
                 try:
-                    _dbg('tp_sl_attach_err', first_error)
-                except Exception:
-                    pass
-                res['tp_sl_error'] = first_error
-            res['tp_price'] = tp_price
-            res['sl_price'] = sl_price
+                    qty2 = max(min_qty, qty + step)
+                    od = fetcher.ex.create_order(ccxt_sym, 'market', 'sell', qty2, None, base_params)
+                    sleep_ms(RATE_MS)
+                    res = {'ok': True, 'order': od, 'qty': qty2, 'params': base_params, 'retry': True}
+                except Exception as e2:
+                    res = {'ok': False, 'error': str(e2), 'qty': qty2, 'params': base_params}
+        if not res.get('ok'):
             return res
 
-        if idx == 0:
-            first_error = res.get('error')
-
-        msg = (res.get('error') or '').lower()
-        if ('one-way mode' in msg) or ('positionside' in msg):
-            p2 = {k: v for k, v in params.items() if k != 'positionSide'}
-            res2 = _try(p2)
-            if res2['ok']:
-                res2['tp_price'] = tp_price
-                res2['sl_price'] = sl_price
-                res2['retry'] = True
-                res2['note'] = 'auto: one-way detected (no positionSide)'
-                return res2
-            p3 = dict(p2, positionSide='BOTH')
-            res3 = _try(p3)
-            if res3['ok']:
-                res3['tp_price'] = tp_price
-                res3['sl_price'] = sl_price
-                res3['retry'] = True
-                res3['note'] = 'auto: one-way detected (BOTH)'
-                return res3
-            last_res = res3
-        elif ('min amount' in msg) and step > 0:
-            try:
-                qty2 = max(min_qty, qty + step)
-                od = fetcher.ex.create_order(ccxt_sym, 'market', 'sell', qty2, None, params)
-                sleep_ms(RATE_MS)
-                r = {'ok': True, 'order': od, 'qty': qty2, 'params': params, 'retry': True}
-                r['tp_price'] = tp_price
-                r['sl_price'] = sl_price
-                return r
-            except Exception as e2:
-                return {'ok': False, 'error': str(e2), 'qty': qty2, 'params': params}
-    return last_res or {'ok': False, 'error': 'unknown error'}
+    _place_tp_sl_after_open(fetcher, sym, 'SHORT', qty, tp_price, sl_price, position_mode)
+    return res
 
 def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: float, position_mode: str):
     ccxt_sym = fetcher.resolve_symbol(sym)
@@ -896,9 +887,13 @@ def run_live(cfg: dict, args):
                                     tp_price = entry_px + float(tp_mult)*atr_abs
                                     sl_price = entry_px - float(sl_mult)*atr_abs
                             if side_cfg == 'SHORT':
-                                res = place_open_short(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price, notional_max=position_notional_max)
+                                res = place_open_short(fetcher, sym, notional, entry_px, position_mode,
+                                                       tp_price=tp_price, sl_price=sl_price,
+                                                       notional_max=position_notional_max, cfg=cfg)
                             else:
-                                res = place_open_long(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price, notional_max=position_notional_max)
+                                res = place_open_long(fetcher, sym, notional, entry_px, position_mode,
+                                                      tp_price=tp_price, sl_price=sl_price,
+                                                      notional_max=position_notional_max, cfg=cfg)
                             if not res.get('ok'):
                                 reason = res.get('skip_reason') or res.get('error') or 'unknown'
                                 if res.get('skip_reason'):
@@ -945,7 +940,9 @@ def run_live(cfg: dict, args):
                         log_skip_reason(sym, 'no price available'); continue
                     tp_price = _sig_get(sig, 'tp_price', None) or _sig_get(sig, 'tp', None)
                     sl_price = _sig_get(sig, 'sl_price', None) or _sig_get(sig, 'sl', None)
-                    res = place_open_short(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price, notional_max=position_notional_max)
+                    res = place_open_short(fetcher, sym, notional, entry_px, position_mode,
+                                           tp_price=tp_price, sl_price=sl_price,
+                                           notional_max=position_notional_max, cfg=cfg)
                     if not res.get('ok'):
                         reason = res.get('skip_reason') or res.get('error') or 'unknown'
                         if res.get('skip_reason'):
@@ -990,7 +987,9 @@ def run_live(cfg: dict, args):
                 except Exception:
                     pass
 
-                res = place_open_long(fetcher, sym, notional, entry_px, position_mode, tp_price=tp_price, sl_price=sl_price, notional_max=position_notional_max)
+                res = place_open_long(fetcher, sym, notional, entry_px, position_mode,
+                                      tp_price=tp_price, sl_price=sl_price,
+                                      notional_max=position_notional_max, cfg=cfg)
                 if not res.get('ok'):
                     reason = res.get('skip_reason') or res.get('error') or 'unknown'
                     _dbg(sym, 'open FAIL:', reason)
