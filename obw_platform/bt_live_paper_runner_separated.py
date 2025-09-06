@@ -42,8 +42,8 @@ def main():
     ap.add_argument("--env-file", default="")
     ap.add_argument("--exchange", default="bingx")
     ap.add_argument("--symbol-format", default="usdtm")
-    ap.add_argument("--poll-sec", type=int, default=15)
-    ap.add_argument("--bar-delay-sec", type=int, default=10)
+    ap.add_argument("--poll-sec", type=int, default=2)
+    ap.add_argument("--bar-delay-sec", type=int, default=1)
     ap.add_argument("--limit_klines", type=int, default=180)
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--heat-report", action="store_true", default=False,
