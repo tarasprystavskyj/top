@@ -19,6 +19,7 @@ def dot():
 import importlib
 import os, sys, math, uuid, datetime as _dt, os
 
+CLOSE_CHECK_LOGGED = set()
 def _cfg_get_nested(cfg: dict, dotted: str, _missing=object()):
     """Return cfg value by dotted path like "runner.top_n" or _missing."""
     cur = cfg
@@ -165,27 +166,37 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
             p['takeProfitPrice'] = float(tp_price)
         if sl_price is not None:
             sl_trigger = float(sl_price)
-            prec = mkt.get('precision', {}).get('price')
-
+            # --- robust tick detection ---
             tick = None
+            # limits.price.min as increment
             try:
-                if isinstance(prec, int):
-                    tick = 10 ** (-prec)
-                else:
-                    precf = float(prec)
-                    tick = 10 ** (-int(precf)) if precf >= 1 else precf
-            except Exception:
-                tick = None
-            if not tick or tick <= 0:
-                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
-            try:
-                _dbg('sl_tick', tick, 'sl_trigger', sl_trigger, 'sl_price', max(sl_trigger - tick, 0.0))
+                lim_tick = float(mkt.get('limits', {}).get('price', {}).get('min') or 0.0)
+                if lim_tick > 0:
+                    tick = lim_tick
             except Exception:
                 pass
-
-            p['stopLoss'] = sl_trigger
-            p['stopPrice'] = sl_trigger
-            p['stopLossPrice'] = max(sl_trigger - tick, 0.0)
+            # precision.price as decimals count
+            if not tick or tick <= 0:
+                prec = mkt.get('precision', {}).get('price')
+                try:
+                    if isinstance(prec, int) and prec >= 0:
+                        tick = 10 ** (-prec)
+                except Exception:
+                    pass
+            # info.priceStep
+            if not tick or tick <= 0:
+                try:
+                    step = float(mkt.get('info', {}).get('priceStep') or 0.0)
+                    if step > 0:
+                        tick = step
+                except Exception:
+                    pass
+            if not tick or tick <= 0:
+                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
+            # --- enforce relation: LONG needs SL < trigger ---
+            p['stopPrice'] = sl_trigger               # trigger
+            p['stopLoss'] = max(sl_trigger - tick, 0)  # order price BELOW trigger
+            # do NOT send stopLossPrice to avoid conflicting checks
         param_candidates.append(p)
     param_candidates.append(dict(base_params))
 
@@ -293,25 +304,34 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
             p['takeProfitPrice'] = float(tp_price)
         if sl_price is not None:
             sl_trigger = float(sl_price)
-            prec = mkt.get('precision', {}).get('price')
+            # --- robust tick detection (same as LONG) ---
             tick = None
             try:
-                if isinstance(prec, int):
-                    tick = 10 ** (-prec)
-                else:
-                    precf = float(prec)
-                    tick = 10 ** (-int(precf)) if precf >= 1 else precf
-            except Exception:
-                tick = None
-            if not tick or tick <= 0:
-                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
-            try:
-                _dbg('sl_tick', tick, 'sl_trigger', sl_trigger, 'sl_price', sl_trigger + tick)
+                lim_tick = float(mkt.get('limits', {}).get('price', {}).get('min') or 0.0)
+                if lim_tick > 0:
+                    tick = lim_tick
             except Exception:
                 pass
-            p['stopLoss'] = sl_trigger
-            p['stopPrice'] = sl_trigger
-            p['stopLossPrice'] = sl_trigger + tick
+            if not tick or tick <= 0:
+                prec = mkt.get('precision', {}).get('price')
+                try:
+                    if isinstance(prec, int) and prec >= 0:
+                        tick = 10 ** (-prec)
+                except Exception:
+                    pass
+            if not tick or tick <= 0:
+                try:
+                    step = float(mkt.get('info', {}).get('priceStep') or 0.0)
+                    if step > 0:
+                        tick = step
+                except Exception:
+                    pass
+            if not tick or tick <= 0:
+                tick = max(abs(sl_trigger) * 1e-4, 1e-8)
+            # --- enforce relation: SHORT needs SL > trigger ---
+            p['stopPrice'] = sl_trigger                # trigger
+            p['stopLoss'] = sl_trigger + tick          # order price ABOVE trigger
+            # do NOT send stopLossPrice to avoid conflicting checks
         param_candidates.append(p)
     param_candidates.append(dict(base_params))
 
@@ -415,6 +435,9 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
 
 
 def _report_close_cooldown(sym: str, pos_rec: dict, px: float):
+    if sym in CLOSE_CHECK_LOGGED:
+        return
+    CLOSE_CHECK_LOGGED.add(sym)
     try:
         side = str(pos_rec.get('side', 'LONG')).upper()
         tp = pos_rec.get('tp_price'); sl = pos_rec.get('sl_price')
@@ -648,6 +671,7 @@ def run_live(cfg: dict, args):
             except Exception:
                 pass
             positions.pop(sym, None)
+            CLOSE_CHECK_LOGGED.discard(sym)
     save_positions(args.results_dir, positions)
 
     last_bar_ts = None
@@ -668,6 +692,7 @@ def run_live(cfg: dict, args):
                     except Exception:
                         pass
                     positions.pop(sym, None)
+                    CLOSE_CHECK_LOGGED.discard(sym)
                     save_positions(args.results_dir, positions)
                     continue
 
@@ -716,6 +741,7 @@ def run_live(cfg: dict, args):
                             except Exception:
                                 pass
                             positions.pop(sym, None)
+                            CLOSE_CHECK_LOGGED.discard(sym)
                             save_positions(args.results_dir, positions)
 
             uni = strat.universe(bar_close, md)
