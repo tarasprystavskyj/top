@@ -169,6 +169,50 @@ def _sig_get(sig, key, default=None):
         pass
     return default
 
+
+def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str):
+    """Return (avg_price, datetime) for an order id, if available."""
+    try:
+        if not order_id:
+            return None, None
+        ccxt_sym = fetcher.resolve_symbol(sym)
+        od = fetcher.ex.fetch_order(order_id, ccxt_sym)
+        sleep_ms(RATE_MS)
+    except Exception as e:
+        _dbg('fetch_order', str(e))
+        return None, None
+    price = None
+    ts = None
+    try:
+        for k in ('average', 'price', 'avgPrice', 'avg_price'):
+            v = od.get(k)
+            if v is not None:
+                price = float(v)
+                break
+    except Exception:
+        pass
+    try:
+        ts = od.get('timestamp')
+        if ts is None:
+            dt_str = od.get('datetime')
+            if dt_str:
+                ts = int(_dt.datetime.fromisoformat(dt_str.replace('Z', '+00:00')).timestamp() * 1000)
+        if ts is None and isinstance(od.get('info'), dict):
+            info = od['info']
+            for k in ('updateTime', 'transactTime', 'ts'):
+                if info.get(k) is not None:
+                    ts = int(info.get(k))
+                    break
+    except Exception:
+        ts = None
+    fill_dt = None
+    if ts is not None:
+        try:
+            fill_dt = _dt.datetime.fromtimestamp(ts / 1000.0, tz=_dt.timezone.utc)
+        except Exception:
+            pass
+    return price, fill_dt
+
 def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None):
     ccxt_sym = fetcher.resolve_symbol(sym)
     mkt = fetcher.markets.get(ccxt_sym, {})
@@ -448,37 +492,52 @@ def load_strategy(path_cls: str, cfg: dict):
     cls = getattr(mod, cls_name)
     return cls(cfg)
 
-def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, pos_rec: dict, position_mode: str):
-    side = str(entry_side or pos_rec.get('side','LONG')).upper()
-    tp = pos_rec.get('tp_price'); sl = pos_rec.get('sl_price')
+def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, pos_rec: dict, position_mode: str, now_dt=None):
+    side = str(entry_side or pos_rec.get('side', 'LONG')).upper()
+    tp = pos_rec.get('tp_price')
+    sl = pos_rec.get('sl_price')
     try:
         tp = float(tp) if tp is not None else None
         sl = float(sl) if sl is not None else None
+        px = float(px)
     except Exception:
-        tp, sl = None, None
+        return None
+    sign = 1.0 if side == 'LONG' else -1.0
     if side == 'LONG':
         if tp is not None and px >= tp:
             od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
             if od:
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
+                lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
-                return True
+                return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
         if sl is not None and px <= sl:
             od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
             if od:
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
+                lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
-                return True
+                return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
     elif side == 'SHORT':
         if tp is not None and px <= tp:
             od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
             if od:
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
+                lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
-                return True
+                return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
         if sl is not None and px >= sl:
             od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
             if od:
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
+                lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
-                return True
-    return False
+                return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
+    return None
     tp = float(pos_rec.get('tp_price') or 0.0) or None
     sl = float(pos_rec.get('sl_price') or 0.0) or None
     if tp is not None and px >= tp:
@@ -705,9 +764,19 @@ def run_live(cfg: dict, args):
             px = fetcher.fetch_ticker_price(sym)
             if px is not None:
                 _report_close_cooldown(sym, rec, px)
-                if _close_if_hit(fetcher, sym, rec.get('side', 'LONG'), px, rec, position_mode):
+                closed = _close_if_hit(fetcher, sym, rec.get('side', 'LONG'), px, rec, position_mode, now)
+                if closed:
                     try:
-                        db_mark_closed(session_db_path, bot_id, rec.get('order_id'), now.isoformat())
+                        db_mark_closed(
+                            session_db_path,
+                            bot_id,
+                            rec.get('order_id'),
+                            now.isoformat(),
+                            exit_fill=closed.get('fill_price'),
+                            exit_fill_ts=closed.get('fill_ts'),
+                            exit_slip_bp=closed.get('slip_bp'),
+                            exit_lag_sec=closed.get('lag_sec'),
+                        )
                     except Exception:
                         pass
                     positions.pop(sym, None)
@@ -759,9 +828,25 @@ def run_live(cfg: dict, args):
                             pass
                         od = place_reduce_only(fetcher, sym, side_close, float(rec.get('qty', 0.0)), position_mode)
                         if od:
+                            fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                            slip = (
+                                (fill / px - 1.0) * 10000.0 * (1 if str(rec.get('side', 'LONG')).upper() == 'LONG' else -1)
+                                if fill
+                                else None
+                            )
+                            lag = (fdt - now).total_seconds() if fdt else None
                             cprint('[exit close]', sym, f'@~{px:.6g}', fg='yellow')
                             try:
-                                db_mark_closed(session_db_path, bot_id, rec.get('order_id'), now.isoformat())
+                                db_mark_closed(
+                                    session_db_path,
+                                    bot_id,
+                                    rec.get('order_id'),
+                                    now.isoformat(),
+                                    exit_fill=fill,
+                                    exit_fill_ts=fdt.isoformat() if fdt else None,
+                                    exit_slip_bp=slip,
+                                    exit_lag_sec=lag,
+                                )
                             except Exception:
                                 pass
                             positions.pop(sym, None)
@@ -821,8 +906,12 @@ def run_live(cfg: dict, args):
                             qty = float(res['qty'])
                             ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '') if (res.get('order')) else None
                             side_str = 'SHORT' if side_cfg=='SHORT' else 'LONG'
+                            fill, fdt = _fetch_order_fill(fetcher, sym, ex_order_id)
+                            entry_fill = float(fill) if fill is not None else float(entry_px)
+                            lag_sec = (fdt - bar_close).total_seconds() if fdt else None
+                            slip_bp = (entry_fill / float(entry_px) - 1.0) * 10000.0 * (1 if side_str == 'LONG' else -1)
                             cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
-                            rec = {'symbol': sym,'side': side_str,'qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id}
+                            rec = {'symbol': sym,'side': side_str,'qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec}
                             positions[sym] = rec; save_positions(args.results_dir, positions)
                             # Fallback TP/SL placement as separate orders (reduce-only)
                             try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode)
@@ -859,8 +948,12 @@ def run_live(cfg: dict, args):
                         cprint('[open FAIL]', sym, ':', res, fg='red', file=sys.stderr); continue
                     qty = float(res['qty'])
                     ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '') if (res.get('order')) else None
+                    fill, fdt = _fetch_order_fill(fetcher, sym, ex_order_id)
+                    entry_fill = float(fill) if fill is not None else float(entry_px)
+                    lag_sec = (fdt - bar_close).total_seconds() if fdt else None
+                    slip_bp = (entry_fill / float(entry_px) - 1.0) * 10000.0 * -1  # SHORT
                     cprint('[open OK]', f'{sym} SHORT qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
-                    rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id}
+                    rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec}
                     positions[sym] = rec; save_positions(args.results_dir, positions)
                     # Fallback TP/SL placement as separate orders (reduce-only)
                     try: _place_tp_sl_after_open(fetcher, sym, 'SHORT', qty, tp_price, sl_price, position_mode)
@@ -903,6 +996,10 @@ def run_live(cfg: dict, args):
                 except Exception:
                     ex_order_id = None
                 side_str = 'LONG'
+                fill, fdt = _fetch_order_fill(fetcher, sym, ex_order_id)
+                entry_fill = float(fill) if fill is not None else float(entry_px)
+                lag_sec = (fdt - bar_close).total_seconds() if fdt else None
+                slip_bp = (entry_fill / float(entry_px) - 1.0) * 10000.0
                 cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'
            + (f' tp={tp_price:.6g}' if tp_price is not None else ' tp=-')
            + (f' sl={sl_price:.6g}' if sl_price is not None else ' sl=-')
@@ -918,7 +1015,11 @@ def run_live(cfg: dict, args):
                     'ts_open': bar_close.isoformat(),
                     'run_id': run_id,
                     'order_id': str(uuid.uuid4()),
-                    'exchange_order_id': ex_order_id
+                    'exchange_order_id': ex_order_id,
+                    'entry_fill': entry_fill,
+                    'entry_fill_ts': fdt.isoformat() if fdt else None,
+                    'entry_slip_bp': slip_bp,
+                    'entry_lag_sec': lag_sec,
                 }
                 positions[sym] = rec
                 save_positions(args.results_dir, positions)
