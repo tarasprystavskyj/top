@@ -189,8 +189,17 @@ def _sig_get(sig, key, default=None):
 def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None, notional_max: float = None):
     ccxt_sym = fetcher.resolve_symbol(sym)
     mkt = fetcher.markets.get(ccxt_sym, {})
-    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, price, max_notional=notional_max)
-    if qty < float(min_qty) - 1e-9 or price * qty < float(min_notional_req) - 1e-9:
+    mkt_price = None
+    try:
+        ticker = fetcher.ex.fetch_ticker(ccxt_sym)
+        mkt_price = ticker.get('ask') or ticker.get('last')
+    except Exception:
+        mkt_price = None
+    mkt_price = float(mkt_price or price or 0.0)
+    if mkt_price <= 0:
+        return {'ok': False, 'skip_reason': 'no_price', 'qty': 0}
+    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, mkt_price, max_notional=notional_max)
+    if qty < float(min_qty) - 1e-9 or mkt_price * qty < float(min_notional_req) - 1e-9:
         return {
             'ok': False,
             'skip_reason': 'min_qty/min_notional',
@@ -257,7 +266,7 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
             'place_open_long',
             sym,
             f'qty={_fmt_float(qty)}',
-            f'price={_fmt_float(price)}',
+            f'price={_fmt_float(mkt_price)}',
             f'tp={_fmt_float(tp_price)}' if tp_price is not None else 'tp=-',
             f'sl={_fmt_float(sl_price)}' if sl_price is not None else 'sl=-',
             f'candidates={len(param_candidates)}',
@@ -333,8 +342,17 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
 def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None, notional_max: float = None):
     ccxt_sym = fetcher.resolve_symbol(sym)
     mkt = fetcher.markets.get(ccxt_sym, {})
-    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, price, max_notional=notional_max)
-    if qty < float(min_qty) - 1e-9 or price * qty < float(min_notional_req) - 1e-9:
+    mkt_price = None
+    try:
+        ticker = fetcher.ex.fetch_ticker(ccxt_sym)
+        mkt_price = ticker.get('bid') or ticker.get('last')
+    except Exception:
+        mkt_price = None
+    mkt_price = float(mkt_price or price or 0.0)
+    if mkt_price <= 0:
+        return {'ok': False, 'skip_reason': 'no_price', 'qty': 0}
+    qty, min_notional_req, step, min_qty = qty_for_notional(mkt, notional, mkt_price, max_notional=notional_max)
+    if qty < float(min_qty) - 1e-9 or mkt_price * qty < float(min_notional_req) - 1e-9:
         return {
             'ok': False,
             'skip_reason': 'min_qty/min_notional',
@@ -398,7 +416,7 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
             'place_open_short',
             sym,
             f'qty={_fmt_float(qty)}',
-            f'price={_fmt_float(price)}',
+            f'price={_fmt_float(mkt_price)}',
             f'tp={_fmt_float(tp_price)}' if tp_price is not None else 'tp=-',
             f'sl={_fmt_float(sl_price)}' if sl_price is not None else 'sl=-',
             f'candidates={len(param_candidates)}',
