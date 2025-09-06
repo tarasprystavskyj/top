@@ -256,17 +256,24 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
         base_params['positionSide'] = 'SHORT'
 
     param_candidates = []
-    if tp_price is not None or sl_price is not None:
+    # On BingX (one-way), inline SL often fails; mirror LONG logic and place SL separately.
+    pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
+    if tp_price is not None:
         p = dict(base_params)
-        if tp_price is not None:
-            p['takeProfit'] = float(tp_price)
-            p['takeProfitPrice'] = float(tp_price)
-        if sl_price is not None:
-            p['stopLoss'] = float(sl_price)
-            p['stopLossPrice'] = float(sl_price)
-            p['stopPrice'] = float(sl_price)
-        param_candidates.append(p)
-    param_candidates.append(dict(base_params))
+        p['takeProfit'] = float(tp_price)
+        p['takeProfitPrice'] = float(tp_price)
+        if pos_oneway:
+            p = dict(p)
+            param_candidates.append(dict(p, positionSide='BOTH'))
+            param_candidates.append({k: v for k, v in p.items() if k != 'positionSide'})
+        else:
+            param_candidates.append(p)
+    # Always add a clean base candidate (no TP/SL inline)
+    if pos_oneway:
+        param_candidates.append({'reduceOnly': False, 'positionSide': 'BOTH'})
+        param_candidates.append({'reduceOnly': False})
+    else:
+        param_candidates.append(dict(base_params))
 
     last_res = None
     try:
@@ -761,12 +768,11 @@ def run_live(cfg: dict, args):
                             qty = float(res['qty'])
                             ex_order_id = str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId') or '') if (res.get('order')) else None
                             side_str = 'SHORT' if side_cfg=='SHORT' else 'LONG'
-                            side_str = 'LONG'
                             cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
                             rec = {'symbol': sym,'side': side_str,'qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id}
                             positions[sym] = rec; save_positions(args.results_dir, positions)
                             # Fallback TP/SL placement as separate orders (reduce-only)
-                            try: _place_tp_sl_after_open(fetcher, sym, 'LONG', qty, tp_price, sl_price, position_mode)
+                            try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode)
                             except Exception as e: _dbg('post_open_error', str(e))
                             try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                             except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
@@ -803,6 +809,9 @@ def run_live(cfg: dict, args):
                     cprint('[open OK]', f'{sym} SHORT qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
                     rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id}
                     positions[sym] = rec; save_positions(args.results_dir, positions)
+                    # Fallback TP/SL placement as separate orders (reduce-only)
+                    try: _place_tp_sl_after_open(fetcher, sym, 'SHORT', qty, tp_price, sl_price, position_mode)
+                    except Exception as e: _dbg('post_open_error', str(e))
                     try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                     except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
                     opened += 1
