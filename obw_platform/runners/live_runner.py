@@ -788,7 +788,7 @@ def run_live(cfg: dict, args):
                     pass
                 side_up = str(side_attr).upper()
                 if side_up in ('SHORT','SELL'):
-                    _dbg(sym, 'skip: SHORT disabled (oneway-long-only)'); log_skip_reason(sym, 'short disabled'); continue
+                    #_dbg(sym, 'skip: SHORT disabled (oneway-long-only)'); log_skip_reason(sym, 'short disabled'); continue
                 # if side_up in ('SHORT','SELL'):  # fallback disabled above
                     entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
                     if not entry_px:
