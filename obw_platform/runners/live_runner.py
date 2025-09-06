@@ -493,7 +493,7 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
         return None
 
 
-def _report_close_cooldown(sym: str, pos_rec: dict, px: float):
+def _report_close_cooldown(sym: str, pos_rec: dict, px: float, bar_close):
     try:
         side = str(pos_rec.get('side', 'LONG')).upper()
         tp = pos_rec.get('tp_price'); sl = pos_rec.get('sl_price')
@@ -533,6 +533,7 @@ def _report_close_cooldown(sym: str, pos_rec: dict, px: float):
                f"tp_gap={fmt(tp_gap)}", f"sl_gap={fmt(sl_gap)}",
                f"nearest={fmt(nearest_val)} ({nearest_label})",
                fg="magenta", dim=True)
+        pos_rec['_last_close_report_ts'] = getattr(bar_close, 'isoformat', lambda: bar_close)()
     except Exception:
         pass
 
@@ -750,7 +751,10 @@ def run_live(cfg: dict, args):
         for sym, rec in list(positions.items()):
             px = fetcher.fetch_ticker_price(sym)
             if px is not None:
-                _report_close_cooldown(sym, rec, px)
+                last_rep = rec.get('_last_close_report_ts')
+                bc_iso = bar_close.isoformat()
+                if last_rep != bc_iso:
+                    _report_close_cooldown(sym, rec, px, bar_close)
                 if _close_if_hit(fetcher, sym, rec.get('side', 'LONG'), px, rec, position_mode):
                     try:
                         db_mark_closed(session_db_path, bot_id, rec.get('order_id'), now.isoformat())
