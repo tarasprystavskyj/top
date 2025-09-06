@@ -115,6 +115,37 @@ def get_exchange_open_positions(fetcher: CCXTFetcher):
             continue
     return pos_map
 
+def get_account_equity(fetcher: CCXTFetcher) -> float:
+    try:
+        bal = fetcher.ex.fetch_balance()
+    except Exception as e:
+        cprint('[balance fetch]', e, fg='red')
+        return 0.0
+    try:
+        if isinstance(bal, dict):
+            total = bal.get('total')
+            if isinstance(total, dict):
+                for k in ('USDT', 'USD', 'USDC', 'BUSD'):
+                    v = total.get(k)
+                    if v is not None:
+                        return float(v)
+            for k in ('equity', 'total'):
+                v = bal.get(k)
+                if isinstance(v, (int, float)):
+                    return float(v)
+            info = bal.get('info')
+            if isinstance(info, dict):
+                for k in ('equity', 'total'):
+                    v = info.get(k)
+                    if v is not None:
+                        try:
+                            return float(v)
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    return 0.0
+
 def qty_for_notional(mkt: dict, notional: float, price: float):
     min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
     step = float(mkt.get('precision', {}).get('amount') or 0.0)
@@ -539,10 +570,12 @@ def run_live(cfg: dict, args):
 
     top_n_v, top_n_origin = _cfg_pick(cfg, ['top_n','runner.top_n','live.top_n','strategy_params.top_n','strategy.top_n'], 4)
     notional_v, notional_origin = _cfg_pick(cfg, ['notional','position_notional','runner.notional','live.notional','portfolio.position_notional'], 2.2)
+    max_nf_v, max_nf_origin = _cfg_pick(cfg, ['max_notional_frac','runner.max_notional_frac','live.max_notional_frac','portfolio.max_notional_frac'], 0.5)
     position_mode_v, position_mode_origin = _cfg_pick(cfg, ['position_mode','runner.position_mode','live.position_mode','session.position_mode'], 'hedge')
     tf_v, tf_origin = _cfg_pick(cfg, ['timeframe','runner.timeframe','live.timeframe'], '1h')
     top_n = int(top_n_v)
     notional = float(notional_v)
+    max_notional_frac = float(max_nf_v)
     position_mode = str(position_mode_v)
     tf = str(tf_v)
     tf_sec = _tf_to_seconds(tf)
@@ -552,12 +585,13 @@ def run_live(cfg: dict, args):
     open_heat_min_v, open_heat_min_origin = _cfg_pick(cfg, ['open_heat_min','runner.open_heat_min','live.open_heat_min'], 0.80)
     open_on_heat = bool(open_on_heat_v)
     open_heat_min = float(open_heat_min_v)
-    cprint('[cfg]', f'top_n={top_n}, notional={notional}, timeframe={tf}, position_mode={position_mode}, open_on_heat={open_on_heat}, heat_min={open_heat_min}', fg='magenta')
+    cprint('[cfg]', f'top_n={top_n}, notional={notional}, timeframe={tf}, position_mode={position_mode}, max_notional_frac={max_notional_frac}, open_on_heat={open_on_heat}, heat_min={open_heat_min}', fg='magenta')
     if getattr(args, 'debug', False):
         _debug_dump_effective(cfg, strat, args,
             resolved={
                 'top_n': (top_n, top_n_origin),
                 'notional': (notional, notional_origin),
+                'max_notional_frac': (max_notional_frac, max_nf_origin),
                 'position_mode': (position_mode, position_mode_origin),
                 'timeframe': (tf, tf_origin),
                 'open_on_heat': (bool(open_on_heat_v), open_on_heat_origin),
@@ -737,11 +771,15 @@ def run_live(cfg: dict, args):
             ranked = strat.rank(bar_close, md, uni)[:top_n]
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
             opened = 0
+            equity = get_account_equity(fetcher)
             for sym in ranked:
                 if sym in positions:
                     _dbg(sym, 'skip: already tracked')
                     log_skip_reason(sym, 'already open by THIS bot')
                     continue
+                if (len(positions) + 1) * notional > max_notional_frac * equity:
+                    log_skip_reason(sym, 'budget cap reached')
+                    break
                 row = md.get(sym)
                 if row is None:
                     _dbg(sym, 'skip: no md row (key mismatch)')
