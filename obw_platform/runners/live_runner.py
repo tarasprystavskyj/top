@@ -630,11 +630,13 @@ def run_live(cfg: dict, args):
     top_n_v, top_n_origin = _cfg_pick(cfg, ['top_n','runner.top_n','live.top_n','strategy_params.top_n','strategy.top_n'], 4)
     notional_v, notional_origin = _cfg_pick(cfg, ['notional','position_notional','runner.notional','live.notional','portfolio.position_notional'], 2.2)
     max_nf_v, max_nf_origin = _cfg_pick(cfg, ['max_notional_frac','runner.max_notional_frac','live.max_notional_frac','portfolio.max_notional_frac'], 0.5)
+    init_eq_v, init_eq_origin = _cfg_pick(cfg, ['initial_equity','runner.initial_equity','live.initial_equity','portfolio.initial_equity'], 100.0)
     position_mode_v, position_mode_origin = _cfg_pick(cfg, ['position_mode','runner.position_mode','live.position_mode','session.position_mode'], 'hedge')
     tf_v, tf_origin = _cfg_pick(cfg, ['timeframe','runner.timeframe','live.timeframe'], '1h')
     top_n = int(top_n_v)
     notional = float(notional_v)
     max_notional_frac = float(max_nf_v)
+    initial_equity = float(init_eq_v)
     position_mode = str(position_mode_v)
     tf = str(tf_v)
     tf_sec = _tf_to_seconds(tf)
@@ -644,13 +646,14 @@ def run_live(cfg: dict, args):
     open_heat_min_v, open_heat_min_origin = _cfg_pick(cfg, ['open_heat_min','runner.open_heat_min','live.open_heat_min'], 0.80)
     open_on_heat = bool(open_on_heat_v)
     open_heat_min = float(open_heat_min_v)
-    cprint('[cfg]', f'top_n={top_n}, notional={notional}, timeframe={tf}, position_mode={position_mode}, max_notional_frac={max_notional_frac}, open_on_heat={open_on_heat}, heat_min={open_heat_min}', fg='magenta')
+    cprint('[cfg]', f'top_n={top_n}, notional={notional}, timeframe={tf}, position_mode={position_mode}, max_notional_frac={max_notional_frac}, initial_equity={initial_equity}, open_on_heat={open_on_heat}, heat_min={open_heat_min}', fg='magenta')
     if getattr(args, 'debug', False):
         _debug_dump_effective(cfg, strat, args,
             resolved={
                 'top_n': (top_n, top_n_origin),
                 'notional': (notional, notional_origin),
                 'max_notional_frac': (max_notional_frac, max_nf_origin),
+                'initial_equity': (initial_equity, init_eq_origin),
                 'position_mode': (position_mode, position_mode_origin),
                 'timeframe': (tf, tf_origin),
                 'open_on_heat': (bool(open_on_heat_v), open_on_heat_origin),
@@ -857,12 +860,16 @@ def run_live(cfg: dict, args):
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
             opened = 0
             equity = get_account_equity(fetcher)
+            position_notional = sum(
+                (p.get('qty', 0.0)) * ((p.get('entry_fill') or p.get('entry') or 0.0))
+                for p in positions.values()
+            )
             for sym in ranked:
                 if sym in positions:
                     _dbg(sym, 'skip: already tracked')
                     log_skip_reason(sym, 'already open by THIS bot')
                     continue
-                if (len(positions) + 1) * notional > max_notional_frac * equity:
+                if position_notional + notional > max_notional_frac * initial_equity:
                     log_skip_reason(sym, 'budget cap reached')
                     break
                 row = md.get(sym)
@@ -913,6 +920,7 @@ def run_live(cfg: dict, args):
                             cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
                             rec = {'symbol': sym,'side': side_str,'qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec}
                             positions[sym] = rec; save_positions(args.results_dir, positions)
+                            position_notional += qty * entry_fill
                             # Fallback TP/SL placement as separate orders (reduce-only)
                             try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode)
                             except Exception as e: _dbg('post_open_error', str(e))
@@ -955,6 +963,7 @@ def run_live(cfg: dict, args):
                     cprint('[open OK]', f'{sym} SHORT qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
                     rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec}
                     positions[sym] = rec; save_positions(args.results_dir, positions)
+                    position_notional += qty * entry_fill
                     # Fallback TP/SL placement as separate orders (reduce-only)
                     try: _place_tp_sl_after_open(fetcher, sym, 'SHORT', qty, tp_price, sl_price, position_mode)
                     except Exception as e: _dbg('post_open_error', str(e))
@@ -1023,6 +1032,7 @@ def run_live(cfg: dict, args):
                 }
                 positions[sym] = rec
                 save_positions(args.results_dir, positions)
+                position_notional += qty * entry_fill
                 # Fallback TP/SL placement as separate orders (reduce-only)
                 try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode)
                 except Exception as e: _dbg('post_open_error', str(e))
