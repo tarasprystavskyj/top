@@ -1,4 +1,4 @@
-const API_URL = process.env.BACKEND_URL || 'http://vps2.happyuser.info:8001';
+const API_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8001';
 
 module.exports = {
   reactStrictMode: true,
