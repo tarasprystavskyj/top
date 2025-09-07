@@ -8,12 +8,13 @@
     "start": "next start",
     "test": "echo \"No tests\""
   },
-  "devDependencies": {
+  "dependencies": {
+    "next": "13.4.19",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
     "typescript": "5.2.2",
     "@types/react": "18.2.21",
     "@types/node": "18.17.17"
-  },
-  "dependencies": {
     "next": "13.4.19",
     "react": "18.2.0",
     "react-dom": "18.2.0",
