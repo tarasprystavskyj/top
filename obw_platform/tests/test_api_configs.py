@@ -2,7 +2,7 @@ import pytest
 
 try:  # pragma: no cover - import error branch is handled by skip
     from fastapi.testclient import TestClient
-    from api.main import app, CONFIG_DIR
+    from v.api.main import app, CONFIG_DIR
 except Exception as exc:  # pragma: no cover
     pytest.skip(f"fastapi not available: {exc}", allow_module_level=True)
 
