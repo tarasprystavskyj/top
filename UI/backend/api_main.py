@@ -23,6 +23,16 @@ BACKTESTER_SCRIPTS = [
     "backtester_core_v1.py",
 ]
 
+# Map of optional features supported by each backtester script.  This helps
+# us only pass CLI flags that a particular backtester understands to avoid
+# "unrecognized arguments" errors.
+BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
+    "backtester_core_speed3_veto_universe_2.py": {"plots": True},
+    "backtester_core_speed3_veto_universe.py": {"plots": True},
+    "backtester_core_speed3.py": {"plots": True},
+    "backtester_core_speed3_veto.py": {"plots": True},
+}
+
 def load_backtester_version() -> str:
     try:
         data = yaml.safe_load(open(BT_VERSION_FILE, "r")) or {}
@@ -111,6 +121,12 @@ def apply_overrides(cfg: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, 
     return out
 
 def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None, script=None):
+    """Build a command line for the selected backtester script.
+
+    Only include CLI flags that the target backtester supports.  This keeps
+    older implementations (e.g. speed2) from failing with "unrecognized
+    arguments" when newer flags like ``--plots`` are present.
+    """
     # run inside obw_platform so relative paths in configs resolve correctly
     bt_script = script or load_backtester_version()
     cmd = [
@@ -121,7 +137,9 @@ def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None, script=N
         "--limit-bars",
         str(limit_bars),
     ]
-    if plots_dir:
+
+    # Only add --plots if the selected backtester advertises support for it
+    if plots_dir and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("plots"):
         cmd += ["--plots", plots_dir]
     return cmd
 
@@ -202,7 +220,14 @@ def health(): return {"ok": True}
 
 @app.get("/api/backtesters")
 def backtesters():
-    return {"versions": BACKTESTER_SCRIPTS, "current": load_backtester_version()}
+    # Expose available backtester scripts along with their optional features so
+    # the frontend can retain only supported parameters for a chosen
+    # implementation.
+    return {
+        "versions": BACKTESTER_SCRIPTS,
+        "current": load_backtester_version(),
+        "capabilities": BACKTESTER_CAPABILITIES,
+    }
 
 @app.get("/api/configs")
 def configs():
