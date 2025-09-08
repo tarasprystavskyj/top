@@ -641,6 +641,11 @@ def run_live(cfg: dict, args):
     tf = str(tf_v)
     tf_sec = _tf_to_seconds(tf)
 
+    # Build a stable results directory to accumulate session data
+    cfg_name = os.path.splitext(os.path.basename(getattr(args, 'cfg', 'cfg')))[0]
+    base_live_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '_reports', '_live'))
+    args.results_dir = os.path.join(base_live_dir, f"livecfg_{cfg_name}_{tf}")
+
     # Optional: open entries based on heat (even if entry_signal is None)
     open_on_heat_v, open_on_heat_origin = _cfg_pick(cfg, ['open_on_heat','runner.open_on_heat','live.open_on_heat'], False)
     open_heat_min_v, open_heat_min_origin = _cfg_pick(cfg, ['open_heat_min','runner.open_heat_min','live.open_heat_min'], 0.80)
