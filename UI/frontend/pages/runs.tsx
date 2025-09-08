@@ -1,1 +1,1 @@
-import useSWR from 'swr'; const f=(u:string)=>fetch(u).then(r=>r.json()); export default function Runs(){const {data}=useSWR('/api/runs',f); if(!data) return 'Loading...'; return <pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(data,null,2)}</pre>} 
+import useSWR from 'swr'; import { apiFetch } from '../utils/api'; const f=(u:string)=>apiFetch(u).then(r=>r.json()); export default function Runs(){const {data}=useSWR('/api/runs',f); if(!data) return 'Loading...'; return <pre style={{whiteSpace:'pre-wrap'}}>{JSON.stringify(data,null,2)}</pre>}
