@@ -1,5 +1,5 @@
 timeframe: 5m
-cache_db: paper_api_results_5m/combined_cache_session.db  #../combined_cache_5m_5000_04.09.db ## #combined_cache_5m_500_05.09.db
+cache_db: ../combined_cache_5m_5000_04.09.db #paper_api_results_5m/combined_cache_session.db ## #combined_cache_5m_500_05.09.db
 strategy_class: strategies.breakout_avaai_full_with_universe_3.BreakoutAVAAIFull
 open_on_heat: false 
 open_heat_min: 0.01
