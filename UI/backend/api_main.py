@@ -11,9 +11,48 @@ MAIN_CONFIG_DIR = os.path.join(DATA_ROOT, "configs")
 OBW_CONFIG_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "configs"))
 CONFIG_DIRS = [MAIN_CONFIG_DIR, OBW_CONFIG_DIR]
 RUNS_DIR = os.path.join(DATA_ROOT, "runs")
+UNIVERSE_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "universe"))
+BT_VERSION_FILE = os.path.join(DATA_ROOT, "backtester_version.yaml")
+BACKTESTER_SCRIPTS = [
+    "backtester_core_speed3_veto_universe_2.py",
+    "backtester_core_speed3_veto_universe.py",
+    "backtester_core_speed2.py",
+    "backtester_core_speed3.py",
+    "backtester_core_speed3_veto.py",
+    "backtester_core_v0.py",
+    "backtester_core_v1.py",
+]
+
+# Map of optional features supported by each backtester script.  This helps
+# us only pass CLI flags that a particular backtester understands to avoid
+# "unrecognized arguments" errors.
+BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
+    "backtester_core_speed3_veto_universe_2.py": {"plots": True},
+    "backtester_core_speed3_veto_universe.py": {"plots": True},
+    "backtester_core_speed3.py": {"plots": True},
+    "backtester_core_speed3_veto.py": {"plots": True},
+}
+
+def load_backtester_version() -> str:
+    try:
+        data = yaml.safe_load(open(BT_VERSION_FILE, "r")) or {}
+        ver = data.get("version")
+        if ver in BACKTESTER_SCRIPTS:
+            return ver
+    except Exception:
+        pass
+    return BACKTESTER_SCRIPTS[0]
+
+def save_backtester_version(ver: str) -> None:
+    try:
+        with open(BT_VERSION_FILE, "w") as f:
+            yaml.safe_dump({"version": ver}, f)
+    except Exception:
+        pass
 
 os.makedirs(MAIN_CONFIG_DIR, exist_ok=True)
 os.makedirs(RUNS_DIR, exist_ok=True)
+os.makedirs(UNIVERSE_DIR, exist_ok=True)
 
 job_q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 jobs: Dict[str, Dict[str, Any]] = {}
@@ -49,6 +88,7 @@ class BacktestReq(BaseModel):
     branch: Optional[str] = None
     cache_db: Optional[str] = None
     override: Optional[Dict[str, Any]] = None
+    backtester: Optional[str] = None
 
 class GridAxis(BaseModel):
     path: str
@@ -80,17 +120,26 @@ def apply_overrides(cfg: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, 
             deep_update(out, k, v)
     return out
 
-def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None):
+def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None, script=None):
+    """Build a command line for the selected backtester script.
+
+    Only include CLI flags that the target backtester supports.  This keeps
+    older implementations (e.g. speed2) from failing with "unrecognized
+    arguments" when newer flags like ``--plots`` are present.
+    """
     # run inside obw_platform so relative paths in configs resolve correctly
+    bt_script = script or load_backtester_version()
     cmd = [
         "python3",
-        "backtester_core_speed3_veto_universe_2.py",
+        bt_script,
         "--cfg",
         cfg_path,
         "--limit-bars",
         str(limit_bars),
     ]
-    if plots_dir:
+
+    # Only add --plots if the selected backtester advertises support for it
+    if plots_dir and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("plots"):
         cmd += ["--plots", plots_dir]
     return cmd
 
@@ -121,7 +170,8 @@ def run_backtest(job):
             os.remove(os.path.join(bt_root, fn))
         except FileNotFoundError:
             pass
-    cmd = cmd_backtester(cfg_path, meta["limit_bars"], meta.get("cache_db"), out_dir)
+    bt_script = meta.get("backtester") or load_backtester_version()
+    cmd = cmd_backtester(cfg_path, meta["limit_bars"], meta.get("cache_db"), out_dir, bt_script)
     with open(logs, "w") as lf:
         p = subprocess.Popen(cmd, cwd=bt_root, stdout=lf, stderr=lf)
         p.wait()
@@ -132,6 +182,7 @@ def run_backtest(job):
         dstp = os.path.join(out_dir, fn)
         if os.path.exists(srcp):
             shutil.copyfile(srcp, dstp)
+    save_backtester_version(bt_script)
 
 def run_grid(job):
     jid = job["job_id"]
@@ -167,6 +218,17 @@ app = FastAPI()
 @app.get("/api/health")
 def health(): return {"ok": True}
 
+@app.get("/api/backtesters")
+def backtesters():
+    # Expose available backtester scripts along with their optional features so
+    # the frontend can retain only supported parameters for a chosen
+    # implementation.
+    return {
+        "versions": BACKTESTER_SCRIPTS,
+        "current": load_backtester_version(),
+        "capabilities": BACKTESTER_CAPABILITIES,
+    }
+
 @app.get("/api/configs")
 def configs():
     out: Dict[str, Dict[str, Any]] = {}
@@ -197,6 +259,13 @@ def config_put(name: str, body: Dict[str, Any] = Body(...)):
     open(p,"w").write(txt)
     return {"ok": True}
 
+@app.get("/api/universes")
+def universes():
+    items = []
+    for p in sorted(glob.glob(os.path.join(UNIVERSE_DIR, "*.txt"))):
+        items.append(os.path.basename(p))
+    return items
+
 @app.post("/api/backtest")
 def backtest(req: BacktestReq):
     jid = str(uuid.uuid4())
@@ -206,6 +275,7 @@ def backtest(req: BacktestReq):
         "cfg_name": req.cfg_name,
         "limit_bars": req.limit_bars,
         "started_at": time.time(),
+        "backtester": req.backtester or load_backtester_version(),
     }
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f)

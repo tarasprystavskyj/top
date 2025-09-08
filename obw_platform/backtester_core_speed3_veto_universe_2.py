@@ -7,7 +7,7 @@
 #   - Calls strat.entry_signal() -> must return TP/SL; we just attach to Position
 #   - Calls strat.manage_position() for exits
 #   - Heat is reporting-only (printed if provided), not used for decisions.
-import argparse, sqlite3, importlib, time, sys, csv, os, pathlib as _p
+import argparse, sqlite3, importlib, time, sys, csv, os, pathlib as _p, shutil
 from dataclasses import dataclass
 from typing import Dict, Any
 
@@ -59,6 +59,28 @@ def find_db_file(filename: str):
     raise FileNotFoundError(f"DB file '{filename}' not found in {search_paths}")
 
 
+def _timeframe_to_minutes(tf: str) -> float:
+    s = str(tf).strip().lower()
+    if s.endswith("m"):
+        try:
+            return float(s[:-1])
+        except Exception:
+            return 0.0
+    if s.endswith("h"):
+        try:
+            return float(s[:-1]) * 60.0
+        except Exception:
+            return 0.0
+    if s.endswith("d"):
+        try:
+            return float(s[:-1]) * 1440.0
+        except Exception:
+            return 0.0
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
 def main():
     ap = argparse.ArgumentParser(description="Thin backtester (universe + strategy-owned logic)")
     ap.add_argument("--cfg", required=True)
@@ -84,14 +106,17 @@ def main():
     allow_syms |= set(_split_csv_list(args.allow_symbols))
     deny_syms  |= set(_split_csv_list(args.deny_symbols))
 
-    if args.symbols_file:
-        with open(args.symbols_file, "r", encoding="utf-8") as f:
-            for ln in f:
-                s = ln.strip()
-                if s and not s.startswith("#"):
-                    allow_syms.add(s)
-    elif cfg.get("universe_file"):
-        with open(cfg["universe_file"], "r", encoding="utf-8") as f:
+    sym_file = args.symbols_file or cfg.get("symbols_file") or cfg.get("universe_file")
+    if sym_file:
+        if not os.path.isabs(sym_file):
+            # Users sometimes provide paths like "universe/foo.txt".  Previously we
+            # blindly prefixed our own "universe" directory which resulted in
+            # paths such as "universe/universe/foo.txt".  Normalise the supplied
+            # path by keeping only the filename and joining it with the local
+            # "universe" directory.
+            udir = os.path.join(os.path.dirname(__file__), "universe")
+            sym_file = os.path.join(udir, os.path.basename(sym_file))
+        with open(sym_file, "r", encoding="utf-8") as f:
             for ln in f:
                 s = ln.strip()
                 if s and not s.startswith("#"):
@@ -294,6 +319,22 @@ def main():
     pf = (pnl_pos / max(1e-12, -pnl_neg)) if (pnl_pos>0 and pnl_neg<0) else 0.0
     win_rate_pct = (wins * 100.0 / max(1, trades)) if trades else 0.0
 
+    tf_minutes = _timeframe_to_minutes(cfg.get("timeframe", 0))
+    total_minutes = tf_minutes * float(args.limit_bars or 0)
+    total_days = total_minutes / (60.0 * 24.0) if total_minutes else 0.0
+    total_return = (equity / initial_equity) if initial_equity else 0.0
+    if total_days > 0 and total_return > 0:
+        daily_ret = total_return ** (1.0 / total_days) - 1.0
+        monthly_ret = total_return ** (1.0 / (total_days / 30.0)) - 1.0 if total_days >= 1 else 0.0
+        yearly_ret = total_return ** (1.0 / (total_days / 365.0)) - 1.0 if total_days >= 1 else 0.0
+        apr = ((equity - initial_equity) / initial_equity) * (365.0 / total_days)
+    else:
+        daily_ret = monthly_ret = yearly_ret = apr = 0.0
+    apr_pct = apr * 100.0
+    daily_ret_pct = daily_ret * 100.0
+    monthly_ret_pct = monthly_ret * 100.0
+    yearly_ret_pct = yearly_ret * 100.0
+
     # Metrics
     import numpy as _np
     eq_arr = _np.array(eq_curve_vals, dtype=float)
@@ -315,13 +356,17 @@ def main():
             cols = ["symbol","side","entry_time","exit_time","entry","exit","tp","sl","reason","gross_return","net_return","notional","fees_paid","realized_pnl"]
             with open("trades.csv","w",newline="") as f:
                 w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(tr_rows)
-        pd.DataFrame([{ 
+        pd.DataFrame([{
             "equity_start": initial_equity, "equity_end": equity, "trades": trades,
             "profit_factor": pf, "win_rate_%": win_rate_pct,
             "elapsed_sec": elapsed,
             "max_dd_frac": max_dd_frac, "max_dd_%": (max_dd_frac * 100.0),
             "monotonicity_sign": mono_sign, "monotonicity_mag": mono_mag,
-            "total_fees": fees_cum
+            "total_fees": fees_cum,
+            "apr_%": apr_pct,
+            "daily_return_%": daily_ret_pct,
+            "monthly_return_%": monthly_ret_pct,
+            "yearly_return_%": yearly_ret_pct
         }]).to_csv("summary.csv", index=False)
 
     # Plots (same as before)
@@ -389,11 +434,33 @@ def main():
         except Exception as e:
             print(f"[plots] failed: {e}")
 
+    # Consolidate reports
+    try:
+        cfg_name = os.path.splitext(os.path.basename(args.cfg))[0] if hasattr(args, 'cfg') else 'cfg'
+        time_id = time.strftime("%Y%m%d_%H%M%S")
+        report_dir = os.path.join("_reports", "_backtest", f"backtest{cfg_name}{time_id}")
+        os.makedirs(report_dir, exist_ok=True)
+        for fname in ("trades.csv", "summary.csv"):
+            if os.path.exists(fname):
+                shutil.copy(fname, report_dir)
+        if args.plots_dir and os.path.isdir(args.plots_dir):
+            for item in os.listdir(args.plots_dir):
+                src = os.path.join(args.plots_dir, item)
+                dst = os.path.join(report_dir, item)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                elif os.path.isfile(src):
+                    shutil.copy(src, report_dir)
+        print(f"[reports] saved to {report_dir}")
+    except Exception as e:
+        print(f"[reports] failed: {e}")
+
     max_dd_pct = max_dd_frac * 100.0
     mono_pct = mono_mag * 100.0
     print(
         f"equity_end={equity:.6f} trades={trades} pf={pf:.6f} fees={fees_cum:.6f} "
-        f"win_rate={win_rate_pct:.3f}% max_dd={max_dd_pct:.3f}% mono={mono_pct:.3f}% elapsed_sec={elapsed:.6f}"
+        f"win_rate={win_rate_pct:.3f}% max_dd={max_dd_pct:.3f}% mono={mono_pct:.3f}% elapsed_sec={elapsed:.6f} "
+        f"apr={apr_pct:.3f}% daily_ret={daily_ret_pct:.3f}% monthly_ret={monthly_ret_pct:.3f}% yearly_ret={yearly_ret_pct:.3f}%"
     )
 
 if __name__ == "__main__":

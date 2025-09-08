@@ -6,6 +6,8 @@ export default function Run() {
   const router = useRouter();
   const [cfgs, setCfgs] = useState<any[]>([]);
   const [cfg, setCfg] = useState('');
+  const [universes, setUniverses] = useState<string[]>([]);
+  const [universe, setUniverse] = useState('');
   const [bars, setBars] = useState(5000);
   const [job, setJob] = useState<any>(null);
   const [res, setRes] = useState<any>(null);
@@ -14,6 +16,8 @@ export default function Run() {
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [showTrades, setShowTrades] = useState(true);
   const [logs, setLogs] = useState('');
+  const [backtesters, setBacktesters] = useState<string[]>([]);
+  const [backtester, setBacktester] = useState('');
 
   // if ?id=JOB_ID is present load that job's result
   useEffect(() => {
@@ -29,11 +33,33 @@ export default function Run() {
       .then(setCfgs);
   }, []);
 
+  useEffect(() => {
+    apiFetch('/api/universes')
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) setUniverses(data);
+        else setUniverses([]);
+      })
+      .catch(() => setUniverses([]));
+  }, []);
+
+  useEffect(() => {
+    apiFetch('/api/backtesters')
+      .then(r => r.json())
+      .then(data => {
+        setBacktesters(data.versions || []);
+        if (data.current) setBacktester(data.current);
+      });
+  }, []);
+
   async function start() {
+    const override = {
+      symbols_file: universe ? `universe/${universe}` : null,
+    };
     const j = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug }),
+      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug, override, backtester }),
     }).then(r => r.json());
     setJob(j);
     setRes(null);
@@ -85,36 +111,55 @@ export default function Run() {
       <h3>Run Backtest</h3>
       {!isReadOnly && (
         <div>
-          <select value={cfg} onChange={e => setCfg(e.target.value)}>
-            <option value=''>--pick config--</option>
-            {cfgs.map((c: any) => (
-              <option key={c.name} value={c.name}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-          <input
-            type='number'
-            value={bars}
-            onChange={e => setBars(parseInt(e.target.value || '0'))}
-          />
-          <label>
+          <div>
+            <select value={cfg} onChange={e => setCfg(e.target.value)}>
+              <option value=''>--pick config--</option>
+              {cfgs.map((c: any) => (
+                <option key={c.name} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <select value={universe} onChange={e => setUniverse(e.target.value)}>
+              <option value=''>--no universe--</option>
+              {universes.map(u => (
+                <option key={u} value={u}>
+                  {u}
+                </option>
+              ))}
+            </select>
             <input
-              type='checkbox'
-              checked={debug}
-              onChange={e => setDebug(e.target.checked)}
+              type='number'
+              value={bars}
+              onChange={e => setBars(parseInt(e.target.value || '0'))}
             />
-            Debug
-          </label>
-          <label>
-            <input
-              type='checkbox'
-              checked={showTrades}
-              onChange={e => setShowTrades(e.target.checked)}
-            />
-            trades
-          </label>
-          <button onClick={start}>Start</button>
+            <label>
+              <input
+                type='checkbox'
+                checked={debug}
+                onChange={e => setDebug(e.target.checked)}
+              />
+              Debug
+            </label>
+            <label>
+              <input
+                type='checkbox'
+                checked={showTrades}
+                onChange={e => setShowTrades(e.target.checked)}
+              />
+              trades
+            </label>
+            <button onClick={start}>Start</button>
+          </div>
+          <div>
+            <select value={backtester} onChange={e => setBacktester(e.target.value)}>
+              {backtesters.map(b => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       )}
       {job && <p>Job: {job.job_id}</p>}
