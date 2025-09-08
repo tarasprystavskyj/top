@@ -355,8 +355,36 @@ def ensure_session_dbs(results_dir: str, session_db: str = '', cache_out: str = 
         timeframe TEXT,
         status TEXT,
         ts_close TEXT,
+        entry_fill REAL,
+        entry_fill_ts TEXT,
+        exit_fill REAL,
+        exit_fill_ts TEXT,
+        entry_slip_bp REAL,
+        entry_lag_sec REAL,
+        exit_slip_bp REAL,
+        exit_lag_sec REAL,
         PRIMARY KEY(bot_id, symbol, local_order_uuid)
     )''')
+
+    # ensure new columns for older databases
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(open_positions)").fetchall()]
+        add_cols = [
+            ("entry_fill", "REAL"),
+            ("entry_fill_ts", "TEXT"),
+            ("exit_fill", "REAL"),
+            ("exit_fill_ts", "TEXT"),
+            ("entry_slip_bp", "REAL"),
+            ("entry_lag_sec", "REAL"),
+            ("exit_slip_bp", "REAL"),
+            ("exit_lag_sec", "REAL"),
+        ]
+        for name, typ in add_cols:
+            if name not in cols:
+                cur.execute(f"ALTER TABLE open_positions ADD COLUMN {name} {typ}")
+    except Exception:
+        pass
+
     con.commit()
     con.close()
 
@@ -500,7 +528,9 @@ def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]
         cur = con.cursor()
         rows = cur.execute(
             """
-            SELECT symbol, side, qty, entry, tp_price, sl_price, ts_open, run_id, local_order_uuid, exchange_order_id, exchange, timeframe
+            SELECT symbol, side, qty, entry, tp_price, sl_price, ts_open, run_id,
+                   local_order_uuid, exchange_order_id, exchange, timeframe,
+                   entry_fill, entry_fill_ts, entry_slip_bp, entry_lag_sec
             FROM open_positions
             WHERE bot_id=? AND status='OPEN'
             ORDER BY ts_open ASC
@@ -509,13 +539,28 @@ def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]
         ).fetchall()
         con.close()
         for r in rows:
-            sym, side, qty, entry, tp, sl, ts_open, run_id, luid, exid, exch, tf = r
+            (
+                sym, side, qty, entry, tp, sl, ts_open, run_id,
+                luid, exid, exch, tf, entry_fill, entry_fill_ts,
+                entry_slip_bp, entry_lag_sec
+            ) = r
             out[sym] = {
-                'symbol': sym, 'side': side, 'qty': float(qty or 0.0),
+                'symbol': sym,
+                'side': side,
+                'qty': float(qty or 0.0),
                 'entry': float(entry) if entry is not None else None,
-                'tp_price': tp, 'sl_price': sl, 'ts_open': ts_open,
-                'run_id': run_id, 'order_id': luid, 'exchange_order_id': exid,
-                'exchange': exch, 'timeframe': tf
+                'tp_price': tp,
+                'sl_price': sl,
+                'ts_open': ts_open,
+                'run_id': run_id,
+                'order_id': luid,
+                'exchange_order_id': exid,
+                'exchange': exch,
+                'timeframe': tf,
+                'entry_fill': entry_fill,
+                'entry_fill_ts': entry_fill_ts,
+                'entry_slip_bp': entry_slip_bp,
+                'entry_lag_sec': entry_lag_sec,
             }
     except Exception as e:
         cprint('[db load open_positions]', e, fg='red')
@@ -529,8 +574,10 @@ def db_upsert_open_position(session_db_path: str, bot_id: str, rec: dict):
             """
             INSERT OR REPLACE INTO open_positions(
                 bot_id, symbol, side, qty, entry, tp_price, sl_price, ts_open, run_id,
-                local_order_uuid, exchange_order_id, exchange, timeframe, status, ts_close
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                local_order_uuid, exchange_order_id, exchange, timeframe, status, ts_close,
+                entry_fill, entry_fill_ts, exit_fill, exit_fill_ts,
+                entry_slip_bp, entry_lag_sec, exit_slip_bp, exit_lag_sec
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 bot_id,
@@ -547,7 +594,15 @@ def db_upsert_open_position(session_db_path: str, bot_id: str, rec: dict):
                 rec.get('exchange'),
                 rec.get('timeframe'),
                 rec.get('status','OPEN'),
-                rec.get('ts_close')
+                rec.get('ts_close'),
+                rec.get('entry_fill'),
+                rec.get('entry_fill_ts'),
+                rec.get('exit_fill'),
+                rec.get('exit_fill_ts'),
+                rec.get('entry_slip_bp'),
+                rec.get('entry_lag_sec'),
+                rec.get('exit_slip_bp'),
+                rec.get('exit_lag_sec')
             )
         )
         con.commit()
@@ -555,16 +610,35 @@ def db_upsert_open_position(session_db_path: str, bot_id: str, rec: dict):
     except Exception as e:
         cprint('[db upsert open_positions]', e, fg='red')
 
-def db_mark_closed(session_db_path: str, bot_id: str, local_order_uuid: str, ts_close_iso: str):
+def db_mark_closed(
+    session_db_path: str,
+    bot_id: str,
+    local_order_uuid: str,
+    ts_close_iso: str,
+    *,
+    exit_fill=None,
+    exit_fill_ts=None,
+    exit_slip_bp=None,
+    exit_lag_sec=None,
+):
     try:
         con = sqlite3.connect(session_db_path)
         cur = con.cursor()
         cur.execute(
             """
-            UPDATE open_positions SET status='CLOSED', ts_close=?
+            UPDATE open_positions SET status='CLOSED', ts_close=?,
+                exit_fill=?, exit_fill_ts=?, exit_slip_bp=?, exit_lag_sec=?
             WHERE bot_id=? AND local_order_uuid=?
             """,
-            (ts_close_iso, bot_id, local_order_uuid)
+            (
+                ts_close_iso,
+                exit_fill,
+                exit_fill_ts,
+                exit_slip_bp,
+                exit_lag_sec,
+                bot_id,
+                local_order_uuid,
+            ),
         )
         con.commit()
         con.close()
@@ -626,18 +700,35 @@ def print_and_save_heat_from_strategy(strat, mode_label: str, bar_close, md: dic
         th = best.get('thresholds', {}) or {}
         a = best.get('actuals', {}) or {}
         cprint(f"[heat] nearest={best.get('symbol')} heat={heat*100:.1f}% (lower gap is closer to entry)", fg="yellow", bold=True)
-        if 'atr' in g:
-            cprint(f"       atr_ratio {a.get('atr_ratio',0.0):.6f} vs min {th.get('min_atr_ratio',0.0):.6f} -> gap {g.get('atr',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'volsurge' in g:
-            cprint(f"       vol_surge_mult req×avg1h -> gap {g.get('volsurge',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'qv24' in g:
-            cprint(f"       qv_24h {a.get('qv_24h',0.0):.0f} vs min {th.get('min_qv_24h',0.0):.0f} -> gap {g.get('qv24',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'qv1h' in g:
-            cprint(f"       qv_1h  {a.get('qv_1h',0.0):.0f} vs min {th.get('min_qv_1h',0.0):.0f} -> gap {g.get('qv1h',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'momentum' in g:
-            cprint(f"       momentum {a.get('mom_sum',0.0):.4f} vs req {th.get('min_momentum_sum',0.0):.4f} -> gap {g.get('momentum',0.0)*100:.1f}%", fg="yellow", dim=True)
-        if 'breadth' in g:
-            cprint(f"       breadth  {a.get('breadth',0.0):.3f} vs min {th.get('min_breadth',0.0):.3f} -> gap {g.get('breadth',0.0)*100:.1f}%", fg="yellow", dim=True)
+        if g.get('atr', 0.0) > 0:
+            cprint(
+                f"       min_atr_ratio {a.get('atr_ratio',0.0):.6f} vs {th.get('min_atr_ratio',0.0):.6f} -> gap {g.get('atr',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
+        if g.get('volsurge', 0.0) > 0:
+            if 'vol_surge_mult' in a and 'min_vol_surge_mult' in th:
+                cprint(
+                    f"       min_vol_surge_mult {a.get('vol_surge_mult',0.0):.2f} vs {th.get('min_vol_surge_mult',0.0):.2f} -> gap {g.get('volsurge',0.0)*100:.1f}%",
+                    fg="yellow", dim=True)
+            else:
+                cprint(
+                    f"       min_vol_surge_mult gap {g.get('volsurge',0.0)*100:.1f}%",
+                    fg="yellow", dim=True)
+        if g.get('qv24', 0.0) > 0:
+            cprint(
+                f"       min_qv_24h {a.get('qv_24h',0.0):.0f} vs {th.get('min_qv_24h',0.0):.0f} -> gap {g.get('qv24',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
+        if g.get('qv1h', 0.0) > 0:
+            cprint(
+                f"       min_qv_1h  {a.get('qv_1h',0.0):.0f} vs {th.get('min_qv_1h',0.0):.0f} -> gap {g.get('qv1h',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
+        if g.get('momentum', 0.0) > 0:
+            cprint(
+                f"       min_momentum_sum {a.get('mom_sum',0.0):.4f} vs {th.get('min_momentum_sum',0.0):.4f} -> gap {g.get('momentum',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
+        if g.get('breadth', 0.0) > 0:
+            cprint(
+                f"       min_breadth  {a.get('breadth',0.0):.3f} vs {th.get('min_breadth',0.0):.3f} -> gap {g.get('breadth',0.0)*100:.1f}%",
+                fg="yellow", dim=True)
         if cache_path:
             save_heat_stats(cache_path, bar_close, mode_label, best)
         return True
