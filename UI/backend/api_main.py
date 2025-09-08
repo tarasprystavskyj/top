@@ -11,9 +11,11 @@ MAIN_CONFIG_DIR = os.path.join(DATA_ROOT, "configs")
 OBW_CONFIG_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "configs"))
 CONFIG_DIRS = [MAIN_CONFIG_DIR, OBW_CONFIG_DIR]
 RUNS_DIR = os.path.join(DATA_ROOT, "runs")
+UNIVERSE_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "universe"))
 
 os.makedirs(MAIN_CONFIG_DIR, exist_ok=True)
 os.makedirs(RUNS_DIR, exist_ok=True)
+os.makedirs(UNIVERSE_DIR, exist_ok=True)
 
 job_q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 jobs: Dict[str, Dict[str, Any]] = {}
@@ -196,6 +198,13 @@ def config_put(name: str, body: Dict[str, Any] = Body(...)):
     except Exception as e: raise HTTPException(400, f"YAML error: {e}")
     open(p,"w").write(txt)
     return {"ok": True}
+
+@app.get("/api/universes")
+def universes():
+    items = []
+    for p in sorted(glob.glob(os.path.join(UNIVERSE_DIR, "*.txt"))):
+        items.append(os.path.basename(p))
+    return items
 
 @app.post("/api/backtest")
 def backtest(req: BacktestReq):
