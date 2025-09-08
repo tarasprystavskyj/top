@@ -2,7 +2,7 @@ node_modules/
 .next/
 out/
 .env*
-.venv/
+.venv*/
 __pycache__/
 *.py[cod]
 .vscode/
@@ -12,3 +12,5 @@ v12.log
 *.db
 *.zip
 *.log
+*.db
+data/
