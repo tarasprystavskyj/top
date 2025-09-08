@@ -34,12 +34,17 @@ export default function Run() {
   useEffect(() => {
     apiFetch('/api/universes')
       .then(r => r.json())
-      .then(setUniverses)
+      .then(data => {
+        if (Array.isArray(data)) setUniverses(data);
+        else setUniverses([]);
+      })
       .catch(() => setUniverses([]));
   }, []);
 
   async function start() {
-    const override = { symbols_file: universe || null };
+    const override = {
+      symbols_file: universe ? `universe/${universe}` : null,
+    };
     const j = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
