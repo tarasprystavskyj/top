@@ -6,14 +6,63 @@
 #   we warn and ignore it unless --force-driver is set.
 # - Everything else remains as in your workflow: build universe -> run RAYS (and optional grid).
 
-import argparse, subprocess, sys, shlex, os
+import argparse, subprocess, sys, shlex, os, re, csv
 
-def run(cmd: str) -> None:
+
+KV_RE = re.compile(
+    r'(?:\x1b\[[0-9;]*m)?(equity_end|pf|profit_factor|max_dd|mono|monotonicity|trades|apr|daily_ret|monthly_ret|yearly_ret)\s*=\s*([-+]?[0-9]*\.?[0-9]+)',
+    re.IGNORECASE,
+)
+
+
+def parse_metrics(text: str):
+    out = {}
+    for k, v in KV_RE.findall(text):
+        if k == 'pf':
+            k = 'profit_factor'
+        if k == 'mono':
+            k = 'monotonicity'
+        if k in (
+            'equity_end',
+            'profit_factor',
+            'max_dd',
+            'monotonicity',
+            'apr',
+            'daily_ret',
+            'monthly_ret',
+            'yearly_ret',
+        ):
+            out[k] = float(v)
+        elif k == 'trades':
+            try:
+                out[k] = int(float(v))
+            except Exception:
+                out[k] = int(v)
+    return out
+
+def run(cmd: str):
     print("\\n>>>", cmd)
-    res = subprocess.run(cmd, shell=True)
+    res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    out = (res.stdout or "") + "\\n" + (res.stderr or "")
+    if out:
+        print(out)
+    metrics = parse_metrics(out)
+    try:
+        with open("summary.csv", newline="") as f:
+            row = next(csv.DictReader(f), None)
+            if row:
+                for k in ("apr_%", "daily_return_%", "monthly_return_%", "yearly_return_%"):
+                    if k in row and row[k] not in (None, ""):
+                        try:
+                            metrics[k] = float(row[k])
+                        except Exception:
+                            pass
+    except Exception:
+        pass
     if res.returncode != 0:
         print(f"[ERR] command failed with code {res.returncode}")
         sys.exit(res.returncode)
+    return metrics
 
 def resolve_driver(driver: str, force: bool) -> str:
     # Heuristic: if the driver path contains "strategies/" it's almost certainly a strategy class file,
