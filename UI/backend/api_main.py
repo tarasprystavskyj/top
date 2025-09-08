@@ -2,14 +2,17 @@
 import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy
 from typing import Any, Dict, Optional, List
 from fastapi import FastAPI, HTTPException, Body
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_ROOT = os.path.join(APP_ROOT, "data")
-CONFIG_DIR = os.path.join(DATA_ROOT, "configs")
+MAIN_CONFIG_DIR = os.path.join(DATA_ROOT, "configs")
+OBW_CONFIG_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "configs"))
+CONFIG_DIRS = [MAIN_CONFIG_DIR, OBW_CONFIG_DIR]
 RUNS_DIR = os.path.join(DATA_ROOT, "runs")
 
-os.makedirs(CONFIG_DIR, exist_ok=True)
+os.makedirs(MAIN_CONFIG_DIR, exist_ok=True)
 os.makedirs(RUNS_DIR, exist_ok=True)
 
 job_q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
@@ -77,25 +80,35 @@ def apply_overrides(cfg: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, 
             deep_update(out, k, v)
     return out
 
-def cmd_backtester(cfg_path, limit_bars, cache_db=None):
+def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None):
     script = "backtester_core_speed3_veto_universe_2.py"
     cmd = ["python3", script, "--cfg", cfg_path, "--limit-bars", str(limit_bars)]
     if cache_db:
         os.environ["CACHE_DB_OVERRIDE"] = cache_db
+    if plots_dir:
+        cmd += ["--plots", plots_dir]
     return cmd
+
+def find_config(name: str) -> Optional[str]:
+    for d in CONFIG_DIRS:
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+    return None
 
 def run_backtest(job):
     jid = job["job_id"]
     meta = job["meta"]
     out_dir = os.path.join(RUNS_DIR, jid); os.makedirs(out_dir, exist_ok=True)
-    src = os.path.join(CONFIG_DIR, meta["cfg_name"])
-    if not os.path.isfile(src): raise RuntimeError("Config not found")
+    src = find_config(meta["cfg_name"])
+    if not src:
+        raise RuntimeError("Config not found")
     cfg_obj = yaml.safe_load(open(src,"r").read())
     merged = apply_overrides(cfg_obj, meta.get("override") or {})
     cfg_path = os.path.join(out_dir, "cfg_merged.yaml")
     with open(cfg_path,"w") as f: yaml.safe_dump(merged, f, sort_keys=False)
     logs = os.path.join(out_dir, "logs.txt")
-    cmd = cmd_backtester(cfg_path, meta["limit_bars"], meta.get("cache_db"))
+    cmd = cmd_backtester(cfg_path, meta["limit_bars"], meta.get("cache_db"), out_dir)
     with open(logs,"w") as lf:
         p = subprocess.Popen(cmd, cwd=os.path.abspath(os.path.join(APP_ROOT, "..")), stdout=lf, stderr=lf)
         p.wait()
@@ -111,7 +124,7 @@ def run_backtest(job):
 def run_grid(job):
     jid = job["job_id"]
     req = job["meta"]["req"]
-    base_cfg = yaml.safe_load(open(os.path.join(CONFIG_DIR, req["cfg_name"]),"r").read())
+    base_cfg = yaml.safe_load(open(find_config(req["cfg_name"]),"r").read())
     out_dir = os.path.join(RUNS_DIR, jid); os.makedirs(out_dir, exist_ok=True)
     axes = req["grid"]
     paths = [a["path"] for a in axes]
@@ -137,16 +150,19 @@ def health(): return {"ok": True}
 
 @app.get("/api/configs")
 def configs():
-    res = []
-    for p in sorted(glob.glob(os.path.join(CONFIG_DIR,"*.yaml"))):
-        st = os.stat(p)
-        res.append({"name": os.path.basename(p), "path": p, "updated_at": st.st_mtime})
-    return res
+    out: Dict[str, Dict[str, Any]] = {}
+    for d in CONFIG_DIRS:
+        for p in sorted(glob.glob(os.path.join(d, "*.yaml"))):
+            st = os.stat(p)
+            name = os.path.basename(p)
+            out[name] = {"name": name, "path": p, "updated_at": st.st_mtime}
+    return list(out.values())
 
 @app.get("/api/configs/{name}")
 def config_get(name: str):
-    p = os.path.join(CONFIG_DIR, name)
-    if not os.path.isfile(p): raise HTTPException(404, "not found")
+    p = find_config(name)
+    if not p:
+        raise HTTPException(404, "not found")
     txt = open(p,"r").read()
     try: parsed = yaml.safe_load(txt)
     except Exception as e: parsed = {"_error": str(e)}
@@ -154,7 +170,7 @@ def config_get(name: str):
 
 @app.put("/api/configs/{name}")
 def config_put(name: str, body: Dict[str, Any] = Body(...)):
-    p = os.path.join(CONFIG_DIR, name)
+    p = os.path.join(MAIN_CONFIG_DIR, name)
     txt = body.get("yaml_text")
     if not isinstance(txt,str): raise HTTPException(400,"yaml_text must be string")
     try: yaml.safe_load(txt)
@@ -180,21 +196,36 @@ def result(job_id: str):
     out_dir = os.path.join(RUNS_DIR, job_id)
     if not os.path.isdir(out_dir): raise HTTPException(404, "out dir not found")
     arts = {}
-    for fn in ("summary.csv","trades.csv","cfg_merged.yaml","logs.txt"):
+    plot_files = [
+        "returns_hist.png",
+        "equity_by_trade.png",
+        "equity_by_time.png",
+        "drawdown_by_trade.png",
+    ]
+    for fn in ("summary.csv", "trades.csv", "cfg_merged.yaml", "logs.txt", *plot_files):
         p = os.path.join(out_dir, fn)
-        if os.path.exists(p): arts[fn]=p
+        if os.path.exists(p):
+            arts[fn] = f"/api/jobs/{job_id}/artifacts/{fn}"
     summary = {}
     if "summary.csv" in arts:
         import csv
-        with open(arts["summary.csv"]) as f:
+        with open(os.path.join(out_dir, "summary.csv")) as f:
             rows = list(csv.DictReader(f))
             if rows: summary = rows[0]
     trades = []
     if "trades.csv" in arts:
         import csv
-        with open(arts["trades.csv"]) as f:
+        with open(os.path.join(out_dir, "trades.csv")) as f:
             trades = list(csv.DictReader(f))[:500]
     return {"summary": summary, "trades": trades, "artifacts": arts}
+
+@app.get("/api/jobs/{job_id}/artifacts/{name}")
+def artifact(job_id: str, name: str):
+    out_dir = os.path.join(RUNS_DIR, job_id)
+    p = os.path.join(out_dir, name)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "not found")
+    return FileResponse(p)
 
 @app.get("/api/runs")
 def runs(limit: int = 50):
