@@ -8,6 +8,7 @@ export default function Run() {
   const [job, setJob] = useState<any>(null);
   const [res, setRes] = useState<any>(null);
   const [slide, setSlide] = useState(0);
+  const [debug, setDebug] = useState(false);
 
   useEffect(() => {
     apiFetch('/api/configs')
@@ -19,7 +20,7 @@ export default function Run() {
     const j = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars }),
+      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug }),
     }).then(r => r.json());
     setJob(j);
     setRes(null);
@@ -69,51 +70,65 @@ export default function Run() {
           value={bars}
           onChange={e => setBars(parseInt(e.target.value || '0'))}
         />
+        <label>
+          <input
+            type='checkbox'
+            checked={debug}
+            onChange={e => setDebug(e.target.checked)}
+          />
+          Debug
+        </label>
         <button onClick={start}>Start</button>
       </div>
       {job && <p>Job: {job.job_id}</p>}
       {res && (
         <div>
-          <pre>{JSON.stringify(res.summary, null, 2)}</pre>
-          {res.trades && res.trades.length > 0 && (
-            <table border={1}>
-              <thead>
-                <tr>
-                  {Object.keys(res.trades[0]).map(k => (
-                    <th key={k}>{k}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {res.trades.map((t: any, i: number) => (
-                  <tr key={i}>
-                    {Object.keys(res.trades[0]).map(k => (
-                      <td key={k}>{t[k]}</td>
+          {res.error ? (
+            <pre style={{ color: 'red' }}>{JSON.stringify(res, null, 2)}</pre>
+          ) : (
+            <>
+              <pre>{JSON.stringify(res.summary, null, 2)}</pre>
+              {res.trades && res.trades.length > 0 && (
+                <table border={1}>
+                  <thead>
+                    <tr>
+                      {Object.keys(res.trades[0]).map(k => (
+                        <th key={k}>{k}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {res.trades.map((t: any, i: number) => (
+                      <tr key={i}>
+                        {Object.keys(res.trades[0]).map(k => (
+                          <td key={k}>{t[k]}</td>
+                        ))}
+                      </tr>
                     ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {plotUrls.length > 0 && (
-            <div>
-              <img
-                src={plotUrls[slide]}
-                style={{ maxWidth: '600px', display: 'block' }}
-              />
-              <div>
-                <button
-                  onClick={() =>
-                    setSlide((slide - 1 + plotUrls.length) % plotUrls.length)
-                  }
-                >
-                  Prev
-                </button>
-                <button onClick={() => setSlide((slide + 1) % plotUrls.length)}>
-                  Next
-                </button>
-              </div>
-            </div>
+                  </tbody>
+                </table>
+              )}
+              {plotUrls.length > 0 && (
+                <div>
+                  <img
+                    src={plotUrls[slide]}
+                    style={{ maxWidth: '600px', display: 'block' }}
+                  />
+                  <div>
+                    <button
+                      onClick={() =>
+                        setSlide((slide - 1 + plotUrls.length) % plotUrls.length)
+                      }
+                    >
+                      Prev
+                    </button>
+                    <button onClick={() => setSlide((slide + 1) % plotUrls.length)}>
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
