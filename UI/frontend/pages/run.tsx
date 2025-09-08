@@ -104,6 +104,15 @@ export default function Run() {
     .map(n => res?.artifacts?.[n])
     .filter(Boolean) as string[];
 
+  const vizNames = [
+    'viz_equity_vs_trade.png',
+    'viz_dd_vs_trade.png',
+    'viz_equity_vs_time.png',
+  ];
+  const vizUrls = vizNames
+    .map(n => res?.artifacts?.[n])
+    .filter(Boolean) as string[];
+
   const isReadOnly = !!router.query.id;
 
   return (
@@ -185,6 +194,20 @@ export default function Run() {
                   Next
                 </button>
               </div>
+            </div>
+          )}
+          {vizUrls.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                gap: '10px',
+                flexWrap: 'wrap',
+                marginTop: '10px',
+              }}
+            >
+              {vizUrls.map((u, i) => (
+                <img key={i} src={u} style={{ maxWidth: '400px' }} />
+              ))}
             </div>
           )}
           {logs && (
