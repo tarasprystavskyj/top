@@ -15,4 +15,6 @@ v12.log
 *.db
 data/
 plots*/
-#*results*/
+*results*/
+summary.csv
+trades.csv

@@ -41,6 +41,23 @@ class Position:
 def _split_csv_list(s):
     if not s: return []
     return [x.strip() for x in str(s).split(",") if x.strip()]
+    
+import os
+
+def find_db_file(filename: str):
+    # Список можливих шляхів
+    search_paths = [
+        os.path.join(".", filename),           # ./filename
+        os.path.join("..", filename),          # ../filename
+        os.path.join("..", "DB", filename),    # ../DB/filename
+    ]
+    
+    for path in search_paths:
+        if os.path.exists(path):
+            return os.path.abspath(path)  # повертаємо повний шлях
+    
+    raise FileNotFoundError(f"DB file '{filename}' not found in {search_paths}")
+
 
 def main():
     ap = argparse.ArgumentParser(description="Thin backtester (universe + strategy-owned logic)")
@@ -59,7 +76,8 @@ def main():
 
     t0 = time.time()
     cfg = yaml.safe_load(open(args.cfg, "r"))
-    con = connect_db(cfg["cache_db"])
+    db_file = find_db_file(cfg["cache_db"])
+    con = connect_db(db_file)
 
     # Allow/Deny sets
     allow_syms, deny_syms = set(), set()
