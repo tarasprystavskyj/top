@@ -1,4 +1,4 @@
-cache_db: ../combined_cache_5m_5000.db
+cache_db: combined_cache_5m_5000.db
 strategy_class: strategies.breakout_avaai_full_with_universe.BreakoutAVAAIFull
 strategy_params:
   side: LONG

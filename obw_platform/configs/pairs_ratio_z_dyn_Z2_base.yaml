@@ -1,5 +1,5 @@
 strategy_class: strategies.pairs_ratio_z_dyn.PairsRatioZDyn
-cache_db: ../combined_cache_1440.db
+cache_db: combined_cache_1440.db
 limit_bars: 1440
 strategy_params:
   btc_symbol: BTC-USDT

@@ -1,5 +1,5 @@
 strategy_class: strategies.vol_breakout.VolatilityBreakout
-cache_db: ../combined_cache_1440.db
+cache_db: combined_cache_1440.db
 
 session:
   open_hour_kyiv: 2

@@ -1,5 +1,5 @@
 timeframe: "5m"
-cache_db: ../combined_cache_5m_5000_04.09.db #combined_cache_5m_5000_01.09.db #combined_cache_5m_500b.db 
+cache_db: combined_cache_5m_5000_04.09.db #combined_cache_5m_5000_01.09.db #combined_cache_5m_500b.db
 #paper_api_results_5m/combined_cache_session_5m_26.08_1100.db 
 open_on_heat: false 
 open_heat_min: 0.01   # трохи нижчий поріг

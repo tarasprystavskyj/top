@@ -1,5 +1,5 @@
 timeframe: 30m
-cache_db: ../combined_cache_30m_1440.db
+cache_db: combined_cache_30m_1440.db
 strategy_class: "strategies.cross_sectional_rs_heat.CrossSectionalRSHeat" 
 portfolio:
   initial_equity: 100.0

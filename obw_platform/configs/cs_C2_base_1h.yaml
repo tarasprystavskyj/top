@@ -1,5 +1,5 @@
 strategy_class: strategies.cross_sectional_rs.CrossSectionalRS
-cache_db: ../combined_cache.db
+cache_db: combined_cache.db
 limit_bars: 1440
 position_mode: oneway
 strategy_params:

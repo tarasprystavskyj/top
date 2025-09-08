@@ -1,6 +1,6 @@
 # Aggressive C2 (LONG-only): push momentum, stricter ATR, looser breadth/vol gate on входи, агресивні SL/TP
 strategy_class: strategies.cross_sectional_rs.CrossSectionalRS
-cache_db: ../combined_cache_1440.db      # або абсолютний шлях до 1h кешу
+cache_db: combined_cache_1440.db      # або абсолютний шлях до 1h кешу
 limit_bars: 1440                         # 60d на 1h; для швидкого свіпу став 500; для 120d — 2880
 
 strategy_params:

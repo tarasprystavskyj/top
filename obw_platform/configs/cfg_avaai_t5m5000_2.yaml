@@ -1,5 +1,5 @@
 timeframe: 5m
-cache_db: ../combined_cache_5m_5000_04.09.db
+cache_db: combined_cache_5m_5000_04.09.db
 strategy_class: strategies.breakout_avaai_full_with_universe_2.BreakoutAVAAIFull
 open_on_heat: false
 open_heat_min: 0.01

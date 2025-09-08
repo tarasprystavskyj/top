@@ -1,6 +1,6 @@
 # ray1440_short_loose_atr002 — same params, DB set to 5m_1440
 timeframe: "5m"
-cache_db: ../combined_cache_5m_2880.db  #../obw_release/combined_cache_5m_1440.db"
+cache_db: combined_cache_5m_2880.db  #../obw_release/combined_cache_5m_1440.db"
 strategy_class: "strategies.cross_sectional_rs_heat.CrossSectionalRSHeat" 
 
 portfolio:

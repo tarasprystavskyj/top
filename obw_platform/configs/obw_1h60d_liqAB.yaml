@@ -1,4 +1,4 @@
-cache_db: ../combined_cache_1440.db
+cache_db: combined_cache_1440.db
 strategy_class: strategies.obw_weighted.OBWeighted
 strategy_params:
   top_n: 4
