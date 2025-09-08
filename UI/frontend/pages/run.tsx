@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
 import { apiFetch } from '../utils/api';
 
 export default function Run() {
+  const router = useRouter();
   const [cfgs, setCfgs] = useState<any[]>([]);
   const [cfg, setCfg] = useState('');
   const [bars, setBars] = useState(5000);
@@ -12,6 +14,14 @@ export default function Run() {
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [showTrades, setShowTrades] = useState(true);
   const [logs, setLogs] = useState('');
+
+  // if ?id=JOB_ID is present load that job's result
+  useEffect(() => {
+    const qid = router.query.id;
+    if (qid && typeof qid === 'string') {
+      setJob({ job_id: qid });
+    }
+  }, [router.query.id]);
 
   useEffect(() => {
     apiFetch('/api/configs')
@@ -68,41 +78,45 @@ export default function Run() {
     .map(n => res?.artifacts?.[n])
     .filter(Boolean) as string[];
 
+  const isReadOnly = !!router.query.id;
+
   return (
     <div>
       <h3>Run Backtest</h3>
-      <div>
-        <select value={cfg} onChange={e => setCfg(e.target.value)}>
-          <option value=''>--pick config--</option>
-          {cfgs.map((c: any) => (
-            <option key={c.name} value={c.name}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-        <input
-          type='number'
-          value={bars}
-          onChange={e => setBars(parseInt(e.target.value || '0'))}
-        />
-        <label>
+      {!isReadOnly && (
+        <div>
+          <select value={cfg} onChange={e => setCfg(e.target.value)}>
+            <option value=''>--pick config--</option>
+            {cfgs.map((c: any) => (
+              <option key={c.name} value={c.name}>
+                {c.name}
+              </option>
+            ))}
+          </select>
           <input
-            type='checkbox'
-            checked={debug}
-            onChange={e => setDebug(e.target.checked)}
+            type='number'
+            value={bars}
+            onChange={e => setBars(parseInt(e.target.value || '0'))}
           />
-          Debug
-        </label>
-        <label>
-          <input
-            type='checkbox'
-            checked={showTrades}
-            onChange={e => setShowTrades(e.target.checked)}
-          />
-          trades
-        </label>
-        <button onClick={start}>Start</button>
-      </div>
+          <label>
+            <input
+              type='checkbox'
+              checked={debug}
+              onChange={e => setDebug(e.target.checked)}
+            />
+            Debug
+          </label>
+          <label>
+            <input
+              type='checkbox'
+              checked={showTrades}
+              onChange={e => setShowTrades(e.target.checked)}
+            />
+            trades
+          </label>
+          <button onClick={start}>Start</button>
+        </div>
+      )}
       {job && <p>Job: {job.job_id}</p>}
       {res && (
         <div>
@@ -132,7 +146,7 @@ export default function Run() {
             <pre style={{ maxHeight: '200px', overflowY: 'auto' }}>{logs}</pre>
           )}
           {showTrades && res.trades && res.trades.length > 0 && (
-            <div style={{ maxHeight: '20px', overflow: 'auto' }}>
+            <div style={{ maxHeight: '200px', overflow: 'auto' }}>
               <table border={1}>
                 <thead>
                   <tr>
