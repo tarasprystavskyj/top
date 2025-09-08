@@ -41,6 +41,13 @@ def _read_universe_file(path: str) -> List[str]:
     if not path:
         return syms
     try:
+        # Normalise the path similar to the backtester.  If a relative path
+        # is provided we treat it as residing in the local ``universe``
+        # directory next to this script.  Only keep the basename to avoid
+        # doubling the directory when users pass ``universe/foo.txt``.
+        if not os.path.isabs(path):
+            udir = os.path.join(os.path.dirname(__file__), "universe")
+            path = os.path.join(udir, os.path.basename(path))
         with open(path, "r", encoding="utf-8") as f:
             for ln in f:
                 ln = ln.strip()
