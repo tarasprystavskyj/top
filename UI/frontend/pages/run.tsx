@@ -9,6 +9,9 @@ export default function Run() {
   const [res, setRes] = useState<any>(null);
   const [slide, setSlide] = useState(0);
   const [debug, setDebug] = useState(false);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [showTrades, setShowTrades] = useState(true);
+  const [logs, setLogs] = useState('');
 
   useEffect(() => {
     apiFetch('/api/configs')
@@ -24,6 +27,8 @@ export default function Run() {
     }).then(r => r.json());
     setJob(j);
     setRes(null);
+    setErrMsg(null);
+    setLogs('');
   }
 
   useEffect(() => {
@@ -37,11 +42,21 @@ export default function Run() {
           r.json()
         );
         setRes(rs);
+        if (st.status === 'error') setErrMsg(st.message || 'error');
         clearInterval(id);
       }
     }, 1000);
     return () => clearInterval(id);
   }, [job]);
+
+  useEffect(() => {
+    if (res && (debug || errMsg) && res.artifacts?.['logs.txt']) {
+      fetch(res.artifacts['logs.txt'])
+        .then(r => r.text())
+        .then(setLogs)
+        .catch(() => {});
+    }
+  }, [res, debug, errMsg]);
 
   const plotNames = [
     'equity_by_time.png',
@@ -78,61 +93,74 @@ export default function Run() {
           />
           Debug
         </label>
+        <label>
+          <input
+            type='checkbox'
+            checked={showTrades}
+            onChange={e => setShowTrades(e.target.checked)}
+          />
+          trades
+        </label>
         <button onClick={start}>Start</button>
       </div>
       {job && <p>Job: {job.job_id}</p>}
       {res && (
         <div>
-          {res.error ? (
-            <pre style={{ color: 'red' }}>{JSON.stringify(res, null, 2)}</pre>
-          ) : (
-            <>
-              <pre>{JSON.stringify(res.summary, null, 2)}</pre>
-              {res.trades && res.trades.length > 0 && (
-                <table border={1}>
-                  <thead>
-                    <tr>
+          {errMsg && <pre style={{ color: 'red' }}>Error: {errMsg}</pre>}
+          <pre>{JSON.stringify(res.summary, null, 2)}</pre>
+          {plotUrls.length > 0 && (
+            <div>
+              <img
+                src={plotUrls[slide]}
+                style={{ maxWidth: '600px', display: 'block' }}
+              />
+              <div>
+                <button
+                  onClick={() =>
+                    setSlide((slide - 1 + plotUrls.length) % plotUrls.length)
+                  }
+                >
+                  Prev
+                </button>
+                <button onClick={() => setSlide((slide + 1) % plotUrls.length)}>
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+          {logs && (
+            <pre style={{ maxHeight: '200px', overflowY: 'auto' }}>{logs}</pre>
+          )}
+          {showTrades && res.trades && res.trades.length > 0 && (
+            <div style={{ maxHeight: '20px', overflow: 'auto' }}>
+              <table border={1}>
+                <thead>
+                  <tr>
+                    {Object.keys(res.trades[0]).map(k => (
+                      <th key={k}>{k}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {res.trades.map((t: any, i: number) => (
+                    <tr key={i}>
                       {Object.keys(res.trades[0]).map(k => (
-                        <th key={k}>{k}</th>
+                        <td key={k}>{formatVal(t[k])}</td>
                       ))}
                     </tr>
-                  </thead>
-                  <tbody>
-                    {res.trades.map((t: any, i: number) => (
-                      <tr key={i}>
-                        {Object.keys(res.trades[0]).map(k => (
-                          <td key={k}>{t[k]}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-              {plotUrls.length > 0 && (
-                <div>
-                  <img
-                    src={plotUrls[slide]}
-                    style={{ maxWidth: '600px', display: 'block' }}
-                  />
-                  <div>
-                    <button
-                      onClick={() =>
-                        setSlide((slide - 1 + plotUrls.length) % plotUrls.length)
-                      }
-                    >
-                      Prev
-                    </button>
-                    <button onClick={() => setSlide((slide + 1) % plotUrls.length)}>
-                      Next
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}
     </div>
   );
+}
+
+function formatVal(v: any) {
+  const num = Number(v);
+  return isNaN(num) ? v : num.toFixed(3);
 }
 
