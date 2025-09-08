@@ -109,8 +109,13 @@ def main():
     sym_file = args.symbols_file or cfg.get("symbols_file") or cfg.get("universe_file")
     if sym_file:
         if not os.path.isabs(sym_file):
+            # Users sometimes provide paths like "universe/foo.txt".  Previously we
+            # blindly prefixed our own "universe" directory which resulted in
+            # paths such as "universe/universe/foo.txt".  Normalise the supplied
+            # path by keeping only the filename and joining it with the local
+            # "universe" directory.
             udir = os.path.join(os.path.dirname(__file__), "universe")
-            sym_file = os.path.join(udir, sym_file)
+            sym_file = os.path.join(udir, os.path.basename(sym_file))
         with open(sym_file, "r", encoding="utf-8") as f:
             for ln in f:
                 s = ln.strip()

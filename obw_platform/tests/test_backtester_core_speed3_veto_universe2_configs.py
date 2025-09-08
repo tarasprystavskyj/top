@@ -67,3 +67,34 @@ def test_backtester_runs_for_config(cfg_path: Path, tmp_path: Path):
     if res.returncode != 0:
         pytest.skip(res.stderr)
     assert "equity_end" in res.stdout
+
+
+def test_symbols_file_path_with_prefix(tmp_path: Path):
+    """Ensure symbol files specified with a "universe/" prefix are handled."""
+    # Build a tiny in-memory config using the greedy_breakout_universe strategy
+    cfg_src = CONFIG_DIR / "greedy_breakout_universe.yaml"
+    data = yaml.safe_load(cfg_src.read_text())
+    tmp_db = tmp_path / "db.sqlite"
+    make_dummy_db(tmp_db)
+    data["cache_db"] = str(tmp_db)
+    tmp_cfg = tmp_path / cfg_src.name
+    with open(tmp_cfg, "w") as f:
+        yaml.safe_dump(data, f)
+
+    # Pass a path with an explicit "universe/" prefix to exercise the
+    # normalisation logic added in the loader.
+    sym_name = "universe_v5_avaai_5m_5000.txt"
+    cmd = [
+        sys.executable,
+        str(CWD / "backtester_core_speed3_veto_universe_2.py"),
+        "--cfg",
+        str(tmp_cfg),
+        "--limit-bars",
+        "2",
+        "--no-export-csv",
+        "--symbols-file",
+        f"universe/{sym_name}",
+    ]
+
+    res = subprocess.run(cmd, cwd=CWD, capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
