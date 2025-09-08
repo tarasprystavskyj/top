@@ -81,7 +81,7 @@ def apply_overrides(cfg: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, 
     return out
 
 def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None):
-    script = "backtester_core_speed3_veto_universe_2.py"
+    script = os.path.join("obw_platform", "backtester_core_speed3_veto_universe_2.py")
     cmd = ["python3", script, "--cfg", cfg_path, "--limit-bars", str(limit_bars)]
     if cache_db:
         os.environ["CACHE_DB_OVERRIDE"] = cache_db
@@ -108,18 +108,21 @@ def run_backtest(job):
     cfg_path = os.path.join(out_dir, "cfg_merged.yaml")
     with open(cfg_path,"w") as f: yaml.safe_dump(merged, f, sort_keys=False)
     logs = os.path.join(out_dir, "logs.txt")
+    repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
+    for fn in ("summary.csv", "trades.csv"):
+        try:
+            os.remove(os.path.join(repo_root, fn))
+        except FileNotFoundError:
+            pass
     cmd = cmd_backtester(cfg_path, meta["limit_bars"], meta.get("cache_db"), out_dir)
     with open(logs,"w") as lf:
-        p = subprocess.Popen(cmd, cwd=os.path.abspath(os.path.join(APP_ROOT, "..")), stdout=lf, stderr=lf)
+        p = subprocess.Popen(cmd, cwd=repo_root, stdout=lf, stderr=lf)
         p.wait()
-    # copy summary/trades if found nearby
-    for root, dirs, files in os.walk(os.path.abspath(os.path.join(APP_ROOT, ".."))):
-        for fn in files:
-            if fn in ("summary.csv","trades.csv"):
-                srcp = os.path.join(root, fn)
-                dstp = os.path.join(out_dir, fn)
-                try: shutil.copyfile(srcp, dstp)
-                except: pass
+    for fn in ("summary.csv", "trades.csv"):
+        srcp = os.path.join(repo_root, fn)
+        dstp = os.path.join(out_dir, fn)
+        if os.path.exists(srcp):
+            shutil.copyfile(srcp, dstp)
 
 def run_grid(job):
     jid = job["job_id"]
