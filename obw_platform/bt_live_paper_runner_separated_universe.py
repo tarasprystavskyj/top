@@ -15,7 +15,7 @@ This file does **not** change your strategy logic.
 
 from __future__ import annotations
 
-import os, sys, argparse, json, time
+import os, sys, argparse, json, time, shutil, atexit
 from typing import List, Tuple, Dict, Any
 
 # ------------------------- Utilities -------------------------
@@ -152,6 +152,24 @@ def main():
         setattr(args, "orders_db", "")
     if (not args.orders_db) and getattr(args, "session_db", ""):
         args.orders_db = args.session_db
+
+    cfg_name = os.path.splitext(os.path.basename(args.cfg))[0]
+    time_id = time.strftime("%Y%m%d_%H%M%S")
+    report_dir = os.path.join("_reports", "_live", f"live{cfg_name}{time_id}")
+    os.makedirs(report_dir, exist_ok=True)
+
+    def _copy_reports():
+        for p in (args.cache_out, args.session_db, args.results_dir):
+            if not p:
+                continue
+            if os.path.isdir(p):
+                dst = os.path.join(report_dir, os.path.basename(p))
+                shutil.copytree(p, dst, dirs_exist_ok=True)
+            elif os.path.isfile(p):
+                shutil.copy(p, report_dir)
+        print(f"[reports] saved to {report_dir}")
+
+    atexit.register(_copy_reports)
 
     # Load config
     cfg = _load_yaml_or_json(args.cfg)
