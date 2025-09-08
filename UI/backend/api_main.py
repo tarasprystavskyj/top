@@ -201,6 +201,14 @@ def config_put(name: str, body: Dict[str, Any] = Body(...)):
 def backtest(req: BacktestReq):
     jid = str(uuid.uuid4())
     jobs[jid] = {"status":"queued","meta": req.model_dump(),"kind":"backtest"}
+    out_dir = os.path.join(RUNS_DIR, jid); os.makedirs(out_dir, exist_ok=True)
+    meta = {
+        "cfg_name": req.cfg_name,
+        "limit_bars": req.limit_bars,
+        "started_at": time.time(),
+    }
+    with open(os.path.join(out_dir, "meta.json"), "w") as f:
+        json.dump(meta, f)
     job_q.put({"job_id": jid, "meta": req.model_dump(), "kind":"backtest"})
     return {"job_id": jid}
 
@@ -249,11 +257,13 @@ def artifact(job_id: str, name: str):
 @app.get("/api/runs")
 def runs(limit: int = 50):
     items = []
-    for d in sorted(os.listdir(RUNS_DIR), reverse=True)[:limit]:
-        p = os.path.join(RUNS_DIR, d)
-        if os.path.isdir(p):
-            items.append({"job_id": d})
-    return items
+    for d in os.listdir(RUNS_DIR):
+        meta_path = os.path.join(RUNS_DIR, d, "meta.json")
+        if os.path.isfile(meta_path):
+            meta = json.load(open(meta_path))
+            items.append({"job_id": d, **meta})
+    items.sort(key=lambda x: x.get("started_at", 0), reverse=True)
+    return items[:limit]
 
 @app.post("/api/grid")
 def grid(req: GridReq):
