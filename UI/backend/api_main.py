@@ -5,6 +5,15 @@ from fastapi import FastAPI, HTTPException, Body
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+try:
+    # Prefer the variant with additional comments if available
+    from obw_platform.engine.visualize_results_1 import plot_equity_curves as _viz_plot
+except Exception:  # pragma: no cover - best effort fallback
+    try:
+        from obw_platform.engine.visualize_results import plot_equity_curves as _viz_plot
+    except Exception:  # pragma: no cover - missing dependency (e.g. matplotlib)
+        _viz_plot = None
+
 APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_ROOT = os.path.join(APP_ROOT, "data")
 MAIN_CONFIG_DIR = os.path.join(DATA_ROOT, "configs")
@@ -12,6 +21,7 @@ OBW_CONFIG_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "c
 CONFIG_DIRS = [MAIN_CONFIG_DIR, OBW_CONFIG_DIR]
 RUNS_DIR = os.path.join(DATA_ROOT, "runs")
 UNIVERSE_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "universe"))
+LIVE_RESULTS_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "_reports", "_live"))
 BT_VERSION_FILE = os.path.join(DATA_ROOT, "backtester_version.yaml")
 BACKTESTER_SCRIPTS = [
     "backtester_core_speed3_veto_universe_2.py",
@@ -183,6 +193,18 @@ def run_backtest(job):
         if os.path.exists(srcp):
             shutil.copyfile(srcp, dstp)
     save_backtester_version(bt_script)
+    # Generate extra visualization plots if possible
+    if _viz_plot is not None:
+        try:
+            _viz_plot(
+                trades_csv=os.path.join(out_dir, "trades.csv"),
+                summary_csv=os.path.join(out_dir, "summary.csv"),
+                show=False,
+                save_dir=out_dir,
+                file_prefix="viz",
+            )
+        except Exception:
+            pass
 
 def run_grid(job):
     jid = job["job_id"]
@@ -298,6 +320,9 @@ def result(job_id: str):
         "equity_by_trade.png",
         "equity_by_time.png",
         "drawdown_by_trade.png",
+        "viz_equity_vs_trade.png",
+        "viz_dd_vs_trade.png",
+        "viz_equity_vs_time.png",
     ]
     for fn in ("summary.csv", "trades.csv", "cfg_merged.yaml", "logs.txt", *plot_files):
         p = os.path.join(out_dir, fn)
@@ -341,3 +366,55 @@ def grid(req: GridReq):
     jobs[jid] = {"status":"queued","meta":{"req": req.model_dump()}, "kind":"grid"}
     job_q.put({"job_id": jid, "meta":{"req": req.model_dump()}, "kind":"grid"})
     return {"job_id": jid}
+
+
+@app.get("/api/live_results")
+def live_results():
+    """List available live result directories."""
+    if not os.path.isdir(LIVE_RESULTS_DIR):
+        return []
+    names = []
+    for d in sorted(os.listdir(LIVE_RESULTS_DIR)):
+        if os.path.isdir(os.path.join(LIVE_RESULTS_DIR, d)):
+            names.append(d)
+    return names
+
+
+@app.get("/api/live_results/{name}")
+def live_result(name: str):
+    """Return visualization artifacts for a live session."""
+    base = os.path.join(LIVE_RESULTS_DIR, name)
+    if not os.path.isdir(base):
+        raise HTTPException(404, "not found")
+    trades = os.path.join(base, "trades.csv")
+    summary = os.path.join(base, "summary.csv")
+    if _viz_plot and os.path.exists(trades):
+        try:
+            _viz_plot(
+                trades_csv=trades,
+                summary_csv=summary if os.path.exists(summary) else None,
+                show=False,
+                save_dir=base,
+                file_prefix="viz",
+            )
+        except Exception:
+            pass
+    arts = {}
+    for fn in [
+        "viz_equity_vs_trade.png",
+        "viz_dd_vs_trade.png",
+        "viz_equity_vs_time.png",
+    ]:
+        p = os.path.join(base, fn)
+        if os.path.exists(p):
+            arts[fn] = f"/api/live_results/{name}/files/{fn}"
+    return {"artifacts": arts}
+
+
+@app.get("/api/live_results/{name}/files/{filename}")
+def live_result_file(name: str, filename: str):
+    base = os.path.join(LIVE_RESULTS_DIR, name)
+    p = os.path.join(base, filename)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "not found")
+    return FileResponse(p)
