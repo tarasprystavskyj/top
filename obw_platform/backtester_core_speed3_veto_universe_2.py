@@ -7,7 +7,7 @@
 #   - Calls strat.entry_signal() -> must return TP/SL; we just attach to Position
 #   - Calls strat.manage_position() for exits
 #   - Heat is reporting-only (printed if provided), not used for decisions.
-import argparse, sqlite3, importlib, time, sys, csv, os, pathlib as _p
+import argparse, sqlite3, importlib, time, sys, csv, os, pathlib as _p, shutil
 from dataclasses import dataclass
 from typing import Dict, Any
 
@@ -433,6 +433,27 @@ def main():
                     plt.tight_layout(); plt.savefig(os.path.join(args.plots_dir, "returns_hist.png"), dpi=140); plt.close()
         except Exception as e:
             print(f"[plots] failed: {e}")
+
+    # Consolidate reports
+    try:
+        cfg_name = os.path.splitext(os.path.basename(args.cfg))[0] if hasattr(args, 'cfg') else 'cfg'
+        time_id = time.strftime("%Y%m%d_%H%M%S")
+        report_dir = os.path.join("_reports", "_backtest", f"backtest{cfg_name}{time_id}")
+        os.makedirs(report_dir, exist_ok=True)
+        for fname in ("trades.csv", "summary.csv"):
+            if os.path.exists(fname):
+                shutil.copy(fname, report_dir)
+        if args.plots_dir and os.path.isdir(args.plots_dir):
+            for item in os.listdir(args.plots_dir):
+                src = os.path.join(args.plots_dir, item)
+                dst = os.path.join(report_dir, item)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                elif os.path.isfile(src):
+                    shutil.copy(src, report_dir)
+        print(f"[reports] saved to {report_dir}")
+    except Exception as e:
+        print(f"[reports] failed: {e}")
 
     max_dd_pct = max_dd_frac * 100.0
     mono_pct = mono_mag * 100.0
