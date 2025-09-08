@@ -81,10 +81,15 @@ def apply_overrides(cfg: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, 
     return out
 
 def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None):
-    script = "backtester_core_speed3_veto_universe_2.py"
-    cmd = ["python3", script, "--cfg", cfg_path, "--limit-bars", str(limit_bars)]
-    if cache_db:
-        os.environ["CACHE_DB_OVERRIDE"] = cache_db
+    # run inside obw_platform so relative paths in configs resolve correctly
+    cmd = [
+        "python3",
+        "backtester_core_speed3_veto_universe_2.py",
+        "--cfg",
+        cfg_path,
+        "--limit-bars",
+        str(limit_bars),
+    ]
     if plots_dir:
         cmd += ["--plots", plots_dir]
     return cmd
@@ -106,20 +111,27 @@ def run_backtest(job):
     cfg_obj = yaml.safe_load(open(src,"r").read())
     merged = apply_overrides(cfg_obj, meta.get("override") or {})
     cfg_path = os.path.join(out_dir, "cfg_merged.yaml")
-    with open(cfg_path,"w") as f: yaml.safe_dump(merged, f, sort_keys=False)
+    with open(cfg_path, "w") as f:
+        yaml.safe_dump(merged, f, sort_keys=False)
     logs = os.path.join(out_dir, "logs.txt")
+    repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
+    bt_root = os.path.join(repo_root, "obw_platform")
+    for fn in ("summary.csv", "trades.csv"):
+        try:
+            os.remove(os.path.join(bt_root, fn))
+        except FileNotFoundError:
+            pass
     cmd = cmd_backtester(cfg_path, meta["limit_bars"], meta.get("cache_db"), out_dir)
-    with open(logs,"w") as lf:
-        p = subprocess.Popen(cmd, cwd=os.path.abspath(os.path.join(APP_ROOT, "..")), stdout=lf, stderr=lf)
+    with open(logs, "w") as lf:
+        p = subprocess.Popen(cmd, cwd=bt_root, stdout=lf, stderr=lf)
         p.wait()
-    # copy summary/trades if found nearby
-    for root, dirs, files in os.walk(os.path.abspath(os.path.join(APP_ROOT, ".."))):
-        for fn in files:
-            if fn in ("summary.csv","trades.csv"):
-                srcp = os.path.join(root, fn)
-                dstp = os.path.join(out_dir, fn)
-                try: shutil.copyfile(srcp, dstp)
-                except: pass
+    if p.returncode != 0:
+        raise RuntimeError(f"backtester failed with code {p.returncode}")
+    for fn in ("summary.csv", "trades.csv"):
+        srcp = os.path.join(bt_root, fn)
+        dstp = os.path.join(out_dir, fn)
+        if os.path.exists(srcp):
+            shutil.copyfile(srcp, dstp)
 
 def run_grid(job):
     jid = job["job_id"]
@@ -138,10 +150,17 @@ def run_grid(job):
         cfg_path = os.path.join(subdir, "cfg_merged.yaml")
         with open(cfg_path,"w") as f: yaml.safe_dump(var, f, sort_keys=False)
         logs = os.path.join(subdir, "logs.txt")
-        cmd = cmd_backtester(cfg_path, req.get("limit_bars",5000), req.get("cache_db"))
-        with open(logs,"w") as lf:
-            p = subprocess.Popen(cmd, cwd=os.path.abspath(os.path.join(APP_ROOT, "..")), stdout=lf, stderr=lf)
+        cmd = cmd_backtester(cfg_path, req.get("limit_bars", 5000), req.get("cache_db"))
+        with open(logs, "w") as lf:
+            p = subprocess.Popen(
+                cmd,
+                cwd=os.path.join(os.path.abspath(os.path.join(APP_ROOT, "..")), "obw_platform"),
+                stdout=lf,
+                stderr=lf,
+            )
             p.wait()
+        if p.returncode != 0:
+            raise RuntimeError(f"backtester failed with code {p.returncode}")
 
 app = FastAPI()
 
