@@ -16,18 +16,34 @@ GLOBAL_BEST_REC = None
 BT_SLEEP_SEC = 0
 
 
-KV_RE = re.compile(r'(?:\x1b\[[0-9;]*m)?(equity_end|pf|profit_factor|max_dd|mono|monotonicity|trades)\s*=\s*([-+]?[0-9]*\.?[0-9]+)', re.IGNORECASE)
+KV_RE = re.compile(
+    r'(?:\x1b\[[0-9;]*m)?(equity_end|pf|profit_factor|max_dd|mono|monotonicity|trades|apr|daily_ret|monthly_ret|yearly_ret)\s*=\s*([-+]?[0-9]*\.?[0-9]+)',
+    re.IGNORECASE,
+)
 
 def parse_metrics(text: str):
     out = {}
     for k, v in KV_RE.findall(text):
-        if k == 'pf': k = 'profit_factor'
-        if k == 'mono': k = 'monotonicity'
-        if k in ('equity_end','profit_factor','max_dd','monotonicity'):
+        if k == 'pf':
+            k = 'profit_factor'
+        if k == 'mono':
+            k = 'monotonicity'
+        if k in (
+            'equity_end',
+            'profit_factor',
+            'max_dd',
+            'monotonicity',
+            'apr',
+            'daily_ret',
+            'monthly_ret',
+            'yearly_ret',
+        ):
             out[k] = float(v)
         elif k == 'trades':
-            try: out[k] = int(float(v))
-            except: out[k] = int(v)
+            try:
+                out[k] = int(float(v))
+            except Exception:
+                out[k] = int(v)
     return out if out else None
 
 def run_backtest(cfg_path: Path, limit_bars: int, plots_dir: str = ""):
@@ -38,7 +54,19 @@ def run_backtest(cfg_path: Path, limit_bars: int, plots_dir: str = ""):
     p = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = time.time() - t0
     out = (p.stdout or "") + "\\n" + (p.stderr or "")
-    stats = parse_metrics(out)
+    stats = parse_metrics(out) or {}
+    try:
+        with open("summary.csv", newline="") as f:
+            row = next(csv.DictReader(f), None)
+            if row:
+                for k in ("apr_%", "daily_return_%", "monthly_return_%", "yearly_return_%"):
+                    if k in row and row[k] not in (None, ""):
+                        try:
+                            stats[k] = float(row[k])
+                        except Exception:
+                            pass
+    except Exception:
+        pass
     if not stats:
         raise RuntimeError(f"Could not parse metrics from backtester output. Tail: {out[-800:]}")
     stats["elapsed_sec"] = elapsed
