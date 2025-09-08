@@ -6,6 +6,8 @@ export default function Run() {
   const router = useRouter();
   const [cfgs, setCfgs] = useState<any[]>([]);
   const [cfg, setCfg] = useState('');
+  const [universes, setUniverses] = useState<string[]>([]);
+  const [universe, setUniverse] = useState('');
   const [bars, setBars] = useState(5000);
   const [job, setJob] = useState<any>(null);
   const [res, setRes] = useState<any>(null);
@@ -29,11 +31,19 @@ export default function Run() {
       .then(setCfgs);
   }, []);
 
+  useEffect(() => {
+    apiFetch('/api/universes')
+      .then(r => r.json())
+      .then(setUniverses)
+      .catch(() => setUniverses([]));
+  }, []);
+
   async function start() {
+    const override = { symbols_file: universe || null };
     const j = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug }),
+      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug, override }),
     }).then(r => r.json());
     setJob(j);
     setRes(null);
@@ -90,6 +100,14 @@ export default function Run() {
             {cfgs.map((c: any) => (
               <option key={c.name} value={c.name}>
                 {c.name}
+              </option>
+            ))}
+          </select>
+          <select value={universe} onChange={e => setUniverse(e.target.value)}>
+            <option value=''>--no universe--</option>
+            {universes.map(u => (
+              <option key={u} value={u}>
+                {u}
               </option>
             ))}
           </select>

@@ -106,14 +106,12 @@ def main():
     allow_syms |= set(_split_csv_list(args.allow_symbols))
     deny_syms  |= set(_split_csv_list(args.deny_symbols))
 
-    if args.symbols_file:
-        with open(args.symbols_file, "r", encoding="utf-8") as f:
-            for ln in f:
-                s = ln.strip()
-                if s and not s.startswith("#"):
-                    allow_syms.add(s)
-    elif cfg.get("universe_file"):
-        with open(cfg["universe_file"], "r", encoding="utf-8") as f:
+    sym_file = args.symbols_file or cfg.get("symbols_file") or cfg.get("universe_file")
+    if sym_file:
+        if not os.path.isabs(sym_file):
+            udir = os.path.join(os.path.dirname(__file__), "universe")
+            sym_file = os.path.join(udir, sym_file)
+        with open(sym_file, "r", encoding="utf-8") as f:
             for ln in f:
                 s = ln.strip()
                 if s and not s.startswith("#"):
