@@ -2,17 +2,17 @@
   "BIO/USDT:USDT": {
     "symbol": "BIO/USDT:USDT",
     "side": "SHORT",
-    "qty": 14.0,
-    "entry": 0.15709,
-    "tp_price": 0.1551108794385278,
-    "sl_price": 0.157767533020471,
-    "ts_open": "2025-09-09T10:10:00+00:00",
-    "run_id": "LIVE_20250909_095354",
-    "order_id": "1fc8e320-8171-426c-b32b-922cadab7626",
-    "exchange_order_id": "1965357047571767296",
-    "entry_fill": 0.15708,
-    "entry_fill_ts": "2025-09-09T10:10:09+00:00",
-    "entry_slip_bp": 0.6365777579742105,
-    "entry_lag_sec": 9.0
+    "qty": 14.08,
+    "entry": 0.15622,
+    "tp_price": 0.15420594826614578,
+    "sl_price": 0.15671834483005082,
+    "ts_open": "2025-09-09T11:55:00+00:00",
+    "run_id": "LIVE_20250909_115417",
+    "order_id": "0eb5a10c-2d8a-4eff-ab65-77aa51a298ae",
+    "exchange_order_id": "1965383469501734912",
+    "entry_fill": 0.1562,
+    "entry_fill_ts": "2025-09-09T11:55:08+00:00",
+    "entry_slip_bp": 1.2802458071947687,
+    "entry_lag_sec": 8.0
   }
 }
