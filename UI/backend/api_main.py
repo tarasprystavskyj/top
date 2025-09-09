@@ -459,11 +459,16 @@ def live_result(name: str):
         except Exception:
             pass
     arts: Dict[str, str] = {}
-    for fn in [
+    plot_files = [
+        "returns_hist.png",
+        "equity_by_trade.png",
+        "equity_by_time.png",
+        "drawdown_by_trade.png",
         "viz_equity_vs_trade.png",
         "viz_dd_vs_trade.png",
         "viz_equity_vs_time.png",
-    ]:
+    ]
+    for fn in plot_files:
         p = os.path.join(base, fn)
         if os.path.exists(p):
             arts[fn] = f"/api/live_results/{name}/files/{fn}"
@@ -542,11 +547,16 @@ def live_result(name: str):
                     pass
             # Collect backtest artifacts
             bt_arts = {}
-            for fn in [
+            bt_plot_files = [
+                "returns_hist.png",
+                "equity_by_trade.png",
+                "equity_by_time.png",
+                "drawdown_by_trade.png",
                 "bt_viz_equity_vs_trade.png",
                 "bt_viz_dd_vs_trade.png",
                 "bt_viz_equity_vs_time.png",
-            ]:
+            ]
+            for fn in bt_plot_files:
                 pth = os.path.join(base, fn)
                 if os.path.exists(pth):
                     bt_arts[fn] = f"/api/live_results/{name}/files/{fn}"
