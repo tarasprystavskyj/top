@@ -42,7 +42,7 @@ export default function LiveResult() {
         );
         setSlide(0);
         setError(
-          liveImgs.length > 0 && backImgs.length > 0
+          liveImgs.length > 0 || backImgs.length > 0
             ? null
             : 'No data available for this session'
         );
@@ -74,17 +74,21 @@ export default function LiveResult() {
           {JSON.stringify(btSummary, null, 2)}
         </pre>
       )}
-      {btImages.length > 0 && images.length > 0 && (
+      {(btImages.length > 0 || images.length > 0) && (
         <div>
           <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
-            <img
-              src={btImages[slide % btImages.length]}
-              style={{ maxWidth: '400px' }}
-            />
-            <img
-              src={images[slide % images.length]}
-              style={{ maxWidth: '400px' }}
-            />
+            {btImages.length > 0 && (
+              <img
+                src={btImages[slide % btImages.length]}
+                style={{ maxWidth: '400px' }}
+              />
+            )}
+            {images.length > 0 && (
+              <img
+                src={images[slide % images.length]}
+                style={{ maxWidth: '400px' }}
+              />
+            )}
           </div>
           <div>
             <button
