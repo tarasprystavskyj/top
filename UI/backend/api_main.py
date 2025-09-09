@@ -556,10 +556,10 @@ def live_result(name: str):
                             CASE WHEN side='LONG'
                                  THEN (exit_fill - entry_fill) * qty
                                  ELSE (entry_fill - exit_fill) * qty
-                            END - COALESCE(fees_paid, 0)
+                            END
                         ) OVER (ORDER BY exit_fill_ts) AS equity
-                    FROM positions
-                    WHERE bot_id = ? AND status = 'CLOSED'
+                    FROM open_positions
+                    WHERE bot_id = ? AND status = 'CLOSED' AND exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL
                     ORDER BY exit_fill_ts""",
                     (initial_equity, bot_id),
                 ).fetchall()
