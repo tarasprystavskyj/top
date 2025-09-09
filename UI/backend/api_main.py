@@ -155,6 +155,9 @@ def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None, script=N
         str(limit_bars),
     ]
 
+    if cache_db:
+        cmd += ["--cache_db", cache_db]
+
     # Only add --plots if the selected backtester advertises support for it
     if plots_dir and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("plots"):
         cmd += ["--plots", plots_dir]
@@ -494,7 +497,23 @@ def live_result(name: str):
                     # If parsing fails we simply keep the summary as ``None``
                     # so the caller knows no usable data was produced.
                     pass
-            backtest = {"artifacts": bt_arts, "summary": bt_summary}
+            bt_trades = []
+            if os.path.exists(dst_trades):
+                try:
+                    import csv
+                    with open(dst_trades) as f:
+                        bt_trades = list(csv.DictReader(f))
+                except Exception:
+                    bt_trades = []
+            bt_logs = None
+            if os.path.exists(logs):
+                bt_logs = f"/api/live_results/{name}/files/{os.path.basename(logs)}"
+            backtest = {
+                "artifacts": bt_arts,
+                "summary": bt_summary,
+                "trades": bt_trades,
+                "logs": bt_logs,
+            }
 
     return {"artifacts": arts, "backtest": backtest}
 
