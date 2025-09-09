@@ -690,7 +690,7 @@ def live_result(name: str):
     return {"artifacts": arts, "backtest": backtest, "live_range": live_range}
 
 
-@app.get("/api/live_results/{name}/files/{filename}")
+@app.get("/api/live_results/{name}/files/{filename:path}")
 def live_result_file(name: str, filename: str):
     base = os.path.join(LIVE_RESULTS_DIR, name)
     p = os.path.join(base, filename)
