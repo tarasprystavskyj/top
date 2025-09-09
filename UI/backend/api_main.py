@@ -430,7 +430,10 @@ def live_result(name: str):
             arts[fn] = f"/api/live_results/{name}/files/{fn}"
 
     # --- Optional backtest using the same cache/config ------------------
-    backtest = {"artifacts": {}, "summary": {}}
+    # Default structure returned when we cannot build a matching backtest.
+    # ``summary`` is ``None`` instead of an empty dict so the frontend can
+    # easily detect the absence of data and avoid showing an empty "{}" block.
+    backtest = {"artifacts": {}, "summary": None}
     cfg_candidates = sorted(glob.glob(os.path.join(base, "cfg_*.yaml")))
     cache_db = os.path.join(base, "combined_cache_session.db")
     if cfg_candidates and os.path.exists(cache_db):
@@ -479,7 +482,7 @@ def live_result(name: str):
                 pth = os.path.join(base, fn)
                 if os.path.exists(pth):
                     bt_arts[fn] = f"/api/live_results/{name}/files/{fn}"
-            bt_summary = {}
+            bt_summary = None
             if os.path.exists(dst_summary):
                 try:
                     import csv
@@ -488,6 +491,8 @@ def live_result(name: str):
                         if rows:
                             bt_summary = rows[0]
                 except Exception:
+                    # If parsing fails we simply keep the summary as ``None``
+                    # so the caller knows no usable data was produced.
                     pass
             backtest = {"artifacts": bt_arts, "summary": bt_summary}
 
