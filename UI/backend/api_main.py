@@ -4,6 +4,12 @@ from typing import Any, Dict, Optional, List
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+try:
+    from obw_platform.runners.common import make_bot_id
+except Exception:  # pragma: no cover - minimal fallback if obw_platform missing
+    def make_bot_id(results_dir: str, exchange: str, timeframe: str) -> str:
+        results_dir = os.path.abspath(results_dir or '.')
+        return f"{results_dir}|{exchange}|{str(timeframe)}"
 
 try:
     # Prefer the variant with additional comments if available
@@ -485,21 +491,102 @@ def live_result(name: str):
     allow_syms = None
     symbols_file = None
     session_db = os.path.join(base, "session.sqlite")
+    live_range = None
     if os.path.exists(session_db):
         try:
-            import sqlite3, json
+            import sqlite3, json, datetime as dt
             con = sqlite3.connect(session_db)
             cur = con.cursor()
             row = cur.execute(
                 "SELECT cfg_json FROM config_snapshots ORDER BY ts_utc DESC LIMIT 1"
             ).fetchone()
-            con.close()
+            exchange = "binance"
+            tf = "1m"
+            initial_equity = 100.0
             if row:
                 snap = json.loads(row[0])
                 allow_syms = snap.get("symbols_whitelist") or snap.get("universe", {}).get("allow")
                 sym_file = snap.get("universe", {}).get("file")
                 if sym_file and sym_file != "<cli>":
                     symbols_file = sym_file
+                exchange = (
+                    snap.get("exchange")
+                    or snap.get("runner", {}).get("exchange")
+                    or exchange
+                )
+                tf = (
+                    snap.get("timeframe")
+                    or snap.get("runner", {}).get("timeframe")
+                    or tf
+                )
+                for path in (
+                    "initial_equity",
+                    "runner.initial_equity",
+                    "live.initial_equity",
+                    "portfolio.initial_equity",
+                ):
+                    cur_cfg = snap
+                    for part in path.split("."):
+                        if isinstance(cur_cfg, dict):
+                            cur_cfg = cur_cfg.get(part)
+                        else:
+                            cur_cfg = None
+                            break
+                    if cur_cfg is not None:
+                        try:
+                            initial_equity = float(cur_cfg)
+                        except Exception:
+                            pass
+                        break
+            bot_id = make_bot_id(base, exchange, tf)
+            has_eq = cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='equity'"
+            ).fetchone()
+            rows = []
+            if has_eq:
+                rows = cur.execute(
+                    "SELECT ts, equity FROM equity WHERE bot_id=? ORDER BY ts",
+                    (bot_id,),
+                ).fetchall()
+            if not rows:
+                rows = cur.execute(
+                    """SELECT
+                        exit_fill_ts AS ts,
+                        ? + SUM(
+                            CASE WHEN side='LONG'
+                                 THEN (exit_fill - entry_fill) * qty
+                                 ELSE (entry_fill - exit_fill) * qty
+                            END - COALESCE(fees_paid, 0)
+                        ) OVER (ORDER BY exit_fill_ts) AS equity
+                    FROM positions
+                    WHERE bot_id = ? AND status = 'CLOSED'
+                    ORDER BY exit_fill_ts""",
+                    (initial_equity, bot_id),
+                ).fetchall()
+            con.close()
+            if rows:
+                live_range = {"start": rows[0][0], "end": rows[-1][0]}
+                try:
+                    import matplotlib
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as plt
+                    ts = [dt.datetime.fromisoformat(r[0].replace('Z', '+00:00')) for r in rows if r[0]]
+                    eq = [float(r[1]) for r in rows]
+                    if ts and eq:
+                        plt.figure()
+                        plt.plot(ts, eq)
+                        plt.title("Live equity vs time")
+                        plt.xlabel("time")
+                        plt.ylabel("equity")
+                        plt.xticks(rotation=45)
+                        plt.tight_layout()
+                        out_fn = "live_equity_vs_time.png"
+                        out_p = os.path.join(base, out_fn)
+                        plt.savefig(out_p)
+                        plt.close()
+                        arts[out_fn] = f"/api/live_results/{name}/files/{out_fn}"
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -600,7 +687,7 @@ def live_result(name: str):
                 "logs": bt_logs,
             }
 
-    return {"artifacts": arts, "backtest": backtest}
+    return {"artifacts": arts, "backtest": backtest, "live_range": live_range}
 
 
 @app.get("/api/live_results/{name}/files/{filename}")

@@ -36,22 +36,16 @@ export default function LiveResult() {
       })
       .then(data => {
         console.debug('Session data', data);
-        const plotNames = [
-          'equity_by_time.png',
-          'returns_hist.png',
-          'equity_by_trade.png',
-          'drawdown_by_trade.png',
-          'viz_equity_vs_trade.png',
-          'viz_dd_vs_trade.png',
-          'viz_equity_vs_time.png',
-        ];
-        const ps = plotNames
-          .map(name => ({
-            name,
-            back: data.backtest?.artifacts?.[name] || null,
-            live: data.artifacts?.[name] || null,
-          }))
-          .filter(p => p.back || p.live);
+        const ps = [
+          {
+            name: 'equity_vs_time',
+            back:
+              data.backtest?.artifacts?.['viz_equity_vs_time.png'] ||
+              data.backtest?.artifacts?.['equity_by_time.png'] ||
+              null,
+            live: data.artifacts?.['live_equity_vs_time.png'] || null,
+          },
+        ].filter(p => p.back || p.live);
         console.debug('Plot pairs', ps);
         console.debug('Backtest summary', data.backtest?.summary || null);
         setPairs(ps);
@@ -65,6 +59,8 @@ export default function LiveResult() {
           const k = t0.ts_utc ? 'ts_utc' : t0.ts ? 'ts' : null;
           if (k) setRange({ start: t0[k], end: t1[k] });
           else setRange(null);
+        } else if (data.live_range) {
+          setRange({ start: data.live_range.start, end: data.live_range.end });
         } else {
           setRange(null);
         }
@@ -117,8 +113,12 @@ export default function LiveResult() {
             {pairs[slide].back && (
               <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
             )}
-            {pairs[slide].live && (
+            {pairs[slide].live ? (
               <img src={pairs[slide].live!} style={{ maxWidth: '400px' }} />
+            ) : (
+              <div style={{ maxWidth: '400px', textAlign: 'center' }}>
+                No live trade data
+              </div>
             )}
           </div>
           {pairs.length > 1 && (
