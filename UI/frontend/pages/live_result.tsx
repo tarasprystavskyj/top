@@ -35,16 +35,36 @@ export default function LiveResult() {
       })
       .then(data => {
         console.debug('Session data', data);
+        const plotNames = [
+          'equity_by_time.png',
+          'returns_hist.png',
+          'equity_by_trade.png',
+          'drawdown_by_trade.png',
+        ];
+        const backPlots = plotNames
+          .map(n => data.backtest?.artifacts?.[n])
+          .filter(Boolean) as string[];
+        const livePlots = plotNames
+          .map(n => data.artifacts?.[n])
+          .filter(Boolean) as string[];
         const order = ['equity_vs_trade', 'dd_vs_trade', 'equity_vs_time'];
-        const backImgs = order
+        const backViz = order
           .map(n => data.backtest?.artifacts?.[`bt_viz_${n}.png`])
           .filter(Boolean) as string[];
-        const liveImgs = order
+        const liveViz = order
           .map(n => data.artifacts?.[`viz_${n}.png`])
           .filter(Boolean) as string[];
-        const imgs = backImgs.length ? backImgs : liveImgs;
-        console.debug('Live images', liveImgs);
-        console.debug('Backtest images', backImgs);
+        const imgs = backPlots.length
+          ? backPlots
+          : livePlots.length
+          ? livePlots
+          : backViz.length
+          ? backViz
+          : liveViz;
+        console.debug('Live plots', livePlots);
+        console.debug('Backtest plots', backPlots);
+        console.debug('Live viz', liveViz);
+        console.debug('Backtest viz', backViz);
         console.debug('Backtest summary', data.backtest?.summary || null);
         setImages(imgs);
         setSummary(data.backtest?.summary || null);
