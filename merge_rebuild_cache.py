@@ -11,6 +11,8 @@ Options:
   --timeframe auto|5m|15m|1h|4h|1d  (override TF for ALL symbols; default=auto detect per symbol)
   --chunksize  50000   (batch-commit rows to reduce memory)
 """
+from __future__ import annotations
+
 import argparse, sqlite3, sys
 from pathlib import Path
 import pandas as pd, numpy as np

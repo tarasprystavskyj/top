@@ -22,12 +22,15 @@ export default function LiveResult() {
 
   useEffect(() => {
     if (!sel) return;
+    console.log('Loading session', sel);
     apiFetch(`/api/live_results/${sel}`)
       .then(r => {
+        console.log('Session response status', r.status);
         if (!r.ok) throw new Error('failed');
         return r.json();
       })
       .then(data => {
+        console.log('Session data', data);
         const order = ['equity_vs_trade', 'dd_vs_trade', 'equity_vs_time'];
         const backImgs = order
           .map(n => data.backtest?.artifacts?.[`bt_viz_${n}.png`])
@@ -48,6 +51,7 @@ export default function LiveResult() {
       })
       .catch(() => {
         setSummary(null);
+
         setImages([]);
         setTrades([]);
         setLogs('');
@@ -58,7 +62,13 @@ export default function LiveResult() {
   return (
     <div>
       <h3>Live Result{sel ? ` – ${sel}` : ''}</h3>
-      <select value={sel} onChange={e => setSel(e.target.value)}>
+      <select
+        value={sel}
+        onChange={e => {
+          console.log('Selected session', e.target.value);
+          setSel(e.target.value);
+        }}
+      >
         <option value=''>--select--</option>
         {sessions.map(s => (
           <option key={s} value={s}>
