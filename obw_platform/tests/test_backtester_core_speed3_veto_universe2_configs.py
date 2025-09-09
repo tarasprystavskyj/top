@@ -98,3 +98,29 @@ def test_symbols_file_path_with_prefix(tmp_path: Path):
 
     res = subprocess.run(cmd, cwd=CWD, capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
+
+
+def test_cache_db_cli_override(tmp_path: Path):
+    """CLI --cache_db should override config value."""
+    cfg_src = CONFIG_DIR / "greedy_breakout_universe.yaml"
+    data = yaml.safe_load(cfg_src.read_text())
+    data["cache_db"] = "missing.db"  # intentionally incorrect
+    tmp_cfg = tmp_path / cfg_src.name
+    tmp_db = tmp_path / "alt.sqlite"
+    make_dummy_db(tmp_db)
+    with open(tmp_cfg, "w") as f:
+        yaml.safe_dump(data, f)
+
+    cmd = [
+        sys.executable,
+        str(CWD / "backtester_core_speed3_veto_universe_2.py"),
+        "--cfg",
+        str(tmp_cfg),
+        "--limit-bars",
+        "2",
+        "--no-export-csv",
+        "--cache_db",
+        str(tmp_db),
+    ]
+    res = subprocess.run(cmd, cwd=CWD, capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr

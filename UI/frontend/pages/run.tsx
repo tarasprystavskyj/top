@@ -18,6 +18,7 @@ export default function Run() {
   const [logs, setLogs] = useState('');
   const [backtesters, setBacktesters] = useState<string[]>([]);
   const [backtester, setBacktester] = useState('');
+  const [cacheDb, setCacheDb] = useState('');
 
   // if ?id=JOB_ID is present load that job's result
   useEffect(() => {
@@ -25,7 +26,11 @@ export default function Run() {
     if (qid && typeof qid === 'string') {
       setJob({ job_id: qid });
     }
-  }, [router.query.id]);
+    const qcache = router.query.cache_db;
+    if (qcache && typeof qcache === 'string') {
+      setCacheDb(qcache);
+    }
+  }, [router.query.id, router.query.cache_db]);
 
   useEffect(() => {
     apiFetch('/api/configs')
@@ -59,7 +64,7 @@ export default function Run() {
     const j = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug, override, backtester }),
+      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug, override, backtester, cache_db: cacheDb || undefined }),
     }).then(r => r.json());
     setJob(j);
     setRes(null);
@@ -141,6 +146,13 @@ export default function Run() {
               type='number'
               value={bars}
               onChange={e => setBars(parseInt(e.target.value || '0'))}
+            />
+            <input
+              type='text'
+              placeholder='cache db path'
+              value={cacheDb}
+              onChange={e => setCacheDb(e.target.value)}
+              style={{ width: '300px' }}
             />
             <label>
               <input
