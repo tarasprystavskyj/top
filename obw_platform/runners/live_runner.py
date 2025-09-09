@@ -1,6 +1,17 @@
 # live_runner.py — LIVE mode
 from .common import *
-from .common import _tf_to_seconds, _align_bar_close, load_positions, save_positions, print_and_save_heat_from_strategy, make_bot_id, db_load_open_positions, db_upsert_open_position, db_mark_closed
+from .common import (
+    _tf_to_seconds,
+    _align_bar_close,
+    load_positions,
+    save_positions,
+    print_and_save_heat_from_strategy,
+    make_bot_id,
+    db_load_open_positions,
+    db_upsert_open_position,
+    db_mark_closed,
+    write_equity,
+)
 
 # color print fallback
 try:
@@ -1052,4 +1063,9 @@ def run_live(cfg: dict, args):
             cprint('[live]', f'opened={opened} at {bar_close.isoformat()}', fg='cyan', bold=(opened>0))
         else:
             dot()
+        equity = get_account_equity(fetcher)
+        try:
+            write_equity(session_db_path, bot_id, now.isoformat(), float(equity))
+        except Exception as e:
+            _dbg('write_equity_failed', str(e))
         time.sleep(args.poll_sec)
