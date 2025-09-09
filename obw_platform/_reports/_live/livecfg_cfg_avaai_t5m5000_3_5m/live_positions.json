@@ -1,20 +1,4 @@
 {
-  "M/USDT:USDT": {
-    "symbol": "M/USDT:USDT",
-    "side": "LONG",
-    "qty": 1.11,
-    "entry": 1.9656,
-    "tp_price": 2.031073355229669,
-    "sl_price": 1.9489921245271085,
-    "ts_open": "2025-09-09T09:50:00+00:00",
-    "run_id": "LIVE_20250909_095354",
-    "order_id": "91ae2840-6646-4238-9ef7-78bf8a978934",
-    "exchange_order_id": "1965353032205164544",
-    "entry_fill": 1.9662,
-    "entry_fill_ts": "2025-09-09T09:54:12+00:00",
-    "entry_slip_bp": 3.0525030525030417,
-    "entry_lag_sec": 252.0
-  },
   "BIO/USDT:USDT": {
     "symbol": "BIO/USDT:USDT",
     "side": "SHORT",
