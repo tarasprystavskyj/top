@@ -10,3 +10,10 @@ source .venv38/bin/activate
 source .venv38/bin/activate
 python -m pip install --upgrade pip
 pip install requests PyYAML pytz
+
+templates 
+
+===============
+Templates of run params 
+
+in "run params.txt"
