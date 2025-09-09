@@ -155,6 +155,9 @@ def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None, script=N
         str(limit_bars),
     ]
 
+    if cache_db:
+        cmd += ["--cache_db", cache_db]
+
     # Only add --plots if the selected backtester advertises support for it
     if plots_dir and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("plots"):
         cmd += ["--plots", plots_dir]

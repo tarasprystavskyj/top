@@ -45,17 +45,29 @@ def _split_csv_list(s):
 import os
 
 def find_db_file(filename: str):
+    """Locate a SQLite cache DB file.
+
+    The original implementation only searched a handful of hard coded
+    locations.  Allow callers to provide an absolute path (or a relative path
+    with directories) which is returned as-is if it exists.  This enables
+    running backtests against databases stored outside of the repository, such
+    as live session caches.
+    """
+
+    if os.path.isabs(filename) and os.path.exists(filename):
+        return os.path.abspath(filename)
+
     # Список можливих шляхів
     search_paths = [
         os.path.join(".", filename),           # ./filename
         os.path.join("..", filename),          # ../filename
         os.path.join("..", "DB", filename),    # ../DB/filename
     ]
-    
+
     for path in search_paths:
         if os.path.exists(path):
             return os.path.abspath(path)  # повертаємо повний шлях
-    
+
     raise FileNotFoundError(f"DB file '{filename}' not found in {search_paths}")
 
 
@@ -93,12 +105,14 @@ def main():
     ap.add_argument("--symbols-file", dest="symbols_file")
     ap.add_argument("--allow-symbols", dest="allow_symbols")
     ap.add_argument("--deny-symbols", dest="deny_symbols")
+    ap.add_argument("--cache_db", dest="cache_db")
     ap.set_defaults(export_csv=True)
     args = ap.parse_args()
 
     t0 = time.time()
     cfg = yaml.safe_load(open(args.cfg, "r"))
-    db_file = find_db_file(cfg["cache_db"])
+    cache_db = args.cache_db or cfg["cache_db"]
+    db_file = find_db_file(cache_db)
     con = connect_db(db_file)
 
     # Allow/Deny sets
