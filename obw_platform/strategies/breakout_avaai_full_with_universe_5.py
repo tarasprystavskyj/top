@@ -289,11 +289,19 @@ class BreakoutAVAAIFull:
             maybe_df = row.get("df")
             if isinstance(maybe_df, pd.DataFrame):
                 df = maybe_df
-        if df is None or len(df) == 0:
-            return None
-        df = df.copy()
-        df.attrs["symbol"] = symbol
-        side_pick = pick_side(df, self.cfg)
+        side_pick: Optional[str] = None
+        if df is not None and len(df) > 0:
+            df = df.copy()
+            df.attrs["symbol"] = symbol
+            side_pick = pick_side(df, self.cfg)
+        else:
+            mom = self._mom_sum(row)
+            if self.side == "LONG":
+                side_pick = "LONG"
+            elif self.side == "SHORT":
+                side_pick = "SHORT"
+            else:
+                side_pick = "LONG" if mom >= 0 else "SHORT"
         if side_pick is None:
             return None
         if self.side == "LONG" and side_pick != "LONG":

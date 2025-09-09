@@ -19,5 +19,4 @@ plots*/
 *results*/
 summary.csv
 trades.csv
-reports/
-_reports/
+obw_platform/_reports/
