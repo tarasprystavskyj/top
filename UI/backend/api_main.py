@@ -21,7 +21,14 @@ OBW_CONFIG_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "c
 CONFIG_DIRS = [MAIN_CONFIG_DIR, OBW_CONFIG_DIR]
 RUNS_DIR = os.path.join(DATA_ROOT, "runs")
 UNIVERSE_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "universe"))
-LIVE_RESULTS_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "_reports", "_live"))
+# Live session reports are stored within the obw_platform project under
+# ``_reports/_live``.  The previous implementation looked for them in the
+# repository root, which resulted in an empty list being returned to the
+# frontend.  Point to the correct location so available sessions appear in the
+# UI selector.
+LIVE_RESULTS_DIR = os.path.abspath(
+    os.path.join(APP_ROOT, "..", "obw_platform", "_reports", "_live")
+)
 BT_VERSION_FILE = os.path.join(DATA_ROOT, "backtester_version.yaml")
 BACKTESTER_SCRIPTS = [
     "backtester_core_speed3_veto_universe_2.py",
