@@ -8,6 +8,7 @@ export default function LiveResult() {
   const [btImages, setBtImages] = useState<string[]>([]);
   const [btSummary, setBtSummary] = useState<any>(null);
   const [slide, setSlide] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetch('/api/live_results')
@@ -19,7 +20,10 @@ export default function LiveResult() {
   useEffect(() => {
     if (!sel) return;
     apiFetch(`/api/live_results/${sel}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error('failed');
+        return r.json();
+      })
       .then(data => {
         const order = ['equity_vs_trade', 'dd_vs_trade', 'equity_vs_time'];
         const liveImgs = order
@@ -30,8 +34,24 @@ export default function LiveResult() {
           .filter(Boolean) as string[];
         setImages(liveImgs);
         setBtImages(backImgs);
-        setBtSummary(data.backtest?.summary || null);
+        setBtSummary(
+          data.backtest?.summary &&
+          Object.keys(data.backtest.summary).length > 0
+            ? data.backtest.summary
+            : null
+        );
         setSlide(0);
+        setError(
+          liveImgs.length > 0 && backImgs.length > 0
+            ? null
+            : 'No data available for this session'
+        );
+      })
+      .catch(() => {
+        setImages([]);
+        setBtImages([]);
+        setBtSummary(null);
+        setError('No data available for this session');
       });
   }, [sel]);
 
@@ -39,7 +59,7 @@ export default function LiveResult() {
 
   return (
     <div>
-      <h3>Live Result</h3>
+      <h3>Live Result{sel ? ` – ${sel}` : ''}</h3>
       <select value={sel} onChange={e => setSel(e.target.value)}>
         <option value=''>--select--</option>
         {sessions.map(s => (
@@ -48,6 +68,7 @@ export default function LiveResult() {
           </option>
         ))}
       </select>
+      {error && <p>{error}</p>}
       {btSummary && (
         <pre style={{ maxWidth: '800px', overflowX: 'auto' }}>
           {JSON.stringify(btSummary, null, 2)}
