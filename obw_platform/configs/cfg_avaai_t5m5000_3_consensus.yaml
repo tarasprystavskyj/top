@@ -5,7 +5,7 @@ open_on_heat: false
 open_heat_min: 0.01
 position_mode: oneway
 strategy_params:
-  side: BOTH
+  side: LONG
   top_n: 8
   length: 10.0
   macd_filter: 1
@@ -28,15 +28,15 @@ side_filter:
   adx_len: 14
   z_len: 50
 
-  z_long_min: 0.8
-  z_short_min: 0.8
-  min_adx: 18
+  z_long_min: 0.3
+  z_short_min: 0.3
+  min_adx: 8
 
-  htf_trend_filter: true
-  htf_ema_fast: 50
-  htf_ema_slow: 150
+  htf_trend_filter: false
+  htf_ema_fast: 30
+  htf_ema_slow: 90
 
-  votes_needed: 2
+  votes_needed: 1
 
   symbol_overrides:
     "BIO/USDT:USDT":
