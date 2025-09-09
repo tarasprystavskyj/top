@@ -382,10 +382,23 @@ def live_results():
 
 @app.get("/api/live_results/{name}")
 def live_result(name: str):
-    """Return visualization artifacts for a live session."""
+    """Return visualization artifacts for a live session along with an optional
+    on-demand backtest of the same session data.
+
+    The live session is expected to contain ``trades.csv`` and ``summary.csv``
+    files produced by the running strategy.  If ``combined_cache_session.db``
+    and a configuration file (matching ``cfg_*.yaml``) are present, the
+    endpoint will also launch a backtest using that cached data and generate a
+    comparable set of visualization images.  This avoids the need for the
+    frontend to orchestrate a separate backtest run via the general ``/api/backtest``
+    endpoint and keeps the API surface simple.
+    """
+
     base = os.path.join(LIVE_RESULTS_DIR, name)
     if not os.path.isdir(base):
         raise HTTPException(404, "not found")
+
+    # --- Live session visualisation -------------------------------------
     trades = os.path.join(base, "trades.csv")
     summary = os.path.join(base, "summary.csv")
     if _viz_plot and os.path.exists(trades):
@@ -399,7 +412,7 @@ def live_result(name: str):
             )
         except Exception:
             pass
-    arts = {}
+    arts: Dict[str, str] = {}
     for fn in [
         "viz_equity_vs_trade.png",
         "viz_dd_vs_trade.png",
@@ -408,7 +421,70 @@ def live_result(name: str):
         p = os.path.join(base, fn)
         if os.path.exists(p):
             arts[fn] = f"/api/live_results/{name}/files/{fn}"
-    return {"artifacts": arts}
+
+    # --- Optional backtest using the same cache/config ------------------
+    backtest = {"artifacts": {}, "summary": {}}
+    cfg_candidates = sorted(glob.glob(os.path.join(base, "cfg_*.yaml")))
+    cache_db = os.path.join(base, "combined_cache_session.db")
+    if cfg_candidates and os.path.exists(cache_db):
+        cfg_path = cfg_candidates[0]
+        repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
+        bt_root = os.path.join(repo_root, "obw_platform")
+        # Ensure previous outputs from obw_platform don't bleed into results
+        for fn in ("summary.csv", "trades.csv"):
+            try:
+                os.remove(os.path.join(bt_root, fn))
+            except FileNotFoundError:
+                pass
+        logs = os.path.join(base, "bt_logs.txt")
+        cmd = cmd_backtester(cfg_path, 5000, cache_db, base)
+        with open(logs, "w") as lf:
+            p = subprocess.Popen(cmd, cwd=bt_root, stdout=lf, stderr=lf)
+            p.wait()
+        if p.returncode == 0:
+            # Copy summary/trades so we can post-process them
+            src_summary = os.path.join(bt_root, "summary.csv")
+            src_trades = os.path.join(bt_root, "trades.csv")
+            dst_summary = os.path.join(base, "bt_summary.csv")
+            dst_trades = os.path.join(base, "bt_trades.csv")
+            if os.path.exists(src_summary):
+                shutil.copyfile(src_summary, dst_summary)
+            if os.path.exists(src_trades):
+                shutil.copyfile(src_trades, dst_trades)
+            if _viz_plot and os.path.exists(dst_trades):
+                try:
+                    _viz_plot(
+                        trades_csv=dst_trades,
+                        summary_csv=dst_summary if os.path.exists(dst_summary) else None,
+                        show=False,
+                        save_dir=base,
+                        file_prefix="bt_viz",
+                    )
+                except Exception:
+                    pass
+            # Collect backtest artifacts
+            bt_arts = {}
+            for fn in [
+                "bt_viz_equity_vs_trade.png",
+                "bt_viz_dd_vs_trade.png",
+                "bt_viz_equity_vs_time.png",
+            ]:
+                pth = os.path.join(base, fn)
+                if os.path.exists(pth):
+                    bt_arts[fn] = f"/api/live_results/{name}/files/{fn}"
+            bt_summary = {}
+            if os.path.exists(dst_summary):
+                try:
+                    import csv
+                    with open(dst_summary) as f:
+                        rows = list(csv.DictReader(f))
+                        if rows:
+                            bt_summary = rows[0]
+                except Exception:
+                    pass
+            backtest = {"artifacts": bt_arts, "summary": bt_summary}
+
+    return {"artifacts": arts, "backtest": backtest}
 
 
 @app.get("/api/live_results/{name}/files/{filename}")
