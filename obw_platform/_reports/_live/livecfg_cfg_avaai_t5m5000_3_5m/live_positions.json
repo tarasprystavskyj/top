@@ -1,36 +1,4 @@
 {
-  "DOLO/USDT:USDT": {
-    "symbol": "DOLO/USDT:USDT",
-    "side": "LONG",
-    "qty": 12.0,
-    "entry": 0.18323,
-    "tp_price": 0.18721642811267963,
-    "sl_price": 0.18224012067385686,
-    "ts_open": "2025-09-09T09:50:00+00:00",
-    "run_id": "LIVE_20250909_095354",
-    "order_id": "107b112b-b374-4f90-aaee-3652cc6ec36c",
-    "exchange_order_id": "1965353010076016640",
-    "entry_fill": 0.183231,
-    "entry_fill_ts": "2025-09-09T09:54:06+00:00",
-    "entry_slip_bp": 0.05457621568449866,
-    "entry_lag_sec": 246.0
-  },
-  "PYTH/USDT:USDT": {
-    "symbol": "PYTH/USDT:USDT",
-    "side": "LONG",
-    "qty": 13.0,
-    "entry": 0.1627,
-    "tp_price": 0.16470444940699486,
-    "sl_price": 0.1621915542967623,
-    "ts_open": "2025-09-09T09:50:00+00:00",
-    "run_id": "LIVE_20250909_095354",
-    "order_id": "8a2a9cf4-bd5c-40bf-9c54-121b4a21c1df",
-    "exchange_order_id": "1965353021383860224",
-    "entry_fill": 0.16272,
-    "entry_fill_ts": "2025-09-09T09:54:09+00:00",
-    "entry_slip_bp": 1.229256299937198,
-    "entry_lag_sec": 249.0
-  },
   "M/USDT:USDT": {
     "symbol": "M/USDT:USDT",
     "side": "LONG",
