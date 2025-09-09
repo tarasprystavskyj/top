@@ -1,0 +1,3 @@
+[universe] allow list size = 14
+[reports] saved to _reports/_backtest/backtestcfg_avaai_t5m5000_320250909_103107
+equity_end=100.920158 trades=126 pf=1.160041 fees=0.554400 win_rate=26.190% max_dd=-1.575% mono=4.692% elapsed_sec=1.235333 apr=19.345% daily_ret=0.053% monthly_ret=1.595% yearly_ret=21.236%

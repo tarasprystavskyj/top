@@ -19,6 +19,28 @@ strategy_params:
   min_qv_1h: 10000.0 #800 #
   min_atr_ratio: 0 #0.020 # 0.007 #
   min_momentum_sum: 0.0
+
+side_filter:
+  ema_fast: 20
+  ema_slow: 55
+  vwap_len: 40
+  atr_len: 14
+  adx_len: 14
+  z_len: 50
+
+  z_long_min: 0.8
+  z_short_min: 0.8
+  min_adx: 18
+
+  htf_trend_filter: true
+  htf_ema_fast: 50
+  htf_ema_slow: 150
+
+  votes_needed: 2
+
+  symbol_overrides:
+    "BIO/USDT:USDT":
+      block_short_on_htf_uptrend: true
 portfolio:
   position_notional: 2.2 #49 #2.2
   position_notional_max: 5
