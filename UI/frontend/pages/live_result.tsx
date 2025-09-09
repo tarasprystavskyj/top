@@ -13,18 +13,27 @@ export default function LiveResult() {
   useEffect(() => {
     apiFetch('/api/live_results')
       .then(r => r.json())
-      .then(data => (Array.isArray(data) ? setSessions(data) : setSessions([])))
-      .catch(() => setSessions([]));
+      .then(data => {
+        console.log('Sessions response', data);
+        setSessions(Array.isArray(data) ? data : []);
+      })
+      .catch(err => {
+        console.error('Failed to load sessions', err);
+        setSessions([]);
+      });
   }, []);
 
   useEffect(() => {
     if (!sel) return;
+    console.log('Loading session', sel);
     apiFetch(`/api/live_results/${sel}`)
       .then(r => {
+        console.log('Session response status', r.status);
         if (!r.ok) throw new Error('failed');
         return r.json();
       })
       .then(data => {
+        console.log('Session data', data);
         const order = ['equity_vs_trade', 'dd_vs_trade', 'equity_vs_time'];
         const liveImgs = order
           .map(n => data.artifacts?.[`viz_${n}.png`])
@@ -32,6 +41,9 @@ export default function LiveResult() {
         const backImgs = order
           .map(n => data.backtest?.artifacts?.[`bt_viz_${n}.png`])
           .filter(Boolean) as string[];
+        console.log('Live images', liveImgs);
+        console.log('Backtest images', backImgs);
+        console.log('Backtest summary', data.backtest?.summary);
         setImages(liveImgs);
         setBtImages(backImgs);
         setBtSummary(
@@ -47,7 +59,8 @@ export default function LiveResult() {
             : 'No data available for this session'
         );
       })
-      .catch(() => {
+      .catch(err => {
+        console.error('Error fetching session', err);
         setImages([]);
         setBtImages([]);
         setBtSummary(null);
@@ -60,7 +73,13 @@ export default function LiveResult() {
   return (
     <div>
       <h3>Live Result{sel ? ` – ${sel}` : ''}</h3>
-      <select value={sel} onChange={e => setSel(e.target.value)}>
+      <select
+        value={sel}
+        onChange={e => {
+          console.log('Selected session', e.target.value);
+          setSel(e.target.value);
+        }}
+      >
         <option value=''>--select--</option>
         {sessions.map(s => (
           <option key={s} value={s}>
