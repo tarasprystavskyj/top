@@ -15,7 +15,7 @@ This file does **not** change your strategy logic.
 
 from __future__ import annotations
 
-import os, sys, argparse, json, time, shutil, atexit
+import os, sys, argparse
 from typing import List, Tuple, Dict, Any
 
 # ------------------------- Utilities -------------------------
@@ -160,40 +160,34 @@ def main():
     args = ap.parse_args()
     if not hasattr(args, "orders_db"):
         setattr(args, "orders_db", "")
-    if (not args.orders_db) and getattr(args, "session_db", ""):
-        args.orders_db = args.session_db
 
     cfg_name = os.path.splitext(os.path.basename(args.cfg))[0]
-    time_id = time.strftime("%Y%m%d_%H%M%S")
-    report_dir = os.path.join("_reports", "_live", f"live{cfg_name}{time_id}")
-    if not args.results_dir:
-        args.results_dir = report_dir
-    if not args.session_db:
-        args.session_db = os.path.join(args.results_dir, "session.sqlite")
-    if not args.cache_out:
-        args.cache_out = os.path.join(args.results_dir, "combined_cache_session.db")
-    os.makedirs(args.results_dir, exist_ok=True)
-    os.makedirs(report_dir, exist_ok=True)
 
-    def _copy_reports():
-        abs_report = os.path.abspath(report_dir)
-        for p in (args.cache_out, args.session_db, args.results_dir):
-            if not p:
-                continue
-            abs_p = os.path.abspath(p)
-            if abs_p == abs_report or abs_p.startswith(abs_report + os.sep):
-                continue
-            if os.path.isdir(p):
-                dst = os.path.join(report_dir, os.path.basename(p))
-                shutil.copytree(p, dst, dirs_exist_ok=True)
-            elif os.path.isfile(p):
-                shutil.copy(p, report_dir)
-        print(f"[reports] saved to {report_dir}")
-
-    atexit.register(_copy_reports)
-
-    # Load config
+    # Load config early to extract timeframe for results directory
     cfg = _load_yaml_or_json(args.cfg)
+    timeframe = str(cfg.get("timeframe") or "na")
+
+    if not args.results_dir:
+        args.results_dir = os.path.join("_reports", "_live", f"livecfg_{cfg_name}_{timeframe}")
+    os.makedirs(args.results_dir, exist_ok=True)
+
+    # Resolve session/cache paths relative to results directory if needed
+    if args.session_db:
+        if not os.path.isabs(args.session_db) and os.path.dirname(args.session_db) == "":
+            args.session_db = os.path.join(args.results_dir, args.session_db)
+    else:
+        args.session_db = os.path.join(args.results_dir, "session.sqlite")
+
+    if args.cache_out:
+        if not os.path.isabs(args.cache_out) and os.path.dirname(args.cache_out) == "":
+            args.cache_out = os.path.join(args.results_dir, args.cache_out)
+    else:
+        args.cache_out = os.path.join(args.results_dir, "combined_cache_session.db")
+
+    if not args.orders_db:
+        args.orders_db = args.session_db
+
+    print(f"[results] dir: {args.results_dir}")
 
     # Build universe
     cfg_uni = cfg.get("universe", {}) or {}
