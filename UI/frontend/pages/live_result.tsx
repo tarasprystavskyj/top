@@ -22,6 +22,7 @@ export default function LiveResult() {
         console.error('Sessions fetch error', err);
         setSessions([]);
       });
+  }, []);
 
   useEffect(() => {
     if (!sel) return;
