@@ -131,12 +131,15 @@ def main():
     ap.add_argument("--db", help="Cache DB path for paper --paper-source=db")
 
     # Common runtime options
-    ap.add_argument("--results-dir", default="runner_results")
+    ap.add_argument("--results-dir", default="",
+                    help="Results directory (default: auto under _reports/_live)")
     ap.add_argument("--limit-bars", type=int, default=0)
 
     # Session & cache
-    ap.add_argument("--session-db", default="")
-    ap.add_argument("--cache-out", default="")
+    ap.add_argument("--session-db", default="",
+                    help="Session DB path (default: session.sqlite in results dir)")
+    ap.add_argument("--cache-out", default="",
+                    help="Cache output path (default: combined_cache_session.db in results dir)")
     ap.add_argument("--hour-cache", choices=["off","save","load"], default="off")
 
     # Exchange/API for PAPER API + LIVE
@@ -163,11 +166,22 @@ def main():
     cfg_name = os.path.splitext(os.path.basename(args.cfg))[0]
     time_id = time.strftime("%Y%m%d_%H%M%S")
     report_dir = os.path.join("_reports", "_live", f"live{cfg_name}{time_id}")
+    if not args.results_dir:
+        args.results_dir = report_dir
+    if not args.session_db:
+        args.session_db = os.path.join(args.results_dir, "session.sqlite")
+    if not args.cache_out:
+        args.cache_out = os.path.join(args.results_dir, "combined_cache_session.db")
+    os.makedirs(args.results_dir, exist_ok=True)
     os.makedirs(report_dir, exist_ok=True)
 
     def _copy_reports():
+        abs_report = os.path.abspath(report_dir)
         for p in (args.cache_out, args.session_db, args.results_dir):
             if not p:
+                continue
+            abs_p = os.path.abspath(p)
+            if abs_p == abs_report or abs_p.startswith(abs_report + os.sep):
                 continue
             if os.path.isdir(p):
                 dst = os.path.join(report_dir, os.path.basename(p))
