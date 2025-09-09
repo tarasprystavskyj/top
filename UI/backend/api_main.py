@@ -137,12 +137,20 @@ def apply_overrides(cfg: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, 
             deep_update(out, k, v)
     return out
 
-def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None, script=None):
+def cmd_backtester(
+    cfg_path,
+    limit_bars,
+    cache_db=None,
+    plots_dir=None,
+    script=None,
+    symbols_file=None,
+    allow_symbols=None,
+):
     """Build a command line for the selected backtester script.
 
     Only include CLI flags that the target backtester supports.  This keeps
-    older implementations (e.g. speed2) from failing with "unrecognized
-    arguments" when newer flags like ``--plots`` are present.
+    older implementations (e.g. speed2) from failing with "unrecognized"
+    arguments when newer flags like ``--plots`` are present.
     """
     # run inside obw_platform so relative paths in configs resolve correctly
     bt_script = script or load_backtester_version()
@@ -157,6 +165,12 @@ def cmd_backtester(cfg_path, limit_bars, cache_db=None, plots_dir=None, script=N
 
     if cache_db:
         cmd += ["--cache_db", cache_db]
+    if symbols_file:
+        cmd += ["--symbols-file", symbols_file]
+    if allow_symbols:
+        if isinstance(allow_symbols, (list, tuple)):
+            allow_symbols = ",".join(allow_symbols)
+        cmd += ["--allow-symbols", allow_symbols]
 
     # Only add --plots if the selected backtester advertises support for it
     if plots_dir and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("plots"):
@@ -168,6 +182,28 @@ def find_config(name: str) -> Optional[str]:
         p = os.path.join(d, name)
         if os.path.isfile(p):
             return p
+    return None
+
+
+def infer_config_from_session(name: str) -> Optional[str]:
+    """Best-effort lookup of a config file based on a live session name.
+
+    Many live result directories omit a copy of the configuration used to
+    generate them.  They do, however, encode the config name in the directory
+    itself (e.g. ``livecfg_cfg_avaai_t5m5000_3_5m``).  Walk backwards through
+    the components of that suffix until we find a matching config file.
+    """
+
+    prefix = "livecfg_"
+    if not name.startswith(prefix):
+        return None
+    suffix = name[len(prefix) :]
+    parts = suffix.split("_")
+    for i in range(len(parts), 0, -1):
+        candidate = "_".join(parts[:i]) + ".yaml"
+        cfg = find_config(candidate)
+        if cfg:
+            return cfg
     return None
 
 def run_backtest(job):
@@ -438,9 +474,31 @@ def live_result(name: str):
     # easily detect the absence of data and avoid showing an empty "{}" block.
     backtest = {"artifacts": {}, "summary": None}
     cfg_candidates = sorted(glob.glob(os.path.join(base, "cfg_*.yaml")))
+    cfg_path = cfg_candidates[0] if cfg_candidates else infer_config_from_session(name)
     cache_db = os.path.join(base, "combined_cache_session.db")
-    if cfg_candidates and os.path.exists(cache_db):
-        cfg_path = cfg_candidates[0]
+
+    allow_syms = None
+    symbols_file = None
+    session_db = os.path.join(base, "session.sqlite")
+    if os.path.exists(session_db):
+        try:
+            import sqlite3, json
+            con = sqlite3.connect(session_db)
+            cur = con.cursor()
+            row = cur.execute(
+                "SELECT cfg_json FROM config_snapshots ORDER BY ts_utc DESC LIMIT 1"
+            ).fetchone()
+            con.close()
+            if row:
+                snap = json.loads(row[0])
+                allow_syms = snap.get("symbols_whitelist") or snap.get("universe", {}).get("allow")
+                sym_file = snap.get("universe", {}).get("file")
+                if sym_file and sym_file != "<cli>":
+                    symbols_file = sym_file
+        except Exception:
+            pass
+
+    if cfg_path and os.path.exists(cache_db):
         repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
         bt_root = os.path.join(repo_root, "obw_platform")
         # Ensure previous outputs from obw_platform don't bleed into results
@@ -450,7 +508,14 @@ def live_result(name: str):
             except FileNotFoundError:
                 pass
         logs = os.path.join(base, "bt_logs.txt")
-        cmd = cmd_backtester(cfg_path, 5000, cache_db, base)
+        cmd = cmd_backtester(
+            cfg_path,
+            5000,
+            cache_db=cache_db,
+            plots_dir=base,
+            symbols_file=symbols_file,
+            allow_symbols=allow_syms,
+        )
         with open(logs, "w") as lf:
             p = subprocess.Popen(cmd, cwd=bt_root, stdout=lf, stderr=lf)
             p.wait()

@@ -15,31 +15,41 @@ export default function LiveResult() {
     apiFetch('/api/live_results')
       .then(r => r.json())
       .then(data => {
+        console.debug('Sessions response', data);
         setSessions(Array.isArray(data) ? data : []);
       })
-      .catch(() => setSessions([]));
-  }, []);
+      .catch(err => {
+        console.error('Sessions fetch error', err);
+        setSessions([]);
+      });
 
   useEffect(() => {
     if (!sel) return;
-    console.log('Loading session', sel);
+    console.debug('Loading session', sel);
     apiFetch(`/api/live_results/${sel}`)
       .then(r => {
-        console.log('Session response status', r.status);
+        console.debug('Session response status', r.status);
         if (!r.ok) throw new Error('failed');
         return r.json();
       })
       .then(data => {
-        console.log('Session data', data);
+        console.debug('Session data', data);
         const order = ['equity_vs_trade', 'dd_vs_trade', 'equity_vs_time'];
         const backImgs = order
           .map(n => data.backtest?.artifacts?.[`bt_viz_${n}.png`])
           .filter(Boolean) as string[];
-        setImages(backImgs);
+        const liveImgs = order
+          .map(n => data.artifacts?.[`viz_${n}.png`])
+          .filter(Boolean) as string[];
+        const imgs = backImgs.length ? backImgs : liveImgs;
+        console.debug('Live images', liveImgs);
+        console.debug('Backtest images', backImgs);
+        console.debug('Backtest summary', data.backtest?.summary || null);
+        setImages(imgs);
         setSummary(data.backtest?.summary || null);
         setTrades(data.backtest?.trades || []);
         setSlide(0);
-        setError(backImgs.length ? null : 'No data available for this session');
+        setError(imgs.length ? null : 'No data available for this session');
         if (data.backtest?.logs) {
           fetch(data.backtest.logs)
             .then(r => r.text())
@@ -49,9 +59,9 @@ export default function LiveResult() {
           setLogs('');
         }
       })
-      .catch(() => {
+      .catch(err => {
+        console.error('Session fetch error', err);
         setSummary(null);
-
         setImages([]);
         setTrades([]);
         setLogs('');
