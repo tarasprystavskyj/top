@@ -512,12 +512,16 @@ def live_result(name: str):
                 os.remove(os.path.join(bt_root, fn))
             except FileNotFoundError:
                 pass
+        bt_plots = os.path.join(base, "bt_plots")
+        if os.path.isdir(bt_plots):
+            shutil.rmtree(bt_plots)
+        os.makedirs(bt_plots, exist_ok=True)
         logs = os.path.join(base, "bt_logs.txt")
         cmd = cmd_backtester(
             cfg_path,
             5000,
             cache_db=cache_db,
-            plots_dir=base,
+            plots_dir=bt_plots,
             symbols_file=symbols_file,
             allow_symbols=allow_syms,
         )
@@ -540,26 +544,32 @@ def live_result(name: str):
                         trades_csv=dst_trades,
                         summary_csv=dst_summary if os.path.exists(dst_summary) else None,
                         show=False,
-                        save_dir=base,
+                        save_dir=bt_plots,
                         file_prefix="bt_viz",
                     )
                 except Exception:
                     pass
             # Collect backtest artifacts
             bt_arts = {}
-            bt_plot_files = [
+            core_files = [
                 "returns_hist.png",
                 "equity_by_trade.png",
                 "equity_by_time.png",
                 "drawdown_by_trade.png",
-                "bt_viz_equity_vs_trade.png",
-                "bt_viz_dd_vs_trade.png",
-                "bt_viz_equity_vs_time.png",
             ]
-            for fn in bt_plot_files:
-                pth = os.path.join(base, fn)
+            for fn in core_files:
+                pth = os.path.join(bt_plots, fn)
                 if os.path.exists(pth):
-                    bt_arts[fn] = f"/api/live_results/{name}/files/{fn}"
+                    bt_arts[fn] = f"/api/live_results/{name}/files/bt_plots/{fn}"
+            viz_map = {
+                "bt_viz_equity_vs_trade.png": "viz_equity_vs_trade.png",
+                "bt_viz_dd_vs_trade.png": "viz_dd_vs_trade.png",
+                "bt_viz_equity_vs_time.png": "viz_equity_vs_time.png",
+            }
+            for src_name, key in viz_map.items():
+                pth = os.path.join(bt_plots, src_name)
+                if os.path.exists(pth):
+                    bt_arts[key] = f"/api/live_results/{name}/files/bt_plots/{src_name}"
             bt_summary = None
             if os.path.exists(dst_summary):
                 try:
