@@ -1,0 +1,18 @@
+{
+  "BIO/USDT:USDT": {
+    "symbol": "BIO/USDT:USDT",
+    "side": "LONG",
+    "qty": 13.85,
+    "entry": 0.1588,
+    "tp_price": 0.16186376966719013,
+    "sl_price": 0.15812314135271274,
+    "ts_open": "2025-09-09T07:50:00+00:00",
+    "run_id": "LIVE_20250909_064006",
+    "order_id": "00f0e2c7-15fb-46dc-82b6-adcd3f35b084",
+    "exchange_order_id": "1965321814545752064",
+    "entry_fill": 0.1588,
+    "entry_fill_ts": "2025-09-09T07:50:09+00:00",
+    "entry_slip_bp": 0.0,
+    "entry_lag_sec": 9.0
+  }
+}

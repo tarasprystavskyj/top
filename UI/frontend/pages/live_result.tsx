@@ -22,7 +22,6 @@ export default function LiveResult() {
         console.error('Sessions fetch error', err);
         setSessions([]);
       });
-  }, []);
 
   useEffect(() => {
     if (!sel) return;
@@ -73,7 +72,13 @@ export default function LiveResult() {
   return (
     <div>
       <h3>Live Result{sel ? ` – ${sel}` : ''}</h3>
-      <select value={sel} onChange={e => setSel(e.target.value)}>
+      <select
+        value={sel}
+        onChange={e => {
+          console.log('Selected session', e.target.value);
+          setSel(e.target.value);
+        }}
+      >
         <option value=''>--select--</option>
         {sessions.map(s => (
           <option key={s} value={s}>
