@@ -20,6 +20,16 @@ strategy_params:
   min_atr_ratio: 0 #0.020 # 0.007 #
   min_momentum_sum: 0.0
 
+trace_calls:
+  enabled: true
+  root_dir: "cache/trace"
+  sqlite_name: "calls.db"
+  sample_rate: 1.0
+  max_arg_size_mb: 8
+  redact_keys: ["api_key", "secret", "password", "auth"]
+  include: []
+  exclude: []
+
 side_filter:
   ema_fast: 20
   ema_slow: 55
