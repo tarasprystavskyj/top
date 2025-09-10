@@ -4,6 +4,9 @@ from typing import Any, Dict, Optional, List
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+import logging
+
+log = logging.getLogger(__name__)
 try:
     from obw_platform.runners.common import make_bot_id
 except Exception:  # pragma: no cover - minimal fallback if obw_platform missing
@@ -463,7 +466,7 @@ def live_result(name: str):
                 file_prefix="viz",
             )
         except Exception:
-            pass
+            log.exception("live_result %s: failed to generate viz plots", name)
     arts: Dict[str, str] = {}
     plot_files = [
         "returns_hist.png",
@@ -536,7 +539,9 @@ def live_result(name: str):
                         try:
                             initial_equity = float(cur_cfg)
                         except Exception:
-                            pass
+                            log.debug(
+                                "live_result %s: invalid initial_equity %r", name, cur_cfg
+                            )
                         break
             bot_id = make_bot_id(base, exchange, tf)
             has_eq = cur.execute(
@@ -556,10 +561,10 @@ def live_result(name: str):
                             CASE WHEN side='LONG'
                                  THEN (exit_fill - entry_fill) * qty
                                  ELSE (entry_fill - exit_fill) * qty
-                            END - COALESCE(fees_paid, 0)
+                            END
                         ) OVER (ORDER BY exit_fill_ts) AS equity
-                    FROM positions
-                    WHERE bot_id = ? AND status = 'CLOSED'
+                    FROM open_positions
+                    WHERE bot_id = ? AND status = 'CLOSED' AND exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL
                     ORDER BY exit_fill_ts""",
                     (initial_equity, bot_id),
                 ).fetchall()
@@ -586,9 +591,9 @@ def live_result(name: str):
                         plt.close()
                         arts[out_fn] = f"/api/live_results/{name}/files/{out_fn}"
                 except Exception:
-                    pass
+                    log.exception("live_result %s: failed to plot live equity", name)
         except Exception:
-            pass
+            log.exception("live_result %s: failed to read session db", name)
 
     if cfg_path and os.path.exists(cache_db):
         repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
@@ -635,7 +640,9 @@ def live_result(name: str):
                         file_prefix="bt_viz",
                     )
                 except Exception:
-                    pass
+                    log.exception(
+                        "live_result %s: failed to generate backtest viz plots", name
+                    )
             # Collect backtest artifacts
             bt_arts = {}
             core_files = [
@@ -668,7 +675,7 @@ def live_result(name: str):
                 except Exception:
                     # If parsing fails we simply keep the summary as ``None``
                     # so the caller knows no usable data was produced.
-                    pass
+                    log.exception("live_result %s: failed to parse bt_summary", name)
             bt_trades = []
             if os.path.exists(dst_trades):
                 try:
@@ -676,6 +683,7 @@ def live_result(name: str):
                     with open(dst_trades) as f:
                         bt_trades = list(csv.DictReader(f))
                 except Exception:
+                    log.exception("live_result %s: failed to parse bt_trades", name)
                     bt_trades = []
             bt_logs = None
             if os.path.exists(logs):
