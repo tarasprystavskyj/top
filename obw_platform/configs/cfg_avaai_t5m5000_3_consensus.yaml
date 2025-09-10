@@ -5,7 +5,7 @@ open_on_heat: false
 open_heat_min: 0.01
 position_mode: oneway
 strategy_params:
-  side: LONG
+  side: BOTH
   top_n: 8
   length: 10.0
   macd_filter: 1
