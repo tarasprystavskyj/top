@@ -363,6 +363,7 @@ def ensure_session_dbs(results_dir: str, session_db: str = '', cache_out: str = 
         entry_lag_sec REAL,
         exit_slip_bp REAL,
         exit_lag_sec REAL,
+        fees_paid REAL,
         PRIMARY KEY(bot_id, symbol, local_order_uuid)
     )''')
 
@@ -378,6 +379,7 @@ def ensure_session_dbs(results_dir: str, session_db: str = '', cache_out: str = 
             ("entry_lag_sec", "REAL"),
             ("exit_slip_bp", "REAL"),
             ("exit_lag_sec", "REAL"),
+            ("fees_paid", "REAL"),
         ]
         for name, typ in add_cols:
             if name not in cols:
@@ -530,7 +532,8 @@ def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]
             """
             SELECT symbol, side, qty, entry, tp_price, sl_price, ts_open, run_id,
                    local_order_uuid, exchange_order_id, exchange, timeframe,
-                   entry_fill, entry_fill_ts, entry_slip_bp, entry_lag_sec
+                   entry_fill, entry_fill_ts, entry_slip_bp, entry_lag_sec,
+                   fees_paid
             FROM open_positions
             WHERE bot_id=? AND status='OPEN'
             ORDER BY ts_open ASC
@@ -542,7 +545,7 @@ def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]
             (
                 sym, side, qty, entry, tp, sl, ts_open, run_id,
                 luid, exid, exch, tf, entry_fill, entry_fill_ts,
-                entry_slip_bp, entry_lag_sec
+                entry_slip_bp, entry_lag_sec, fees_paid
             ) = r
             out[sym] = {
                 'symbol': sym,
@@ -561,6 +564,7 @@ def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]
                 'entry_fill_ts': entry_fill_ts,
                 'entry_slip_bp': entry_slip_bp,
                 'entry_lag_sec': entry_lag_sec,
+                'fees_paid': fees_paid,
             }
     except Exception as e:
         cprint('[db load open_positions]', e, fg='red')
@@ -576,8 +580,8 @@ def db_upsert_open_position(session_db_path: str, bot_id: str, rec: dict):
                 bot_id, symbol, side, qty, entry, tp_price, sl_price, ts_open, run_id,
                 local_order_uuid, exchange_order_id, exchange, timeframe, status, ts_close,
                 entry_fill, entry_fill_ts, exit_fill, exit_fill_ts,
-                entry_slip_bp, entry_lag_sec, exit_slip_bp, exit_lag_sec
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                entry_slip_bp, entry_lag_sec, exit_slip_bp, exit_lag_sec, fees_paid
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 bot_id,
@@ -602,7 +606,8 @@ def db_upsert_open_position(session_db_path: str, bot_id: str, rec: dict):
                 rec.get('entry_slip_bp'),
                 rec.get('entry_lag_sec'),
                 rec.get('exit_slip_bp'),
-                rec.get('exit_lag_sec')
+                rec.get('exit_lag_sec'),
+                rec.get('fees_paid')
             )
         )
         con.commit()
@@ -620,6 +625,7 @@ def db_mark_closed(
     exit_fill_ts=None,
     exit_slip_bp=None,
     exit_lag_sec=None,
+    fees_paid=None,
 ):
     try:
         con = sqlite3.connect(session_db_path)
@@ -627,7 +633,8 @@ def db_mark_closed(
         cur.execute(
             """
             UPDATE open_positions SET status='CLOSED', ts_close=?,
-                exit_fill=?, exit_fill_ts=?, exit_slip_bp=?, exit_lag_sec=?
+                exit_fill=?, exit_fill_ts=?, exit_slip_bp=?, exit_lag_sec=?,
+                fees_paid=COALESCE(?, fees_paid)
             WHERE bot_id=? AND local_order_uuid=?
             """,
             (
@@ -636,6 +643,7 @@ def db_mark_closed(
                 exit_fill_ts,
                 exit_slip_bp,
                 exit_lag_sec,
+                fees_paid,
                 bot_id,
                 local_order_uuid,
             ),
