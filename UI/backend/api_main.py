@@ -161,6 +161,8 @@ def _make_live_equity_png(base_dir):
     plt.figure(figsize=(8, 4))
     plt.plot(df["ts"], df["equity"])
     ax = plt.gca()
+    # show hours alongside the date for readability
+
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
     plt.xticks(rotation=45)
     plt.title("Live Equity vs Time")

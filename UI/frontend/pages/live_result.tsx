@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
 import { apiFetch } from '../utils/api';
 
 export default function LiveResult() {
+  const router = useRouter();
   const [sessions, setSessions] = useState<string[]>([]);
   const [sel, setSel] = useState('');
   const [summary, setSummary] = useState<any>(null);
@@ -13,6 +15,13 @@ export default function LiveResult() {
   const [range, setRange] = useState<{ start: string; end: string } | null>(null);
   const [debug, setDebug] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
+
+  useEffect(() => {
+    const q = router.query.cfg;
+    if (typeof q === 'string') {
+      setSel(q);
+    }
+  }, [router.query.cfg]);
 
   useEffect(() => {
     apiFetch('/api/live_results')
@@ -110,8 +119,12 @@ export default function LiveResult() {
       <select
         value={sel}
         onChange={e => {
-          console.log('Selected session', e.target.value);
-          setSel(e.target.value);
+          const v = e.target.value;
+          console.log('Selected session', v);
+          const q = { ...router.query } as any;
+          if (v) q.cfg = v; else delete q.cfg;
+          router.replace({ pathname: router.pathname, query: q }, undefined, { shallow: true });
+          setSel(v);
         }}
       >
         <option value=''>--select--</option>
@@ -138,16 +151,22 @@ export default function LiveResult() {
       {pairs.length > 0 && (
         <div>
           <div style={{ display: 'flex', gap: '10px' }}>
-            {pairs[slide].back && (
-              <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
-            )}
-            {pairs[slide].live ? (
-              <img src={pairs[slide].live!} style={{ maxWidth: '400px' }} />
-            ) : (
-              <div style={{ maxWidth: '400px', textAlign: 'center' }}>
-                No live trade data
-              </div>
-            )}
+            <div style={{ textAlign: 'center' }}>
+              <div>Backtest</div>
+              {pairs[slide].back && (
+                <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
+              )}
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div>Live</div>
+              {pairs[slide].live ? (
+                <img src={pairs[slide].live!} style={{ maxWidth: '400px' }} />
+              ) : (
+                <div style={{ maxWidth: '400px', textAlign: 'center' }}>
+                  No live trade data
+                </div>
+              )}
+            </div>
           </div>
           {pairs.length > 1 && (
             <div>
