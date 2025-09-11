@@ -1,18 +1,12 @@
 # FastAPI MVP backend
 import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy
 from typing import Any, Dict, Optional, List
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import logging
 
 log = logging.getLogger(__name__)
-try:
-    from obw_platform.runners.common import make_bot_id
-except Exception:  # pragma: no cover - minimal fallback if obw_platform missing
-    def make_bot_id(results_dir: str, exchange: str, timeframe: str) -> str:
-        results_dir = os.path.abspath(results_dir or '.')
-        return f"{results_dir}|{exchange}|{str(timeframe)}"
 
 try:
     # Prefer the variant with additional comments if available
@@ -58,6 +52,126 @@ BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
     "backtester_core_speed3.py": {"plots": True},
     "backtester_core_speed3_veto.py": {"plots": True},
 }
+
+# --- helpers: live equity from session.sqlite --------------------------------
+def _session_equity_df(session_db):
+    import sqlite3, json, pandas as pd, numpy as np
+    if not os.path.exists(session_db):
+        return None
+    con = sqlite3.connect(session_db)
+    cur = con.cursor()
+
+    # 1) try snapshots from equity table
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(equity);").fetchall()]
+    except Exception:
+        cols = []
+    if cols:
+        try:
+            df = pd.read_sql("SELECT * FROM equity ORDER BY 1;", con)
+            if not df.empty:
+                tcol = next((c for c in df.columns if c.lower() in ("ts", "ts_utc", "time", "timestamp")), None)
+                vcol = next((c for c in df.columns if c.lower() in ("equity", "equity_usdt", "value")), None)
+                if tcol and vcol:
+                    df = df[[tcol, vcol]].rename(columns={tcol: "ts", vcol: "equity"})
+                    df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
+                    df = df.dropna(subset=["ts", "equity"]).sort_values("ts")
+                    if len(df) >= 2:
+                        con.close()
+                        return df
+        except Exception:
+            pass
+
+    # 2) reconstruct from closed trades
+    tbl = None
+    for name in ("open_positions", "positions"):
+        try:
+            cur.execute(f"SELECT 1 FROM {name} LIMIT 1;")
+            tbl = name
+            break
+        except Exception:
+            continue
+    if not tbl:
+        con.close()
+        return None
+
+    # initial_equity
+    init_eq = 100.0
+    try:
+        row = cur.execute(
+            "SELECT cfg_json FROM config_snapshots ORDER BY ts_utc DESC LIMIT 1;"
+        ).fetchone()
+        if row and row[0]:
+            snap = json.loads(row[0])
+            init_eq = (
+                snap.get("initial_equity")
+                or snap.get("portfolio", {}).get("initial_equity")
+                or 100.0
+            )
+    except Exception:
+        pass
+
+    # extract closed trades
+    cols = [r[1] for r in cur.execute(f"PRAGMA table_info({tbl});").fetchall()]
+    has_status = "status" in cols
+    has_fees = "fees_paid" in cols
+    sel = "side, qty, entry_fill, exit_fill, exit_fill_ts" + (
+        ", fees_paid" if has_fees else ""
+    )
+    where = "WHERE exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
+    if has_status:
+        where = "WHERE status='CLOSED' AND exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
+    import pandas as pd, numpy as np
+    df = pd.read_sql(
+        f"SELECT {sel} FROM {tbl} {where} ORDER BY exit_fill_ts;", con
+    )
+    con.close()
+    if df.empty:
+        return None
+    df["ts"] = pd.to_datetime(df["exit_fill_ts"], errors="coerce", utc=True)
+    for c in ("qty", "entry_fill", "exit_fill"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    if has_fees:
+        df["fees_paid"] = pd.to_numeric(df["fees_paid"], errors="coerce").fillna(0.0)
+    df["pnl"] = np.where(
+        df["side"].str.upper() == "LONG",
+        (df["exit_fill"] - df["entry_fill"]) * df["qty"],
+        (df["entry_fill"] - df["exit_fill"]) * df["qty"],
+    )
+    if has_fees:
+        df["pnl"] = df["pnl"] - df["fees_paid"]
+    eq = (init_eq + df["pnl"].cumsum()).rename("equity")
+    out = pd.DataFrame({"ts": df["ts"], "equity": eq})
+    out = out.dropna(subset=["ts"]).sort_values("ts")
+    return out
+
+
+def _make_live_equity_png(base_dir):
+    """Save viz_equity_vs_time.png into the live session dir, return path or None."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+
+    session_db = os.path.join(base_dir, "session.sqlite")
+    df = _session_equity_df(session_db)
+    if df is None or df.empty:
+        return None
+    out_png = os.path.join(base_dir, "viz_equity_vs_time.png")
+    plt.figure(figsize=(8, 4))
+    plt.plot(df["ts"], df["equity"])
+    ax = plt.gca()
+    # show hours alongside the date for readability
+    ax.xaxis.set_major_locator(mdates.HourLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+    plt.xticks(rotation=45)
+    plt.title("Live Equity vs Time")
+    plt.xlabel("Time")
+    plt.ylabel("Equity")
+    plt.tight_layout()
+    plt.savefig(out_png)
+    plt.close()
+    return out_png
 
 def load_backtester_version() -> str:
     try:
@@ -436,7 +550,7 @@ def live_results():
 
 
 @app.get("/api/live_results/{name}")
-def live_result(name: str):
+def live_result(name: str, debug: int = Query(0)):
     """Return visualization artifacts for a live session along with an optional
     on-demand backtest of the same session data.
 
@@ -467,6 +581,10 @@ def live_result(name: str):
             )
         except Exception:
             log.exception("live_result %s: failed to generate viz plots", name)
+    try:
+        _make_live_equity_png(base)
+    except Exception:
+        pass
     arts: Dict[str, str] = {}
     plot_files = [
         "returns_hist.png",
@@ -497,103 +615,30 @@ def live_result(name: str):
     live_range = None
     if os.path.exists(session_db):
         try:
-            import sqlite3, json, datetime as dt
+            import sqlite3, json
             con = sqlite3.connect(session_db)
             cur = con.cursor()
             row = cur.execute(
-                "SELECT cfg_json FROM config_snapshots ORDER BY ts_utc DESC LIMIT 1"
+                "SELECT cfg_json FROM config_snapshots ORDER BY ts_utc DESC LIMIT 1;"
             ).fetchone()
-            exchange = "binance"
-            tf = "1m"
-            initial_equity = 100.0
-            if row:
+            if row and row[0]:
                 snap = json.loads(row[0])
                 allow_syms = snap.get("symbols_whitelist") or snap.get("universe", {}).get("allow")
                 sym_file = snap.get("universe", {}).get("file")
                 if sym_file and sym_file != "<cli>":
                     symbols_file = sym_file
-                exchange = (
-                    snap.get("exchange")
-                    or snap.get("runner", {}).get("exchange")
-                    or exchange
-                )
-                tf = (
-                    snap.get("timeframe")
-                    or snap.get("runner", {}).get("timeframe")
-                    or tf
-                )
-                for path in (
-                    "initial_equity",
-                    "runner.initial_equity",
-                    "live.initial_equity",
-                    "portfolio.initial_equity",
-                ):
-                    cur_cfg = snap
-                    for part in path.split("."):
-                        if isinstance(cur_cfg, dict):
-                            cur_cfg = cur_cfg.get(part)
-                        else:
-                            cur_cfg = None
-                            break
-                    if cur_cfg is not None:
-                        try:
-                            initial_equity = float(cur_cfg)
-                        except Exception:
-                            log.debug(
-                                "live_result %s: invalid initial_equity %r", name, cur_cfg
-                            )
-                        break
-            bot_id = make_bot_id(base, exchange, tf)
-            has_eq = cur.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='equity'"
-            ).fetchone()
-            rows = []
-            if has_eq:
-                rows = cur.execute(
-                    "SELECT ts, equity FROM equity WHERE bot_id=? ORDER BY ts",
-                    (bot_id,),
-                ).fetchall()
-            if not rows:
-                rows = cur.execute(
-                    """SELECT
-                        exit_fill_ts AS ts,
-                        ? + SUM(
-                            CASE WHEN side='LONG'
-                                 THEN (exit_fill - entry_fill) * qty
-                                 ELSE (entry_fill - exit_fill) * qty
-                            END
-                        ) OVER (ORDER BY exit_fill_ts) AS equity
-                    FROM open_positions
-                    WHERE bot_id = ? AND status = 'CLOSED' AND exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL
-                    ORDER BY exit_fill_ts""",
-                    (initial_equity, bot_id),
-                ).fetchall()
             con.close()
-            if rows:
-                live_range = {"start": rows[0][0], "end": rows[-1][0]}
-                try:
-                    import matplotlib
-                    matplotlib.use("Agg")
-                    import matplotlib.pyplot as plt
-                    ts = [dt.datetime.fromisoformat(r[0].replace('Z', '+00:00')) for r in rows if r[0]]
-                    eq = [float(r[1]) for r in rows]
-                    if ts and eq:
-                        plt.figure()
-                        plt.plot(ts, eq)
-                        plt.title("Live equity vs time")
-                        plt.xlabel("time")
-                        plt.ylabel("equity")
-                        plt.xticks(rotation=45)
-                        plt.tight_layout()
-                        out_fn = "live_equity_vs_time.png"
-                        out_p = os.path.join(base, out_fn)
-                        plt.savefig(out_p)
-                        plt.close()
-                        arts[out_fn] = f"/api/live_results/{name}/files/{out_fn}"
-                except Exception:
-                    log.exception("live_result %s: failed to plot live equity", name)
         except Exception:
             log.exception("live_result %s: failed to read session db", name)
+        try:
+            df = _session_equity_df(session_db)
+            if df is not None and not df.empty:
+                live_range = {
+                    "start": df["ts"].iloc[0].isoformat(),
+                    "end": df["ts"].iloc[-1].isoformat(),
+                }
+        except Exception:
+            pass
 
     if cfg_path and os.path.exists(cache_db):
         repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
@@ -609,9 +654,30 @@ def live_result(name: str):
             shutil.rmtree(bt_plots)
         os.makedirs(bt_plots, exist_ok=True)
         logs = os.path.join(base, "bt_logs.txt")
+        # Limit backtest to the time window available from the live session
+        limit_bars = 5000
+        if live_range:
+            try:
+                import pandas as pd
+                cfg = yaml.safe_load(open(cfg_path, "r")) or {}
+                tf = cfg.get("timeframe") or cfg.get("tf") or cfg.get("interval")
+                step_min = 0
+                if isinstance(tf, str):
+                    if tf.endswith("m"):
+                        step_min = int(tf[:-1])
+                    elif tf.endswith("h"):
+                        step_min = int(tf[:-1]) * 60
+                elif isinstance(tf, (int, float)):
+                    step_min = int(tf)
+                if step_min:
+                    start = pd.to_datetime(live_range["start"])
+                    end = pd.to_datetime(live_range["end"])
+                    limit_bars = max(int((end - start).total_seconds() / 60 / step_min) + 1, 1)
+            except Exception:
+                pass
         cmd = cmd_backtester(
             cfg_path,
-            5000,
+            limit_bars,
             cache_db=cache_db,
             plots_dir=bt_plots,
             symbols_file=symbols_file,
@@ -695,7 +761,48 @@ def live_result(name: str):
                 "logs": bt_logs,
             }
 
-    return {"artifacts": arts, "backtest": backtest, "live_range": live_range}
+    resp = {"artifacts": arts, "backtest": backtest, "live_range": live_range}
+
+    if debug:
+        dbg = {
+            "dir": base,
+            "exists": os.path.isdir(base),
+            "files": sorted(os.listdir(base)),
+        }
+        sdb = os.path.join(base, "session.sqlite")
+        if os.path.exists(sdb):
+            import sqlite3
+            con = sqlite3.connect(sdb)
+            cur = con.cursor()
+            try:
+                integ = cur.execute("PRAGMA integrity_check;").fetchone()[0]
+            except Exception as e:
+                integ = f"error:{e}"
+            try:
+                tabs = [
+                    r[0]
+                    for r in cur.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table';"
+                    ).fetchall()
+                ]
+            except Exception as e:
+                tabs = [f"error:{e}"]
+            counts: Dict[str, Any] = {}
+            for t in tabs:
+                try:
+                    counts[t] = cur.execute(f"SELECT COUNT(*) FROM {t};").fetchone()[0]
+                except Exception as e:
+                    counts[t] = f"error:{e}"
+            con.close()
+            dbg["session_db"] = {
+                "size_bytes": os.path.getsize(sdb),
+                "integrity": integ,
+                "tables": tabs,
+                "counts": counts,
+            }
+        resp["debug"] = dbg
+
+    return resp
 
 
 @app.get("/api/live_results/{name}/files/{filename:path}")
