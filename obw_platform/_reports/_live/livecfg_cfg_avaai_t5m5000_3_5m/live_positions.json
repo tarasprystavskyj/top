@@ -10,25 +10,11 @@
     "run_id": "LIVE_20250910_064808",
     "order_id": "c3ea44ba-51f6-4de7-9b66-c99046b1ea42",
     "exchange_order_id": "1966025194297581568",
+    "exchange": "bingx",
+    "timeframe": "5m",
     "entry_fill": 0.15228,
     "entry_fill_ts": "2025-09-11T06:25:07+00:00",
     "entry_slip_bp": 21.05817320347425,
     "entry_lag_sec": 7.0
-  },
-  "NMR/USDT:USDT": {
-    "symbol": "NMR/USDT:USDT",
-    "side": "LONG",
-    "qty": 0.1,
-    "entry": 20.312,
-    "tp_price": 22.56518756747759,
-    "sl_price": 19.720401202395927,
-    "ts_open": "2025-09-11T06:30:00+00:00",
-    "run_id": "LIVE_20250910_064808",
-    "order_id": "0189de95-3d55-410b-8afd-863266b0c9cc",
-    "exchange_order_id": "1966026459266113536",
-    "entry_fill": 20.403,
-    "entry_fill_ts": "2025-09-11T06:30:09+00:00",
-    "entry_slip_bp": 44.801102796374614,
-    "entry_lag_sec": 9.0
   }
 }
