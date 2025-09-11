@@ -163,7 +163,7 @@ def _make_live_equity_png(base_dir):
     ax = plt.gca()
     # show hours alongside the date for readability
     ax.xaxis.set_major_locator(mdates.HourLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H'))
     plt.xticks(rotation=45)
     plt.title("Live Equity vs Time")
     plt.xlabel("Time")
