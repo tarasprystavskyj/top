@@ -38,16 +38,27 @@ export default function LiveResult() {
       })
       .then(data => {
         console.debug('Session data', data);
-        const ps = [
-          {
-            name: 'equity_vs_time',
+        const plotFiles = [
+          'equity_by_time.png',
+          'equity_by_trade.png',
+          'drawdown_by_trade.png',
+          'returns_hist.png',
+        ];
+        const ps = plotFiles
+          .map(fn => ({
+            name: fn.replace('.png', ''),
             back:
-              data.backtest?.artifacts?.['viz_equity_vs_time.png'] ||
-              data.backtest?.artifacts?.['equity_by_time.png'] ||
-              null,
-            live: data.artifacts?.['viz_equity_vs_time.png'] || null,
-          },
-        ].filter(p => p.back || p.live);
+              data.backtest?.artifacts?.[fn] ||
+              (fn === 'equity_by_time.png'
+                ? data.backtest?.artifacts?.['viz_equity_vs_time.png']
+                : null),
+            live:
+              data.artifacts?.[fn] ||
+              (fn === 'equity_by_time.png'
+                ? data.artifacts?.['viz_equity_vs_time.png']
+                : null),
+          }))
+          .filter(p => p.back || p.live);
         console.debug('Plot pairs', ps);
         console.debug('Backtest summary', data.backtest?.summary || null);
         setPairs(ps);

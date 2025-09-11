@@ -151,6 +151,7 @@ def _make_live_equity_png(base_dir):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
 
     session_db = os.path.join(base_dir, "session.sqlite")
     df = _session_equity_df(session_db)
@@ -159,6 +160,9 @@ def _make_live_equity_png(base_dir):
     out_png = os.path.join(base_dir, "viz_equity_vs_time.png")
     plt.figure(figsize=(8, 4))
     plt.plot(df["ts"], df["equity"])
+    ax = plt.gca()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+    plt.xticks(rotation=45)
     plt.title("Live Equity vs Time")
     plt.xlabel("Time")
     plt.ylabel("Equity")

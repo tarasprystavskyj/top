@@ -427,7 +427,7 @@ def main():
                     ts.loc[mask] = ts_raw[mask].map(lambda x: pd.to_datetime(x, errors='coerce'))
                 plt.plot(ts, eq_time.values, label=legend_label)
                 ax = plt.gca()
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
                 plt.xticks(rotation=45)
                 plt.legend()
 
