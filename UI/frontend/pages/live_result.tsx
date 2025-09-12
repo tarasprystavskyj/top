@@ -13,10 +13,10 @@ export default function LiveResult() {
   const [trades, setTrades] = useState<any[]>([]);
   const [liveTrades, setLiveTrades] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [btRange, setBtRange] = useState<{ start: string; end: string } | null>(null);
   const [liveRange, setLiveRange] = useState<{ start: string; end: string } | null>(null);
   const [debug, setDebug] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
+  const [btRangeText, setBtRangeText] = useState<string>('');
 
   useEffect(() => {
     const q = router.query.cfg;
@@ -77,16 +77,13 @@ export default function LiveResult() {
         setTrades(data.backtest?.trades || []);
         setLiveTrades(data.live_trades || []);
         setSlide(0);
-        setError(ps.length ? null : 'No data available for this session');
-        if (data.backtest?.trades?.length) {
-          const t0 = data.backtest.trades[0];
-          const t1 = data.backtest.trades[data.backtest.trades.length - 1];
-          const k = t0.ts_utc ? 'ts_utc' : t0.ts ? 'ts' : null;
-          if (k) setBtRange({ start: t0[k], end: t1[k] });
-          else setBtRange(null);
-        } else {
-          setBtRange(null);
-        }
+        const hasData =
+          ps.length > 0 ||
+          !!data.backtest?.summary ||
+          (data.backtest?.trades?.length ?? 0) > 0 ||
+          (data.live_trades?.length ?? 0) > 0;
+        setError(hasData ? null : 'No data available for this session');
+        setBtRangeText(data.backtest?.time_range_text || '');
         setLiveRange(data.live_range || null);
         if (debug && data?.debug) {
           console.debug('Live debug:', data.debug);
@@ -110,7 +107,7 @@ export default function LiveResult() {
         setTrades([]);
         setLiveTrades([]);
         setLogs('');
-        setBtRange(null);
+        setBtRangeText('');
         setLiveRange(null);
         setError('No data available for this session');
         setDebugData(null);
@@ -157,10 +154,14 @@ export default function LiveResult() {
           <div style={{ display: 'flex', gap: '10px' }}>
             <div style={{ textAlign: 'center' }}>
               <h3>
-                Backtest {btRange ? `(${btRange.start} — ${btRange.end})` : ''}
+                Backtest {btRangeText ? `(${btRangeText})` : ''}
               </h3>
-              {pairs[slide].back && (
+              {pairs[slide].back ? (
                 <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
+              ) : (
+                <div style={{ maxWidth: '400px', textAlign: 'center' }}>
+                  No backtest trade data
+                </div>
               )}
             </div>
             <div style={{ textAlign: 'center' }}>
@@ -198,57 +199,57 @@ export default function LiveResult() {
       {(trades.length > 0 || liveTrades.length > 0) && (
         <div style={{ display: 'flex', gap: 16 }}>
           <div style={{ flex: 1 }}>
-            {trades.length > 0 && (
-              <>
-                <h4>Backtest trades ({trades.length})</h4>
-                <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                  <table border={1}>
-                    <thead>
-                      <tr>
+            <h4>Backtest trades ({trades.length})</h4>
+            {trades.length > 0 ? (
+              <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                <table border={1}>
+                  <thead>
+                    <tr>
+                      {Object.keys(trades[0]).map(k => (
+                        <th key={k}>{k}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trades.map((t, i) => (
+                      <tr key={i}>
                         {Object.keys(trades[0]).map(k => (
-                          <th key={k}>{k}</th>
+                          <td key={k}>{formatVal(t[k])}</td>
                         ))}
                       </tr>
-                    </thead>
-                    <tbody>
-                      {trades.map((t, i) => (
-                        <tr key={i}>
-                          {Object.keys(trades[0]).map(k => (
-                            <td key={k}>{formatVal(t[k])}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div>No backtest trades</div>
             )}
           </div>
           <div style={{ flex: 1 }}>
-            {liveTrades.length > 0 && (
-              <>
-                <h4>Live trades ({liveTrades.length})</h4>
-                <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                  <table border={1}>
-                    <thead>
-                      <tr>
+            <h4>Live trades ({liveTrades.length})</h4>
+            {liveTrades.length > 0 ? (
+              <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                <table border={1}>
+                  <thead>
+                    <tr>
+                      {Object.keys(liveTrades[0]).map(k => (
+                        <th key={k}>{k}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {liveTrades.map((t, i) => (
+                      <tr key={i}>
                         {Object.keys(liveTrades[0]).map(k => (
-                          <th key={k}>{k}</th>
+                          <td key={k}>{formatVal(t[k])}</td>
                         ))}
                       </tr>
-                    </thead>
-                    <tbody>
-                      {liveTrades.map((t, i) => (
-                        <tr key={i}>
-                          {Object.keys(liveTrades[0]).map(k => (
-                            <td key={k}>{formatVal(t[k])}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div>No live trades</div>
             )}
           </div>
         </div>

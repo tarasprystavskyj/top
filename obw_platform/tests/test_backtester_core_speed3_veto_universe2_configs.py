@@ -61,7 +61,6 @@ def test_backtester_runs_for_config(cfg_path: Path, tmp_path: Path):
         str(tmp_cfg),
         "--limit-bars",
         "2",
-        "--no-export-csv",
     ]
     res = subprocess.run(cmd, cwd=CWD, capture_output=True, text=True)
     if res.returncode != 0:
@@ -91,7 +90,6 @@ def test_symbols_file_path_with_prefix(tmp_path: Path):
         str(tmp_cfg),
         "--limit-bars",
         "2",
-        "--no-export-csv",
         "--symbols-file",
         f"universe/{sym_name}",
     ]
@@ -118,7 +116,6 @@ def test_cache_db_cli_override(tmp_path: Path):
         str(tmp_cfg),
         "--limit-bars",
         "2",
-        "--no-export-csv",
         "--cache_db",
         str(tmp_db),
     ]
