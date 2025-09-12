@@ -1,4 +1,4 @@
-timeframe: '5m'
+timeframe: '1m'
 cache_db: combined_cache_5m_500.db
 strategy_class: strategies.breakout_avaai_full_with_universe_3.BreakoutAVAAIFull
 side: 'BOTH'
