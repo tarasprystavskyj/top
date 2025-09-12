@@ -99,10 +99,7 @@ def _run_backtest(cfg_path: str, limit_bars: int | None):
 def _run_live(cfg: Dict[str, Any], args):
     # Try to call your live runner
     try:
-        try:
-            from .runners import live_runner_2 as _lr
-        except Exception:  # allow running from repo root or package
-            import runners.live_runner_2 as _lr  # type: ignore
+        import runners.live_runner_2 as _lr
         if TRACE:
             auto_instrument_module(_lr, cfg=cfg,
                 include=cfg.get("trace_calls", {}).get("include"),
@@ -117,10 +114,7 @@ def _run_live(cfg: Dict[str, Any], args):
 def _run_paper_api(cfg: Dict[str, Any], args):
     # Try your project's paper runner first
     try:
-        try:
-            from .runners.paper_api_runner import run_paper_api as _run_paper_api
-        except Exception:  # allow running from repo root or package
-            from runners.paper_api_runner import run_paper_api as _run_paper_api  # type: ignore
+        from runners.paper_api_runner import run_paper_api as _run_paper_api
         return _run_paper_api(cfg, args)
     except Exception as e:
         print("[paper-api] runners.paper_api_runner.run_paper_api not available:", e)

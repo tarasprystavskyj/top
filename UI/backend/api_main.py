@@ -162,7 +162,14 @@ def _make_live_equity_png(base_dir):
     plt.plot(df["ts"], df["equity"])
     ax = plt.gca()
     # show hours alongside the date for readability
+<<<<<<< HEAD
 
+=======
+    ax.xaxis.set_major_locator(mdates.HourLocator())
+<<<<<<< HEAD
+>>>>>>> parent of 3284c21 (Merge branch 'main' into codex/add-debug-mode-and-live-equity-graph-ggim29)
+=======
+>>>>>>> parent of 3284c21 (Merge branch 'main' into codex/add-debug-mode-and-live-equity-graph-ggim29)
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
     plt.xticks(rotation=45)
     plt.title("Live Equity vs Time")
