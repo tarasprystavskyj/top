@@ -11,8 +11,10 @@ export default function LiveResult() {
   const [slide, setSlide] = useState(0);
   const [logs, setLogs] = useState('');
   const [trades, setTrades] = useState<any[]>([]);
+  const [liveTrades, setLiveTrades] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [range, setRange] = useState<{ start: string; end: string } | null>(null);
+  const [btRange, setBtRange] = useState<{ start: string; end: string } | null>(null);
+  const [liveRange, setLiveRange] = useState<{ start: string; end: string } | null>(null);
   const [debug, setDebug] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
 
@@ -73,19 +75,19 @@ export default function LiveResult() {
         setPairs(ps);
         setSummary(data.backtest?.summary || null);
         setTrades(data.backtest?.trades || []);
+        setLiveTrades(data.live_trades || []);
         setSlide(0);
         setError(ps.length ? null : 'No data available for this session');
         if (data.backtest?.trades?.length) {
           const t0 = data.backtest.trades[0];
           const t1 = data.backtest.trades[data.backtest.trades.length - 1];
           const k = t0.ts_utc ? 'ts_utc' : t0.ts ? 'ts' : null;
-          if (k) setRange({ start: t0[k], end: t1[k] });
-          else setRange(null);
-        } else if (data.live_range) {
-          setRange({ start: data.live_range.start, end: data.live_range.end });
+          if (k) setBtRange({ start: t0[k], end: t1[k] });
+          else setBtRange(null);
         } else {
-          setRange(null);
+          setBtRange(null);
         }
+        setLiveRange(data.live_range || null);
         if (debug && data?.debug) {
           console.debug('Live debug:', data.debug);
           setDebugData(data.debug);
@@ -106,8 +108,10 @@ export default function LiveResult() {
         setSummary(null);
         setPairs([]);
         setTrades([]);
+        setLiveTrades([]);
         setLogs('');
-        setRange(null);
+        setBtRange(null);
+        setLiveRange(null);
         setError('No data available for this session');
         setDebugData(null);
       });
@@ -152,13 +156,17 @@ export default function LiveResult() {
         <div>
           <div style={{ display: 'flex', gap: '10px' }}>
             <div style={{ textAlign: 'center' }}>
-              <div>Backtest</div>
+              <div>
+                Backtest {btRange ? `(${btRange.start} – ${btRange.end})` : ''}
+              </div>
               {pairs[slide].back && (
                 <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
               )}
             </div>
             <div style={{ textAlign: 'center' }}>
-              <div>Live</div>
+              <div>
+                Live {liveRange ? `(${liveRange.start} – ${liveRange.end})` : ''}
+              </div>
               {pairs[slide].live ? (
                 <img src={pairs[slide].live!} style={{ maxWidth: '400px' }} />
               ) : (
@@ -182,36 +190,67 @@ export default function LiveResult() {
       {logs && (
         <pre style={{ maxHeight: '200px', overflow: 'auto' }}>{logs}</pre>
       )}
-      {range && (
-        <p>
-          Window: {range.start} – {range.end}
-        </p>
-      )}
       {debug && debugData && (
         <pre style={{ maxHeight: 300, overflow: 'auto' }}>
           {JSON.stringify(debugData, null, 2)}
         </pre>
       )}
-      {trades.length > 0 && (
-        <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-          <table border={1}>
-            <thead>
-              <tr>
-                {Object.keys(trades[0]).map(k => (
-                  <th key={k}>{k}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {trades.map((t, i) => (
-                <tr key={i}>
-                  {Object.keys(trades[0]).map(k => (
-                    <td key={k}>{formatVal(t[k])}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {(trades.length > 0 || liveTrades.length > 0) && (
+        <div style={{ display: 'flex', gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            {trades.length > 0 && (
+              <>
+                <h4>Backtest trades</h4>
+                <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                  <table border={1}>
+                    <thead>
+                      <tr>
+                        {Object.keys(trades[0]).map(k => (
+                          <th key={k}>{k}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trades.map((t, i) => (
+                        <tr key={i}>
+                          {Object.keys(trades[0]).map(k => (
+                            <td key={k}>{formatVal(t[k])}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            {liveTrades.length > 0 && (
+              <>
+                <h4>Live trades</h4>
+                <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                  <table border={1}>
+                    <thead>
+                      <tr>
+                        {Object.keys(liveTrades[0]).map(k => (
+                          <th key={k}>{k}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {liveTrades.map((t, i) => (
+                        <tr key={i}>
+                          {Object.keys(liveTrades[0]).map(k => (
+                            <td key={k}>{formatVal(t[k])}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>
