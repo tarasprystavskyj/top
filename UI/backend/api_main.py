@@ -47,7 +47,7 @@ BACKTESTER_SCRIPTS = [
 # us only pass CLI flags that a particular backtester understands to avoid
 # "unrecognized arguments" errors.
 BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
-    "backtester_core_speed3_veto_universe_2.py": {"plots": True, "time_range": True},
+    "backtester_core_speed3_veto_universe_2.py": {"plots": True, "time_range": True, "export_csv": True},
     "backtester_core_speed3_veto_universe.py": {"plots": True},
     "backtester_core_speed3.py": {"plots": True},
     "backtester_core_speed3_veto.py": {"plots": True},
@@ -308,6 +308,8 @@ def cmd_backtester(
     allow_symbols=None,
     time_from=None,
     time_to=None,
+    export_csv=False,
+    debug=False,
 ):
     """Build a command line for the selected backtester script.
 
@@ -337,6 +339,10 @@ def cmd_backtester(
     # Only add --plots if the selected backtester advertises support for it
     if plots_dir and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("plots"):
         cmd += ["--plots", plots_dir]
+    if export_csv and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("export_csv"):
+        cmd += ["--export-csv"]
+    if debug:
+        cmd += ["--debug"]
     return cmd
 
 def find_config(name: str) -> Optional[str]:
@@ -383,30 +389,20 @@ def run_backtest(job):
     logs = os.path.join(out_dir, "logs.txt")
     repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
     bt_root = os.path.join(repo_root, "obw_platform")
-    for fn in ("summary.csv", "trades.csv"):
-        try:
-            os.remove(os.path.join(bt_root, fn))
-        except FileNotFoundError:
-            pass
     bt_script = meta.get("backtester") or load_backtester_version()
-    cmd = cmd_backtester(cfg_path, meta["limit_bars"], meta.get("cache_db"), out_dir, bt_script)
+    cmd = cmd_backtester(cfg_path, meta["limit_bars"], meta.get("cache_db"), out_dir, bt_script, export_csv=True)
     with open(logs, "w") as lf:
         p = subprocess.Popen(cmd, cwd=bt_root, stdout=lf, stderr=lf)
         p.wait()
     if p.returncode != 0:
         raise RuntimeError(f"backtester failed with code {p.returncode}")
-    for fn in ("summary.csv", "trades.csv"):
-        srcp = os.path.join(bt_root, fn)
-        dstp = os.path.join(out_dir, fn)
-        if os.path.exists(srcp):
-            shutil.copyfile(srcp, dstp)
     save_backtester_version(bt_script)
     # Generate extra visualization plots if possible
     if _viz_plot is not None:
         try:
             _viz_plot(
-                trades_csv=os.path.join(out_dir, "trades.csv"),
-                summary_csv=os.path.join(out_dir, "summary.csv"),
+                trades_csv=os.path.join(out_dir, "bt_trades.csv"),
+                summary_csv=os.path.join(out_dir, "bt_summary.csv") if os.path.exists(os.path.join(out_dir, "bt_summary.csv")) else None,
                 show=False,
                 save_dir=out_dir,
                 file_prefix="viz",
@@ -431,7 +427,7 @@ def run_grid(job):
         cfg_path = os.path.join(subdir, "cfg_merged.yaml")
         with open(cfg_path,"w") as f: yaml.safe_dump(var, f, sort_keys=False)
         logs = os.path.join(subdir, "logs.txt")
-        cmd = cmd_backtester(cfg_path, req.get("limit_bars", 5000), req.get("cache_db"))
+        cmd = cmd_backtester(cfg_path, req.get("limit_bars", 5000), req.get("cache_db"), export_csv=True)
         with open(logs, "w") as lf:
             p = subprocess.Popen(
                 cmd,
@@ -643,7 +639,7 @@ def live_result(name: str, debug: int = Query(0)):
     # Default structure returned when we cannot build a matching backtest.
     # ``summary`` is ``None`` instead of an empty dict so the frontend can
     # easily detect the absence of data and avoid showing an empty "{}" block.
-    backtest = {"artifacts": {}, "summary": None}
+    backtest = {"artifacts": {}, "summary": None, "trades": [], "logs": None, "time_range_text": None, "files": {}}
     cfg_candidates = sorted(glob.glob(os.path.join(base, "cfg_*.yaml")))
     cfg_path = cfg_candidates[0] if cfg_candidates else infer_config_from_session(name)
     cache_db = os.path.join(base, "combined_cache_session.db")
@@ -695,15 +691,10 @@ def live_result(name: str, debug: int = Query(0)):
             log.exception("live_result %s: failed to parse trades.csv", name)
 
     bt_cmd = None
+    bt_stdout = None
     if cfg_path and os.path.exists(cache_db):
         repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
         bt_root = os.path.join(repo_root, "obw_platform")
-        # Ensure previous outputs from obw_platform don't bleed into results
-        for fn in ("summary.csv", "trades.csv"):
-            try:
-                os.remove(os.path.join(bt_root, fn))
-            except FileNotFoundError:
-                pass
         bt_plots = os.path.join(base, "bt_plots")
         if os.path.isdir(bt_plots):
             shutil.rmtree(bt_plots)
@@ -718,85 +709,81 @@ def live_result(name: str, debug: int = Query(0)):
             allow_symbols=allow_syms,
             time_from=live_range["start"] if live_range else None,
             time_to=live_range["end"] if live_range else None,
+            export_csv=True,
+            debug=bool(debug),
         )
         bt_cmd = " ".join(cmd)
+        result = subprocess.run(cmd, cwd=bt_root, capture_output=True, text=True)
         with open(logs, "w") as lf:
-            p = subprocess.Popen(cmd, cwd=bt_root, stdout=lf, stderr=lf)
-            p.wait()
-        if p.returncode == 0:
-            # Copy summary/trades so we can post-process them
-            src_summary = os.path.join(bt_root, "summary.csv")
-            src_trades = os.path.join(bt_root, "trades.csv")
-            dst_summary = os.path.join(base, "bt_summary.csv")
-            dst_trades = os.path.join(base, "bt_trades.csv")
-            if os.path.exists(src_summary):
-                shutil.copyfile(src_summary, dst_summary)
-            if os.path.exists(src_trades):
-                shutil.copyfile(src_trades, dst_trades)
-            if _viz_plot and os.path.exists(dst_trades):
-                try:
-                    _viz_plot(
-                        trades_csv=dst_trades,
-                        summary_csv=dst_summary if os.path.exists(dst_summary) else None,
-                        show=False,
-                        save_dir=bt_plots,
-                        file_prefix="bt_viz",
-                    )
-                except Exception:
-                    log.exception(
-                        "live_result %s: failed to generate backtest viz plots", name
-                    )
-            # Collect backtest artifacts
-            bt_arts = {}
-            core_files = [
-                "returns_hist.png",
-                "equity_by_trade.png",
-                "equity_by_time.png",
-                "drawdown_by_trade.png",
-            ]
-            for fn in core_files:
-                pth = os.path.join(bt_plots, fn)
-                if os.path.exists(pth):
-                    bt_arts[fn] = f"/api/live_results/{name}/files/bt_plots/{fn}"
-            viz_map = {
-                "bt_viz_equity_vs_trade.png": "viz_equity_vs_trade.png",
-                "bt_viz_dd_vs_trade.png": "viz_dd_vs_trade.png",
-                "bt_viz_equity_vs_time.png": "viz_equity_vs_time.png",
-            }
-            for src_name, key in viz_map.items():
-                pth = os.path.join(bt_plots, src_name)
-                if os.path.exists(pth):
-                    bt_arts[key] = f"/api/live_results/{name}/files/bt_plots/{src_name}"
-            bt_summary = None
-            if os.path.exists(dst_summary):
-                try:
-                    import csv
-                    with open(dst_summary) as f:
-                        rows = list(csv.DictReader(f))
-                        if rows:
-                            bt_summary = rows[0]
-                except Exception:
-                    # If parsing fails we simply keep the summary as ``None``
-                    # so the caller knows no usable data was produced.
-                    log.exception("live_result %s: failed to parse bt_summary", name)
-            bt_trades = []
-            if os.path.exists(dst_trades):
-                try:
-                    import csv
-                    with open(dst_trades) as f:
-                        bt_trades = list(csv.DictReader(f))
-                except Exception:
-                    log.exception("live_result %s: failed to parse bt_trades", name)
-                    bt_trades = []
-            bt_logs = None
-            if os.path.exists(logs):
-                bt_logs = f"/api/live_results/{name}/files/{os.path.basename(logs)}"
-            backtest = {
-                "artifacts": bt_arts,
-                "summary": bt_summary,
-                "trades": bt_trades,
-                "logs": bt_logs,
-            }
+            lf.write(result.stdout)
+            lf.write(result.stderr)
+        bt_stdout = result.stdout
+        bt_logs = f"/api/live_results/{name}/files/{os.path.basename(logs)}" if os.path.exists(logs) else None
+        bt_arts: Dict[str, str] = {}
+        bt_summary = None
+        bt_trades = []
+        time_range_text = None
+        trades_path = summary_path = None
+        for line in bt_stdout.splitlines():
+            if line.startswith("[time range]"):
+                time_range_text = line[len("[time range] "):].strip()
+            if line.startswith("[files]"):
+                parts = dict(p.split("=", 1) for p in line[7:].split())
+                trades_path = parts.get("bt_trades")
+                summary_path = parts.get("bt_summary")
+        if trades_path and os.path.exists(trades_path):
+            try:
+                import csv
+                with open(trades_path) as f:
+                    bt_trades = list(csv.DictReader(f))
+            except Exception:
+                log.exception("live_result %s: failed to parse bt_trades", name)
+                bt_trades = []
+        if summary_path and os.path.exists(summary_path):
+            try:
+                import json as _json
+                bt_summary = _json.load(open(summary_path))
+            except Exception:
+                log.exception("live_result %s: failed to parse bt_summary", name)
+        if result.returncode == 0 and _viz_plot and trades_path and os.path.exists(trades_path):
+            try:
+                _viz_plot(
+                    trades_csv=trades_path,
+                    summary_csv=summary_path if summary_path and os.path.exists(summary_path) else None,
+                    show=False,
+                    save_dir=bt_plots,
+                    file_prefix="bt_viz",
+                )
+            except Exception:
+                log.exception("live_result %s: failed to generate backtest viz plots", name)
+        core_files = [
+            "returns_hist.png",
+            "equity_by_trade.png",
+            "equity_by_time.png",
+            "drawdown_by_trade.png",
+        ]
+        for fn in core_files:
+            pth = os.path.join(bt_plots, fn)
+            if os.path.exists(pth):
+                bt_arts[fn] = f"/api/live_results/{name}/files/bt_plots/{fn}"
+        viz_map = {
+            "bt_viz_equity_vs_trade.png": "viz_equity_vs_trade.png",
+            "bt_viz_dd_vs_trade.png": "viz_dd_vs_trade.png",
+            "bt_viz_equity_vs_time.png": "viz_equity_vs_time.png",
+        }
+        for src_name, key in viz_map.items():
+            pth = os.path.join(bt_plots, src_name)
+            if os.path.exists(pth):
+                bt_arts[key] = f"/api/live_results/{name}/files/bt_plots/{src_name}"
+        backtest = {
+            "artifacts": bt_arts,
+            "summary": bt_summary,
+            "trades": bt_trades,
+            "logs": bt_logs,
+            "time_range_text": time_range_text,
+            "files": {"bt_trades": trades_path, "bt_summary": summary_path},
+        }
+        
     bt_range = None
     bt_trades = backtest.get("trades") or []
     if bt_trades:
@@ -822,6 +809,8 @@ def live_result(name: str, debug: int = Query(0)):
         }
         if bt_cmd:
             dbg["bt_cmd"] = bt_cmd
+        if bt_stdout:
+            dbg["bt_stdout"] = bt_stdout
         sdb = os.path.join(base, "session.sqlite")
         if os.path.exists(sdb):
             import sqlite3

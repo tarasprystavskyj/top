@@ -7,7 +7,7 @@
 #   - Calls strat.entry_signal() -> must return TP/SL; we just attach to Position
 #   - Calls strat.manage_position() for exits
 #   - Heat is reporting-only (printed if provided), not used for decisions.
-import argparse, sqlite3, importlib, time, sys, csv, os, pathlib as _p, shutil
+import argparse, sqlite3, importlib, time, sys, os, pathlib as _p, shutil, json
 from dataclasses import dataclass
 from typing import Dict, Any
 
@@ -39,7 +39,6 @@ def _split_csv_list(s):
     if not s: return []
     return [x.strip() for x in str(s).split(",") if x.strip()]
     
-import os
 
 def find_db_file(filename: str):
     """Locate a SQLite cache DB file.
@@ -103,19 +102,16 @@ def main():
     ap = argparse.ArgumentParser(description="Thin backtester (universe + strategy-owned logic)")
     ap.add_argument("--cfg", required=True)
     ap.add_argument("--limit-bars", type=int, default=500)
-    ap.add_argument("--export-csv", dest="export_csv", action="store_true")
-    ap.add_argument("--no-export-csv", dest="export_csv", action="store_false")
-    ap.add_argument("--plots", dest="plots_dir")
-    ap.add_argument("--plots-dir", dest="plots_dir")
+    ap.add_argument("--time-from", dest="time_from", type=str, default=None)
+    ap.add_argument("--time-to", dest="time_to", type=str, default=None)
+    ap.add_argument("--allow-symbols", type=str, default="")
+    ap.add_argument("--plots", dest="plots_dir", type=str, default="_reports/_backtest")
+    ap.add_argument("--export-csv", action="store_true")
+    ap.add_argument("--debug", action="store_true")
     # Universe controls (OPENINGS)
     ap.add_argument("--symbols-file", dest="symbols_file")
-    ap.add_argument("--allow-symbols", dest="allow_symbols")
     ap.add_argument("--deny-symbols", dest="deny_symbols")
     ap.add_argument("--cache_db", dest="cache_db")
-    ap.add_argument("--time-from", dest="time_from")
-    ap.add_argument("--time-to", dest="time_to")
-    ap.add_argument("--debug", action="store_true")
-    ap.set_defaults(export_csv=True)
     args = ap.parse_args()
 
     t0 = time.time()
@@ -153,9 +149,7 @@ def main():
     # Time window
     t_from = _norm_iso(getattr(args, 'time_from', None))
     t_to   = _norm_iso(getattr(args, 'time_to', None))
-    allow = None
-    if args.allow_symbols:
-        allow = [s.strip() for s in args.allow_symbols.split(',') if s.strip()]
+    allow = [s.strip() for s in (args.allow_symbols or "").split(",") if s.strip()]
 
     rows = []
     if t_from or t_to:
@@ -172,19 +166,21 @@ def main():
             q.append(f"AND symbol IN ({','.join('?'*len(allow))})"); params.extend(allow)
         q.append("ORDER BY datetime_utc ASC, symbol ASC")
         rows = con.execute(" ".join(q), params).fetchall()
-        if args.debug:
-            r = con.execute(
-                "SELECT MIN(datetime_utc), MAX(datetime_utc), COUNT(*) FROM price_indicators WHERE datetime_utc BETWEEN ? AND ?",
-                (
-                    t_from or "0000-01-01T00:00:00+00:00",
-                    t_to or "9999-12-31T23:59:59+00:00",
-                ),
-            ).fetchone()
-            print(f"[dbg] rows_in_range={r[2]} db_min={r[0]} db_max={r[1]}")
         if not rows:
             print(f"No bars in interval {t_from} .. {t_to} for DB={db_file}"); return
-        time_start = rows[0]["datetime_utc"]
-        time_end = rows[-1]["datetime_utc"]
+        rr = con.execute(
+            """
+            SELECT MIN(datetime_utc), MAX(datetime_utc), COUNT(*)
+            FROM price_indicators WHERE datetime_utc BETWEEN ? AND ?
+            """,
+            (
+                t_from or "0000-01-01T00:00:00+00:00",
+                t_to or "9999-12-31T23:59:59+00:00",
+            ),
+        ).fetchone()
+        time_start, time_end, rows_count = rr[0], rr[1], rr[2]
+        if args.debug:
+            print(f"[dbg] rows_in_range={rows_count} db_min={time_start} db_max={time_end}")
     else:
         th_row = con.execute(
             "SELECT MIN(datetime_utc) FROM (SELECT datetime_utc FROM price_indicators ORDER BY datetime_utc DESC LIMIT ?)",
@@ -425,24 +421,34 @@ def main():
     else:
         max_dd_frac = 0.0; mono_sign = 0.0; mono_mag = 0.0
 
+    summary_dict = {
+        "equity_start": initial_equity,
+        "equity_end": equity,
+        "trades": trades,
+        "profit_factor": pf,
+        "win_rate_%": win_rate_pct,
+        "elapsed_sec": elapsed,
+        "max_dd_frac": max_dd_frac,
+        "max_dd_%": (max_dd_frac * 100.0),
+        "monotonicity_sign": mono_sign,
+        "monotonicity_mag": mono_mag,
+        "total_fees": fees_cum,
+        "apr_%": apr_pct,
+        "daily_return_%": daily_ret_pct,
+        "monthly_return_%": monthly_ret_pct,
+        "yearly_return_%": yearly_ret_pct,
+    }
+
     # CSV exports
     if args.export_csv:
-        if tr_rows:
-            cols = ["symbol","side","entry_time","exit_time","entry","exit","tp","sl","reason","gross_return","net_return","notional","fees_paid","realized_pnl"]
-            with open("trades.csv","w",newline="") as f:
-                w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(tr_rows)
-        pd.DataFrame([{
-            "equity_start": initial_equity, "equity_end": equity, "trades": trades,
-            "profit_factor": pf, "win_rate_%": win_rate_pct,
-            "elapsed_sec": elapsed,
-            "max_dd_frac": max_dd_frac, "max_dd_%": (max_dd_frac * 100.0),
-            "monotonicity_sign": mono_sign, "monotonicity_mag": mono_mag,
-            "total_fees": fees_cum,
-            "apr_%": apr_pct,
-            "daily_return_%": daily_ret_pct,
-            "monthly_return_%": monthly_ret_pct,
-            "yearly_return_%": yearly_ret_pct
-        }]).to_csv("summary.csv", index=False)
+        os.makedirs(args.plots_dir, exist_ok=True)
+        trades_path = os.path.join(args.plots_dir, "bt_trades.csv")
+        summary_path = os.path.join(args.plots_dir, "bt_summary.csv")
+        trades_df = pd.DataFrame(tr_rows)
+        trades_df.to_csv(trades_path, index=False)
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary_dict, f, indent=2, default=str)
+        print(f"[files] bt_trades={trades_path} bt_summary={summary_path}")
 
     # Plots (same as before)
     if args.plots_dir:

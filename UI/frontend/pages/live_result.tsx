@@ -13,10 +13,10 @@ export default function LiveResult() {
   const [trades, setTrades] = useState<any[]>([]);
   const [liveTrades, setLiveTrades] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [btRange, setBtRange] = useState<{ start: string; end: string } | null>(null);
   const [liveRange, setLiveRange] = useState<{ start: string; end: string } | null>(null);
   const [debug, setDebug] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
+  const [btRangeText, setBtRangeText] = useState<string>('');
 
   useEffect(() => {
     const q = router.query.cfg;
@@ -78,15 +78,7 @@ export default function LiveResult() {
         setLiveTrades(data.live_trades || []);
         setSlide(0);
         setError(ps.length ? null : 'No data available for this session');
-        if (data.backtest?.trades?.length) {
-          const t0 = data.backtest.trades[0];
-          const t1 = data.backtest.trades[data.backtest.trades.length - 1];
-          const k = t0.ts_utc ? 'ts_utc' : t0.ts ? 'ts' : null;
-          if (k) setBtRange({ start: t0[k], end: t1[k] });
-          else setBtRange(null);
-        } else {
-          setBtRange(null);
-        }
+        setBtRangeText(data.backtest?.time_range_text || '');
         setLiveRange(data.live_range || null);
         if (debug && data?.debug) {
           console.debug('Live debug:', data.debug);
@@ -110,7 +102,7 @@ export default function LiveResult() {
         setTrades([]);
         setLiveTrades([]);
         setLogs('');
-        setBtRange(null);
+        setBtRangeText('');
         setLiveRange(null);
         setError('No data available for this session');
         setDebugData(null);
@@ -157,7 +149,7 @@ export default function LiveResult() {
           <div style={{ display: 'flex', gap: '10px' }}>
             <div style={{ textAlign: 'center' }}>
               <h3>
-                Backtest {btRange ? `(${btRange.start} — ${btRange.end})` : ''}
+                Backtest {btRangeText ? `(${btRangeText})` : ''}
               </h3>
               {pairs[slide].back && (
                 <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
