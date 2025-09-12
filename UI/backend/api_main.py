@@ -162,8 +162,8 @@ def _make_live_equity_png(base_dir):
     plt.plot(df["ts"], df["equity"])
     ax = plt.gca()
     # show hours alongside the date for readability
-    ax.xaxis.set_major_locator(mdates.HourLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H'))
+
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
     plt.xticks(rotation=45)
     plt.title("Live Equity vs Time")
     plt.xlabel("Time")
@@ -654,30 +654,9 @@ def live_result(name: str, debug: int = Query(0)):
             shutil.rmtree(bt_plots)
         os.makedirs(bt_plots, exist_ok=True)
         logs = os.path.join(base, "bt_logs.txt")
-        # Limit backtest to the time window available from the live session
-        limit_bars = 5000
-        if live_range:
-            try:
-                import pandas as pd
-                cfg = yaml.safe_load(open(cfg_path, "r")) or {}
-                tf = cfg.get("timeframe") or cfg.get("tf") or cfg.get("interval")
-                step_min = 0
-                if isinstance(tf, str):
-                    if tf.endswith("m"):
-                        step_min = int(tf[:-1])
-                    elif tf.endswith("h"):
-                        step_min = int(tf[:-1]) * 60
-                elif isinstance(tf, (int, float)):
-                    step_min = int(tf)
-                if step_min:
-                    start = pd.to_datetime(live_range["start"])
-                    end = pd.to_datetime(live_range["end"])
-                    limit_bars = max(int((end - start).total_seconds() / 60 / step_min) + 1, 1)
-            except Exception:
-                pass
         cmd = cmd_backtester(
             cfg_path,
-            limit_bars,
+            5000,
             cache_db=cache_db,
             plots_dir=bt_plots,
             symbols_file=symbols_file,
