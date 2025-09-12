@@ -13,6 +13,7 @@ from typing import Dict, Any
 
 import yaml
 import pandas as pd
+import datetime as _dt
 
 def import_by_path(path: str):
     mod_name, cls_name = path.rsplit(".", 1)
@@ -93,6 +94,15 @@ def _timeframe_to_minutes(tf: str) -> float:
     except Exception:
         return 0.0
 
+
+def _norm_iso(ts: str):
+    if not ts:
+        return ts
+    try:
+        return _dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).isoformat()
+    except Exception:
+        return ts
+
 def main():
     ap = argparse.ArgumentParser(description="Thin backtester (universe + strategy-owned logic)")
     ap.add_argument("--cfg", required=True)
@@ -144,8 +154,8 @@ def main():
     if deny_syms:  print(f"[universe] deny  list size = {len(deny_syms)}")
 
     # Time window
-    t_from = getattr(args, 'time_from', None)
-    t_to = getattr(args, 'time_to', None)
+    t_from = _norm_iso(getattr(args, 'time_from', None))
+    t_to = _norm_iso(getattr(args, 'time_to', None))
     base_q = (
         "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h "
         "FROM price_indicators "
