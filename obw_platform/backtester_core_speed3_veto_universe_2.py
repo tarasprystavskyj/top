@@ -13,6 +13,7 @@ from typing import Dict, Any
 
 import yaml
 import pandas as pd
+import datetime as _dt
 
 def import_by_path(path: str):
     mod_name, cls_name = path.rsplit(".", 1)
@@ -22,12 +23,8 @@ def import_by_path(path: str):
     mod = importlib.import_module(mod_name)
     return getattr(mod, cls_name)
 
-def connect_db(path: str):
+def _db_connect(path: str):
     con = sqlite3.connect(path)
-    con.execute("PRAGMA journal_mode=OFF;")
-    con.execute("PRAGMA synchronous=OFF;")
-    con.execute("PRAGMA temp_store=MEMORY;")
-    con.execute("PRAGMA mmap_size=268435456;")
     con.row_factory = sqlite3.Row
     return con
 
@@ -93,6 +90,15 @@ def _timeframe_to_minutes(tf: str) -> float:
     except Exception:
         return 0.0
 
+
+def _norm_iso(ts: str):
+    if not ts:
+        return ts
+    try:
+        return _dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).isoformat()
+    except Exception:
+        return ts
+
 def main():
     ap = argparse.ArgumentParser(description="Thin backtester (universe + strategy-owned logic)")
     ap.add_argument("--cfg", required=True)
@@ -106,6 +112,9 @@ def main():
     ap.add_argument("--allow-symbols", dest="allow_symbols")
     ap.add_argument("--deny-symbols", dest="deny_symbols")
     ap.add_argument("--cache_db", dest="cache_db")
+    ap.add_argument("--time-from", dest="time_from")
+    ap.add_argument("--time-to", dest="time_to")
+    ap.add_argument("--debug", action="store_true")
     ap.set_defaults(export_csv=True)
     args = ap.parse_args()
 
@@ -113,7 +122,7 @@ def main():
     cfg = yaml.safe_load(open(args.cfg, "r"))
     cache_db = args.cache_db or cfg["cache_db"]
     db_file = find_db_file(cache_db)
-    con = connect_db(db_file)
+    con = _db_connect(db_file)
 
     # Allow/Deny sets
     allow_syms, deny_syms = set(), set()
@@ -142,19 +151,62 @@ def main():
     if deny_syms:  print(f"[universe] deny  list size = {len(deny_syms)}")
 
     # Time window
-    th_row = con.execute(
-        "SELECT t FROM (SELECT DISTINCT datetime_utc AS t FROM price_indicators ORDER BY datetime_utc DESC LIMIT ?) ORDER BY t ASC LIMIT 1",
-        (int(args.limit_bars),)
-    ).fetchone()
-    if not th_row:
-        print("No bars."); return
-    min_time = th_row[0]
+    t_from = _norm_iso(getattr(args, 'time_from', None))
+    t_to   = _norm_iso(getattr(args, 'time_to', None))
+    allow = None
+    if args.allow_symbols:
+        allow = [s.strip() for s in args.allow_symbols.split(',') if s.strip()]
 
-    rows = con.execute(
-        "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h "
-        "FROM price_indicators WHERE datetime_utc >= ? ORDER BY datetime_utc ASC, symbol ASC",
-        (min_time,)
-    ).fetchall()
+    rows = []
+    if t_from or t_to:
+        q = [
+            "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h",
+            "FROM price_indicators WHERE 1=1",
+        ]
+        params = []
+        if t_from:
+            q.append("AND datetime_utc >= ?"); params.append(t_from)
+        if t_to:
+            q.append("AND datetime_utc <= ?"); params.append(t_to)
+        if allow:
+            q.append(f"AND symbol IN ({','.join('?'*len(allow))})"); params.extend(allow)
+        q.append("ORDER BY datetime_utc ASC, symbol ASC")
+        rows = con.execute(" ".join(q), params).fetchall()
+        if args.debug:
+            r = con.execute(
+                "SELECT MIN(datetime_utc), MAX(datetime_utc), COUNT(*) FROM price_indicators WHERE datetime_utc BETWEEN ? AND ?",
+                (
+                    t_from or "0000-01-01T00:00:00+00:00",
+                    t_to or "9999-12-31T23:59:59+00:00",
+                ),
+            ).fetchone()
+            print(f"[dbg] rows_in_range={r[2]} db_min={r[0]} db_max={r[1]}")
+        if not rows:
+            print(f"No bars in interval {t_from} .. {t_to} for DB={db_file}"); return
+        time_start = rows[0]["datetime_utc"]
+        time_end = rows[-1]["datetime_utc"]
+    else:
+        th_row = con.execute(
+            "SELECT MIN(datetime_utc) FROM (SELECT datetime_utc FROM price_indicators ORDER BY datetime_utc DESC LIMIT ?)",
+            (int(args.limit_bars),),
+        ).fetchone()
+        if not th_row or not th_row[0]:
+            print("No bars."); return
+        min_time = th_row[0]
+        q = [
+            "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h",
+            "FROM price_indicators WHERE datetime_utc >= ?",
+        ]
+        params = [min_time]
+        if allow:
+            q.append(f"AND symbol IN ({','.join('?'*len(allow))})"); params.extend(allow)
+        q.append("ORDER BY datetime_utc ASC, symbol ASC")
+        rows = con.execute(" ".join(q), params).fetchall()
+        if not rows:
+            print("No bars."); return
+        time_start = rows[0]["datetime_utc"]
+        time_end = rows[-1]["datetime_utc"]
+    print(f"[time range] {time_start} -> {time_end}")
 
     # Bucket by time
     slices = []
@@ -174,6 +226,7 @@ def main():
             float(r["qv_24h"] or 0.0),
         ))
     if bucket: slices.append((cur_t, bucket))
+    bars_count = len(slices)
 
     Strat = import_by_path(cfg["strategy_class"])
     strat = Strat(cfg)
@@ -334,7 +387,15 @@ def main():
     win_rate_pct = (wins * 100.0 / max(1, trades)) if trades else 0.0
 
     tf_minutes = _timeframe_to_minutes(cfg.get("timeframe", 0))
-    total_minutes = tf_minutes * float(args.limit_bars or 0)
+    if t_from or t_to:
+        try:
+            t0_dt = pd.to_datetime(time_start)
+            t1_dt = pd.to_datetime(time_end)
+            total_minutes = (t1_dt - t0_dt).total_seconds() / 60.0
+        except Exception:
+            total_minutes = tf_minutes * float(args.limit_bars or 0)
+    else:
+        total_minutes = tf_minutes * float(args.limit_bars or 0)
     total_days = total_minutes / (60.0 * 24.0) if total_minutes else 0.0
     total_return = (equity / initial_equity) if initial_equity else 0.0
     if total_days > 0 and total_return > 0:
@@ -391,7 +452,7 @@ def main():
             cfg_name = os.path.basename(args.cfg) if hasattr(args, 'cfg') else 'cfg:n/a'
             _dbn = os.path.basename(cfg.get('cache_db','')) if isinstance(cfg, dict) else ''
             _tf = '5m' if '5m' in _dbn else ('1440' if '1440' in _dbn else ('60m' if '60m' in _dbn else ('1h' if '1h' in _dbn else '?')))
-            legend_label = f"{cfg_name} | TF: {_tf} | bars: {args.limit_bars}"
+            legend_label = f"{cfg_name} | TF: {_tf} | bars: {bars_count}"
             os.makedirs(args.plots_dir, exist_ok=True)
 
             import numpy as np
