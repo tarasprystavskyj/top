@@ -52,7 +52,7 @@ side_filter:
     "BIO/USDT:USDT":
       block_short_on_htf_uptrend: true
 portfolio:
-  position_notional: 2.2 #49 #2.2
+  position_notional: 20  #2.2 
   position_notional_max: 5
   initial_equity: 100.0
   max_notional_frac: 0.9
