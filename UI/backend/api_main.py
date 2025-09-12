@@ -146,6 +146,47 @@ def _session_equity_df(session_db):
     return out
 
 
+def _session_closed_trades(session_db):
+    """Return closed trades from session.sqlite as a list of dicts."""
+    import sqlite3
+    import pandas as pd
+
+    if not os.path.exists(session_db):
+        return None
+    con = sqlite3.connect(session_db)
+    cur = con.cursor()
+    tbl = None
+    for name in ("open_positions", "positions"):
+        try:
+            cur.execute(f"SELECT 1 FROM {name} LIMIT 1;")
+            tbl = name
+            break
+        except Exception:
+            continue
+    if not tbl:
+        con.close()
+        return None
+    cols = [r[1] for r in cur.execute(f"PRAGMA table_info({tbl});").fetchall()]
+    has_status = "status" in cols
+    has_fees = "fees_paid" in cols
+    sel = "symbol, side, qty, entry_fill, entry_fill_ts, exit_fill, exit_fill_ts"
+    if has_fees:
+        sel += ", fees_paid"
+    where = "WHERE exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
+    if has_status:
+        where = (
+            "WHERE status='CLOSED' AND exit_fill IS NOT NULL "
+            "AND exit_fill_ts IS NOT NULL"
+        )
+    df = pd.read_sql(
+        f"SELECT {sel} FROM {tbl} {where} ORDER BY exit_fill_ts;", con
+    )
+    con.close()
+    if df.empty:
+        return None
+    return df.to_dict(orient="records")
+
+
 def _make_live_equity_png(base_dir):
     """Save viz_equity_vs_time.png into the live session dir, return path or None."""
     import matplotlib
@@ -162,14 +203,7 @@ def _make_live_equity_png(base_dir):
     plt.plot(df["ts"], df["equity"])
     ax = plt.gca()
     # show hours alongside the date for readability
-<<<<<<< HEAD
-
-=======
     ax.xaxis.set_major_locator(mdates.HourLocator())
-<<<<<<< HEAD
->>>>>>> parent of 3284c21 (Merge branch 'main' into codex/add-debug-mode-and-live-equity-graph-ggim29)
-=======
->>>>>>> parent of 3284c21 (Merge branch 'main' into codex/add-debug-mode-and-live-equity-graph-ggim29)
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
     plt.xticks(rotation=45)
     plt.title("Live Equity vs Time")
@@ -620,6 +654,7 @@ def live_result(name: str, debug: int = Query(0)):
     symbols_file = None
     session_db = os.path.join(base, "session.sqlite")
     live_range = None
+    live_trades: List[Dict[str, Any]] = []
     if os.path.exists(session_db):
         try:
             import sqlite3, json
@@ -646,6 +681,20 @@ def live_result(name: str, debug: int = Query(0)):
                 }
         except Exception:
             pass
+        try:
+            lt = _session_closed_trades(session_db)
+            if lt:
+                live_trades = lt
+        except Exception:
+            log.exception("live_result %s: failed to extract live trades", name)
+    trades_csv = os.path.join(base, "trades.csv")
+    if not live_trades and os.path.exists(trades_csv):
+        try:
+            import csv
+            with open(trades_csv) as f:
+                live_trades = list(csv.DictReader(f))
+        except Exception:
+            log.exception("live_result %s: failed to parse trades.csv", name)
 
     if cfg_path and os.path.exists(cache_db):
         repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
@@ -746,8 +795,22 @@ def live_result(name: str, debug: int = Query(0)):
                 "trades": bt_trades,
                 "logs": bt_logs,
             }
+    bt_range = None
+    bt_trades = backtest.get("trades") or []
+    if bt_trades:
+        t0 = bt_trades[0]
+        t1 = bt_trades[-1]
+        k = next((c for c in ("ts_utc", "ts") if c in t0), None)
+        if k:
+            bt_range = {"start": t0[k], "end": t1[k]}
 
-    resp = {"artifacts": arts, "backtest": backtest, "live_range": live_range}
+    resp = {
+        "artifacts": arts,
+        "backtest": backtest,
+        "live_range": live_range,
+        "live_trades": live_trades,
+        "bt_range": bt_range,
+    }
 
     if debug:
         dbg = {
