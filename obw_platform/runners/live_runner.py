@@ -15,20 +15,47 @@ from .common import (
 
 # color print fallback
 try:
-    from .common import cprint as _cprint, dot as _dot
+    from .common import cprint as _cprint
 except Exception:
-    _cprint, _dot = None, None
+    _cprint = None
 def cprint(*parts, fg: str = "", bold: bool = False, dim: bool = False, file=None, end="\n", flush=False):
     if _cprint:
         return _cprint(*parts, fg=fg, bold=bold, dim=dim, file=file, end=end, flush=flush)
     print(" ".join(str(p) for p in parts), file=file, end=end, flush=flush)
-def dot():
-    if _dot:
-        return _dot()
-    print(".", end="", flush=True)
 
 import importlib
 import os, sys, math, uuid, datetime as _dt, os
+import json
+from datetime import datetime, timezone
+
+_last_dot_bar = None
+def _bar_key(now: datetime, bar_sec: int) -> int:
+    # у нас однакова для всіх символів сітка барів
+    return int(now.timestamp() // bar_sec)
+
+def print_dot_once_per_bar(now: datetime, bar_sec: int):
+    global _last_dot_bar
+    k = _bar_key(now, bar_sec)
+    if _last_dot_bar != k:
+        sys.stdout.write("."); sys.stdout.flush()
+        _last_dot_bar = k
+
+_last_cc_print = {}
+def cc_log_once_per_bar(sym, bar_key, msg):
+    k = (sym, bar_key)
+    if _last_cc_print.get(k):
+        return
+    _last_cc_print[k] = True
+    cprint(msg, fg="magenta", dim=True)
+
+def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=None):
+    ts = datetime.now(timezone.utc).isoformat()
+    px = px_hint or fetcher.fetch_ticker_price(sym)
+    try:
+        db_mark_closed(session_db_path, bot_id, order_id, ts,
+                       exit_fill=px, exit_fill_ts=ts)
+    except Exception as e:
+        cprint('db_mark_closed_failed', str(e), fg='yellow')
 
 def _cfg_get_nested(cfg: dict, dotted: str, _missing=object()):
     """Return cfg value by dotted path like "runner.top_n" or _missing."""
@@ -276,10 +303,14 @@ def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: floa
     except Exception:
         pass
 
+    seen = set()
     for params in param_candidates:
+        key = json.dumps(params, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
         _dbg('try_params', params)
         res = _try(params)
-        _dbg('try_params', params)
         try:
             _dbg('result', ('ok' if res.get('ok') else 'ERR'), (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId'))) if res.get('ok') else ''), res.get('error',''))
         except Exception:
@@ -373,9 +404,14 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
     except Exception:
         pass
 
+    seen = set()
     for params in param_candidates:
-        res = _try(params)
+        key = json.dumps(params, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
         _dbg('try_params', params)
+        res = _try(params)
         try:
             _dbg('result', ('ok' if res.get('ok') else 'ERR'), (('order_id=' + str((res.get('order') or {}).get('id') or (res.get('order') or {}).get('orderId'))) if res.get('ok') else ''), res.get('error',''))
         except Exception:
@@ -450,7 +486,7 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
         return None
 
 
-def _report_close_cooldown(sym: str, pos_rec: dict, px: float):
+def _report_close_cooldown(sym: str, pos_rec: dict, px: float, bar_key: int):
     # print close-check only in debug mode
     if not globals().get('DEBUG_OPEN'):
         return
@@ -489,10 +525,10 @@ def _report_close_cooldown(sym: str, pos_rec: dict, px: float):
             nearest_label, nearest_val = min(candidates, key=lambda kv: kv[1])
 
         def fmt(v): return f"{v:.2f}%" if v is not None else "n/a"
-        cprint("[close-check]", sym, f"side={side}",
-               f"tp_gap={fmt(tp_gap)}", f"sl_gap={fmt(sl_gap)}",
-               f"nearest={fmt(nearest_val)} ({nearest_label})",
-               fg="magenta", dim=True)
+        msg = (f"[close-check] {sym} side={side} "
+               f"tp_gap={fmt(tp_gap)} sl_gap={fmt(sl_gap)} "
+               f"nearest={fmt(nearest_val)} ({nearest_label})")
+        cc_log_once_per_bar(sym, bar_key, msg)
     except Exception:
         pass
 
@@ -503,7 +539,7 @@ def load_strategy(path_cls: str, cfg: dict):
     cls = getattr(mod, cls_name)
     return cls(cfg)
 
-def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, pos_rec: dict, position_mode: str, now_dt=None):
+def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, pos_rec: dict, position_mode: str, now_dt=None, session_db_path=None, bot_id=None):
     side = str(entry_side or pos_rec.get('side', 'LONG')).upper()
     tp = pos_rec.get('tp_price')
     sl = pos_rec.get('sl_price')
@@ -654,6 +690,7 @@ def run_live(cfg: dict, args):
     position_mode = str(position_mode_v)
     tf = str(tf_v)
     tf_sec = _tf_to_seconds(tf)
+    BAR_SECONDS = tf_sec
 
     # Build a stable results directory to accumulate session data
     cfg_name = os.path.splitext(os.path.basename(getattr(args, 'cfg', 'cfg')))[0]
@@ -773,6 +810,7 @@ def run_live(cfg: dict, args):
             positions.pop(sym, None)
     save_positions(args.results_dir, positions)
 
+    _last_close_check_bar_by_sym = {}
     last_bar_ts = None
     cprint('[live]', f'polling every {args.poll_sec}s; entries at bar close +{args.bar_delay_sec}s', fg='cyan')
     while True:
@@ -792,24 +830,30 @@ def run_live(cfg: dict, args):
         all_syms = sorted(set(fetcher.by_base.values()))
         universe = [s for s in all_syms if (not allow or s in allow)]
         for sym, rec in list(positions.items()):
+            now = datetime.now(timezone.utc)
+            bar_key = _bar_key(now, BAR_SECONDS)
+            if _last_close_check_bar_by_sym.get(sym) == bar_key:
+                continue
+            _last_close_check_bar_by_sym[sym] = bar_key
             px = fetcher.fetch_ticker_price(sym)
             if px is not None:
-                _report_close_cooldown(sym, rec, px)
-                closed = _close_if_hit(fetcher, sym, rec.get('side', 'LONG'), px, rec, position_mode, now)
+                _report_close_cooldown(sym, rec, px, bar_key)
+                closed = _close_if_hit(fetcher, sym, rec.get('side', 'LONG'), px, rec, position_mode, now, session_db_path, bot_id)
                 if closed:
-                    try:
-                        db_mark_closed(
-                            session_db_path,
-                            bot_id,
-                            rec.get('order_id'),
-                            now.isoformat(),
-                            exit_fill=closed.get('fill_price'),
-                            exit_fill_ts=closed.get('fill_ts'),
-                            exit_slip_bp=closed.get('slip_bp'),
-                            exit_lag_sec=closed.get('lag_sec'),
-                        )
-                    except Exception:
-                        pass
+                    if not closed.get('already_marked'):
+                        try:
+                            db_mark_closed(
+                                session_db_path,
+                                bot_id,
+                                rec.get('order_id'),
+                                now.isoformat(),
+                                exit_fill=closed.get('fill_price'),
+                                exit_fill_ts=closed.get('fill_ts'),
+                                exit_slip_bp=closed.get('slip_bp'),
+                                exit_lag_sec=closed.get('lag_sec'),
+                            )
+                        except Exception:
+                            pass
                     positions.pop(sym, None)
                     save_positions(args.results_dir, positions)
                     continue
@@ -833,7 +877,7 @@ def run_live(cfg: dict, args):
                             pass
                     feats = feats_df.iloc[-1].to_dict()
                 md[ccxt_sym] = feats
-                dot()
+                print_dot_once_per_bar(datetime.now(timezone.utc), BAR_SECONDS)
 
             for sym, rec in list(positions.items()):
                 row = md.get(sym)
@@ -1080,10 +1124,11 @@ def run_live(cfg: dict, args):
                 print_and_save_heat_from_strategy(strat, 'live', bar_close, md, uni, cache_out_path)
             cprint('[live]', f'opened={opened} at {bar_close.isoformat()}', fg='cyan', bold=(opened>0))
         else:
-            dot()
+            now = datetime.now(timezone.utc)
+            print_dot_once_per_bar(now, BAR_SECONDS)
         equity = get_account_equity(fetcher)
         try:
-            write_equity(session_db_path, bot_id, now.isoformat(), float(equity))
+            write_equity(session_db_path, bot_id, now, {'equity': float(equity)})
         except Exception as e:
             _dbg('write_equity_failed', str(e))
         time.sleep(args.poll_sec)
