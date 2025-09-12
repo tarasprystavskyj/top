@@ -1,5 +1,5 @@
 timeframe: 5m
-cache_db: _reports/_live/livecfg_cfg_avaai_t5m5000_3_5m_B/combined_cache_session.db #combined_cache_5m_5000_04.09.db #paper_api_results_5m/combined_cache_session.db ## #combined_cache_5m_500_05.09.db
+cache_db: _reports/_live/livecfg_cfg_avaai_t5m5000_3_5m/combined_cache_session.db #combined_cache_5m_5000_04.09.db #paper_api_results_5m/combined_cache_session.db ## #combined_cache_5m_500_05.09.db
 strategy_class: strategies.breakout_avaai_full_with_universe_4.BreakoutAVAAIFull
 open_on_heat: false 
 open_heat_min: 0.01
@@ -16,7 +16,7 @@ strategy_params:
   tp_atr_mult: 4.1 #0.1 
   sl_atr_mult: 1.04 #0.1 #
   min_qv_24h: 200000.0
-  min_qv_1h: 10000.0 #800 # 
+  min_qv_1h: 10000.0 #800 #
   min_atr_ratio: 0 #0.020 # 0.007 #
   min_momentum_sum: 0.0
 
@@ -56,7 +56,6 @@ portfolio:
   position_notional_max: 5
   initial_equity: 100.0
   max_notional_frac: 0.9
-  slippage_per_side: 0.0016
 session:
   open_every_bar: true
 top-n: 8.0
