@@ -47,7 +47,7 @@ BACKTESTER_SCRIPTS = [
 # us only pass CLI flags that a particular backtester understands to avoid
 # "unrecognized arguments" errors.
 BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
-    "backtester_core_speed3_veto_universe_2.py": {"plots": True},
+    "backtester_core_speed3_veto_universe_2.py": {"plots": True, "time_range": True},
     "backtester_core_speed3_veto_universe.py": {"plots": True},
     "backtester_core_speed3.py": {"plots": True},
     "backtester_core_speed3_veto.py": {"plots": True},
@@ -172,12 +172,9 @@ def _session_closed_trades(session_db):
     sel = "symbol, side, qty, entry_fill, entry_fill_ts, exit_fill, exit_fill_ts"
     if has_fees:
         sel += ", fees_paid"
-    where = "WHERE exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
+    where = "WHERE exit_fill_ts IS NOT NULL"
     if has_status:
-        where = (
-            "WHERE status='CLOSED' AND exit_fill IS NOT NULL "
-            "AND exit_fill_ts IS NOT NULL"
-        )
+        where = "WHERE status='CLOSED' AND exit_fill_ts IS NOT NULL"
     df = pd.read_sql(
         f"SELECT {sel} FROM {tbl} {where} ORDER BY exit_fill_ts;", con
     )
@@ -309,6 +306,8 @@ def cmd_backtester(
     script=None,
     symbols_file=None,
     allow_symbols=None,
+    time_from=None,
+    time_to=None,
 ):
     """Build a command line for the selected backtester script.
 
@@ -318,14 +317,13 @@ def cmd_backtester(
     """
     # run inside obw_platform so relative paths in configs resolve correctly
     bt_script = script or load_backtester_version()
-    cmd = [
-        "python3",
-        bt_script,
-        "--cfg",
-        cfg_path,
-        "--limit-bars",
-        str(limit_bars),
-    ]
+    cmd = ["python3", bt_script, "--cfg", cfg_path]
+    if time_from and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("time_range"):
+        cmd += ["--time-from", time_from]
+    if time_to and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("time_range"):
+        cmd += ["--time-to", time_to]
+    if not (time_from or time_to):
+        cmd += ["--limit-bars", str(limit_bars)]
 
     if cache_db:
         cmd += ["--cache_db", cache_db]
@@ -717,6 +715,8 @@ def live_result(name: str, debug: int = Query(0)):
             plots_dir=bt_plots,
             symbols_file=symbols_file,
             allow_symbols=allow_syms,
+            time_from=live_range["start"] if live_range else None,
+            time_to=live_range["end"] if live_range else None,
         )
         with open(logs, "w") as lf:
             p = subprocess.Popen(cmd, cwd=bt_root, stdout=lf, stderr=lf)

@@ -156,17 +156,17 @@ export default function LiveResult() {
         <div>
           <div style={{ display: 'flex', gap: '10px' }}>
             <div style={{ textAlign: 'center' }}>
-              <div>
-                Backtest {btRange ? `(${btRange.start} – ${btRange.end})` : ''}
-              </div>
+              <h3>
+                Backtest {btRange ? `(${btRange.start} — ${btRange.end})` : ''}
+              </h3>
               {pairs[slide].back && (
                 <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
               )}
             </div>
             <div style={{ textAlign: 'center' }}>
-              <div>
-                Live {liveRange ? `(${liveRange.start} – ${liveRange.end})` : ''}
-              </div>
+              <h3>
+                Live {liveRange ? `(${liveRange.start} — ${liveRange.end})` : ''}
+              </h3>
               {pairs[slide].live ? (
                 <img src={pairs[slide].live!} style={{ maxWidth: '400px' }} />
               ) : (
@@ -200,7 +200,7 @@ export default function LiveResult() {
           <div style={{ flex: 1 }}>
             {trades.length > 0 && (
               <>
-                <h4>Backtest trades</h4>
+                <h4>Backtest trades ({trades.length})</h4>
                 <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                   <table border={1}>
                     <thead>
@@ -227,7 +227,7 @@ export default function LiveResult() {
           <div style={{ flex: 1 }}>
             {liveTrades.length > 0 && (
               <>
-                <h4>Live trades</h4>
+                <h4>Live trades ({liveTrades.length})</h4>
                 <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                   <table border={1}>
                     <thead>
