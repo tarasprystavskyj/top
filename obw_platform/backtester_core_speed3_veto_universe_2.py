@@ -23,12 +23,8 @@ def import_by_path(path: str):
     mod = importlib.import_module(mod_name)
     return getattr(mod, cls_name)
 
-def connect_db(path: str):
+def _db_connect(path: str):
     con = sqlite3.connect(path)
-    con.execute("PRAGMA journal_mode=OFF;")
-    con.execute("PRAGMA synchronous=OFF;")
-    con.execute("PRAGMA temp_store=MEMORY;")
-    con.execute("PRAGMA mmap_size=268435456;")
     con.row_factory = sqlite3.Row
     return con
 
@@ -118,6 +114,7 @@ def main():
     ap.add_argument("--cache_db", dest="cache_db")
     ap.add_argument("--time-from", dest="time_from")
     ap.add_argument("--time-to", dest="time_to")
+    ap.add_argument("--debug", action="store_true")
     ap.set_defaults(export_csv=True)
     args = ap.parse_args()
 
@@ -125,7 +122,7 @@ def main():
     cfg = yaml.safe_load(open(args.cfg, "r"))
     cache_db = args.cache_db or cfg["cache_db"]
     db_file = find_db_file(cache_db)
-    con = connect_db(db_file)
+    con = _db_connect(db_file)
 
     # Allow/Deny sets
     allow_syms, deny_syms = set(), set()
@@ -155,44 +152,56 @@ def main():
 
     # Time window
     t_from = _norm_iso(getattr(args, 'time_from', None))
-    t_to = _norm_iso(getattr(args, 'time_to', None))
-    base_q = (
-        "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h "
-        "FROM price_indicators "
-    )
+    t_to   = _norm_iso(getattr(args, 'time_to', None))
+    allow = None
+    if args.allow_symbols:
+        allow = [s.strip() for s in args.allow_symbols.split(',') if s.strip()]
+
     rows = []
     if t_from or t_to:
-        if t_from and t_to:
-            rows = con.execute(
-                base_q + "WHERE datetime_utc BETWEEN ? AND ? ORDER BY datetime_utc ASC, symbol ASC",
-                (t_from, t_to),
-            ).fetchall()
-        elif t_from:
-            rows = con.execute(
-                base_q + "WHERE datetime_utc >= ? ORDER BY datetime_utc ASC, symbol ASC",
-                (t_from,),
-            ).fetchall()
-        else:
-            rows = con.execute(
-                base_q + "WHERE datetime_utc <= ? ORDER BY datetime_utc ASC, symbol ASC",
-                (t_to,),
-            ).fetchall()
+        q = [
+            "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h",
+            "FROM price_indicators WHERE 1=1",
+        ]
+        params = []
+        if t_from:
+            q.append("AND datetime_utc >= ?"); params.append(t_from)
+        if t_to:
+            q.append("AND datetime_utc <= ?"); params.append(t_to)
+        if allow:
+            q.append(f"AND symbol IN ({','.join('?'*len(allow))})"); params.extend(allow)
+        q.append("ORDER BY datetime_utc ASC, symbol ASC")
+        rows = con.execute(" ".join(q), params).fetchall()
+        if args.debug:
+            r = con.execute(
+                "SELECT MIN(datetime_utc), MAX(datetime_utc), COUNT(*) FROM price_indicators WHERE datetime_utc BETWEEN ? AND ?",
+                (
+                    t_from or "0000-01-01T00:00:00+00:00",
+                    t_to or "9999-12-31T23:59:59+00:00",
+                ),
+            ).fetchone()
+            print(f"[dbg] rows_in_range={r[2]} db_min={r[0]} db_max={r[1]}")
         if not rows:
-            print("No bars."); return
+            print(f"No bars in interval {t_from} .. {t_to} for DB={db_file}"); return
         time_start = rows[0]["datetime_utc"]
         time_end = rows[-1]["datetime_utc"]
     else:
         th_row = con.execute(
-            "SELECT t FROM (SELECT DISTINCT datetime_utc AS t FROM price_indicators ORDER BY datetime_utc DESC LIMIT ?) ORDER BY t ASC LIMIT 1",
+            "SELECT MIN(datetime_utc) FROM (SELECT datetime_utc FROM price_indicators ORDER BY datetime_utc DESC LIMIT ?)",
             (int(args.limit_bars),),
         ).fetchone()
-        if not th_row:
+        if not th_row or not th_row[0]:
             print("No bars."); return
         min_time = th_row[0]
-        rows = con.execute(
-            base_q + "WHERE datetime_utc >= ? ORDER BY datetime_utc ASC, symbol ASC",
-            (min_time,),
-        ).fetchall()
+        q = [
+            "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h",
+            "FROM price_indicators WHERE datetime_utc >= ?",
+        ]
+        params = [min_time]
+        if allow:
+            q.append(f"AND symbol IN ({','.join('?'*len(allow))})"); params.extend(allow)
+        q.append("ORDER BY datetime_utc ASC, symbol ASC")
+        rows = con.execute(" ".join(q), params).fetchall()
         if not rows:
             print("No bars."); return
         time_start = rows[0]["datetime_utc"]
@@ -217,6 +226,7 @@ def main():
             float(r["qv_24h"] or 0.0),
         ))
     if bucket: slices.append((cur_t, bucket))
+    bars_count = len(slices)
 
     Strat = import_by_path(cfg["strategy_class"])
     strat = Strat(cfg)
@@ -442,7 +452,7 @@ def main():
             cfg_name = os.path.basename(args.cfg) if hasattr(args, 'cfg') else 'cfg:n/a'
             _dbn = os.path.basename(cfg.get('cache_db','')) if isinstance(cfg, dict) else ''
             _tf = '5m' if '5m' in _dbn else ('1440' if '1440' in _dbn else ('60m' if '60m' in _dbn else ('1h' if '1h' in _dbn else '?')))
-            legend_label = f"{cfg_name} | TF: {_tf} | bars: {args.limit_bars}"
+            legend_label = f"{cfg_name} | TF: {_tf} | bars: {bars_count}"
             os.makedirs(args.plots_dir, exist_ok=True)
 
             import numpy as np
