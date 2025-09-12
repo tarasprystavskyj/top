@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fetch_build_cache_v15.py
+fetch_build_cache_v16.py
 - Adds date range (--start/--end) and "back from now" (--back-bars) fetching.
+- When using --back-bars, only missing bars after the last stored row are fetched and appended.
 - Chunks requests into <=1440 bars per call to satisfy exchange limits.
 - Maintains v14 functionality (limit-based fetch) for backwards compatibility.
 
@@ -14,18 +15,18 @@ Outputs SQLite table 'price_indicators' with columns:
 
 Examples:
   # Back 5000 bars from "now" on 5m timeframe (chunked as needed)
-  python3 fetch_build_cache_v15.py \
+  python3 fetch_build_cache_v16.py \
     -i universe_symbols_bingx.csv -t 5m --back-bars 5000 \
     -o combined_cache_5m.db --exchange bingx --ccxt-symbol-format usdtm
 
   # Explicit date range (UTC)
-  python3 fetch_build_cache_v15.py \
+  python3 fetch_build_cache_v16.py \
     -i universe_symbols_bingx.csv -t 30m \
     --start "2025-06-01 00:00" --end "2025-08-22 00:00" \
     -o combined_cache_30m.db --exchange bingx
 
   # Legacy single-shot with limit (<=1440 bars)
-  python3 fetch_build_cache_v15.py -i universe_symbols_bingx.csv -t 1h --limit 1440 -o out.db
+  python3 fetch_build_cache_v16.py -i universe_symbols_bingx.csv -t 1h --limit 1440 -o out.db
 """
 import os
 import sys
@@ -179,7 +180,8 @@ def ensure_schema(db_path: str) -> None:
     con.commit()
     con.close()
 
-def insert_or_replace_rows(db_path: str, rows: List[dict]) -> None:
+def insert_ignore_rows(db_path: str, rows: List[dict]) -> None:
+    """Insert rows, skipping any duplicates already in the table."""
     if not rows:
         return
     con = sqlite3.connect(db_path)
@@ -192,11 +194,27 @@ def insert_or_replace_rows(db_path: str, rows: List[dict]) -> None:
     placeholders = ",".join(["?"] * len(cols))
     data = [tuple(r.get(c) for c in cols) for r in rows]
     cur.executemany(
-        f"INSERT OR REPLACE INTO price_indicators ({','.join(cols)}) VALUES ({placeholders})",
+        f"INSERT OR IGNORE INTO price_indicators ({','.join(cols)}) VALUES ({placeholders})",
         data
     )
     con.commit()
     con.close()
+
+
+def last_timestamp_ms(db_path: str, symbol: str) -> Optional[int]:
+    """Return the latest timestamp in ms for symbol in DB, or None if absent."""
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute(
+        "SELECT MAX(datetime_utc) FROM price_indicators WHERE symbol = ?",
+        (symbol,)
+    )
+    row = cur.fetchone()
+    con.close()
+    if row and row[0]:
+        dt = pd.to_datetime(row[0], utc=True)
+        return int(dt.value // 10**6)
+    return None
 
 
 # -------- Feature engineering --------
@@ -411,6 +429,7 @@ def main():
     bases = [normalize_token(x) for x in uni["symbol"].dropna().unique().tolist()]
 
     tf_seconds = timeframe_to_seconds(args.timeframe)
+    tf_ms = tf_seconds * 1000
 
     for raw in bases:
         mkt = resolve_market(ex, raw, fmt_bias=args.ccxt_symbol_format)
@@ -420,7 +439,13 @@ def main():
         try:
             # Choose fetching mode
             if args.back_bars is not None and args.back_bars > 0:
-                df = fetch_ohlcv_back_from_now(ex, mkt, args.timeframe, args.back_bars)
+                now_ms = ex.milliseconds() if hasattr(ex, "milliseconds") else int(pd.Timestamp.utcnow().value // 10**6)
+                start_limit_ms = max(0, now_ms - args.back_bars * tf_ms)
+                last_ms = last_timestamp_ms(args.output, mkt)
+                fetch_start_ms = start_limit_ms
+                if last_ms is not None:
+                    fetch_start_ms = max(start_limit_ms, last_ms + tf_ms)
+                df = fetch_ohlcv_range(ex, mkt, args.timeframe, fetch_start_ms, now_ms)
             elif start_ms is not None and end_ms is not None:
                 df = fetch_ohlcv_range(ex, mkt, args.timeframe, start_ms, end_ms)
             else:
@@ -455,7 +480,7 @@ def main():
                     "qv_24h": float(r["qv_24h"]),
                     "vol_surge_mult": float(r["vol_surge_mult"]),
                 })
-            insert_or_replace_rows(args.output, rows)
+            insert_ignore_rows(args.output, rows)
             print(f"[OK] {raw} -> {mkt} tf={args.timeframe} rows={len(rows)}")
         except Exception as e:
             print(f"[ERR] {raw} -> {mkt} {e}", file=sys.stderr)
