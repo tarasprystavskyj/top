@@ -1,0 +1,67 @@
+timeframe: 1m
+cache_db: _reports/_live/livecfg_cfg_avaai_t5m5000_3_5m/combined_cache_session.db #combined_cache_5m_5000_04.09.db #paper_api_results_5m/combined_cache_session.db ## #combined_cache_5m_500_05.09.db
+strategy_class: strategies.breakout_avaai_full_with_universe_4.BreakoutAVAAIFull
+open_on_heat: false 
+open_heat_min: 0.01
+position_mode: oneway
+strategy_params:
+  side: BOTH
+  top_n: 8
+  length: 10.0
+  macd_filter: 1
+  volume_length: 20
+  adx_length: 14
+  adx_threshold: 22
+  atr_threshold_ratio: 0.0022
+  tp_atr_mult: 4.1 #0.1 
+  sl_atr_mult: 1.04 #0.1 #
+  min_qv_24h: 200000.0
+  min_qv_1h: 500 #10000.0 #800 #
+  min_atr_ratio: 0 #0.020 # 0.007 #
+  min_momentum_sum: 0.0
+
+trace_calls:
+  enabled: true
+  root_dir: "cache/trace"
+  sqlite_name: "calls.db"
+  sample_rate: 1.0
+  max_arg_size_mb: 8
+  redact_keys: ["api_key", "secret", "password", "auth"]
+  include: []
+  exclude: []
+
+side_filter:
+  ema_fast: 20
+  ema_slow: 55
+  vwap_len: 40
+  atr_len: 14
+  adx_len: 14
+  z_len: 50
+
+  z_long_min: 0.8
+  z_short_min: 0.8
+  min_adx: 18
+
+  htf_trend_filter: true
+  htf_ema_fast: 50
+  htf_ema_slow: 150
+
+  votes_needed: 2
+
+  symbol_overrides:
+    "BIO/USDT:USDT":
+      block_short_on_htf_uptrend: true
+portfolio:
+  position_notional: 2.2 #49 #2.2
+  position_notional_max: 5
+  initial_equity: 100.0
+  max_notional_frac: 0.9
+session:
+  open_every_bar: true
+top-n: 8.0
+
+#symbols_file: universe_v5_avaai_5m_5000.txt
+
+
+#equity_end,profit_factor,max_dd,monotonicity,trades
+#121,       1.039453,     -0.25, 0.019345,    652
