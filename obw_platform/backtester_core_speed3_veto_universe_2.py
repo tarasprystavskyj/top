@@ -109,7 +109,10 @@ def main():
     ap.add_argument("--export-csv", action="store_true")
     ap.add_argument("--debug", action="store_true")
     # Universe controls (OPENINGS)
-    ap.add_argument("--symbols-file", dest="symbols_file")
+    ap.add_argument("--symbols-file", dest="symbols_file",
+                    help="Path to file with allowed symbols (one per line)")
+    ap.add_argument("--universe-file", dest="symbols_file",
+                    help="Alias for --symbols-file (backward compat)")
     ap.add_argument("--deny-symbols", dest="deny_symbols")
     ap.add_argument("--cache_db", dest="cache_db")
     args = ap.parse_args()
