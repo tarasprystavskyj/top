@@ -106,6 +106,8 @@ def main():
     ap.add_argument("--allow-symbols", dest="allow_symbols")
     ap.add_argument("--deny-symbols", dest="deny_symbols")
     ap.add_argument("--cache_db", dest="cache_db")
+    ap.add_argument("--time-from", dest="time_from")
+    ap.add_argument("--time-to", dest="time_to")
     ap.set_defaults(export_csv=True)
     args = ap.parse_args()
 
@@ -142,19 +144,50 @@ def main():
     if deny_syms:  print(f"[universe] deny  list size = {len(deny_syms)}")
 
     # Time window
-    th_row = con.execute(
-        "SELECT t FROM (SELECT DISTINCT datetime_utc AS t FROM price_indicators ORDER BY datetime_utc DESC LIMIT ?) ORDER BY t ASC LIMIT 1",
-        (int(args.limit_bars),)
-    ).fetchone()
-    if not th_row:
-        print("No bars."); return
-    min_time = th_row[0]
-
-    rows = con.execute(
+    t_from = getattr(args, 'time_from', None)
+    t_to = getattr(args, 'time_to', None)
+    base_q = (
         "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h "
-        "FROM price_indicators WHERE datetime_utc >= ? ORDER BY datetime_utc ASC, symbol ASC",
-        (min_time,)
-    ).fetchall()
+        "FROM price_indicators "
+    )
+    rows = []
+    if t_from or t_to:
+        if t_from and t_to:
+            rows = con.execute(
+                base_q + "WHERE datetime_utc BETWEEN ? AND ? ORDER BY datetime_utc ASC, symbol ASC",
+                (t_from, t_to),
+            ).fetchall()
+        elif t_from:
+            rows = con.execute(
+                base_q + "WHERE datetime_utc >= ? ORDER BY datetime_utc ASC, symbol ASC",
+                (t_from,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                base_q + "WHERE datetime_utc <= ? ORDER BY datetime_utc ASC, symbol ASC",
+                (t_to,),
+            ).fetchall()
+        if not rows:
+            print("No bars."); return
+        time_start = rows[0]["datetime_utc"]
+        time_end = rows[-1]["datetime_utc"]
+    else:
+        th_row = con.execute(
+            "SELECT t FROM (SELECT DISTINCT datetime_utc AS t FROM price_indicators ORDER BY datetime_utc DESC LIMIT ?) ORDER BY t ASC LIMIT 1",
+            (int(args.limit_bars),),
+        ).fetchone()
+        if not th_row:
+            print("No bars."); return
+        min_time = th_row[0]
+        rows = con.execute(
+            base_q + "WHERE datetime_utc >= ? ORDER BY datetime_utc ASC, symbol ASC",
+            (min_time,),
+        ).fetchall()
+        if not rows:
+            print("No bars."); return
+        time_start = rows[0]["datetime_utc"]
+        time_end = rows[-1]["datetime_utc"]
+    print(f"[time range] {time_start} -> {time_end}")
 
     # Bucket by time
     slices = []
@@ -334,7 +367,15 @@ def main():
     win_rate_pct = (wins * 100.0 / max(1, trades)) if trades else 0.0
 
     tf_minutes = _timeframe_to_minutes(cfg.get("timeframe", 0))
-    total_minutes = tf_minutes * float(args.limit_bars or 0)
+    if t_from or t_to:
+        try:
+            t0_dt = pd.to_datetime(time_start)
+            t1_dt = pd.to_datetime(time_end)
+            total_minutes = (t1_dt - t0_dt).total_seconds() / 60.0
+        except Exception:
+            total_minutes = tf_minutes * float(args.limit_bars or 0)
+    else:
+        total_minutes = tf_minutes * float(args.limit_bars or 0)
     total_days = total_minutes / (60.0 * 24.0) if total_minutes else 0.0
     total_return = (equity / initial_equity) if initial_equity else 0.0
     if total_days > 0 and total_return > 0:
