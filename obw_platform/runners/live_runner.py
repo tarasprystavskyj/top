@@ -554,11 +554,9 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
         if tp is not None and px >= tp:
             od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
             if od and isinstance(od, dict) and od.get('error') == 'no_position':
-                now_iso = (now_dt or datetime.now(timezone.utc)).isoformat()
+                now_iso = (now_dt or _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc)).isoformat()
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
-                if session_db_path and bot_id:
-                    mark_closed_now(fetcher, session_db_path, bot_id, sym, pos_rec.get('order_id'), px)
-                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'already_marked': True}
+                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
                 fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
@@ -568,11 +566,9 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
         if sl is not None and px <= sl:
             od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
             if od and isinstance(od, dict) and od.get('error') == 'no_position':
-                now_iso = (now_dt or datetime.now(timezone.utc)).isoformat()
+                now_iso = (now_dt or _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc)).isoformat()
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
-                if session_db_path and bot_id:
-                    mark_closed_now(fetcher, session_db_path, bot_id, sym, pos_rec.get('order_id'), px)
-                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'already_marked': True}
+                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
                 fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
@@ -583,11 +579,9 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
         if tp is not None and px <= tp:
             od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
             if od and isinstance(od, dict) and od.get('error') == 'no_position':
-                now_iso = (now_dt or datetime.now(timezone.utc)).isoformat()
+                now_iso = (now_dt or _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc)).isoformat()
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
-                if session_db_path and bot_id:
-                    mark_closed_now(fetcher, session_db_path, bot_id, sym, pos_rec.get('order_id'), px)
-                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'already_marked': True}
+                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
                 fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
@@ -597,11 +591,9 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
         if sl is not None and px >= sl:
             od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
             if od and isinstance(od, dict) and od.get('error') == 'no_position':
-                now_iso = (now_dt or datetime.now(timezone.utc)).isoformat()
+                now_iso = (now_dt or _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc)).isoformat()
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
-                if session_db_path and bot_id:
-                    mark_closed_now(fetcher, session_db_path, bot_id, sym, pos_rec.get('order_id'), px)
-                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'already_marked': True}
+                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
                 fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
@@ -802,7 +794,19 @@ def run_live(cfg: dict, args):
             cprint('[resume-ok]', sym, 'confirmed on exchange', fg='green', dim=True)
         else:
             cprint('[resume-miss]', sym, 'NOT found on exchange -> closing locally', fg='yellow')
-            mark_closed_now(fetcher, session_db_path, bot_id, sym, rec.get('order_id'), rec.get('entry'))
+            try:
+                now_iso = _dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc).isoformat()
+                px_now = fetcher.fetch_ticker_price(sym) or rec.get('entry') or 0.0
+                db_mark_closed(
+                    session_db_path,
+                    bot_id,
+                    rec.get('order_id'),
+                    now_iso,
+                    exit_fill=px_now,
+                    exit_fill_ts=now_iso,
+                )
+            except Exception:
+                pass
             positions.pop(sym, None)
     save_positions(args.results_dir, positions)
 

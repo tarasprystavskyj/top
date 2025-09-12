@@ -694,6 +694,7 @@ def live_result(name: str, debug: int = Query(0)):
         except Exception:
             log.exception("live_result %s: failed to parse trades.csv", name)
 
+    bt_cmd = None
     if cfg_path and os.path.exists(cache_db):
         repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
         bt_root = os.path.join(repo_root, "obw_platform")
@@ -718,6 +719,7 @@ def live_result(name: str, debug: int = Query(0)):
             time_from=live_range["start"] if live_range else None,
             time_to=live_range["end"] if live_range else None,
         )
+        bt_cmd = " ".join(cmd)
         with open(logs, "w") as lf:
             p = subprocess.Popen(cmd, cwd=bt_root, stdout=lf, stderr=lf)
             p.wait()
@@ -818,6 +820,8 @@ def live_result(name: str, debug: int = Query(0)):
             "exists": os.path.isdir(base),
             "files": sorted(os.listdir(base)),
         }
+        if bt_cmd:
+            dbg["bt_cmd"] = bt_cmd
         sdb = os.path.join(base, "session.sqlite")
         if os.path.exists(sdb):
             import sqlite3
