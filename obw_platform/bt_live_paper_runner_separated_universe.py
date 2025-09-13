@@ -149,6 +149,10 @@ def main():
     ap.add_argument("--poll-sec", type=int, default=2)
     ap.add_argument("--bar-delay-sec", type=int, default=1)
     ap.add_argument("--limit_klines", type=int, default=180)
+    ap.add_argument("--prewarm-bars", type=int, default=None,
+                    help="Number of historical bars to fetch for indicator warm-up")
+    ap.add_argument("--prewarm-hours", type=int, default=None,
+                    help="Minimum history in hours for warm-up (converted to bars if provided)")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--heat-report", action="store_true")
 
@@ -230,6 +234,8 @@ def main():
             "poll_sec":    args.poll_sec,
             "bar_delay_sec": args.bar_delay_sec,
             "limit_klines":  args.limit_klines,
+            "prewarm_bars": args.prewarm_bars,
+            "prewarm_hours": args.prewarm_hours,
             "exchange":    args.exchange,
             "symbol_format": args.symbol_format,
             "heat_report": args.heat_report,
