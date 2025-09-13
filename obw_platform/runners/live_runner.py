@@ -75,6 +75,27 @@ def _cfg_pick(cfg: dict, candidates, default=None):
             return v, f"yaml:{key}"
     return default, "default"
 
+
+def _tf_to_sec(tf: str) -> int:
+    """Alias for _tf_to_seconds for clarity."""
+    return _tf_to_seconds(tf)
+
+
+def _infer_prewarm_bars(cfg: dict, timeframe: str) -> int:
+    tf_sec = _tf_to_sec(timeframe)
+    sp = {
+        **(cfg.get("strategy_params") or {}),
+        **((cfg.get("strategy") or {}).get("params") or {}),
+    }
+    atr_n = int(sp.get("atr_n", 50))
+    adx_n = int(sp.get("adx_n", 14))
+    heat_n = int(sp.get("heat_lookback", 50))
+    bars_1h = max(1, 3600 // tf_sec)
+    bars_24h = max(1, 24 * 3600 // tf_sec)
+    k = 3
+    need = max(k * atr_n, k * adx_n, k * heat_n, bars_24h)
+    return int(need + 10)
+
 def _debug_dump_effective(cfg: dict, strat, args, resolved: dict, env_over: dict):
     try:
         cprint("[cfg.dump] --- runner-args ---", fg="magenta", bold=True)
@@ -720,6 +741,48 @@ def run_live(cfg: dict, args):
     os.makedirs(args.results_dir, exist_ok=True)
     session_db_path, cache_out_path = ensure_session_dbs(args.results_dir, args.session_db, args.cache_out)
 
+    # ---- resolve prewarm config ----
+    pw_cfg = ((cfg.get("runner") or {}).get("prewarm") or {})
+    prewarm_bars = pw_cfg.get("bars")
+    prewarm_hours = pw_cfg.get("hours")
+    if getattr(args, "prewarm_bars", None) is not None:
+        prewarm_bars = args.prewarm_bars
+    if getattr(args, "prewarm_hours", None) is not None:
+        prewarm_hours = args.prewarm_hours
+    if prewarm_hours and not prewarm_bars:
+        prewarm_bars = int(prewarm_hours * 3600 // _tf_to_sec(tf))
+    if not prewarm_bars:
+        prewarm_bars = _infer_prewarm_bars(cfg, tf)
+
+    md_warm_cache = {}
+    allow = []
+    try:
+        allow_env = os.getenv('RS_UNIVERSE_ALLOW', '')
+        if allow_env:
+            allow = [s.strip() for s in allow_env.split(',') if s.strip()]
+        if not allow:
+            allow = list((cfg.get('universe', {}) or {}).get('allow', []) or [])
+    except Exception:
+        allow = []
+    all_syms = sorted(set(fetcher.by_base.values()))
+    universe0 = [s for s in all_syms if (not allow or s in allow)]
+
+    def _prewarm_sym(sym: str):
+        lim = max(int(getattr(args, 'limit_klines', 200) or 200), prewarm_bars + 50)
+        df = fetcher.fetch_ohlcv_df(sym, timeframe=tf, limit=lim)
+        if df is None or len(df) == 0:
+            return
+        feats_df = compute_feats(df, tf_seconds=tf_sec)
+        if args.hour_cache in ('save', 'load'):
+            try:
+                cache_out_upsert(cache_out_path, sym, feats_df)
+            except Exception:
+                pass
+        md_warm_cache[sym] = feats_df.iloc[-1].to_dict()
+
+    for sym in universe0:
+        _prewarm_sym(sym)
+
     run_id = _dt.datetime.utcnow().strftime('LIVE_%Y%m%d_%H%M%S')
     write_config_snapshot(session_db_path, run_id, cfg)
 
@@ -866,8 +929,9 @@ def run_live(cfg: dict, args):
                 if args.hour_cache == 'load':
                     feats = read_hour_cache_row(cache_out_path, ccxt_sym, bar_close)
                 if not feats:
-                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=tf, limit=max(60, args.limit_klines))
-                    if df is None or len(df) < 30:
+                    lim = max(prewarm_bars + 2, getattr(args, 'limit_klines', 0) or 0, 60)
+                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=tf, limit=lim)
+                    if df is None or len(df) < max(30, prewarm_bars):
                         continue
                     feats_df = compute_feats(df, tf_seconds=tf_sec)
                     if args.hour_cache in ('save', 'load'):
