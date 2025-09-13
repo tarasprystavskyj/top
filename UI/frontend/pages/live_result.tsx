@@ -49,27 +49,36 @@ export default function LiveResult() {
       })
       .then(data => {
         console.debug('Session data', data);
-        const plotFiles = [
-          'equity_by_time.png',
-          'equity_by_trade.png',
-          'drawdown_by_trade.png',
-          'returns_hist.png',
+        // Кожному «базовому» файлу даємо список альтернатив viz_*,
+        // бо бекенд може породити саме їх.
+        const plotDefs = [
+          { key: 'equity_by_time.png',   alts: ['viz_equity_vs_time.png'] },
+          { key: 'equity_by_trade.png',  alts: ['viz_equity_vs_trade.png'] },
+          { key: 'drawdown_by_trade.png',alts: ['viz_dd_vs_trade.png'] },
+          { key: 'returns_hist.png',     alts: [] },
         ];
-        const ps = plotFiles
-          .map(fn => ({
-            name: fn.replace('.png', ''),
-            back:
-              data.backtest?.artifacts?.[fn] ||
-              (fn === 'equity_by_time.png'
-                ? data.backtest?.artifacts?.['viz_equity_vs_time.png']
-                : null),
-            live:
-              data.artifacts?.[fn] ||
-              (fn === 'equity_by_time.png'
-                ? data.artifacts?.['viz_equity_vs_time.png']
-                : null),
-          }))
-          .filter(p => p.back || p.live);
+
+        const pick = (arts: any, key: string, alts: string[]) => {
+          if (!arts) return null;
+          if (arts[key]) return arts[key];
+          for (const a of alts) if (arts[a]) return arts[a];
+          return null;
+        };
+
+        const label = (fn: string) =>
+          fn
+            .replace('equity_by_', 'equity: ')
+            .replace('drawdown_by_', 'drawdown: ')
+            .replace('.png', '')
+            .replace(/_/g, ' ');
+
+        const ps = plotDefs
+          .map(({ key, alts }) => {
+            const back = pick(data.backtest?.artifacts, key, alts);
+            const live = pick(data.artifacts, key, alts);
+            return back || live ? { name: label(key), back, live } : null;
+          })
+          .filter(Boolean) as { name: string; back: string | null; live: string | null }[];
         console.debug('Plot pairs', ps);
         console.debug('Backtest summary', data.backtest?.summary || null);
         setPairs(ps);
