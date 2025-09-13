@@ -47,6 +47,7 @@ def parse_metrics(text: str):
     return out if out else None
 
 def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, label: str = None):
+    import time, os
     cmd = [
         sys.executable,
         str(BACKTESTER),
@@ -58,7 +59,6 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
     ]
     if with_plots:
         from uuid import uuid4
-        import time, os
         ts = time.strftime("%Y%m%d_%H%M%S")
         tag = (label or "final") + "_" + uuid4().hex[:6]
         plots_dir = f"_reports/_bt_plots/{tag}_{ts}"
