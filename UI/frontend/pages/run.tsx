@@ -61,14 +61,11 @@ export default function Run() {
     const override = {
       symbols_file: universe ? `universe/${universe}` : null,
     };
-    // normalize cache DB path so simple filenames resolve correctly inside the
-    // backtester (which runs from the ``obw_platform`` directory).  This also
-    // trims stray whitespace that could lead to creating an empty sqlite file
-    // instead of opening the expected database.
-    let cacheDbPath = cacheDb.trim();
-    if (cacheDbPath && !cacheDbPath.startsWith('/') && !cacheDbPath.includes('/')) {
-      cacheDbPath = '../' + cacheDbPath;
-    }
+    // Trim any stray whitespace. Backend will resolve relative paths, so we
+    // forward the path as-is without prepending directories that may create
+    // incorrect locations.
+    const cacheDbPath = cacheDb.trim();
+    console.log('cacheDbPath', cacheDbPath);
     const j = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
