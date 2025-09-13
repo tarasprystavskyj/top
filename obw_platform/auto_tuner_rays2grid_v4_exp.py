@@ -9,6 +9,14 @@ import numpy as np
 import pandas as pd
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+
+args_ns = None
+
+
+def dprint(*args, **kwargs):
+    if getattr(args_ns, "debug", False):  # args_ns визначимо в main()
+        print(*args, **kwargs)
+
 BACKTESTER = Path("backtester_core_speed3_veto_universe_2.py")
 INIT_CFG = None
 GLOBAL_BEST_S = -1e18
@@ -69,7 +77,7 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
         plots_dir = f"_reports/_bt_plots/{tag}_{ts}"
         os.makedirs(plots_dir, exist_ok=True)
         cmd += ["--plots", plots_dir]
-    print("[bt_cmd]", " ".join(map(str, cmd)))
+    dprint("[bt_cmd]", " ".join(map(str, cmd)))
     t0 = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = time.time() - t0
@@ -109,7 +117,26 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
             stats["summary_csv"] = str(Path(rep) / "bt_summary.csv")
         else:
             stats["reason"] = stats.get("reason") or "no [files] and no [reports] in stdout"
+            dprint("[warn] cannot locate CSV; stdout tail:\n", out[-2000:])
+            dprint("[warn] stderr tail:\n", err[-2000:])
+
+    # Якщо з stdout не витягнули метрики — спробувати summary_csv
+    if (not stats) or ("equity_end" not in stats or "trades" not in stats):
+        if summary_csv and Path(summary_csv).exists():
+            try:
+                df = pd.read_csv(summary_csv)
+                if len(df):
+                    row = df.iloc[-1]
+                    stats.setdefault("equity_end", float(row.get("equity_end", 100.0)))
+                    stats.setdefault("profit_factor", float(row.get("profit_factor", 0.0)))
+                    stats.setdefault("max_dd", float(row.get("max_dd", 0.0)))
+                    stats.setdefault("monotonicity", float(row.get("mono", row.get("monotonicity", 0.0))))
+                    stats.setdefault("trades", int(row.get("trades", 0)))
+            except Exception as e:
+                stats["reason"] = stats.get("reason") or f"summary_csv_read_error: {e}"
+
     stats["elapsed_sec"] = elapsed
+    dprint(f"[debug] trades_csv={stats.get('trades_csv')} summary_csv={stats.get('summary_csv')} reason={stats.get('reason','')}")
     if not with_plots:
         BT_CACHE[key] = stats
     if with_plots and BT_SLEEP_SEC > 0:
@@ -368,6 +395,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, args):
         for r in recs:
             wr.writerow(r)
     reason = best.get("reason", "")
+    # лишаємо видимим підсумковий рядок (корисний навіть без --debug)
     print(f"[rays] BEST {pname}={best.get('value')} Ew={best.get('Ew')} (E={best.get('equity_end')} PF={best.get('profit_factor')} DD={best.get('max_dd')} T={best.get('trades')})" + (f" [reason: {reason}]" if reason else ""))
     return base_cfg, recs
 
@@ -480,6 +508,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, args):
     line = f"[grid] BEST {chosen.get('value')} Ew={chosen.get('Ew')} (E={chosen.get('equity_end')} PF={chosen.get('profit_factor')} DD={chosen.get('max_dd')} T={chosen.get('trades')})"
     if reason:
         line += f" [reason: {reason}]"
+    # лишаємо видимим фінальний рядок (корисний навіть без --debug)
     print(line)
     return base_cfg, recs
 
@@ -538,6 +567,7 @@ def main():
     ap.add_argument("--plan", help="Path to external plan module (default_plan used if omitted)")
     ap.add_argument("--sleep-sec", type=float, default=0.0, help="pause between backtests in seconds")
     ap.add_argument("--jobs", type=int, default=1, help="number of parallel backtest jobs")
+    ap.add_argument("--debug", action="store_true", help="verbose logs")
     ap.add_argument("--decay", choices=["none", "exp", "mix"], default="exp")
     ap.add_argument("--hl-hours", type=float, default=48.0)
     ap.add_argument("--mix-alpha", type=float, default=0.7)
@@ -545,6 +575,9 @@ def main():
     ap.add_argument("--min-trades-recent", type=int, default=0)
     ap.add_argument("--recent-hours", type=float, default=72.0)
     args = ap.parse_args()
+
+    global args_ns
+    args_ns = args
 
     global INIT_CFG
     INIT_CFG = read_yaml(Path(args.cfg))
