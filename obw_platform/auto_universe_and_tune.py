@@ -101,6 +101,7 @@ def main():
 
     # Final refine
     ap.add_argument("--grid", action="store_true", help="Run additional refine passes for all key params")
+    ap.add_argument("--timeout", type=int, default=300, help="Seconds per backtest run for rays/grid")
 
     # Runner/driver knobs
     ap.add_argument("--runner", default="grid_runner_ultrafast_3.py", help="Rays/Grid runner script")
@@ -123,6 +124,7 @@ def main():
     if args.plots:
         base += f"--plots {shlex.quote(args.plots)} "
     base += f"--driver {shlex.quote(driver)} "
+    base += f"--timeout {args.timeout} "
 
     # Helper to form a rays command
     def rays(param_path: str, values_csv: str, tag: str) -> None:
