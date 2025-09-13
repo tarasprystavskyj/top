@@ -172,9 +172,12 @@ def _session_closed_trades(session_db):
     sel = "symbol, side, qty, entry_fill, entry_fill_ts, exit_fill, exit_fill_ts"
     if has_fees:
         sel += ", fees_paid"
-    where = "WHERE exit_fill_ts IS NOT NULL"
+    where = "WHERE exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
     if has_status:
-        where = "WHERE status='CLOSED' AND exit_fill_ts IS NOT NULL"
+        where = (
+            "WHERE status='CLOSED' AND exit_fill IS NOT NULL "
+            "AND exit_fill_ts IS NOT NULL"
+        )
     df = pd.read_sql(
         f"SELECT {sel} FROM {tbl} {where} ORDER BY exit_fill_ts;", con
     )
@@ -847,10 +850,10 @@ def live_result(name: str, debug: int = Query(0)):
     return resp
 
 
-@app.get("/api/live_results/{name}/files/{filename:path}")
-def live_result_file(name: str, filename: str):
+@app.get("/api/live_results/{name}/files/{fn:path}")
+def live_file(name: str, fn: str):
     base = os.path.join(LIVE_RESULTS_DIR, name)
-    p = os.path.join(base, filename)
+    p = os.path.join(base, fn)
     if not os.path.isfile(p):
         raise HTTPException(404, "not found")
     return FileResponse(p)
