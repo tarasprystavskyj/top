@@ -11,9 +11,9 @@ strategy_params:
   macd_filter: 1
   volume_length: 20
   adx_length: 14
-  adx_threshold: 22
+  adx_threshold: 22 
   atr_threshold_ratio: 0.0022
-  tp_atr_mult: 4.0 #0.1 
+  tp_atr_mult: 4.6 #0.1 
   sl_atr_mult: 1.08 #0.1 #
   min_qv_24h: 200000.0
   min_qv_1h: 10000.0 #800 # 
