@@ -134,8 +134,17 @@ def _run_once(cfg_obj, limit_bars=500, timeout=60):
     # forward symbols-file to the backtester if provided
     if G_ARGS and getattr(G_ARGS, "symbols_file", None):
         cmd += ["--symbols-file", G_ARGS.symbols_file]
+    if G_ARGS and getattr(G_ARGS, "debug", False):
+        print("[bt_cmd]", " ".join(map(str, cmd)))
     p = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    out, _ = p.communicate(timeout=timeout)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        if G_ARGS and getattr(G_ARGS, "debug", False):
+            print("[bt_cmd]", " ".join(map(str, cmd)), "(retry)")
+        out, _ = subprocess.Popen(cmd, cwd=str(ROOT), stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True).communicate(timeout=timeout*2)
     m_eq = re.search(r"equity_end=([0-9]+\.[0-9]+)", out)
     m_pf = re.search(r"pf=([0-9]+\.[0-9]+)", out)
     m_tr = re.search(r"trades=([0-9]+)", out)
@@ -356,8 +365,9 @@ def main():
     ap.add_argument("--mode", choices=["rays","grid"], required=True)
     ap.add_argument("--cfg", required=True)
     ap.add_argument("--limit-bars", type=int, default=500)
-    ap.add_argument("--timeout", type=int, default=60)
+    ap.add_argument("--timeout", type=int, default=300)
     ap.add_argument("--out-prefix", default="", help="Prefix for CSV/YAML outputs; default 'rays' or 'grid')")
+    ap.add_argument("--debug", action="store_true")
 
     # New: allow external symbol list and plots dir, and override driver path
     ap.add_argument("--symbols-file", dest="symbols_file", help="optional file with line-separated symbols")
@@ -389,6 +399,10 @@ def main():
     ap.add_argument("--min_atr_ratio-range", dest="min_atr_range")
 
     args = ap.parse_args()
+    # Якщо таймаут не заданий або занадто малий — масштабуй за обсягом даних
+    if not args.timeout or args.timeout < 60:
+        # емпірично: ~0.03 с на бар (дає ≈ 222 с для 7400 барів)
+        args.timeout = max(120, int(args.limit_bars * 0.03))
     G_ARGS = args
     # Optional driver override
     if args.driver:
