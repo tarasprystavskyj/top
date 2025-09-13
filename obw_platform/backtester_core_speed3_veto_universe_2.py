@@ -483,7 +483,7 @@ def main():
         trades_df.to_csv(trades_path, index=False)
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary_dict, f, indent=2, default=str)
-        # Machine-readable line for auto_tuner
+        # Machine-readable line for auto_tuner (allows tuners to locate CSVs)
         print(f"[files] bt_trades={trades_path} bt_summary={summary_path}")
 
     # Plots (same as before)
