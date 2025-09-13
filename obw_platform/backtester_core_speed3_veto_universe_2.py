@@ -490,7 +490,7 @@ def main():
     with open(summary_csv_bt, "w", encoding="utf-8") as f:
         json.dump(summary_dict, f, indent=2, default=str)
     # Machine-readable line for auto_tuner (allows tuners to locate CSVs)
-    print(f"[files] bt_trades={trades_csv_bt} bt_summary={summary_csv_bt}")
+    #print(f"[files] bt_trades={trades_csv_bt} bt_summary={summary_csv_bt}")
 
     # Plots (same as before)
     if args.plots_dir:
