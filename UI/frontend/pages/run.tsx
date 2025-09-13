@@ -61,10 +61,18 @@ export default function Run() {
     const override = {
       symbols_file: universe ? `universe/${universe}` : null,
     };
+    // normalize cache DB path so simple filenames resolve correctly inside the
+    // backtester (which runs from the ``obw_platform`` directory).  This also
+    // trims stray whitespace that could lead to creating an empty sqlite file
+    // instead of opening the expected database.
+    let cacheDbPath = cacheDb.trim();
+    if (cacheDbPath && !cacheDbPath.startsWith('/') && !cacheDbPath.includes('/')) {
+      cacheDbPath = '../' + cacheDbPath;
+    }
     const j = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug, override, backtester, cache_db: cacheDb || undefined }),
+      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug, override, backtester, cache_db: cacheDbPath || undefined }),
     }).then(r => r.json());
     setJob(j);
     setRes(null);
