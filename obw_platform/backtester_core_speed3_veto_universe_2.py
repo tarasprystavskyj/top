@@ -472,19 +472,25 @@ def main():
 
     cfg_name = os.path.splitext(os.path.basename(args.cfg))[0] if hasattr(args, 'cfg') else 'cfg'
     time_id = time.strftime("%Y%m%d_%H%M%S")
-    report_dir = os.path.join("_reports", "_backtest", f"backtest{cfg_name}{time_id}")
+    report_dir = os.path.join("_reports", "_backtest", f"backtest_{cfg_name}_{time_id}")
+    report_dir = os.path.abspath(report_dir)
 
-    # CSV exports
-    if args.export_csv:
-        os.makedirs(report_dir, exist_ok=True)
-        trades_path = os.path.join(report_dir, "bt_trades.csv")
-        summary_path = os.path.join(report_dir, "bt_summary.csv")
-        trades_df = pd.DataFrame(tr_rows)
-        trades_df.to_csv(trades_path, index=False)
-        with open(summary_path, "w", encoding="utf-8") as f:
-            json.dump(summary_dict, f, indent=2, default=str)
-        # Machine-readable line for auto_tuner (allows tuners to locate CSVs)
-        print(f"[files] bt_trades={trades_path} bt_summary={summary_path}")
+    # CSV exports (always write per-run artifacts into the report dir)
+    os.makedirs(report_dir, exist_ok=True)
+    trades_df = pd.DataFrame(tr_rows)
+    # "human" names
+    trades_csv  = os.path.join(report_dir, "trades.csv")
+    summary_csv = os.path.join(report_dir, "summary.csv")
+    trades_df.to_csv(trades_csv, index=False)
+    pd.DataFrame([summary_dict]).to_csv(summary_csv, index=False)
+    # compatibility with tuner scripts
+    trades_csv_bt  = os.path.join(report_dir, "bt_trades.csv")
+    summary_csv_bt = os.path.join(report_dir, "bt_summary.csv")
+    trades_df.to_csv(trades_csv_bt, index=False)
+    with open(summary_csv_bt, "w", encoding="utf-8") as f:
+        json.dump(summary_dict, f, indent=2, default=str)
+    # Machine-readable line for auto_tuner (allows tuners to locate CSVs)
+    print(f"[files] bt_trades={trades_csv_bt} bt_summary={summary_csv_bt}")
 
     # Plots (same as before)
     if args.plots_dir:
@@ -495,20 +501,22 @@ def main():
             _dbn = os.path.basename(cfg.get('cache_db','')) if isinstance(cfg, dict) else ''
             _tf = '5m' if '5m' in _dbn else ('1440' if '1440' in _dbn else ('60m' if '60m' in _dbn else ('1h' if '1h' in _dbn else '?')))
             legend_label = f"{cfg_name} | TF: {_tf} | bars: {bars_count}"
-            os.makedirs(args.plots_dir, exist_ok=True)
+            # make a unique subdirectory for each run
+            run_plots_dir = os.path.join(args.plots_dir, f"backtest_{time_id}")
+            os.makedirs(run_plots_dir, exist_ok=True)
 
             import numpy as np
             eq_curve = np.array(eq_arr, dtype=float)
             plt.figure(); plt.plot(range(len(eq_curve)), eq_curve, label=legend_label); plt.legend()
             plt.title("Equity vs Trade #"); plt.xlabel("Trade #"); plt.ylabel("Equity")
-            plt.tight_layout(); plt.savefig(os.path.join(args.plots_dir, "equity_by_trade.png"), dpi=140); plt.close()
+            plt.tight_layout(); plt.savefig(os.path.join(run_plots_dir, "equity_by_trade.png"), dpi=140); plt.close()
 
             if len(eq_curve)>1:
                 peaks = np.maximum.accumulate(eq_curve)
                 dd = (eq_curve - peaks) / peaks
                 plt.figure(); plt.plot(range(len(dd)), dd, label=legend_label); plt.legend()
                 plt.title("Drawdown vs Trade #"); plt.xlabel("Trade #"); plt.ylabel("Drawdown (fraction)")
-                plt.tight_layout(); plt.savefig(os.path.join(args.plots_dir, "drawdown_by_trade.png"), dpi=140); plt.close()
+                plt.tight_layout(); plt.savefig(os.path.join(run_plots_dir, "drawdown_by_trade.png"), dpi=140); plt.close()
 
             if tr_rows and tr_rows[0].get("exit_time", None) is not None:
                 dft = pd.DataFrame(tr_rows).sort_values("exit_time")
@@ -535,7 +543,7 @@ def main():
                 plt.legend()
 
                 plt.title("Equity vs Time"); plt.xlabel("Time"); plt.ylabel("Equity")
-                plt.tight_layout(); plt.savefig(os.path.join(args.plots_dir, "equity_by_time.png"), dpi=160); plt.close()
+                plt.tight_layout(); plt.savefig(os.path.join(run_plots_dir, "equity_by_time.png"), dpi=160); plt.close()
 
             if tr_rows:
                 dfr = pd.DataFrame(tr_rows)
@@ -547,35 +555,27 @@ def main():
                 if series is not None and len(series)>0:
                     plt.figure(); plt.hist(series.values, bins=30)
                     plt.title("Distribution of Returns per Trade"); plt.xlabel("Return per trade"); plt.ylabel("Count")
-                    plt.tight_layout(); plt.savefig(os.path.join(args.plots_dir, "returns_hist.png"), dpi=140); plt.close()
+                    plt.tight_layout(); plt.savefig(os.path.join(run_plots_dir, "returns_hist.png"), dpi=140); plt.close()
         except Exception as e:
             print(f"[plots] failed: {e}")
 
     # Consolidate reports
     try:
         os.makedirs(report_dir, exist_ok=True)
-        for fname in ("trades.csv", "summary.csv"):
-            if os.path.exists(fname):
-                shutil.copy(fname, report_dir)
-        if args.plots_dir and os.path.isdir(args.plots_dir):
-            plots_abs = os.path.abspath(args.plots_dir)
-            report_abs = os.path.abspath(report_dir)
-            try:
-                common = os.path.commonpath([plots_abs, report_abs])
-            except Exception:
-                common = ""
-            if common != plots_abs:
-                for item in os.listdir(args.plots_dir):
-                    if item.startswith("backtest"):
-                        continue
-                    src = os.path.join(args.plots_dir, item)
-                    dst = os.path.join(report_dir, item)
-                    if os.path.isdir(src):
-                        shutil.copytree(src, dst, dirs_exist_ok=True)
-                    elif os.path.isfile(src):
-                        shutil.copy(src, report_dir)
-            else:
-                print(f"[reports] skip copying from plots_dir={plots_abs} (ancestor of report_dir)")
+        if args.plots_dir:
+            run_plots_dir = os.path.join(args.plots_dir, f"backtest_{time_id}")
+            if os.path.isdir(run_plots_dir):
+                plots_abs = os.path.abspath(run_plots_dir)
+                report_abs = os.path.abspath(report_dir)
+                dst_plots = os.path.join(report_dir, "plots")
+                os.makedirs(dst_plots, exist_ok=True)
+                for item in os.listdir(run_plots_dir):
+                    s = os.path.join(run_plots_dir, item)
+                    d = os.path.join(dst_plots, item)
+                    if os.path.isdir(s):
+                        shutil.copytree(s, d, dirs_exist_ok=True)
+                    elif os.path.isfile(s):
+                        shutil.copy2(s, d)
         print(f"[reports] saved to {report_dir}")
     except Exception as e:
         print(f"[reports] failed: {e}")
