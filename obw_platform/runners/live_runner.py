@@ -83,7 +83,10 @@ def _tf_to_sec(tf: str) -> int:
 
 def _infer_prewarm_bars(cfg: dict, timeframe: str) -> int:
     tf_sec = _tf_to_sec(timeframe)
-    sp = (cfg.get("strategy_params") or {}) | (cfg.get("strategy") or {}).get("params", {})
+    sp = {
+        **(cfg.get("strategy_params") or {}),
+        **((cfg.get("strategy") or {}).get("params") or {}),
+    }
     atr_n = int(sp.get("atr_n", 50))
     adx_n = int(sp.get("adx_n", 14))
     heat_n = int(sp.get("heat_lookback", 50))
