@@ -8,12 +8,14 @@ import argparse, itertools, re, subprocess, sys, time, csv
 from pathlib import Path
 from datetime import datetime
 import yaml, copy
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 BACKTESTER = Path("backtester_core_speed3_veto_universe_2.py")
 INIT_CFG = None
 GLOBAL_BEST_S = -1e18
 GLOBAL_BEST_REC = None
 BT_SLEEP_SEC = 0
+BT_CACHE = {}
 
 
 KV_RE = re.compile(
@@ -48,6 +50,10 @@ def parse_metrics(text: str):
 
 def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, label: str = None):
     import time, os
+    yaml_text = Path(cfg_path).read_text()
+    key = (limit_bars, yaml_text)
+    if not with_plots and key in BT_CACHE:
+        return BT_CACHE[key]
     cmd = [
         sys.executable,
         str(BACKTESTER),
@@ -71,10 +77,25 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
     stats = parse_metrics(out) or {}
     if not stats:
         raise RuntimeError(f"Could not parse metrics from backtester output. Tail: {out[-800:]}")
+    trades_csv = None
+    for line in out.splitlines():
+        if "bt_trades=" in line:
+            m = re.search(r"bt_trades=([^\s]+)", line)
+            if m:
+                trades_csv = m.group(1)
+            break
+    stats["trades_csv"] = trades_csv
     stats["elapsed_sec"] = elapsed
-    if BT_SLEEP_SEC > 0:
+    if not with_plots:
+        BT_CACHE[key] = stats
+    if with_plots and BT_SLEEP_SEC > 0:
         time.sleep(BT_SLEEP_SEC)
     return stats
+
+
+def _eval_one(args_tuple):
+    cfg_yaml_path, limit_bars = args_tuple
+    return run_backtest(cfg_yaml_path, limit_bars, with_plots=False)
 
 
 
@@ -236,25 +257,41 @@ def include_seed_values(values, pname, current_value):
     return list(vals)
 
 
-def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_trades, target_trades):
+def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_trades, target_trades, jobs):
     global GLOBAL_BEST_S, GLOBAL_BEST_REC
     cur, _ = get_current(base_cfg, pname)
     cand = ensure_included(cand, cur) if isinstance(cand, (list,tuple)) else ([cur] if cur is not None else [])
     cand = include_seed_values(cand, pname, cur)
 
     recs = []
+    tasks = []
 
     for v in cand:
         cfg = copy.deepcopy(base_cfg)
         set_param(cfg, pname, v)
         tmp = Path("tune_tmp") / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
         write_yaml(cfg, tmp)
-        try:
-            res = run_backtest(tmp, limit_bars, with_plots=False)
-        except Exception as e:
-            res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
-        res.update({"param":pname,"value":v,"cfg_path":str(tmp),"yaml":str(tmp),"ts":datetime.utcnow().isoformat(timespec="seconds")})
-        recs.append(res)
+        tasks.append((tmp, v, cfg))
+
+    if jobs > 1:
+        with ProcessPoolExecutor(max_workers=jobs) as ex:
+            fut_map = {ex.submit(_eval_one, (tmp, limit_bars)): (tmp, v, cfg) for tmp, v, cfg in tasks}
+            for fut in as_completed(fut_map):
+                tmp, v, cfg = fut_map[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
+                res.update({"param":pname,"value":v,"cfg_path":str(tmp),"yaml":str(tmp),"ts":datetime.utcnow().isoformat(timespec="seconds")})
+                recs.append(res)
+    else:
+        for tmp, v, cfg in tasks:
+            try:
+                res = run_backtest(tmp, limit_bars, with_plots=False)
+            except Exception as e:
+                res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
+            res.update({"param":pname,"value":v,"cfg_path":str(tmp),"yaml":str(tmp),"ts":datetime.utcnow().isoformat(timespec="seconds")})
+            recs.append(res)
 
     best = pick_best(recs, weights, min_trades, target_trades)
     # regression guard: keep previous if no improvement
@@ -262,7 +299,8 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
     if cur_rec and best.get('score', -1e18) < cur_rec.get('score', -1e18):
         best = cur_rec
     set_param(base_cfg, pname, best["value"])
-    write_yaml(base_cfg, Path(f"{prefix}_{pname}_best.yaml"))
+    best_yaml = Path(f"{prefix}_{pname}_best.yaml")
+    write_yaml(base_cfg, best_yaml)
     with open(log_csv, "a", newline="") as f:
         wr = csv.DictWriter(f, fieldnames=["ts","param","value","equity_end","profit_factor","max_dd","monotonicity","trades","elapsed_sec","yaml","score"], extrasaction="ignore")
         if f.tell()==0: wr.writeheader()
@@ -271,7 +309,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
     return base_cfg, recs
 
 
-def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, target_trades):    # Expand search lists with current+seed inclusion
+def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, target_trades, jobs):    # Expand search lists with current+seed inclusion
     cand_lists = {}
     for p, spec in params.items():
         cur, _ = get_current(base_cfg, p)
@@ -289,6 +327,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
 
     grid = list(itertools.product(*[cand_lists[k] for k in keys]))
     recs = []
+    tasks = []
     for vec in grid:
         cfg = copy.deepcopy(base_cfg)
         name = []
@@ -297,18 +336,39 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
             name.append(f"{k}={v}")
         tmp = Path("tune_tmp") / f"{prefix}_grid_{'_'.join(str(x).replace('.', 'p') for x in vec)}.yaml"
         write_yaml(cfg, tmp)
-        try:
-            res = run_backtest(tmp, limit_bars, with_plots=False)
-        except Exception as e:
-            res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
-        res.update({
-            "param": "|".join(keys),
-            "value": "|".join(map(str, vec)),
-            "cfg_path": str(tmp),
-            "yaml": str(tmp),
-            "ts": datetime.utcnow().isoformat(timespec="seconds")
-        })
-        recs.append(res)
+        tasks.append((tmp, vec, cfg))
+
+    if jobs > 1:
+        with ProcessPoolExecutor(max_workers=jobs) as ex:
+            fut_map = {ex.submit(_eval_one, (tmp, limit_bars)): (tmp, vec, cfg) for tmp, vec, cfg in tasks}
+            for fut in as_completed(fut_map):
+                tmp, vec, cfg = fut_map[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
+                res.update({
+                    "param": "|".join(keys),
+                    "value": "|".join(map(str, vec)),
+                    "cfg_path": str(tmp),
+                    "yaml": str(tmp),
+                    "ts": datetime.utcnow().isoformat(timespec="seconds"),
+                })
+                recs.append(res)
+    else:
+        for tmp, vec, cfg in tasks:
+            try:
+                res = run_backtest(tmp, limit_bars, with_plots=False)
+            except Exception as e:
+                res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
+            res.update({
+                "param": "|".join(keys),
+                "value": "|".join(map(str, vec)),
+                "cfg_path": str(tmp),
+                "yaml": str(tmp),
+                "ts": datetime.utcnow().isoformat(timespec="seconds"),
+            })
+            recs.append(res)
 
     best = pick_best(recs, weights, min_trades, target_trades)
     # regression guard: global (baseline or prev best)
@@ -406,7 +466,8 @@ def main():
     ap.add_argument("--min-trades", type=int, default=50)
     ap.add_argument("--target-trades", type=int, default=300)
     ap.add_argument("--plan", help="Path to external plan module (default_plan used if omitted)")
-    ap.add_argument("--sleep-sec", type=float, default=60.0, help="pause between backtests in seconds")
+    ap.add_argument("--sleep-sec", type=float, default=0.0, help="pause between backtests in seconds")
+    ap.add_argument("--jobs", type=int, default=1, help="number of parallel backtest jobs")
     args = ap.parse_args()
 
     global INIT_CFG
@@ -462,18 +523,14 @@ def main():
         plan = default_plan(args.limit_bars)
 
 
-    # sanity run
-    try: _ = run_backtest(Path(args.cfg), args.limit_bars)
-    except Exception as e: print(e); sys.exit(1)
-
     cur_yaml = Path(args.cfg)
     for i, (mode, params) in enumerate(plan, 1):
         prefix = f"{args.prefix}_s{i}_{mode}"
         if mode == "rays":
             (pname, cand) = list(params.items())[0]
-            base, rays_results = do_rays(base, args.limit_bars, pname, cand, prefix, log_csv, weights, args.min_trades, args.target_trades)
+            base, rays_results = do_rays(base, args.limit_bars, pname, cand, prefix, log_csv, weights, args.min_trades, args.target_trades, args.jobs)
         elif mode == "grid":
-            base, grid_results = do_grid(base, args.limit_bars, params, prefix, log_csv, weights, args.min_trades, args.target_trades)
+            base, grid_results = do_grid(base, args.limit_bars, params, prefix, log_csv, weights, args.min_trades, args.target_trades, args.jobs)
         else:
             raise ValueError(mode)
 
@@ -486,11 +543,13 @@ def main():
         best = sorted(rays_results, key=lambda r: r.get("score", -1e18), reverse=True)[:TOPK_RAYS_PLOTS]
         for i, r in enumerate(best, 1):
             run_backtest(Path(r["cfg_path"]), args.limit_bars, with_plots=True, label=f"{args.prefix}_rays_final_{i}")
-        prune_reports(args.prefix)
     if grid_results:
         best_grid = pick_best(grid_results, weights, args.min_trades, args.target_trades)
         run_backtest(Path(best_grid["cfg_path"]), args.limit_bars, with_plots=True, label=f"{args.prefix}_grid_final")
-        prune_reports(args.prefix)
+    prune_reports(args.prefix)
+    tmp_dir = Path("tune_tmp")
+    for p in tmp_dir.glob("*.yaml"):
+        p.unlink(missing_ok=True)
 
 
 def include_seed_values(values, pname, current_value):

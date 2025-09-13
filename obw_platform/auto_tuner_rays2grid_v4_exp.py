@@ -7,12 +7,14 @@ from datetime import datetime
 import yaml, copy
 import numpy as np
 import pandas as pd
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 BACKTESTER = Path("backtester_core_speed3_veto_universe_2.py")
 INIT_CFG = None
 GLOBAL_BEST_S = -1e18
 GLOBAL_BEST_REC = None
 BT_SLEEP_SEC = 0
+BT_CACHE = {}
 
 
 KV_RE = re.compile(
@@ -46,6 +48,10 @@ def parse_metrics(text: str):
     return out if out else None
 
 def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, label: str = None):
+    yaml_text = Path(cfg_path).read_text()
+    key = (limit_bars, yaml_text)
+    if not with_plots and key in BT_CACHE:
+        return BT_CACHE[key]
     cmd = [
         sys.executable,
         str(BACKTESTER),
@@ -80,9 +86,16 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
             break
     stats["trades_csv"] = trades_csv
     stats["elapsed_sec"] = elapsed
-    if BT_SLEEP_SEC > 0:
+    if not with_plots:
+        BT_CACHE[key] = stats
+    if with_plots and BT_SLEEP_SEC > 0:
         time.sleep(BT_SLEEP_SEC)
     return stats
+
+
+def _eval_one(args_tuple):
+    cfg_yaml_path, limit_bars = args_tuple
+    return run_backtest(cfg_yaml_path, limit_bars, with_plots=False)
 
 
 def compute_weights(times: pd.Series, now: pd.Timestamp,
@@ -248,27 +261,65 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, args):
     local_best_Ew = -1e18
     local_best_cfg = None
     local_best_rec = None
+    jobs = []
 
     for v in cand:
         cfg = copy.deepcopy(base_cfg)
         set_param(cfg, pname, v)
         tmp = Path("tune_tmp") / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
         write_yaml(cfg, tmp)
-        try:
-            res = run_backtest(tmp, limit_bars, with_plots=False)
-        except Exception as e:
-            res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
-        trades_df = pd.read_csv(res.get("trades_csv", "bt_trades.csv")) if res.get("trades_csv") else pd.DataFrame()
-        Ew, w_tr = weighted_expected_return(trades_df, args)
-        res.update({"param":pname,"value":v,"cfg_path":str(tmp),"yaml":str(tmp),"ts":datetime.utcnow().isoformat(timespec="seconds"),"Ew":Ew,"trades_w_recent":w_tr})
-        recs.append(res)
+        jobs.append((tmp, v, cfg))
 
-        ok_trades = (args.min_trades == 0 or int(res.get("trades",0)) >= args.min_trades)
-        ok_recent = (args.min_trades_recent == 0 or w_tr >= args.min_trades_recent / max(1.0, len(trades_df)))
+    def handle_result(res, v, tmp, cfg):
+        nonlocal local_best_Ew, local_best_cfg, local_best_rec
+        T = int(res.get("trades", 0))
+        Ew, w_tr = -1e9, 0.0
+        trades_len = T
+        if args.min_trades == 0 or T >= args.min_trades:
+            if res.get("trades_csv"):
+                trades_df = pd.read_csv(
+                    res["trades_csv"],
+                    usecols=["exit_time", "net_return"],
+                    dtype={"net_return": "float32"},
+                    engine="c",
+                    low_memory=False,
+                )
+                trades_len = len(trades_df)
+                Ew, w_tr = weighted_expected_return(trades_df, args)
+        res.update({
+            "param": pname,
+            "value": v,
+            "cfg_path": str(tmp),
+            "yaml": str(tmp),
+            "ts": datetime.utcnow().isoformat(timespec="seconds"),
+            "Ew": Ew,
+            "trades_w_recent": w_tr,
+        })
+        recs.append(res)
+        ok_trades = (args.min_trades == 0 or T >= args.min_trades)
+        ok_recent = (args.min_trades_recent == 0 or w_tr >= args.min_trades_recent / max(1.0, trades_len))
         if ok_trades and ok_recent and (Ew > local_best_Ew + 1e-12):
             local_best_Ew = Ew
             local_best_cfg = copy.deepcopy(cfg)
             local_best_rec = res
+
+    if args.jobs > 1:
+        with ProcessPoolExecutor(max_workers=args.jobs) as ex:
+            fut_map = {ex.submit(_eval_one, (tmp, limit_bars)): (tmp, v, cfg) for tmp, v, cfg in jobs}
+            for fut in as_completed(fut_map):
+                tmp, v, cfg = fut_map[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
+                handle_result(res, v, tmp, cfg)
+    else:
+        for tmp, v, cfg in jobs:
+            try:
+                res = run_backtest(tmp, limit_bars, with_plots=False)
+            except Exception as e:
+                res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
+            handle_result(res, v, tmp, cfg)
 
     if local_best_cfg is not None:
         base_cfg = local_best_cfg
@@ -276,7 +327,8 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, args):
     else:
         best = {"value": cur, "Ew": local_best_Ew}
 
-    write_yaml(base_cfg, Path(f"{prefix}_{pname}_best.yaml"))
+    best_yaml = Path(f"{prefix}_{pname}_best.yaml")
+    write_yaml(base_cfg, best_yaml)
     with open(log_csv, "a", newline="") as f:
         wr = csv.DictWriter(f, fieldnames=["ts","param","value","equity_end","profit_factor","max_dd","monotonicity","trades","elapsed_sec","yaml","Ew","trades_w_recent"], extrasaction="ignore")
         if f.tell() == 0:
@@ -305,6 +357,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, args):
     local_best_Ew = -1e18
     local_best_cfg = None
     local_best_rec = None
+    jobs = []
 
     for vec in grid:
         cfg = copy.deepcopy(base_cfg)
@@ -312,12 +365,24 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, args):
             set_param(cfg, k, v)
         tmp = Path("tune_tmp") / f"{prefix}_grid_{'_'.join(str(x).replace('.', 'p') for x in vec)}.yaml"
         write_yaml(cfg, tmp)
-        try:
-            res = run_backtest(tmp, limit_bars, with_plots=False)
-        except Exception as e:
-            res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
-        trades_df = pd.read_csv(res.get("trades_csv", "bt_trades.csv")) if res.get("trades_csv") else pd.DataFrame()
-        Ew, w_tr = weighted_expected_return(trades_df, args)
+        jobs.append((tmp, vec, cfg))
+
+    def handle_result(res, vec, tmp, cfg):
+        nonlocal local_best_Ew, local_best_cfg, local_best_rec
+        T = int(res.get("trades", 0))
+        Ew, w_tr = -1e9, 0.0
+        trades_len = T
+        if args.min_trades == 0 or T >= args.min_trades:
+            if res.get("trades_csv"):
+                trades_df = pd.read_csv(
+                    res["trades_csv"],
+                    usecols=["exit_time", "net_return"],
+                    dtype={"net_return": "float32"},
+                    engine="c",
+                    low_memory=False,
+                )
+                trades_len = len(trades_df)
+                Ew, w_tr = weighted_expected_return(trades_df, args)
         res.update({
             "param": "|".join(keys),
             "value": "|".join(map(str, vec)),
@@ -328,13 +393,30 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, args):
             "trades_w_recent": w_tr,
         })
         recs.append(res)
-
-        ok_trades = (args.min_trades == 0 or int(res.get("trades",0)) >= args.min_trades)
-        ok_recent = (args.min_trades_recent == 0 or w_tr >= args.min_trades_recent / max(1.0, len(trades_df)))
+        ok_trades = (args.min_trades == 0 or T >= args.min_trades)
+        ok_recent = (args.min_trades_recent == 0 or w_tr >= args.min_trades_recent / max(1.0, trades_len))
         if ok_trades and ok_recent and (Ew > local_best_Ew + 1e-12):
             local_best_Ew = Ew
             local_best_cfg = copy.deepcopy(cfg)
             local_best_rec = res
+
+    if args.jobs > 1:
+        with ProcessPoolExecutor(max_workers=args.jobs) as ex:
+            fut_map = {ex.submit(_eval_one, (tmp, limit_bars)): (tmp, vec, cfg) for tmp, vec, cfg in jobs}
+            for fut in as_completed(fut_map):
+                tmp, vec, cfg = fut_map[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
+                handle_result(res, vec, tmp, cfg)
+    else:
+        for tmp, vec, cfg in jobs:
+            try:
+                res = run_backtest(tmp, limit_bars, with_plots=False)
+            except Exception as e:
+                res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
+            handle_result(res, vec, tmp, cfg)
 
     if local_best_cfg is not None:
         base_cfg = local_best_cfg
@@ -417,7 +499,8 @@ def main():
     ap.add_argument("--prefix", default="t5m2880_exp")
     ap.add_argument("--min-trades", type=int, default=50)
     ap.add_argument("--plan", help="Path to external plan module (default_plan used if omitted)")
-    ap.add_argument("--sleep-sec", type=float, default=60.0, help="pause between backtests in seconds")
+    ap.add_argument("--sleep-sec", type=float, default=0.0, help="pause between backtests in seconds")
+    ap.add_argument("--jobs", type=int, default=1, help="number of parallel backtest jobs")
     ap.add_argument("--decay", choices=["none", "exp", "mix"], default="exp")
     ap.add_argument("--hl-hours", type=float, default=48.0)
     ap.add_argument("--mix-alpha", type=float, default=0.7)
@@ -440,8 +523,18 @@ def main():
     baseline_yaml = Path(f"{args.prefix}_baseline.yaml")
     write_yaml(base, baseline_yaml)
     base_res = run_backtest(baseline_yaml, args.limit_bars)
-    trades_df = pd.read_csv(base_res.get("trades_csv", "bt_trades.csv")) if base_res.get("trades_csv") else pd.DataFrame()
-    Ew0, _ = weighted_expected_return(trades_df, args)
+    T = int(base_res.get("trades", 0))
+    Ew0 = -1e9
+    if args.min_trades == 0 or T >= args.min_trades:
+        if base_res.get("trades_csv"):
+            trades_df = pd.read_csv(
+                base_res["trades_csv"],
+                usecols=["exit_time", "net_return"],
+                dtype={"net_return": "float32"},
+                engine="c",
+                low_memory=False,
+            )
+            Ew0, _ = weighted_expected_return(trades_df, args)
     print(f"[baseline] Ew={Ew0:.6f} trades={base_res.get('trades')}")
     log_csv = Path(f"{args.prefix}_tuner_log.csv")
 
@@ -465,13 +558,6 @@ def main():
         plan = default_plan(args.limit_bars)
 
 
-    # sanity run
-    try:
-        _ = run_backtest(Path(args.cfg), args.limit_bars)
-    except Exception as e:
-        print(e)
-        sys.exit(1)
-
     cur_yaml = Path(args.cfg)
     for i, (mode, params) in enumerate(plan, 1):
         prefix = f"{args.prefix}_s{i}_{mode}"
@@ -492,11 +578,13 @@ def main():
         best = sorted(rays_results, key=lambda r: r.get("Ew", -1e18), reverse=True)[:TOPK_RAYS_PLOTS]
         for i, r in enumerate(best, 1):
             run_backtest(Path(r["cfg_path"]), args.limit_bars, with_plots=True, label=f"{args.prefix}_rays_final_{i}")
-        prune_reports(args.prefix)
     if grid_results:
         best_grid = max(grid_results, key=lambda r: r.get("Ew", -1e18))
         run_backtest(Path(best_grid["cfg_path"]), args.limit_bars, with_plots=True, label=f"{args.prefix}_grid_final")
-        prune_reports(args.prefix)
+    prune_reports(args.prefix)
+    tmp_dir = Path("tune_tmp")
+    for p in tmp_dir.glob("*.yaml"):
+        p.unlink(missing_ok=True)
 
 
 
