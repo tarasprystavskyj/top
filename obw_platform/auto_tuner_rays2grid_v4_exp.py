@@ -69,22 +69,46 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
         plots_dir = f"_reports/_bt_plots/{tag}_{ts}"
         os.makedirs(plots_dir, exist_ok=True)
         cmd += ["--plots", plots_dir]
+    print("[bt_cmd]", " ".join(map(str, cmd)))
     t0 = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = time.time() - t0
-    out = (p.stdout or "") + "\n" + (p.stderr or "")
+    out, err = p.stdout or "", p.stderr or ""
+    if p.returncode != 0:
+        dbg = Path("_reports/_debug"); dbg.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time())
+        (dbg / f"bt_fail_{ts}.out.txt").write_text(out)
+        (dbg / f"bt_fail_{ts}.err.txt").write_text(err)
+        raise RuntimeError(f"Backtester failed rc={p.returncode} (see _reports/_debug/*.txt)")
     stats = parse_metrics(out) or {}
     if not stats:
-        raise RuntimeError(f"Could not parse metrics from backtester output. Tail: {out[-800:]}")
-    # extract trades csv path if present
+        dbg = Path("_reports/_debug"); dbg.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time())
+        (dbg / f"bt_fail_{ts}.out.txt").write_text(out)
+        (dbg / f"bt_fail_{ts}.err.txt").write_text(err)
+        stats["reason"] = "no metrics in stdout"
     trades_csv = None
+    summary_csv = None
     for line in out.splitlines():
         if "bt_trades=" in line:
             m = re.search(r"bt_trades=([^\s]+)", line)
             if m:
                 trades_csv = m.group(1)
+            m2 = re.search(r"bt_summary=([^\s]+)", line)
+            if m2:
+                summary_csv = m2.group(1)
             break
     stats["trades_csv"] = trades_csv
+    if summary_csv:
+        stats["summary_csv"] = summary_csv
+    if not trades_csv:
+        mrep = re.search(r"\[reports\]\s+saved to\s+(\S+)", out)
+        if mrep:
+            rep = mrep.group(1)
+            stats["trades_csv"] = str(Path(rep) / "bt_trades.csv")
+            stats["summary_csv"] = str(Path(rep) / "bt_summary.csv")
+        else:
+            stats["reason"] = stats.get("reason") or "no [files] and no [reports] in stdout"
     stats["elapsed_sec"] = elapsed
     if not with_plots:
         BT_CACHE[key] = stats
@@ -156,6 +180,12 @@ def deep_set(d, key, val):
         if k not in cur or not isinstance(cur[k], dict):
             cur[k] = {}
         cur = cur[k]
+    if isinstance(val, str):
+        try:
+            vnum = float(val)
+            val = int(vnum) if vnum.is_integer() else vnum
+        except Exception:
+            pass
     cur[parts[-1]] = val
 
 def prune_reports(prefix: str, keep: int = 60):
@@ -268,6 +298,8 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, args):
         set_param(cfg, pname, v)
         tmp = Path("tune_tmp") / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
         write_yaml(cfg, tmp)
+        tmp_yaml = read_yaml(tmp)
+        assert deep_get(tmp_yaml, "portfolio.cache_db") or deep_get(tmp_yaml, "cache_db"), "cache_db missing"
         jobs.append((tmp, v, cfg))
 
     def handle_result(res, v, tmp, cfg):
@@ -335,7 +367,8 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, args):
             wr.writeheader()
         for r in recs:
             wr.writerow(r)
-    print(f"[rays] BEST {pname}={best.get('value')} Ew={best.get('Ew')} (E={best.get('equity_end')} PF={best.get('profit_factor')} DD={best.get('max_dd')} T={best.get('trades')})")
+    reason = best.get("reason", "")
+    print(f"[rays] BEST {pname}={best.get('value')} Ew={best.get('Ew')} (E={best.get('equity_end')} PF={best.get('profit_factor')} DD={best.get('max_dd')} T={best.get('trades')})" + (f" [reason: {reason}]" if reason else ""))
     return base_cfg, recs
 
 
@@ -365,6 +398,8 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, args):
             set_param(cfg, k, v)
         tmp = Path("tune_tmp") / f"{prefix}_grid_{'_'.join(str(x).replace('.', 'p') for x in vec)}.yaml"
         write_yaml(cfg, tmp)
+        tmp_yaml = read_yaml(tmp)
+        assert deep_get(tmp_yaml, "portfolio.cache_db") or deep_get(tmp_yaml, "cache_db"), "cache_db missing"
         jobs.append((tmp, vec, cfg))
 
     def handle_result(res, vec, tmp, cfg):
@@ -441,8 +476,10 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, args):
             wr.writeheader()
         for r in recs:
             wr.writerow(r)
-
+    reason = chosen.get("reason", "")
     line = f"[grid] BEST {chosen.get('value')} Ew={chosen.get('Ew')} (E={chosen.get('equity_end')} PF={chosen.get('profit_factor')} DD={chosen.get('max_dd')} T={chosen.get('trades')})"
+    if reason:
+        line += f" [reason: {reason}]"
     print(line)
     return base_cfg, recs
 
