@@ -50,10 +50,16 @@ def find_db_file(filename: str):
     as live session caches.
     """
 
+    filename = filename.strip()
     if os.path.isabs(filename) and os.path.exists(filename):
         return os.path.abspath(filename)
 
-    # Список можливих шляхів
+    # If caller supplies a relative path with directories, honor it directly
+    # instead of blindly prepending ".." which may lead to invalid paths.
+    if os.path.dirname(filename) and os.path.exists(filename):
+        return os.path.abspath(filename)
+
+    # Otherwise search in common locations for a bare filename
     search_paths = [
         os.path.join(".", filename),           # ./filename
         os.path.join("..", filename),          # ../filename

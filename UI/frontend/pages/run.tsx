@@ -61,10 +61,15 @@ export default function Run() {
     const override = {
       symbols_file: universe ? `universe/${universe}` : null,
     };
+    // Trim any stray whitespace. Backend will resolve relative paths, so we
+    // forward the path as-is without prepending directories that may create
+    // incorrect locations.
+    const cacheDbPath = cacheDb.trim();
+    console.log('cacheDbPath', cacheDbPath);
     const j = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug, override, backtester, cache_db: cacheDb || undefined }),
+      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug, override, backtester, cache_db: cacheDbPath || undefined }),
     }).then(r => r.json());
     setJob(j);
     setRes(null);
