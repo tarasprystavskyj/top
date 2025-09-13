@@ -109,10 +109,7 @@ def main():
     ap.add_argument("--export-csv", action="store_true")
     ap.add_argument("--debug", action="store_true")
     # Universe controls (OPENINGS)
-    ap.add_argument("--symbols-file", dest="symbols_file",
-                    help="Path to file with allowed symbols (one per line)")
-    ap.add_argument("--universe-file", dest="symbols_file",
-                    help="Alias for --symbols-file (backward compat)")
+    ap.add_argument("--symbols-file", dest="symbols_file")
     ap.add_argument("--deny-symbols", dest="deny_symbols")
     ap.add_argument("--cache_db", dest="cache_db")
     args = ap.parse_args()
@@ -169,7 +166,7 @@ def main():
             q.append(f"AND symbol IN ({','.join('?'*len(allow))})"); params.extend(allow)
         q.append("ORDER BY datetime_utc ASC, symbol ASC")
         rows = con.execute(" ".join(q), params).fetchall()
-        if not rows:
+        if not rows or not t_from or not t_to:
             print(f"No bars in interval {t_from} .. {t_to} for DB={db_file}"); return
         rr = con.execute(
             """
@@ -177,18 +174,49 @@ def main():
             FROM price_indicators WHERE datetime_utc BETWEEN ? AND ?
             """,
             (
-                t_from or "0000-01-01T00:00:00+00:00",
-                t_to or "9999-12-31T23:59:59+00:00",
+                t_from,
+                t_to,
             ),
         ).fetchone()
         time_start, time_end, rows_count = rr[0], rr[1], rr[2]
         if args.debug:
             print(f"[dbg] rows_in_range={rows_count} db_min={time_start} db_max={time_end}")
     else:
-        th_row = con.execute(
-            "SELECT MIN(datetime_utc) FROM (SELECT datetime_utc FROM price_indicators ORDER BY datetime_utc DESC LIMIT ?)",
-            (int(args.limit_bars),),
-        ).fetchone()
+        # Determine the earliest timestamp for the requested number of bars.
+        #
+        # Previously we simply grabbed the last ``limit_bars`` rows from the
+        # ``price_indicators`` table.  Because the table stores one row per
+        # symbol per timestamp, limiting by rows resulted in an extremely
+        # narrow time window when many symbols were present (e.g. 500 rows over
+        # 100 symbols yields only five minutes of data).  This caused the
+        # backtester to always operate on a very small, fixed interval.
+        #
+        # To honour ``--limit-bars`` we instead select the latest *distinct*
+        # timestamps and compute the minimum among them.  When an allow-list is
+        # provided, we restrict the search to those symbols so extraneous rows
+        # do not skew the range.
+        if allow:
+            placeholders = ",".join("?" * len(allow))
+            th_row = con.execute(
+                f"""
+                SELECT MIN(datetime_utc) FROM (
+                    SELECT DISTINCT datetime_utc FROM price_indicators
+                    WHERE symbol IN ({placeholders})
+                    ORDER BY datetime_utc DESC LIMIT ?
+                )
+                """,
+                (*allow, int(args.limit_bars)),
+            ).fetchone()
+        else:
+            th_row = con.execute(
+                """
+                SELECT MIN(datetime_utc) FROM (
+                    SELECT DISTINCT datetime_utc FROM price_indicators
+                    ORDER BY datetime_utc DESC LIMIT ?
+                )
+                """,
+                (int(args.limit_bars),),
+            ).fetchone()
         if not th_row or not th_row[0]:
             print("No bars."); return
         min_time = th_row[0]
