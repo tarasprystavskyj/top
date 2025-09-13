@@ -1,0 +1,5 @@
+param,value,equity_end,profit_factor,trades,max_dd,monotonicity,elapsed_sec,daily_return,monthly_return,backtest_days
+top-n,0,92.33709,0.694543,1104,-8.956,-7.304,34.324129,,,
+top-n,8,92.33709,0.694543,1104,-8.956,-7.304,37.478472,,,
+top-n,10,92.33709,0.694543,1104,-8.956,-7.304,36.973994,,,
+top-n,12,92.33709,0.694543,1104,-8.956,-7.304,36.790149,,,

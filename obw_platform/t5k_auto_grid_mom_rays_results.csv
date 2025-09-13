@@ -1,0 +1,5 @@
+param,value,equity_end,profit_factor,trades,max_dd,monotonicity,elapsed_sec,daily_return,monthly_return,backtest_days
+min-mom,0,92.33709,0.694543,1104,-8.956,-7.304,37.828851,,,
+min-mom,0.020,93.173741,0.706031,1016,-7.995,-6.669,33.120898,,,
+min-mom,0.022,93.026953,0.699329,1012,-8.032,-6.871,35.861428,,,
+min-mom,0.024,93.031435,0.698135,1007,-8.072,-6.873,33.811754,,,
