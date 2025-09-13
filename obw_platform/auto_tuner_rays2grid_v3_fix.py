@@ -46,27 +46,29 @@ def parse_metrics(text: str):
                 out[k] = int(v)
     return out if out else None
 
-def run_backtest(cfg_path: Path, limit_bars: int, plots_dir: str = ""):
-    cmd = [sys.executable, str(BACKTESTER), "--cfg", str(cfg_path), "--limit-bars", str(limit_bars)]
-    if plots_dir:
+def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, label: str = None):
+    cmd = [
+        sys.executable,
+        str(BACKTESTER),
+        "--cfg",
+        str(cfg_path),
+        "--limit-bars",
+        str(limit_bars),
+        "--export-csv",
+    ]
+    if with_plots:
+        from uuid import uuid4
+        import time, os
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        tag = (label or "final") + "_" + uuid4().hex[:6]
+        plots_dir = f"_reports/_bt_plots/{tag}_{ts}"
+        os.makedirs(plots_dir, exist_ok=True)
         cmd += ["--plots", plots_dir]
     t0 = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = time.time() - t0
-    out = (p.stdout or "") + "\\n" + (p.stderr or "")
+    out = (p.stdout or "") + "\n" + (p.stderr or "")
     stats = parse_metrics(out) or {}
-    try:
-        with open("summary.csv", newline="") as f:
-            row = next(csv.DictReader(f), None)
-            if row:
-                for k in ("apr_%", "daily_return_%", "monthly_return_%", "yearly_return_%"):
-                    if k in row and row[k] not in (None, ""):
-                        try:
-                            stats[k] = float(row[k])
-                        except Exception:
-                            pass
-    except Exception:
-        pass
     if not stats:
         raise RuntimeError(f"Could not parse metrics from backtester output. Tail: {out[-800:]}")
     stats["elapsed_sec"] = elapsed
@@ -102,6 +104,15 @@ def deep_set(d, key, val):
             cur[k] = {}
         cur = cur[k]
     cur[parts[-1]] = val
+
+def prune_reports(prefix: str, keep: int = 60):
+    from pathlib import Path
+    import shutil
+    root = Path("_reports/_backtest")
+    pats = sorted([p for p in root.glob(f"backtest{prefix}*") if p.is_dir()],
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    for p in pats[keep:]:
+        shutil.rmtree(p, ignore_errors=True)
 
 ALIASES = {
     "tp": ["strategy_params.tp_atr_mult"],
@@ -239,10 +250,10 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
         tmp = Path("tune_tmp") / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
         write_yaml(cfg, tmp)
         try:
-            res = run_backtest(tmp, limit_bars)
+            res = run_backtest(tmp, limit_bars, with_plots=False)
         except Exception as e:
             res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
-        res.update({"param":pname,"value":v,"yaml":str(tmp),"ts":datetime.utcnow().isoformat(timespec="seconds")})
+        res.update({"param":pname,"value":v,"cfg_path":str(tmp),"yaml":str(tmp),"ts":datetime.utcnow().isoformat(timespec="seconds")})
         recs.append(res)
 
     best = pick_best(recs, weights, min_trades, target_trades)
@@ -257,7 +268,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
         if f.tell()==0: wr.writeheader()
         for r in recs: wr.writerow(r)
     print(f"[rays] BEST {pname}={best['value']} score={best['score']} (E={best.get('equity_end')} PF={best.get('profit_factor')} DD={best.get('max_dd')} T={best.get('trades')})")
-    return base_cfg
+    return base_cfg, recs
 
 
 def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, target_trades):    # Expand search lists with current+seed inclusion
@@ -287,12 +298,13 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
         tmp = Path("tune_tmp") / f"{prefix}_grid_{'_'.join(str(x).replace('.', 'p') for x in vec)}.yaml"
         write_yaml(cfg, tmp)
         try:
-            res = run_backtest(tmp, limit_bars)
+            res = run_backtest(tmp, limit_bars, with_plots=False)
         except Exception as e:
             res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
         res.update({
             "param": "|".join(keys),
             "value": "|".join(map(str, vec)),
+            "cfg_path": str(tmp),
             "yaml": str(tmp),
             "ts": datetime.utcnow().isoformat(timespec="seconds")
         })
@@ -333,6 +345,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
 
     line = f"[grid] BEST {chosen['value']} score={chosen.get('score')} (E={chosen.get('equity_end')} PF={chosen.get('profit_factor')} DD={chosen.get('max_dd')} T={chosen.get('trades')})"
     print(_green_if(line, (chosen.get('score', -1e18) > prev_best)))
+    return base_cfg, recs
 
 
 def default_plan(limit_bars: int = None):
@@ -405,6 +418,8 @@ def main():
 
 
     base = read_yaml(Path(args.cfg))
+    rays_results = []
+    grid_results = []
     # ---- Baseline (original cfg) ----
     baseline_yaml = Path(f"{args.prefix}_baseline.yaml")
     write_yaml(base, baseline_yaml)
@@ -456,15 +471,26 @@ def main():
         prefix = f"{args.prefix}_s{i}_{mode}"
         if mode == "rays":
             (pname, cand) = list(params.items())[0]
-            base = do_rays(base, args.limit_bars, pname, cand, prefix, log_csv, weights, args.min_trades, args.target_trades)
+            base, rays_results = do_rays(base, args.limit_bars, pname, cand, prefix, log_csv, weights, args.min_trades, args.target_trades)
         elif mode == "grid":
-            base = do_grid(base, args.limit_bars, params, prefix, log_csv, weights, args.min_trades, args.target_trades)
+            base, grid_results = do_grid(base, args.limit_bars, params, prefix, log_csv, weights, args.min_trades, args.target_trades)
         else:
             raise ValueError(mode)
 
     final = Path(f"{args.prefix}_final_best.yaml")
     write_yaml(base, final)
     print(f"DONE -> {final}")
+
+    TOPK_RAYS_PLOTS = 3
+    if rays_results:
+        best = sorted(rays_results, key=lambda r: r.get("score", -1e18), reverse=True)[:TOPK_RAYS_PLOTS]
+        for i, r in enumerate(best, 1):
+            run_backtest(Path(r["cfg_path"]), args.limit_bars, with_plots=True, label=f"{args.prefix}_rays_final_{i}")
+        prune_reports(args.prefix)
+    if grid_results:
+        best_grid = pick_best(grid_results, weights, args.min_trades, args.target_trades)
+        run_backtest(Path(best_grid["cfg_path"]), args.limit_bars, with_plots=True, label=f"{args.prefix}_grid_final")
+        prune_reports(args.prefix)
 
 
 def include_seed_values(values, pname, current_value):
