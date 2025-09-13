@@ -105,7 +105,7 @@ def main():
     ap.add_argument("--time-from", dest="time_from", type=str, default=None)
     ap.add_argument("--time-to", dest="time_to", type=str, default=None)
     ap.add_argument("--allow-symbols", type=str, default="")
-    ap.add_argument("--plots", dest="plots_dir", type=str, default="_reports/_backtest")
+    ap.add_argument("--plots", dest="plots_dir", type=str, default=None)
     ap.add_argument("--export-csv", action="store_true")
     ap.add_argument("--debug", action="store_true")
     # Universe controls (OPENINGS)
@@ -442,11 +442,15 @@ def main():
         "yearly_return_%": yearly_ret_pct,
     }
 
+    cfg_name = os.path.splitext(os.path.basename(args.cfg))[0] if hasattr(args, 'cfg') else 'cfg'
+    time_id = time.strftime("%Y%m%d_%H%M%S")
+    report_dir = os.path.join("_reports", "_backtest", f"backtest{cfg_name}{time_id}")
+
     # CSV exports
     if args.export_csv:
-        os.makedirs(args.plots_dir, exist_ok=True)
-        trades_path = os.path.join(args.plots_dir, "bt_trades.csv")
-        summary_path = os.path.join(args.plots_dir, "bt_summary.csv")
+        os.makedirs(report_dir, exist_ok=True)
+        trades_path = os.path.join(report_dir, "bt_trades.csv")
+        summary_path = os.path.join(report_dir, "bt_summary.csv")
         trades_df = pd.DataFrame(tr_rows)
         trades_df.to_csv(trades_path, index=False)
         with open(summary_path, "w", encoding="utf-8") as f:
@@ -520,21 +524,29 @@ def main():
 
     # Consolidate reports
     try:
-        cfg_name = os.path.splitext(os.path.basename(args.cfg))[0] if hasattr(args, 'cfg') else 'cfg'
-        time_id = time.strftime("%Y%m%d_%H%M%S")
-        report_dir = os.path.join("_reports", "_backtest", f"backtest{cfg_name}{time_id}")
         os.makedirs(report_dir, exist_ok=True)
         for fname in ("trades.csv", "summary.csv"):
             if os.path.exists(fname):
                 shutil.copy(fname, report_dir)
         if args.plots_dir and os.path.isdir(args.plots_dir):
-            for item in os.listdir(args.plots_dir):
-                src = os.path.join(args.plots_dir, item)
-                dst = os.path.join(report_dir, item)
-                if os.path.isdir(src):
-                    shutil.copytree(src, dst, dirs_exist_ok=True)
-                elif os.path.isfile(src):
-                    shutil.copy(src, report_dir)
+            plots_abs = os.path.abspath(args.plots_dir)
+            report_abs = os.path.abspath(report_dir)
+            try:
+                common = os.path.commonpath([plots_abs, report_abs])
+            except Exception:
+                common = ""
+            if common != plots_abs:
+                for item in os.listdir(args.plots_dir):
+                    if item.startswith("backtest"):
+                        continue
+                    src = os.path.join(args.plots_dir, item)
+                    dst = os.path.join(report_dir, item)
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+                    elif os.path.isfile(src):
+                        shutil.copy(src, report_dir)
+            else:
+                print(f"[reports] skip copying from plots_dir={plots_abs} (ancestor of report_dir)")
         print(f"[reports] saved to {report_dir}")
     except Exception as e:
         print(f"[reports] failed: {e}")
