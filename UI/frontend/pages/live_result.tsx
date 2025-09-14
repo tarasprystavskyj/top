@@ -155,47 +155,104 @@ export default function LiveResult() {
       )}
       {pairs.length > 0 && (
         <div>
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <div style={{ textAlign: 'center' }}>
-              <h3>
-                Backtest {btRangeText ? `(${btRangeText})` : ''}
-              </h3>
-              {pairs[slide].back && (
-                <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
-              )}
-              {pairs.length > 1 && (
-                <input
-                  type="range"
-                  min={0}
-                  max={pairs.length - 1}
-                  value={slide}
-                  onChange={e => setSlide(Number(e.target.value))}
-                  style={{ width: '100%' }}
-                />
-              )}
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
+              <div style={{ textAlign: 'center' }}>
+                <h3>
+                  Backtest {btRangeText ? `(${btRangeText})` : ''}
+                </h3>
+                {pairs[slide].back && (
+                  <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
+                )}
+                {pairs.length > 1 && (
+                  <input
+                    type="range"
+                    min={0}
+                    max={pairs.length - 1}
+                    value={slide}
+                    onChange={e => setSlide(Number(e.target.value))}
+                    style={{ width: '100%' }}
+                  />
+                )}
+              </div>
+              <div style={{ textAlign: 'center' }}>
+                <h3>
+                  Live {liveRange ? `(${liveRange.start} — ${liveRange.end})` : ''}
+                </h3>
+                {pairs[slide].live ? (
+                  <img src={pairs[slide].live!} style={{ maxWidth: '400px' }} />
+                ) : (
+                  <div style={{ maxWidth: '400px', textAlign: 'center' }}>
+                    No live trade data
+                  </div>
+                )}
+                {pairs.length > 1 && (
+                  <input
+                    type="range"
+                    min={0}
+                    max={pairs.length - 1}
+                    value={slide}
+                    onChange={e => setSlide(Number(e.target.value))}
+                    style={{ width: '100%' }}
+                  />
+                )}
+              </div>
+
             </div>
-            <div style={{ textAlign: 'center' }}>
-              <h3>
-                Live {liveRange ? `(${liveRange.start} — ${liveRange.end})` : ''}
-              </h3>
-              {pairs[slide].live ? (
-                <img src={pairs[slide].live!} style={{ maxWidth: '400px' }} />
-              ) : (
-                <div style={{ maxWidth: '400px', textAlign: 'center' }}>
-                  No live trade data
-                </div>
-              )}
-              {pairs.length > 1 && (
-                <input
-                  type="range"
-                  min={0}
-                  max={pairs.length - 1}
-                  value={slide}
-                  onChange={e => setSlide(Number(e.target.value))}
-                  style={{ width: '100%' }}
-                />
-              )}
-            </div>
+            {(trades.length > 0 || liveTrades.length > 0) && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {trades.length > 0 && (
+                  <>
+                    <h4>Backtest trades ({trades.length})</h4>
+                    <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                      <table border={1}>
+                        <thead>
+                          <tr>
+                            {Object.keys(trades[0]).map(k => (
+                              <th key={k}>{k}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {trades.map((t, i) => (
+                            <tr key={i}>
+                              {Object.keys(trades[0]).map(k => (
+                                <td key={k}>{formatVal(t[k])}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+                {liveTrades.length > 0 && (
+                  <>
+                    <h4>Live trades ({liveTrades.length})</h4>
+                    <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                      <table border={1}>
+                        <thead>
+                          <tr>
+                            {Object.keys(liveTrades[0]).map(k => (
+                              <th key={k}>{k}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {liveTrades.map((t, i) => (
+                            <tr key={i}>
+                              {Object.keys(liveTrades[0]).map(k => (
+                                <td key={k}>{formatVal(t[k])}</td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           {pairs.length > 1 && (
             <div>
@@ -216,62 +273,58 @@ export default function LiveResult() {
           {JSON.stringify(debugData, null, 2)}
         </pre>
       )}
-      {(trades.length > 0 || liveTrades.length > 0) && (
+      {pairs.length === 0 && (trades.length > 0 || liveTrades.length > 0) && (
         <div style={{ display: 'flex', gap: 16 }}>
-          <div style={{ flex: 1 }}>
-            {trades.length > 0 && (
-              <>
-                <h4>Backtest trades ({trades.length})</h4>
-                <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                  <table border={1}>
-                    <thead>
-                      <tr>
+          {trades.length > 0 && (
+            <div style={{ flex: 1 }}>
+              <h4>Backtest trades ({trades.length})</h4>
+              <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                <table border={1}>
+                  <thead>
+                    <tr>
+                      {Object.keys(trades[0]).map(k => (
+                        <th key={k}>{k}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trades.map((t, i) => (
+                      <tr key={i}>
                         {Object.keys(trades[0]).map(k => (
-                          <th key={k}>{k}</th>
+                          <td key={k}>{formatVal(t[k])}</td>
                         ))}
                       </tr>
-                    </thead>
-                    <tbody>
-                      {trades.map((t, i) => (
-                        <tr key={i}>
-                          {Object.keys(trades[0]).map(k => (
-                            <td key={k}>{formatVal(t[k])}</td>
-                          ))}
-                        </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {liveTrades.length > 0 && (
+            <div style={{ flex: 1 }}>
+              <h4>Live trades ({liveTrades.length})</h4>
+              <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+                <table border={1}>
+                  <thead>
+                    <tr>
+                      {Object.keys(liveTrades[0]).map(k => (
+                        <th key={k}>{k}</th>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
-          </div>
-          <div style={{ flex: 1 }}>
-            {liveTrades.length > 0 && (
-              <>
-                <h4>Live trades ({liveTrades.length})</h4>
-                <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                  <table border={1}>
-                    <thead>
-                      <tr>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {liveTrades.map((t, i) => (
+                      <tr key={i}>
                         {Object.keys(liveTrades[0]).map(k => (
-                          <th key={k}>{k}</th>
+                          <td key={k}>{formatVal(t[k])}</td>
                         ))}
                       </tr>
-                    </thead>
-                    <tbody>
-                      {liveTrades.map((t, i) => (
-                        <tr key={i}>
-                          {Object.keys(liveTrades[0]).map(k => (
-                            <td key={k}>{formatVal(t[k])}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
-          </div>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
