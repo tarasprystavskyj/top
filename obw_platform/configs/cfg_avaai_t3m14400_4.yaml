@@ -23,11 +23,11 @@ top_n: 8                     # скільки символів відбират�
 
 # Вхідні фільтри
 min_atr_ratio: 0.02          # мінімальна відносна ATR (0..1)
-min_momentum_sum: 0.0        # 0.0 вимикає поріг по моментуму (як у твоїх прибуткових прогонів)
+min_momentum_sum: 0.036        # 0.0 вимикає поріг по моментуму (як у твоїх прибуткових прогонів)
 
 # TP/SL як кратні ATR
 tp_atr_mult: 3.8
-sl_atr_mult: 1.04
+sl_atr_mult: 0.5
 
 # Вартість торгівлі та ковзання (налаштуй під свою біржу)
 fee_rate: 0.0004             # ~0.04% за бік
@@ -35,7 +35,7 @@ slippage_per_side: 0.0005    # ~0.05% ковзання на бік
 
 # Вихід по "heat"
 exit_on_heat: true
-heat_exit_threshold: 0.40    # виходити, якщо heat < порогу
+heat_exit_threshold: 0.85    # виходити, якщо heat < порогу
 heat_exit_min_rr: 1.05       # мінімальне RR для виходу по heat
 
 # Частковий тейк-профіт
@@ -51,28 +51,14 @@ min_qv_1h: 0.0
 exchange_min_notional: 2.2
 min_qty: 0.0
 
-# Обмеження на кількість нових позицій
-max_new_positions_per_bar: 0     # 0 = без ліміту
-first_bar_max_positions: 0       # якщо >0 — ліміт лише на першому барі
-
-# Інтрабар-менеджмент (якщо використовуєш 1m під-дані в live/backtest)
-intrabar:
-  enabled: true
-  tf: "1m"
-  manage_every_sec: 60
-  state_confirm_bars: 2
-  price_event_priority: ["SL","TP","STATE"]
-  same_bar_resolution: "conservative"
-  fallback_to_5m_only: true
-
 # (Опційно) згрупувати параметри також у блоці strategy_params (не обов'язково)
 strategy_params:
   side: "BOTH"
   top_n: 8
   min_atr_ratio: 0.02
-  min_momentum_sum: 0.0
+  min_momentum_sum: 0.036
   tp_atr_mult: 3.8
-  sl_atr_mult: 1.04
+  sl_atr_mult: 0.5
   fee_rate: 0.0004
   slippage_per_side: 0.0005
   exit_on_heat: true
