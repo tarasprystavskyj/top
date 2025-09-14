@@ -163,6 +163,16 @@ export default function LiveResult() {
               {pairs[slide].back && (
                 <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
               )}
+              {pairs.length > 1 && (
+                <input
+                  type="range"
+                  min={0}
+                  max={pairs.length - 1}
+                  value={slide}
+                  onChange={e => setSlide(Number(e.target.value))}
+                  style={{ width: '100%' }}
+                />
+              )}
             </div>
             <div style={{ textAlign: 'center' }}>
               <h3>
@@ -174,6 +184,16 @@ export default function LiveResult() {
                 <div style={{ maxWidth: '400px', textAlign: 'center' }}>
                   No live trade data
                 </div>
+              )}
+              {pairs.length > 1 && (
+                <input
+                  type="range"
+                  min={0}
+                  max={pairs.length - 1}
+                  value={slide}
+                  onChange={e => setSlide(Number(e.target.value))}
+                  style={{ width: '100%' }}
+                />
               )}
             </div>
           </div>
