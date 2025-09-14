@@ -28,6 +28,7 @@ import importlib
 import os, sys, math, uuid, datetime as _dt, os
 import json
 from datetime import datetime, timezone
+from typing import Optional
 
 _last_dot_bar = None
 def _bar_key(now: datetime, bar_sec: int) -> int:
@@ -643,8 +644,8 @@ def _place_tp_sl_after_open(
     tp_price,
     sl_price,
     position_mode: str,
-    part_tp_price: float | None = None,
-    part_tp_qty: float | None = None,
+    part_tp_price: Optional[float] = None,
+    part_tp_qty: Optional[float] = None,
 ):
     """Place TP/SL (and optional partial TP) as reduce-only orders after a market open."""
     try:
