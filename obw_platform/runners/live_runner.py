@@ -11,6 +11,7 @@ from .common import (
     db_upsert_open_position,
     db_mark_closed,
     write_equity,
+    insert_order_row,
 )
 
 # color print fallback
@@ -214,6 +215,16 @@ def qty_for_notional(mkt: dict, notional: float, price: float):
     else:
         qty = max(min_qty, notional / max(price, 1e-9))
     return qty, min_notional_req, step, min_qty
+
+
+def round_to_step(value: float, step: float) -> float:
+    if not step or step <= 0:
+        return float(value)
+    return math.floor(float(value) / step) * step
+
+
+def opp_side(side: str) -> str:
+    return 'SHORT' if str(side).upper().startswith('LONG') else 'LONG'
 
 def _sig_get(sig, key, default=None):
     try:
@@ -477,7 +488,7 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
 
 def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: float, position_mode: str):
     ccxt_sym = fetcher.resolve_symbol(sym)
-    params = {'reduceOnly': True}
+    params = {'reduceOnly': True, 'positionSide': 'BOTH'}
     if position_mode == 'hedge':
         params['positionSide'] = 'LONG' if side_close.lower() == 'sell' else 'SHORT'
     try:
@@ -488,7 +499,7 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
         msg = str(e).lower()
         if ('one-way mode' in msg) or ('positionside' in msg):
             try:
-                params2 = {'reduceOnly': True}
+                params2 = {'reduceOnly': True, 'positionSide': 'BOTH'}
                 od = fetcher.ex.create_order(ccxt_sym, 'market', side_close, qty, None, params2)
                 sleep_ms(RATE_MS)
                 return od
@@ -947,40 +958,54 @@ def run_live(cfg: dict, args):
                 row = md.get(sym)
                 if row is None:
                     continue
-                adj = None
+                ex = None
                 try:
                     Pos = type('Pos', (), {})
                     pos_like = Pos()
-                    for k,v in rec.items():
+                    for k, v in rec.items():
                         setattr(pos_like, k, v)
-                    adj = strat.manage_position(bar_close, sym, pos_like, row, ctx={})
+                    if hasattr(strat, 'manage_position_v2'):
+                        ex = strat.manage_position_v2(sym, row, pos_like, ctx={'now': now})
+                    elif hasattr(strat, 'manage_position'):
+                        ex = strat.manage_position(sym, row, pos_like, ctx={'now': now})
                 except Exception:
-                    adj = None
-                if getattr(adj, 'action', None) == 'EXIT':
+                    ex = None
+                action = getattr(ex, 'action', None)
+                if action == 'EXIT':
                     px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
                     if px:
-                        side_close = 'sell'
-                        try:
-                            if str(rec.get('side', 'LONG')).upper() == 'SHORT':
-                                side_close = 'buy'
-                        except Exception:
-                            pass
-                        od = place_reduce_only(fetcher, sym, side_close, float(rec.get('qty', 0.0)), position_mode)
+                        side_close = 'sell' if str(rec.get('side', 'LONG')).upper() == 'LONG' else 'buy'
+                        qty_close = float(rec.get('qty', 0.0))
+                        od = place_reduce_only(fetcher, sym, side_close, qty_close, position_mode)
                         if od:
                             if isinstance(od, dict) and od.get('error') == 'no_position':
-                                fill = px
-                                fdt = now
-                                slip = None
-                                lag = None
+                                fill = px; fdt = now
                             else:
                                 fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
-                                slip = (
-                                    (fill / px - 1.0) * 10000.0 * (1 if str(rec.get('side', 'LONG')).upper() == 'LONG' else -1)
-                                    if fill
-                                    else None
-                                )
-                                lag = (fdt - now).total_seconds() if fdt else None
                             cprint('[exit close]', sym, f'@~{px:.6g}', fg='yellow')
+                            gross = (fill - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill)/rec.get('entry',1.0)
+                            fee_rate = float(getattr(strat,'fee_rate',0.0))
+                            fees = (rec.get('entry',0.0)*qty_close + fill*qty_close)*fee_rate
+                            net = gross - (fees / (rec.get('entry',0.0)*qty_close))
+                            realized = net * rec.get('entry',0.0)*qty_close
+                            try:
+                                insert_order_row(session_db_path, {
+                                    'order_id': str(uuid.uuid4()),
+                                    'ts_utc': now.isoformat(),
+                                    'bar_time_utc': now.isoformat(),
+                                    'mode': 'EXIT',
+                                    'symbol': sym,
+                                    'side': side_close,
+                                    'type': 'market',
+                                    'price': fill,
+                                    'qty': qty_close,
+                                    'status': 'filled',
+                                    'reason': getattr(ex, 'reason', ''),
+                                    'run_id': run_id,
+                                    'extra': json.dumps({'gross_return': gross, 'net_return': net, 'fees_paid': fees, 'realized_pnl': realized})
+                                })
+                            except Exception:
+                                pass
                             try:
                                 db_mark_closed(
                                     session_db_path,
@@ -989,13 +1014,73 @@ def run_live(cfg: dict, args):
                                     now.isoformat(),
                                     exit_fill=fill,
                                     exit_fill_ts=fdt.isoformat() if fdt else None,
-                                    exit_slip_bp=slip,
-                                    exit_lag_sec=lag,
                                 )
+                            except Exception:
+                                pass
+                            try:
+                                ccxt_sym = fetcher.resolve_symbol(sym)
+                                fetcher.ex.cancel_all_orders(ccxt_sym)
+                                sleep_ms(RATE_MS)
                             except Exception:
                                 pass
                             positions.pop(sym, None)
                             save_positions(args.results_dir, positions)
+                elif action == 'TP_PARTIAL':
+                    frac = max(0.0, min(1.0, float(getattr(ex, 'qty_frac', 0.5))))
+                    qty_total = float(rec.get('qty', 0.0))
+                    qty_close = qty_total * frac
+                    ccxt_sym = fetcher.resolve_symbol(sym)
+                    mkt = fetcher.markets.get(ccxt_sym, {})
+                    step = float(mkt.get('precision', {}).get('amount') or 0.0)
+                    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
+                    qty_close = round_to_step(qty_close, step)
+                    price = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
+                    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or getattr(strat, 'exchange_min_notional', 0.0))
+                    if qty_close < max(min_qty, float(getattr(strat, 'min_qty', 0.0))) or price * qty_close < min_notional:
+                        cprint('[tp_partial skip] too small', sym, fg='yellow')
+                        continue
+                    side_close = 'sell' if str(rec.get('side', 'LONG')).upper() == 'LONG' else 'buy'
+                    od = place_reduce_only(fetcher, sym, side_close, qty_close, position_mode)
+                    if od:
+                        if isinstance(od, dict) and od.get('error') == 'no_position':
+                            fill = price; fdt = now
+                        else:
+                            fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                        gross = (fill - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill)/rec.get('entry',1.0)
+                        fee_rate = float(getattr(strat,'fee_rate',0.0))
+                        fees = (rec.get('entry',0.0)*qty_close + fill*qty_close)*fee_rate
+                        net = gross - (fees / (rec.get('entry',0.0)*qty_close))
+                        realized = net * rec.get('entry',0.0)*qty_close
+                        try:
+                            insert_order_row(session_db_path, {
+                                'order_id': str(uuid.uuid4()),
+                                'ts_utc': now.isoformat(),
+                                'bar_time_utc': now.isoformat(),
+                                'mode': 'TP_PARTIAL',
+                                'symbol': sym,
+                                'side': side_close,
+                                'type': 'market',
+                                'price': fill,
+                                'qty': qty_close,
+                                'status': 'filled',
+                                'reason': getattr(ex, 'reason', 'TP_PARTIAL'),
+                                'run_id': run_id,
+                                'extra': json.dumps({'gross_return': gross, 'net_return': net, 'fees_paid': fees, 'realized_pnl': realized})
+                            })
+                        except Exception:
+                            pass
+                        rec['qty'] = qty_total - qty_close
+                        try:
+                            db_upsert_open_position(session_db_path, bot_id, rec)
+                        except Exception:
+                            pass
+                        try:
+                            fetcher.ex.cancel_all_orders(ccxt_sym)
+                            sleep_ms(RATE_MS)
+                            _place_tp_sl_after_open(fetcher, sym, rec.get('side','LONG'), rec['qty'], rec.get('tp_price'), rec.get('sl_price'), position_mode)
+                        except Exception:
+                            pass
+                        save_positions(args.results_dir, positions)
 
             uni = strat.universe(bar_close, md)
             ranked = strat.rank(bar_close, md, uni)[:top_n]
