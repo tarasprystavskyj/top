@@ -663,6 +663,7 @@ def _place_tp_sl_after_open(
                 return {'ok': False, 'error': str(e), 'params': params}
 
         # ---- Partial TP (50% or as configured) ----
+        ptp_ok = False
         if (
             part_tp_price is not None
             and part_tp_price > 0
@@ -700,10 +701,14 @@ def _place_tp_sl_after_open(
                     else "",
                 )
                 if r.get("ok"):
+                    ptp_ok = True
                     break
 
+        # adjust remaining qty for full TP if partial TP succeeded
+        tp_qty = qty - (part_tp_qty if ptp_ok else 0.0)
+
         # ---- TP ----
-        if tp_price is not None and tp_price > 0:
+        if tp_price is not None and tp_price > 0 and tp_qty > 0:
             tp_side = 'sell' if side=='LONG' else 'buy'
             tp_candidates = [
                 ('take_profit', tp_side, float(tp_price), dict(base)),
@@ -711,9 +716,9 @@ def _place_tp_sl_after_open(
                 ('limit', tp_side, float(tp_price), {**base, 'takeProfit': True}),
                 ('market', tp_side, None, {**base, 'takeProfitPrice': float(tp_price)}),
             ]
-            _dbg('tp_fallback', sym, f'side={side}', f'qty={qty:.6g}', f'price={tp_price}', f'pos_mode={position_mode}', f'candidates={len(tp_candidates)}')
+            _dbg('tp_fallback', sym, f'side={side}', f'qty={tp_qty:.6g}', f'price={tp_price}', f'pos_mode={position_mode}', f'candidates={len(tp_candidates)}')
             for otype, oside, oprice, pms in tp_candidates:
-                r = _try(otype, oside, qty, oprice, pms)
+                r = _try(otype, oside, tp_qty, oprice, pms)
                 _dbg('tp_try', {'type': otype, 'side': oside, 'price': oprice, 'params': pms})
                 _dbg('tp_res', ('ok' if r.get('ok') else 'ERR'), r.get('error',''),
                      ('order_id=' + str((r.get('order') or {}).get('id') or (r.get('order') or {}).get('orderId'))) if r.get('ok') else '')
