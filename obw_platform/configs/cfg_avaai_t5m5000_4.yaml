@@ -19,12 +19,12 @@ strategy_params:
   min_qv_1h: 10000.0 #800 # 
   min_atr_ratio: 0 #0.020 # 0.007 #
   min_momentum_sum: 0.0
-  fee_rate: 0.002
+  fee_rate: 0.001
   slippage_per_side: 0.0016
-  exit_on_heat: false
-  heat_exit_threshold: 0.40
+  exit_on_heat: true
+  heat_exit_threshold: 0.90
   heat_exit_min_rr: 1.05
-  partial_tp_enable: false
+  partial_tp_enable: true
   partial_tp_frac: 0.50
   partial_trigger_frac_of_tp: 0.50
   exchange_min_notional: 2.2
