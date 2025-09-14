@@ -60,3 +60,15 @@ ts,param,value,equity_end,profit_factor,max_dd,monotonicity,trades,elapsed_sec,y
 2025-09-14T22:14:49,min-mom,0.072,139.445623,1.56205,-2.598,9.355,1338,5.801885604858398,tune_tmp/t3m_30d_s4_rays_min-mom_0p072.yaml,92.96522300000001
 2025-09-14T22:14:54,min-mom,0.076,138.513735,1.548469,-2.518,9.171,1338,5.73993182182312,tune_tmp/t3m_30d_s4_rays_min-mom_0p076.yaml,90.950363
 2025-09-14T22:15:00,min-mom,0.08,139.077824,1.564769,-2.439,9.324,1322,5.688506603240967,tune_tmp/t3m_30d_s4_rays_min-mom_0p08.yaml,92.47505199999999
+2025-09-14T22:15:08,strategy_params.heat_exit_threshold,0.4,139.647334,1.523475,-2.661,8.148,1365,7.777336359024048,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p4.yaml,86.669034
+2025-09-14T22:15:15,strategy_params.heat_exit_threshold,0.45,139.618623,1.522311,-2.684,8.221,1369,7.380715370178223,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p45.yaml,86.99135500000003
+2025-09-14T22:15:22,strategy_params.heat_exit_threshold,0.5,139.678315,1.522742,-2.689,8.265,1375,6.868216514587402,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p5.yaml,87.276219
+2025-09-14T22:15:28,strategy_params.heat_exit_threshold,0.55,139.712515,1.524692,-2.568,8.351,1378,6.144990682601929,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p55.yaml,87.763819
+2025-09-14T22:15:34,strategy_params.heat_exit_threshold,0.6,139.863548,1.52992,-2.702,8.428,1384,6.172807455062866,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p6.yaml,88.36258800000002
+2025-09-14T22:15:41,strategy_params.heat_exit_threshold,0.65,139.680926,1.527952,-2.706,8.462,1384,6.472539186477661,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p65.yaml,88.32635
+2025-09-14T22:15:47,strategy_params.heat_exit_threshold,0.7,141.111392,1.549453,-2.583,8.842,1398,6.353973388671875,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p7.yaml,91.914828
+2025-09-14T22:15:53,strategy_params.heat_exit_threshold,0.75,141.282249,1.550497,-2.66,9.067,1415,6.103318691253662,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p75.yaml,93.22321300000002
+2025-09-14T22:16:00,strategy_params.heat_exit_threshold,0.8,140.909398,1.545499,-2.67,9.124,1416,6.705965518951416,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p8.yaml,93.07538600000001
+2025-09-14T22:16:07,strategy_params.heat_exit_threshold,0.85,141.678415,1.555496,-2.714,9.484,1428,7.008962869644165,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p85.yaml,95.764367
+2025-09-14T22:16:07,strategy_params.heat_exit_threshold,0.9,140.765561,1.546537,-2.748,9.433,1432,5.723726511001587,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p9.yaml,94.48900499999999
+2025-09-14T22:16:14,strategy_params.heat_exit_threshold,0.95,140.170905,1.539534,-2.715,9.43,1443,6.470288038253784,tune_tmp/t3m_30d_s5_rays_strategy_params.heat_exit_threshold_0p95.yaml,93.795313
