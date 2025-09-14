@@ -1,5 +1,0 @@
-param,value,equity_end,profit_factor,trades,max_dd,monotonicity,elapsed_sec,daily_return,monthly_return,backtest_days
-min-atr,0,92.33709,0.694543,1104,-8.956,-7.304,33.570192,,,
-min-atr,0.020,99.354488,0.822495,54,-1.992,-1.475,31.908825,,,
-min-atr,0.022,99.403995,0.824406,48,-1.896,-1.616,34.031569,,,
-min-atr,0.024,99.714929,0.90795,43,-1.614,-0.803,32.053755,,,
