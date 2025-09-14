@@ -1,7 +1,7 @@
 
 time python3 short_top_gainers_backtest.py \
   -d history_output \
-  -b optimized.db \
+  -b optimized.db \ 
   -o 23 \
   -n 4 \
   --min-overbought-index 70 \
@@ -646,8 +646,8 @@ python3 auto_universe_and_tune.py \
   
 python3 fetch_build_cache_v16.py \
   -i universe_symbols_bingx.csv -t 5m \
-  --back-bars 500 \
-  -o combined_cache_5m_500_05.09.db --exchange bingx --ccxt-symbol-format usdtm
+  --back-bars 5000 \
+  -o DB/combined_cache_5m_5000_04.09.db --exchange bingx --ccxt-symbol-format usdtm
   
 python3 auto_tuner_rays2grid_v3_fix.py \
   --cfg configs/greedy_breakout_universe.yaml \
@@ -661,10 +661,23 @@ python3 auto_tuner_rays2grid_v3_fix.py \
   
 python3 backtester_core_speed3_veto_universe_2.py \
  --cfg configs/cfg_avaai_t5m5000_3.yaml \
- --limit-bars 5000 \
- --plots plots_5000 \
+ --limit-bars 500 \
+ --plots plots_500 \
  --symbols-file universe_prof_v6_avaai_5m_5000_12s_1.03.txt
+ --cache_db _reports/_live/livecfg_cfg_avaai_t5m5000_3_5m/combined_cache_session.db
  #universe_v5_avaai_5m_5000.txt \
+ 
+  
+  python3 bt_live_paper_runner_separated_universe.py \
+  --mode live --paper-source api \
+  --env-file .env \
+  --cfg configs/cfg_avaai_t1m5000_6.yaml  \
+  --exchange bingx --symbol-format usdtm   --poll-sec 2 --bar-delay-sec 1 --limit_klines 200  \
+  --session-db  session.sqlite \
+  --cache-out   combined_cache_session.db \
+  --hour-cache load  \
+  --universe-file universe_prof_v6_avaai_5m_5000_12s_1.03.txt
+
 
  
 python3 backtester_core_speed3_veto_universe_2.py \
@@ -679,10 +692,44 @@ BT_IGNORE_VOLSURGE=1 python3 bt_live_paper_runner_separated_universe.py \
   --cfg configs/cfg_avaai_t5m5000_3.yaml \
   --exchange bingx --symbol-format usdtm \
   --poll-sec 2 --bar-delay-sec 1 --limit_klines 200 \
-  --results-dir paper_api_results_5m \
-  --session-db  paper_api_results_5m/session.sqlite \
-  --cache-out   paper_api_results_5m/combined_cache_session.db \
   --hour-cache load \
   --universe-file universe_prof_v6_avaai_5m_5000_12s_1.03.txt
   
   #uuniverse_v5_avaai_5m_5000.txt
+  
+   python backtester_core_speed3_veto_universe_2.py \
+   --cfg configs/cfg_avaai_t5m5000_3.yaml  \
+   --cache_db DB/combined_cache_5m_5000_04.09.db \
+     --symbols-file universe_prof_v6_avaai_5m_5000_12s_1.03.txt  --limit-bars 500 \
+--time-from 2024-09-08T00:00:00 \
+   --time-to   2024-09-12T23:55:00 \
+   	
+   
+   #DB/combined_cache_5m_5000_04.09.db \	
+   #_reports/_live/livecfg_cfg_avaai_t5m5000_3_5m_B/combined_cache_session.db \
+   
+   
+   git checkout main
+git pull
+git revert --no-commit db9158983ba3ac60549e364f2204459b7aec1dac..HEAD   # відкотити всі коміти ПОТІМ за <COMMIT_SHA>
+git commit -m "Revert main to db9158983ba3ac60549e364f2204459b7aec1dac"
+git push
+
+git revert --abort
+
+git checkout main
+git fetch origin
+git reset --hard ab3fe643dd7c9da595d341e6939a8dd5cc434d01
+git push --force-with-lease origin main
+   
+find obw_platform -path "*/_reports/_backtest/*" -type f -print0 | xargs -0 rm -f
+
+python3 auto_tuner_rays2grid_v4_exp.py \
+  --cfg configs/cfg_avaai_t5m5000_3.yaml \
+  --limit-bars 50 \
+  --plan tuner_plan_avaai_slip16.py \
+  --prefix t5m5000_slip16 \
+  --min-trades 40 \
+  --target-trades 220 \
+  --w-equity 1.0 --w-pf 12.0 --w-dd 220.0 --w-mono 5.0 --dd-target 0.12 \
+  --sleep-sec 1
