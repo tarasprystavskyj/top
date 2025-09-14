@@ -11,6 +11,7 @@ from .common import (
     db_upsert_open_position,
     db_mark_closed,
     write_equity,
+    insert_order_row,
 )
 
 # color print fallback
@@ -214,6 +215,16 @@ def qty_for_notional(mkt: dict, notional: float, price: float):
     else:
         qty = max(min_qty, notional / max(price, 1e-9))
     return qty, min_notional_req, step, min_qty
+
+
+def round_to_step(value: float, step: float) -> float:
+    if not step or step <= 0:
+        return float(value)
+    return math.floor(float(value) / step) * step
+
+
+def opp_side(side: str) -> str:
+    return 'SHORT' if str(side).upper().startswith('LONG') else 'LONG'
 
 def _sig_get(sig, key, default=None):
     try:
@@ -477,7 +488,7 @@ def place_open_short(fetcher: CCXTFetcher, sym: str, notional: float, price: flo
 
 def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: float, position_mode: str):
     ccxt_sym = fetcher.resolve_symbol(sym)
-    params = {'reduceOnly': True}
+    params = {'reduceOnly': True, 'positionSide': 'BOTH'}
     if position_mode == 'hedge':
         params['positionSide'] = 'LONG' if side_close.lower() == 'sell' else 'SHORT'
     try:
@@ -488,7 +499,7 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, side_close: str, qty: floa
         msg = str(e).lower()
         if ('one-way mode' in msg) or ('positionside' in msg):
             try:
-                params2 = {'reduceOnly': True}
+                params2 = {'reduceOnly': True, 'positionSide': 'BOTH'}
                 od = fetcher.ex.create_order(ccxt_sym, 'market', side_close, qty, None, params2)
                 sleep_ms(RATE_MS)
                 return od
@@ -624,8 +635,18 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
     return None
 
 
-def _place_tp_sl_after_open(fetcher: CCXTFetcher, sym: str, side: str, qty: float, tp_price, sl_price, position_mode: str):
-    """Place TP/SL as separate reduce-only orders after a market open (safer for BingX oneway)."""
+def _place_tp_sl_after_open(
+    fetcher: CCXTFetcher,
+    sym: str,
+    side: str,
+    qty: float,
+    tp_price,
+    sl_price,
+    position_mode: str,
+    part_tp_price: float | None = None,
+    part_tp_qty: float | None = None,
+):
+    """Place TP/SL (and optional partial TP) as reduce-only orders after a market open."""
     try:
         ccxt_sym = fetcher.resolve_symbol(sym)
         pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
@@ -639,6 +660,46 @@ def _place_tp_sl_after_open(fetcher: CCXTFetcher, sym: str, side: str, qty: floa
                 return {'ok': True, 'order': od, 'params': params}
             except Exception as e:
                 return {'ok': False, 'error': str(e), 'params': params}
+
+        # ---- Partial TP (50% or as configured) ----
+        if (
+            part_tp_price is not None
+            and part_tp_price > 0
+            and part_tp_qty is not None
+            and part_tp_qty > 0
+        ):
+            ptp_side = "sell" if side == "LONG" else "buy"
+            ptp_candidates = [
+                ("take_profit", ptp_side, float(part_tp_price), dict(base)),
+                ("take_profit_market", ptp_side, None, {**base, "triggerPrice": float(part_tp_price)}),
+                ("limit", ptp_side, float(part_tp_price), {**base, "takeProfit": True}),
+                ("market", ptp_side, None, {**base, "takeProfitPrice": float(part_tp_price)}),
+            ]
+            _dbg(
+                "ptp_fallback",
+                sym,
+                f"side={side}",
+                f"qty={part_tp_qty:.6g}",
+                f"price={part_tp_price}",
+                f"pos_mode={position_mode}",
+                f"candidates={len(ptp_candidates)}",
+            )
+            for otype, oside, oprice, pms in ptp_candidates:
+                r = _try(otype, oside, part_tp_qty, oprice, pms)
+                _dbg("ptp_try", {"type": otype, "side": oside, "price": oprice, "params": pms})
+                _dbg(
+                    "ptp_res",
+                    ("ok" if r.get("ok") else "ERR"),
+                    r.get("error", ""),
+                    (
+                        "order_id="
+                        + str((r.get("order") or {}).get("id") or (r.get("order") or {}).get("orderId"))
+                    )
+                    if r.get("ok")
+                    else "",
+                )
+                if r.get("ok"):
+                    break
 
         # ---- TP ----
         if tp_price is not None and tp_price > 0:
@@ -947,40 +1008,54 @@ def run_live(cfg: dict, args):
                 row = md.get(sym)
                 if row is None:
                     continue
-                adj = None
+                ex = None
                 try:
                     Pos = type('Pos', (), {})
                     pos_like = Pos()
-                    for k,v in rec.items():
+                    for k, v in rec.items():
                         setattr(pos_like, k, v)
-                    adj = strat.manage_position(bar_close, sym, pos_like, row, ctx={})
+                    if hasattr(strat, 'manage_position_v2'):
+                        ex = strat.manage_position_v2(sym, row, pos_like, ctx={'now': now})
+                    elif hasattr(strat, 'manage_position'):
+                        ex = strat.manage_position(sym, row, pos_like, ctx={'now': now})
                 except Exception:
-                    adj = None
-                if getattr(adj, 'action', None) == 'EXIT':
+                    ex = None
+                action = getattr(ex, 'action', None)
+                if action == 'EXIT':
                     px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
                     if px:
-                        side_close = 'sell'
-                        try:
-                            if str(rec.get('side', 'LONG')).upper() == 'SHORT':
-                                side_close = 'buy'
-                        except Exception:
-                            pass
-                        od = place_reduce_only(fetcher, sym, side_close, float(rec.get('qty', 0.0)), position_mode)
+                        side_close = 'sell' if str(rec.get('side', 'LONG')).upper() == 'LONG' else 'buy'
+                        qty_close = float(rec.get('qty', 0.0))
+                        od = place_reduce_only(fetcher, sym, side_close, qty_close, position_mode)
                         if od:
                             if isinstance(od, dict) and od.get('error') == 'no_position':
-                                fill = px
-                                fdt = now
-                                slip = None
-                                lag = None
+                                fill = px; fdt = now
                             else:
                                 fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
-                                slip = (
-                                    (fill / px - 1.0) * 10000.0 * (1 if str(rec.get('side', 'LONG')).upper() == 'LONG' else -1)
-                                    if fill
-                                    else None
-                                )
-                                lag = (fdt - now).total_seconds() if fdt else None
                             cprint('[exit close]', sym, f'@~{px:.6g}', fg='yellow')
+                            gross = (fill - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill)/rec.get('entry',1.0)
+                            fee_rate = float(getattr(strat,'fee_rate',0.0))
+                            fees = (rec.get('entry',0.0)*qty_close + fill*qty_close)*fee_rate
+                            net = gross - (fees / (rec.get('entry',0.0)*qty_close))
+                            realized = net * rec.get('entry',0.0)*qty_close
+                            try:
+                                insert_order_row(session_db_path, {
+                                    'order_id': str(uuid.uuid4()),
+                                    'ts_utc': now.isoformat(),
+                                    'bar_time_utc': now.isoformat(),
+                                    'mode': 'EXIT',
+                                    'symbol': sym,
+                                    'side': side_close,
+                                    'type': 'market',
+                                    'price': fill,
+                                    'qty': qty_close,
+                                    'status': 'filled',
+                                    'reason': getattr(ex, 'reason', ''),
+                                    'run_id': run_id,
+                                    'extra': json.dumps({'gross_return': gross, 'net_return': net, 'fees_paid': fees, 'realized_pnl': realized})
+                                })
+                            except Exception:
+                                pass
                             try:
                                 db_mark_closed(
                                     session_db_path,
@@ -989,13 +1064,73 @@ def run_live(cfg: dict, args):
                                     now.isoformat(),
                                     exit_fill=fill,
                                     exit_fill_ts=fdt.isoformat() if fdt else None,
-                                    exit_slip_bp=slip,
-                                    exit_lag_sec=lag,
                                 )
+                            except Exception:
+                                pass
+                            try:
+                                ccxt_sym = fetcher.resolve_symbol(sym)
+                                fetcher.ex.cancel_all_orders(ccxt_sym)
+                                sleep_ms(RATE_MS)
                             except Exception:
                                 pass
                             positions.pop(sym, None)
                             save_positions(args.results_dir, positions)
+                elif action == 'TP_PARTIAL':
+                    frac = max(0.0, min(1.0, float(getattr(ex, 'qty_frac', 0.5))))
+                    qty_total = float(rec.get('qty', 0.0))
+                    qty_close = qty_total * frac
+                    ccxt_sym = fetcher.resolve_symbol(sym)
+                    mkt = fetcher.markets.get(ccxt_sym, {})
+                    step = float(mkt.get('precision', {}).get('amount') or 0.0)
+                    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
+                    qty_close = round_to_step(qty_close, step)
+                    price = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
+                    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or getattr(strat, 'exchange_min_notional', 0.0))
+                    if qty_close < max(min_qty, float(getattr(strat, 'min_qty', 0.0))) or price * qty_close < min_notional:
+                        cprint('[tp_partial skip] too small', sym, fg='yellow')
+                        continue
+                    side_close = 'sell' if str(rec.get('side', 'LONG')).upper() == 'LONG' else 'buy'
+                    od = place_reduce_only(fetcher, sym, side_close, qty_close, position_mode)
+                    if od:
+                        if isinstance(od, dict) and od.get('error') == 'no_position':
+                            fill = price; fdt = now
+                        else:
+                            fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                        gross = (fill - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill)/rec.get('entry',1.0)
+                        fee_rate = float(getattr(strat,'fee_rate',0.0))
+                        fees = (rec.get('entry',0.0)*qty_close + fill*qty_close)*fee_rate
+                        net = gross - (fees / (rec.get('entry',0.0)*qty_close))
+                        realized = net * rec.get('entry',0.0)*qty_close
+                        try:
+                            insert_order_row(session_db_path, {
+                                'order_id': str(uuid.uuid4()),
+                                'ts_utc': now.isoformat(),
+                                'bar_time_utc': now.isoformat(),
+                                'mode': 'TP_PARTIAL',
+                                'symbol': sym,
+                                'side': side_close,
+                                'type': 'market',
+                                'price': fill,
+                                'qty': qty_close,
+                                'status': 'filled',
+                                'reason': getattr(ex, 'reason', 'TP_PARTIAL'),
+                                'run_id': run_id,
+                                'extra': json.dumps({'gross_return': gross, 'net_return': net, 'fees_paid': fees, 'realized_pnl': realized})
+                            })
+                        except Exception:
+                            pass
+                        rec['qty'] = qty_total - qty_close
+                        try:
+                            db_upsert_open_position(session_db_path, bot_id, rec)
+                        except Exception:
+                            pass
+                        try:
+                            fetcher.ex.cancel_all_orders(ccxt_sym)
+                            sleep_ms(RATE_MS)
+                            _place_tp_sl_after_open(fetcher, sym, rec.get('side','LONG'), rec['qty'], rec.get('tp_price'), rec.get('sl_price'), position_mode)
+                        except Exception:
+                            pass
+                        save_positions(args.results_dir, positions)
 
             uni = strat.universe(bar_close, md)
             ranked = strat.rank(bar_close, md, uni)[:top_n]
@@ -1064,7 +1199,18 @@ def run_live(cfg: dict, args):
                             positions[sym] = rec; save_positions(args.results_dir, positions)
                             position_notional += qty * entry_fill
                             # Fallback TP/SL placement as separate orders (reduce-only)
-                            try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode)
+                            part_tp_price = part_tp_qty = None
+                            if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
+                                trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
+                                frac = float(getattr(strat, 'partial_tp_frac', 0.5))
+                                if side_str == 'SHORT':
+                                    path = entry_px - tp_price
+                                    part_tp_price = entry_px - trig * path
+                                else:
+                                    path = tp_price - entry_px
+                                    part_tp_price = entry_px + trig * path
+                                part_tp_qty = qty * frac
+                            try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode, part_tp_price, part_tp_qty)
                             except Exception as e: _dbg('post_open_error', str(e))
                             try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                             except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
@@ -1107,8 +1253,27 @@ def run_live(cfg: dict, args):
                     positions[sym] = rec; save_positions(args.results_dir, positions)
                     position_notional += qty * entry_fill
                     # Fallback TP/SL placement as separate orders (reduce-only)
-                    try: _place_tp_sl_after_open(fetcher, sym, 'SHORT', qty, tp_price, sl_price, position_mode)
-                    except Exception as e: _dbg('post_open_error', str(e))
+                    part_tp_price = part_tp_qty = None
+                    if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
+                        trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
+                        frac = float(getattr(strat, 'partial_tp_frac', 0.5))
+                        path = entry_px - tp_price
+                        part_tp_price = entry_px - trig * path
+                        part_tp_qty = qty * frac
+                    try:
+                        _place_tp_sl_after_open(
+                            fetcher,
+                            sym,
+                            'SHORT',
+                            qty,
+                            tp_price,
+                            sl_price,
+                            position_mode,
+                            part_tp_price,
+                            part_tp_qty,
+                        )
+                    except Exception as e:
+                        _dbg('post_open_error', str(e))
                     try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                     except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
                     opened += 1
@@ -1176,8 +1341,27 @@ def run_live(cfg: dict, args):
                 save_positions(args.results_dir, positions)
                 position_notional += qty * entry_fill
                 # Fallback TP/SL placement as separate orders (reduce-only)
-                try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode)
-                except Exception as e: _dbg('post_open_error', str(e))
+                part_tp_price = part_tp_qty = None
+                if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
+                    trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
+                    frac = float(getattr(strat, 'partial_tp_frac', 0.5))
+                    path = tp_price - entry_px
+                    part_tp_price = entry_px + trig * path
+                    part_tp_qty = qty * frac
+                try:
+                    _place_tp_sl_after_open(
+                        fetcher,
+                        sym,
+                        side_str,
+                        qty,
+                        tp_price,
+                        sl_price,
+                        position_mode,
+                        part_tp_price,
+                        part_tp_qty,
+                    )
+                except Exception as e:
+                    _dbg('post_open_error', str(e))
                 try:
                     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                 except Exception as e:
