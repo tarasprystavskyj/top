@@ -43,9 +43,11 @@ class ExitSig:
     reason: Optional[str] = None
     qty_frac: Optional[float] = None
 
-def _f(x, default=0.0) -> float:
-    try: return float(x)
-    except Exception: return float(default)
+def _f(x, default=0.0) -> float | None:
+    try:
+        return float(x)
+    except Exception:
+        return None if default is None else float(default)
 
 class BreakoutAVAAIFull:
     """
