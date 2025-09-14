@@ -453,6 +453,17 @@ def main():
                 lim = min(MAX_PER_REQUEST, int(args.limit))
                 df = fetch_ohlcv_limit(ex, mkt, args.timeframe, lim)
 
+            expected_rows = None
+            if args.back_bars is not None and args.back_bars > 0:
+                expected_rows = args.back_bars
+            elif start_ms is not None and end_ms is not None:
+                expected_rows = int(np.ceil((end_ms - start_ms) / tf_ms))
+
+            if df.empty and expected_rows is not None:
+                # Symbol might be newly listed and lacks full history; fetch what is available.
+                lim = min(expected_rows, MAX_PER_REQUEST)
+                df = fetch_ohlcv_limit(ex, mkt, args.timeframe, lim)
+
             if df.empty:
                 print(f"[WARN] {mkt} — no OHLCV")
                 continue
@@ -481,7 +492,10 @@ def main():
                     "vol_surge_mult": float(r["vol_surge_mult"]),
                 })
             insert_ignore_rows(args.output, rows)
-            print(f"[OK] {raw} -> {mkt} tf={args.timeframe} rows={len(rows)}")
+            msg = "[OK]"
+            if expected_rows is not None and len(rows) < expected_rows:
+                msg = "[WARN]"
+            print(f"{msg} {raw} -> {mkt} tf={args.timeframe} rows={len(rows)}")
         except Exception as e:
             print(f"[ERR] {raw} -> {mkt} {e}", file=sys.stderr)
 
