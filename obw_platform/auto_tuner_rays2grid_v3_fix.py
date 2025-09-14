@@ -371,6 +371,9 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
             recs.append(res)
 
     best = pick_best(recs, weights, min_trades, target_trades)
+    if not best:
+        print("[grid] no candidates evaluated; skipping")
+        return base_cfg, recs
     # regression guard: global (baseline or prev best)
     cur_vec = [str(get_current(base_cfg, k)[0]) for k in keys]
     cur_name = "|".join(cur_vec)
