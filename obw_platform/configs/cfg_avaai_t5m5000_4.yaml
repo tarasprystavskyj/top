@@ -17,12 +17,12 @@ strategy_params:
   sl_atr_mult: 1.08 #0.1 #
   min_qv_24h: 200000.0
   min_qv_1h: 10000.0 #800 # 
-  min_atr_ratio: 0 #0.020 # 0.007 #
-  min_momentum_sum: 0.0
+  min_atr_ratio: 0.03 #!!!!!!!!!!!!!!!!!!!!!!!!!!! #0.020 # 0.007 #
+  min_momentum_sum: 0.05 #!!!!!!!!!!!!!!!!!
   fee_rate: 0.001
   slippage_per_side: 0.0016
   exit_on_heat: true
-  heat_exit_threshold: 0.40
+  heat_exit_threshold: 0.90
   heat_exit_min_rr: 1.05
   partial_tp_enable: true
   partial_tp_frac: 0.50
@@ -62,7 +62,7 @@ side_filter:
     "BIO/USDT:USDT":
       block_short_on_htf_uptrend: true
 portfolio:
-  position_notional: 2.2 #2.2 
+  position_notional: 4.5 #2.2   
   position_notional_max: 5
   initial_equity: 100.0
   max_notional_frac: 0.15
