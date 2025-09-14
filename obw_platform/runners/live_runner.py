@@ -27,6 +27,7 @@ def cprint(*parts, fg: str = "", bold: bool = False, dim: bool = False, file=Non
 import importlib
 import os, sys, math, uuid, datetime as _dt, os
 import json
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -241,48 +242,55 @@ def _sig_get(sig, key, default=None):
     return default
 
 
-def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str):
-    """Return (avg_price, datetime) for an order id, if available."""
-    try:
-        if not order_id:
-            return None, None
-        ccxt_sym = fetcher.resolve_symbol(sym)
-        od = fetcher.ex.fetch_order(order_id, ccxt_sym)
-        sleep_ms(RATE_MS)
-    except Exception as e:
-        _dbg('fetch_order', str(e))
+def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str, max_wait_ms: int = 5000):
+    """Return (avg_price, datetime) for an order id, polling until filled or timeout."""
+    if not order_id:
         return None, None
-    price = None
-    ts = None
-    try:
-        for k in ('average', 'price', 'avgPrice', 'avg_price'):
-            v = od.get(k)
-            if v is not None:
-                price = float(v)
-                break
-    except Exception:
-        pass
-    try:
-        ts = od.get('timestamp')
-        if ts is None:
-            dt_str = od.get('datetime')
-            if dt_str:
-                ts = int(_dt.datetime.fromisoformat(dt_str.replace('Z', '+00:00')).timestamp() * 1000)
-        if ts is None and isinstance(od.get('info'), dict):
-            info = od['info']
-            for k in ('updateTime', 'transactTime', 'ts'):
-                if info.get(k) is not None:
-                    ts = int(info.get(k))
-                    break
-    except Exception:
-        ts = None
-    fill_dt = None
-    if ts is not None:
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    deadline = time.time() + max_wait_ms / 1000.0
+    last_od = None
+    while True:
         try:
-            fill_dt = _dt.datetime.fromtimestamp(ts / 1000.0, tz=_dt.timezone.utc)
+            od = fetcher.ex.fetch_order(order_id, ccxt_sym)
+            last_od = od
+            sleep_ms(RATE_MS)
+        except Exception as e:
+            _dbg('fetch_order', str(e))
+            od = last_od or {}
+        price = None
+        ts = None
+        try:
+            for k in ('average', 'price', 'avgPrice', 'avg_price'):
+                v = od.get(k)
+                if v is not None:
+                    price = float(v)
+                    break
         except Exception:
             pass
-    return price, fill_dt
+        try:
+            ts = od.get('timestamp')
+            if ts is None:
+                dt_str = od.get('datetime')
+                if dt_str:
+                    ts = int(_dt.datetime.fromisoformat(dt_str.replace('Z', '+00:00')).timestamp() * 1000)
+            if ts is None and isinstance(od.get('info'), dict):
+                info = od['info']
+                for k in ('updateTime', 'transactTime', 'ts'):
+                    if info.get(k) is not None:
+                        ts = int(info.get(k))
+                        break
+        except Exception:
+            ts = None
+        status = str(od.get('status') or '').lower()
+        if price is not None or status in ('closed', 'canceled') or time.time() >= deadline:
+            fill_dt = None
+            if ts is not None:
+                try:
+                    fill_dt = _dt.datetime.fromtimestamp(ts / 1000.0, tz=_dt.timezone.utc)
+                except Exception:
+                    pass
+            return price, fill_dt
+        sleep_ms(250)
 
 def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None):
     ccxt_sym = fetcher.resolve_symbol(sym)
@@ -591,10 +599,10 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
                 return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
-                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
                 lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
-                cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
+                cprint('[tp close]', sym, f'@~{(fill or px):.6g} tp={tp:.6g}', fg='green', bold=True)
                 return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
         if sl is not None and px <= sl:
             od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
@@ -603,10 +611,10 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
                 return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
-                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
                 lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
-                cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
+                cprint('[sl close]', sym, f'@~{(fill or px):.6g} sl={sl:.6g}', fg='red', bold=True)
                 return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
     elif side == 'SHORT':
         if tp is not None and px <= tp:
@@ -616,10 +624,10 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
                 return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
-                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
                 lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
-                cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
+                cprint('[tp close]', sym, f'@~{(fill or px):.6g} tp={tp:.6g}', fg='green', bold=True)
                 return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
         if sl is not None and px >= sl:
             od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
@@ -628,10 +636,10 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
                 return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
-                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
                 lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
-                cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
+                cprint('[sl close]', sym, f'@~{(fill or px):.6g} sl={sl:.6g}', fg='red', bold=True)
                 return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
     return None
 
@@ -1037,8 +1045,8 @@ def run_live(cfg: dict, args):
                             if isinstance(od, dict) and od.get('error') == 'no_position':
                                 fill = px; fdt = now
                             else:
-                                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
-                            cprint('[exit close]', sym, f'@~{px:.6g}', fg='yellow')
+                                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
+                            cprint('[exit close]', sym, f'@~{(fill or px):.6g}', fg='yellow')
                             gross = (fill - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill)/rec.get('entry',1.0)
                             fee_rate = float(getattr(strat,'fee_rate',0.0))
                             fees = (rec.get('entry',0.0)*qty_close + fill*qty_close)*fee_rate
