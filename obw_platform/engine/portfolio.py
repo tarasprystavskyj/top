@@ -112,6 +112,37 @@ class Portfolio:
         self.positions = [p for p in self.positions if p is not pos]
         return pnl
 
+    def close_partial(self, pos: Position, t, last_price, qty_frac, reason="partial"):
+        slip = self.slippage_per_side
+        tick = self.tick_pct
+        funding_rate_hour = float(self.cfg.get("funding_rate_hour", 0.00002))
+        qty_frac = max(0.0, min(1.0, float(qty_frac)))
+        if qty_frac <= 0:
+            return 0.0
+        exit_px = round_tick(last_price * (1 + slip) if pos.side == "SHORT" else last_price * (1 - slip), tick)
+        gross = (pos.entry_price - exit_px) / max(pos.entry_price, 1e-12) if pos.side == "SHORT" else (exit_px - pos.entry_price) / max(pos.entry_price, 1e-12)
+        holding_hours = max(0.0, (t - pos.entry_time).total_seconds() / 3600.0)
+        costs = self.fee_rate + funding_rate_hour * holding_hours
+        fees_paid = pos.notional * qty_frac * costs
+        net = gross - costs
+        pnl = pos.notional * qty_frac * net
+        self.equity += pnl
+        self.position_value -= pos.notional * qty_frac
+        self.realized_pnl_cum += pnl
+        self.total_fees += fees_paid
+        self.trades.append({
+            "open_time_utc": pos.entry_time.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"),
+            "symbol": pos.symbol, "side": pos.side,
+            "entry_price": pos.entry_price,
+            "exit_time_utc": t.tz_convert("UTC").strftime("%Y-%m-%d %H:%M:%S"),
+            "exit_price": exit_px, "reason": reason,
+            "gross_return": gross, "net_return": net,
+            "notional": pos.notional * qty_frac, "fees_paid": fees_paid,
+            "realized_pnl": pnl, "equity_after": self.equity
+        })
+        pos.notional *= (1 - qty_frac)
+        return pnl
+
     def save_trades(self, path: str):
         pd.DataFrame(self.trades).to_csv(path, index=False)
 

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Optional, Literal, Mapping, Any, List, Dict, Tuple
 
 Side = Literal["LONG","SHORT"]
-ExitAction = Literal["HOLD","TP","SL","EXIT"]
+ExitAction = Literal["HOLD","TP","SL","EXIT","TP_PARTIAL"]
 
 @dataclass
 class Sig:
@@ -41,6 +41,7 @@ class ExitSig:
     action: ExitAction
     exit_price: Optional[float] = None
     reason: Optional[str] = None
+    qty_frac: Optional[float] = None
 
 def _f(x, default=0.0) -> float:
     try: return float(x)
@@ -73,6 +74,22 @@ class BreakoutAVAAIFull:
         self.tp_mult: float = float(_read("tp_atr_mult", 3.8))
         self.sl_mult: float = float(_read("sl_atr_mult", 1.04))
 
+        # trading costs / buffers
+        self.fee_rate: float = float(_read("fee_rate", 0.001))
+        self.slip_per_side: float = float(_read("slippage_per_side", 0.0016))
+
+        # HEAT-based exit
+        self.exit_on_heat: bool = bool(_read("exit_on_heat", True))
+        self.heat_exit_threshold: float = float(_read("heat_exit_threshold", 0.40))
+        self.heat_exit_min_rr: float = float(_read("heat_exit_min_rr", 1.05))
+
+        # Partial take-profit
+        self.partial_tp_enable: bool = bool(_read("partial_tp_enable", True))
+        self.partial_tp_frac: float = float(_read("partial_tp_frac", 0.50))
+        self.partial_trigger_frac_of_tp: float = float(_read("partial_trigger_frac_of_tp", 0.50))
+        self.exchange_min_notional: float = float(_read("exchange_min_notional", 2.2))
+        self.min_qty: float = float(_read("min_qty", 0.0))
+
         # liquidity floors (kept but set lenient defaults; can be overridden in YAML)
         self.min_qv_24h: float = float(_read("min_qv_24h", 0.0))
         self.min_qv_1h: float  = float(_read("min_qv_1h", 0.0))
@@ -97,6 +114,16 @@ class BreakoutAVAAIFull:
             # allow derived 1h volume if provided
             qv1 = _f(row.get("volume", 0.0)) * _f(row.get("close", 0.0))
         return (qv24 >= self.min_qv_24h) and (qv1 >= self.min_qv_1h)
+
+    def _round_trip_buffer_rr(self) -> float:
+        """Approximate round-trip cost in R units (relative to entry price)."""
+        return 2 * self.fee_rate + 2 * self.slip_per_side
+
+    def _unrealized_rr(self, side: str, entry: float, px: float) -> float:
+        if entry <= 0:
+            return 0.0
+        pnl = (px - entry) / entry if side == "LONG" else (entry - px) / entry
+        return float(pnl)
 
     @staticmethod
     def _pct_gap(actual: float, thresh: float) -> float:
@@ -201,21 +228,62 @@ class BreakoutAVAAIFull:
             sl = close + self.sl_mult * atr_abs
 
         self._opens_this_bar += 1
-        return Sig(side=side, take_profit=float(tp), stop_price=float(sl), reason="rule/atr-multipliers")
+        entry_heat = self.heat(t, symbol, row)
+        return Sig(side=side, take_profit=float(tp), stop_price=float(sl),
+                   reason="rule/atr-multipliers", heat=float(entry_heat))
 
-    def manage_position(self, symbol: str, row: Mapping[str, Any], pos: Any, ctx: Optional[Mapping[str, Any]] = None):
-        """CLOSE-based TP/SL (match the old behaviour)."""
+    def manage_position(self, symbol, row, pos, ctx=None):
         close = _f(row.get("close", 0.0))
         side  = str(getattr(pos, "side", "LONG")).upper()
         tp    = _f(getattr(pos, "tp", getattr(pos, "take_profit", getattr(pos, "tp_price", None))), None)
         sl    = _f(getattr(pos, "sl", getattr(pos, "stop_price", getattr(pos, "sl_price", None))), None)
+        entry = _f(getattr(pos, "entry", getattr(pos, "entry_price", None)), None)
+        qty   = _f(getattr(pos, "qty", getattr(pos, "size", None)), None)
+        if (qty is None or qty <= 0) and entry and entry > 0:
+            try:
+                notional = _f(getattr(pos, "notional", None), None)
+                if notional and notional > 0:
+                    qty = notional / entry
+            except Exception:
+                qty = None
 
+        # 1) Стандартні TP/SL по close (як було)
         if side == "LONG":
-            if sl is not None and close <= sl: return ExitSig("SL", exit_price=sl)
-            if tp is not None and close >= tp: return ExitSig("TP", exit_price=tp)
+            if sl and close <= sl: return ExitSig("SL", exit_price=sl, reason="SL")
+            if tp and close >= tp: return ExitSig("TP", exit_price=tp, reason="TP")
         else:
-            if sl is not None and close >= sl: return ExitSig("SL", exit_price=sl)
-            if tp is not None and close <= tp: return ExitSig("TP", exit_price=tp)
+            if sl and close >= sl: return ExitSig("SL", exit_price=sl, reason="SL")
+            if tp and close <= tp: return ExitSig("TP", exit_price=tp, reason="TP")
+
+        # Якщо немає потрібних даних — тримаємо
+        if entry is None or entry <= 0 or qty is None or qty <= 0:
+            return ExitSig("HOLD")
+
+        # 2) Частковий TP (50%) — коли пройшли X% шляху до TP
+        if self.partial_tp_enable and tp:
+            path = (tp - entry) if side == "LONG" else (entry - tp)
+            prog = (close - entry) if side == "LONG" else (entry - close)
+            if path > 0 and prog >= self.partial_trigger_frac_of_tp * path:
+                part_qty = qty * self.partial_tp_frac
+                notional = part_qty * close
+                if (self.min_qty and part_qty < self.min_qty) or (notional < self.exchange_min_notional):
+                    pass
+                else:
+                    return ExitSig("TP_PARTIAL", exit_price=close, reason="TP50", qty_frac=self.partial_tp_frac)
+
+        # 3) Heat-exit / Reverse-momentum exit за умови, що PnL >= буферу
+        rr = self._unrealized_rr(side, entry, close)
+        need = self._round_trip_buffer_rr() * self.heat_exit_min_rr
+
+        if rr >= need:
+            h_now = self.heat(None, symbol, row)
+            if self.exit_on_heat and h_now < self.heat_exit_threshold:
+                return ExitSig("EXIT", exit_price=close, reason=f"heat<{self.heat_exit_threshold:.2f}")
+
+            m = self._mom_sum(row)
+            if (side == "LONG" and m < 0) or (side == "SHORT" and m > 0):
+                return ExitSig("EXIT", exit_price=close, reason="mom_reverse")
+
         return ExitSig("HOLD")
 
     # ---------- optional: heat reporting only (no decisions here) ----------

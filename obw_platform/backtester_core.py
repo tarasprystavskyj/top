@@ -404,6 +404,17 @@ def run_backtest(cache_db: str,
             action = _act(adj)
             if action == "EXIT":
                 pf.close(pos, t_utc, row["close"], reason=_reason(adj))
+            elif action == "TP_PARTIAL":
+                part = max(0.0, min(1.0, float(_get(adj, "qty_frac", 0.5))))
+                price = float(row.get("close", 0.0))
+                qty_close = (pos.notional / max(pos.entry_price, 1e-12)) * part
+                notional = qty_close * price
+                min_notional = _get(strat, "exchange_min_notional", 0.0)
+                min_qty = _get(strat, "min_qty", 0.0)
+                if notional >= min_notional and (min_qty <= 0 or qty_close >= min_qty):
+                    pf.close_partial(pos, t_utc, price, part, reason=_reason(adj))
+                else:
+                    pass
             elif action == "MOVE_SL" and _new_stop(adj) is not None:
                 pos.stop_price = _new_stop(adj)
             elif action == "MOVE_TP" and _new_tp(adj) is not None:

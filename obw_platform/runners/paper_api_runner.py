@@ -233,6 +233,42 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                 if row is None:
                     continue
                 adj = _call_manage_position(strat, bar_close, pos.symbol, pos, row, pf)
+                if getattr(adj, 'action', None) == 'TP_PARTIAL':
+                    part = max(0.0, min(1.0, float(getattr(adj, 'qty_frac', 0.5))))
+                    price = float(row.get('close') or 0.0)
+                    qty_total = pos.notional / max(pos.entry_price, 1e-12)
+                    qty_close = qty_total * part
+                    notional = qty_close * price
+                    min_notional = getattr(strat, 'exchange_min_notional', 0.0)
+                    min_qty = getattr(strat, 'min_qty', 0.0)
+                    if notional >= min_notional and (min_qty <= 0 or qty_close >= min_qty):
+                        pnl = pf.close_partial(pos, bar_close, price, part, reason=getattr(adj, 'reason', 'TP50'))
+                        side = str(getattr(pos, 'side', 'LONG')).upper()
+                        px = price * (1 - port_cfg['slippage_per_side']) if side == 'LONG' else price * (1 + port_cfg['slippage_per_side'])
+                        color = GREEN if pnl >= 0 else RED
+                        print(
+                            f"{GRAY}[close] {bar_close.isoformat()} {pos.symbol} {side} "
+                            f"qty={_fmt_float(qty_close)} exit={_fmt_float(px)} reason=TP_PARTIAL "
+                            f"pnl={color}{pnl:+.2f}{GRAY} eq={pf.equity:.2f}{RESET}"
+                        )
+                        insert_order_row(orders_db, {
+                            'order_id': str(uuid.uuid4()),
+                            'ts_utc': datetime.utcnow().isoformat(),
+                            'bar_time_utc': bar_close.isoformat(),
+                            'mode': 'paper_api',
+                            'symbol': pos.symbol,
+                            'side': 'sell' if side == 'LONG' else 'buy',
+                            'type': 'market',
+                            'price': float(px),
+                            'qty': float(qty_close),
+                            'status': 'filled',
+                            'reason': 'TP_PARTIAL',
+                            'run_id': run_id,
+                            'extra': json.dumps({'sim': True})
+                        })
+                    else:
+                        cprint(f"[tp50-skip] {pos.symbol} qty={_fmt_float(qty_close)} notional={_fmt_float(notional)}", fg='yellow')
+                    continue
                 if getattr(adj, 'action', None) in ('TP', 'SL', 'EXIT'):
                     # derive exit price (prefer explicit)
                     exit_price = getattr(adj, 'exit_price', None)
