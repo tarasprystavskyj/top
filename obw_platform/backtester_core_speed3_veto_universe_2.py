@@ -576,7 +576,7 @@ def main():
     with open(summary_csv_bt, "w", encoding="utf-8") as f:
         json.dump(summary_dict, f, indent=2, default=str)
     # Machine-readable line for auto_tuner (allows tuners to locate CSVs)
-    #print(f"[files] bt_trades={trades_csv_bt} bt_summary={summary_csv_bt}")
+    print(f"[files] bt_trades={trades_csv_bt} bt_summary={summary_csv_bt}")
 
     # Plots (same as before)
     if args.plots_dir:
@@ -587,8 +587,7 @@ def main():
             _dbn = os.path.basename(cfg.get('cache_db','')) if isinstance(cfg, dict) else ''
             _tf = '5m' if '5m' in _dbn else ('1440' if '1440' in _dbn else ('60m' if '60m' in _dbn else ('1h' if '1h' in _dbn else '?')))
             legend_label = f"{cfg_name} | TF: {_tf} | bars: {bars_count}"
-            # make a unique subdirectory for each run
-            run_plots_dir = os.path.join(args.plots_dir, f"backtest_{time_id}")
+            run_plots_dir = args.plots_dir
             os.makedirs(run_plots_dir, exist_ok=True)
 
             import numpy as np
@@ -649,10 +648,8 @@ def main():
     try:
         os.makedirs(report_dir, exist_ok=True)
         if args.plots_dir:
-            run_plots_dir = os.path.join(args.plots_dir, f"backtest_{time_id}")
+            run_plots_dir = args.plots_dir
             if os.path.isdir(run_plots_dir):
-                plots_abs = os.path.abspath(run_plots_dir)
-                report_abs = os.path.abspath(report_dir)
                 dst_plots = os.path.join(report_dir, "plots")
                 os.makedirs(dst_plots, exist_ok=True)
                 for item in os.listdir(run_plots_dir):
