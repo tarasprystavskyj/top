@@ -197,7 +197,6 @@ export default function LiveResult() {
                   />
                 )}
               </div>
-
             </div>
             {(trades.length > 0 || liveTrades.length > 0) && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
