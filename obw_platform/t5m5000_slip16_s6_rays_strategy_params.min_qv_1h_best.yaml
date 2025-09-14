@@ -13,12 +13,12 @@ strategy_params:
   adx_length: 14
   adx_threshold: 22
   atr_threshold_ratio: 0.0022
-  tp_atr_mult: 4.0
+  tp_atr_mult: 4.5
   sl_atr_mult: 1.08
-  min_qv_24h: 200000.0
+  min_qv_24h: 800000.0
   min_qv_1h: 10000.0
   min_atr_ratio: 0.0
-  min_momentum_sum: 0.0
+  min_momentum_sum: 0.024
 trace_calls:
   enabled: true
   root_dir: cache/trace
@@ -53,8 +53,9 @@ portfolio:
   position_notional: 2.2
   position_notional_max: 5
   initial_equity: 100.0
-  max_notional_frac: 0.2
+  max_notional_frac: 0.15
   slippage_per_side: 0.0016
+  fee_rate: 0.001
 session:
   open_every_bar: true
 top-n: 8.0
