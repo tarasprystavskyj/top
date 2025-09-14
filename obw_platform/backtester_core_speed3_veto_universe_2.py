@@ -34,6 +34,7 @@ class Position:
     entry: float
     sl: float
     tp: float
+    qty: float
 
 def _split_csv_list(s):
     if not s: return []
@@ -287,38 +288,95 @@ def main():
             for sym, pos in list(positions.items()):
                 row = None
                 for tup in bucket_all:
-                    if tup[0]==sym:
+                    if tup[0] == sym:
                         sym2, close, atr, dp6, dp12, qv1h, qv24 = tup
-                        row = {"close":close,"atr_ratio":atr,"dp6h":dp6,"dp12h":dp12,"quote_volume":qv1h,"qv_24h":qv24}
+                        row = {
+                            "close": close,
+                            "atr_ratio": atr,
+                            "dp6h": dp6,
+                            "dp12h": dp12,
+                            "quote_volume": qv1h,
+                            "qv_24h": qv24,
+                        }
                         break
-                if row is None: continue
+                if row is None:
+                    continue
                 ex = strat.manage_position(sym, row, pos, ctx=None)
-                if ex and ex.action in ("TP","SL","EXIT"):
+                if ex and ex.action in ("TP", "SL", "EXIT"):
                     px = float(ex.exit_price if ex.exit_price is not None else row["close"])
-                    gross_ret = (px - pos.entry)/pos.entry if pos.side=="LONG" else (pos.entry - px)/pos.entry
-                    net_ret = gross_ret - 2*slippage - 2*fee
-                    pnl = net_ret
-                    trades+=1
-                    fees_cum += fee * 2 * pos_notional
-                    if pnl>0: wins+=1; pnl_pos += pnl
-                    else: losses+=1; pnl_neg += pnl
-                    equity *= (1.0 + (pnl * pos_notional / equity))
-                    tr_rows.append({
-                        "symbol": sym,
-                        "side": pos.side,
-                        "entry_time": pos_time.get(sym, t),
-                        "exit_time": t,
-                        "entry": pos.entry,
-                        "exit": px,
-                        "tp": pos.tp, "sl": pos.sl,
-                        "reason": ex.action,
-                        "gross_return": gross_ret,
-                        "net_return": net_ret,
-                        "notional": pos_notional,
-                        "fees_paid": fee * 2 * pos_notional,
-                        "realized_pnl": net_ret * pos_notional,
-                    })
-                    del positions[sym]; pos_time.pop(sym, None)
+                    notional = pos.entry * pos.qty
+                    gross_ret = (px - pos.entry) / pos.entry if pos.side == "LONG" else (pos.entry - px) / pos.entry
+                    net_ret = gross_ret - 2 * slippage - 2 * fee
+                    pnl_amt = net_ret * notional
+                    trades += 1
+                    fees_cum += fee * 2 * notional
+                    if pnl_amt > 0:
+                        wins += 1
+                        pnl_pos += pnl_amt
+                    else:
+                        losses += 1
+                        pnl_neg += pnl_amt
+                    equity += pnl_amt
+                    tr_rows.append(
+                        {
+                            "symbol": sym,
+                            "side": pos.side,
+                            "entry_time": pos_time.get(sym, t),
+                            "exit_time": t,
+                            "entry": pos.entry,
+                            "exit": px,
+                            "tp": pos.tp,
+                            "sl": pos.sl,
+                            "reason": ex.action,
+                            "gross_return": gross_ret,
+                            "net_return": net_ret,
+                            "notional": notional,
+                            "fees_paid": fee * 2 * notional,
+                            "realized_pnl": pnl_amt,
+                        }
+                    )
+                    del positions[sym]
+                    pos_time.pop(sym, None)
+                elif ex and ex.action == "TP_PARTIAL":
+                    px = float(ex.exit_price if ex.exit_price is not None else row["close"])
+                    part = max(0.0, min(1.0, float(getattr(ex, "qty_frac", 0.5))))
+                    qty_close = pos.qty * part
+                    notional_now = qty_close * px
+                    min_notional = getattr(strat, "exchange_min_notional", 0.0)
+                    min_qty = getattr(strat, "min_qty", 0.0)
+                    if notional_now >= min_notional and (min_qty <= 0 or qty_close >= min_qty):
+                        notional_entry = qty_close * pos.entry
+                        gross_ret = (px - pos.entry) / pos.entry if pos.side == "LONG" else (pos.entry - px) / pos.entry
+                        net_ret = gross_ret - 2 * slippage - 2 * fee
+                        pnl_amt = net_ret * notional_entry
+                        trades += 1
+                        fees_cum += fee * 2 * notional_entry
+                        if pnl_amt > 0:
+                            wins += 1
+                            pnl_pos += pnl_amt
+                        else:
+                            losses += 1
+                            pnl_neg += pnl_amt
+                        equity += pnl_amt
+                        tr_rows.append(
+                            {
+                                "symbol": sym,
+                                "side": pos.side,
+                                "entry_time": pos_time.get(sym, t),
+                                "exit_time": t,
+                                "entry": pos.entry,
+                                "exit": px,
+                                "tp": pos.tp,
+                                "sl": pos.sl,
+                                "reason": "TP_PARTIAL",
+                                "gross_return": gross_ret,
+                                "net_return": net_ret,
+                                "notional": notional_entry,
+                                "fees_paid": fee * 2 * notional_entry,
+                                "realized_pnl": pnl_amt,
+                            }
+                        )
+                        pos.qty -= qty_close
 
         # compute current equity including unrealized PnL
         unrealized = 0.0
@@ -331,7 +389,7 @@ def main():
             else:
                 gross_ret = (pos.entry - px) / pos.entry
             net_ret = gross_ret - 2 * slippage - 2 * fee
-            unrealized += net_ret * pos_notional
+            unrealized += net_ret * pos.entry * pos.qty
         equity_mtm = equity + unrealized
 
         # --- Universe filtering for OPENINGS only (allow/deny) ---
@@ -358,7 +416,8 @@ def main():
             if sym in positions:
                 continue
             # Budget check
-            if (len(positions)+1)*pos_notional > max_notional_frac * equity_mtm:
+            current_open = sum(p.entry * p.qty for p in positions.values())
+            if (current_open + pos_notional) > max_notional_frac * equity_mtm:
                 break
             row = md_map_open.get(sym)
             if not row:
@@ -374,7 +433,8 @@ def main():
             if not isinstance(tp, (int,float)) or not isinstance(sl, (int,float)):
                 raise RuntimeError(f"Strategy must supply numeric take_profit/stop_price for {sym}")
             entry_px = float(row["close"])
-            positions[sym] = Position(sig.side, entry_px, float(sl), float(tp))
+            qty = pos_notional / max(entry_px, 1e-12)
+            positions[sym] = Position(sig.side, entry_px, float(sl), float(tp), qty)
             pos_time[sym] = t
             # Heat reporting (if strategy exposes it) — optional, for logs only
             heat = None
@@ -395,25 +455,42 @@ def main():
         last_px = {sym: close for (sym, close, *_rest) in slices[-1][1]}
         for sym, pos in list(positions.items()):
             px = last_px.get(sym)
-            if px is None: continue
-            gross_ret = (px - pos.entry)/pos.entry if pos.side=="LONG" else (pos.entry - px)/pos.entry
-            net_ret = gross_ret - 2*slippage - 2*fee
-            pnl = net_ret
+            if px is None:
+                continue
+            notional = pos.entry * pos.qty
+            gross_ret = (px - pos.entry) / pos.entry if pos.side == "LONG" else (pos.entry - px) / pos.entry
+            net_ret = gross_ret - 2 * slippage - 2 * fee
+            pnl_amt = net_ret * notional
             trades += 1
-            fees_cum += fee * 2 * pos_notional
-            if pnl>0: wins+=1; pnl_pos += pnl
-            else: losses+=1; pnl_neg += pnl
-            equity *= (1.0 + (pnl * pos_notional / equity))
+            fees_cum += fee * 2 * notional
+            if pnl_amt > 0:
+                wins += 1
+                pnl_pos += pnl_amt
+            else:
+                losses += 1
+                pnl_neg += pnl_amt
+            equity += pnl_amt
             eq_curve_vals.append(equity)
-            tr_rows.append({
-                "symbol": sym, "side": pos.side,
-                "entry_time": pos_time.get(sym, last_t), "exit_time": last_t,
-                "entry": pos.entry, "exit": px, "tp": pos.tp, "sl": pos.sl,
-                "reason": "EOD", "gross_return": gross_ret, "net_return": net_ret,
-                "notional": pos_notional, "fees_paid": fee * 2 * pos_notional,
-                "realized_pnl": net_ret * pos_notional
-            })
-            del positions[sym]; pos_time.pop(sym, None)
+            tr_rows.append(
+                {
+                    "symbol": sym,
+                    "side": pos.side,
+                    "entry_time": pos_time.get(sym, last_t),
+                    "exit_time": last_t,
+                    "entry": pos.entry,
+                    "exit": px,
+                    "tp": pos.tp,
+                    "sl": pos.sl,
+                    "reason": "EOD",
+                    "gross_return": gross_ret,
+                    "net_return": net_ret,
+                    "notional": notional,
+                    "fees_paid": fee * 2 * notional,
+                    "realized_pnl": pnl_amt,
+                }
+            )
+            del positions[sym]
+            pos_time.pop(sym, None)
 
     elapsed = time.time() - t0
     pf = (pnl_pos / max(1e-12, -pnl_neg)) if (pnl_pos>0 and pnl_neg<0) else 0.0
