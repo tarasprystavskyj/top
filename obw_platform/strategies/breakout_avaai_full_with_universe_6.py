@@ -1,5 +1,5 @@
 
-# strategies/breakout_avaai_full_with_universe_4.py
+# strategies/breakout_avaai_full_with_universe_6.py
 # Refactored strategy: ALL entry/exit & TP/SL decisions live here.
 # Backtester must only:
 #   - apply allow/deny universe for OPENING,
@@ -70,9 +70,20 @@ class BreakoutAVAAIFull:
 
         self.side: str = str(_read("side", "BOTH")).upper()
         self.top_n: int = int(_read("top_n", _read("top-n", 8)))  # accept both spellings
-        self.min_atr_ratio: float = float(_read("min_atr_ratio", 0.02))
-        # Important: default to 0.0 to reproduce the wide-entry behaviour unless overridden
-        self.min_momentum_sum: float = float(_read("min_momentum_sum", 0.0))
+
+        # entry filters: disabled by default
+        self.entry_min_atr_ratio: float = float(_read("min_atr_ratio", 0.0))
+        self.entry_min_momentum_sum: float = float(_read("min_momentum_sum", 0.0))
+
+        # exit-specific filters (can be overridden via exit_filters section)
+        exit_f = (self.cfg.get("exit_filters") or sp.get("exit_filters") or {})
+        self.exit_min_atr_ratio: float = float(exit_f.get("min_atr_ratio", 0.03))
+        self.exit_min_momentum_sum: float = float(exit_f.get("min_momentum_sum", 0.05))
+
+        # keep legacy names for compatibility
+        self.min_atr_ratio = self.entry_min_atr_ratio
+        self.min_momentum_sum = self.entry_min_momentum_sum
+
         self.tp_mult: float = float(_read("tp_atr_mult", 3.8))
         self.sl_mult: float = float(_read("sl_atr_mult", 1.04))
 
@@ -160,13 +171,13 @@ class BreakoutAVAAIFull:
         out: List[str] = []
         for sym, row in md_map.items():
             atr = _f(row.get("atr_ratio", 0.0))
-            if self.min_atr_ratio > 0 and atr < self.min_atr_ratio:
+            if self.entry_min_atr_ratio > 0 and atr < self.entry_min_atr_ratio:
                 continue
             if not self._liq_ok(row):
                 continue
             # Optional momentum threshold (mm<=0 disables)
             m = self._mom_sum(row)
-            mm = self.min_momentum_sum
+            mm = self.entry_min_momentum_sum
             if mm > 0:
                 if self.side == "LONG" and m < +mm:
                     continue
@@ -298,10 +309,10 @@ class BreakoutAVAAIFull:
         if qv1 <= 0.0:
             qv1 = _f(row.get("volume", 0.0)) * _f(row.get("close", 0.0))
 
-        min_atr = float(self.min_atr_ratio)
+        min_atr = float(self.exit_min_atr_ratio)
         min_qv24 = float(self.min_qv_24h)
         min_qv1h = float(self.min_qv_1h)
-        min_mom = float(self.min_momentum_sum)
+        min_mom = float(self.exit_min_momentum_sum)
 
         if self.side == "LONG":
             gap_mom = self._pct_gap_rev(m, +min_mom)
