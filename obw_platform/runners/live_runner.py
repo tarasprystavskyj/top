@@ -635,8 +635,18 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
     return None
 
 
-def _place_tp_sl_after_open(fetcher: CCXTFetcher, sym: str, side: str, qty: float, tp_price, sl_price, position_mode: str):
-    """Place TP/SL as separate reduce-only orders after a market open (safer for BingX oneway)."""
+def _place_tp_sl_after_open(
+    fetcher: CCXTFetcher,
+    sym: str,
+    side: str,
+    qty: float,
+    tp_price,
+    sl_price,
+    position_mode: str,
+    part_tp_price: float | None = None,
+    part_tp_qty: float | None = None,
+):
+    """Place TP/SL (and optional partial TP) as reduce-only orders after a market open."""
     try:
         ccxt_sym = fetcher.resolve_symbol(sym)
         pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
@@ -650,6 +660,46 @@ def _place_tp_sl_after_open(fetcher: CCXTFetcher, sym: str, side: str, qty: floa
                 return {'ok': True, 'order': od, 'params': params}
             except Exception as e:
                 return {'ok': False, 'error': str(e), 'params': params}
+
+        # ---- Partial TP (50% or as configured) ----
+        if (
+            part_tp_price is not None
+            and part_tp_price > 0
+            and part_tp_qty is not None
+            and part_tp_qty > 0
+        ):
+            ptp_side = "sell" if side == "LONG" else "buy"
+            ptp_candidates = [
+                ("take_profit", ptp_side, float(part_tp_price), dict(base)),
+                ("take_profit_market", ptp_side, None, {**base, "triggerPrice": float(part_tp_price)}),
+                ("limit", ptp_side, float(part_tp_price), {**base, "takeProfit": True}),
+                ("market", ptp_side, None, {**base, "takeProfitPrice": float(part_tp_price)}),
+            ]
+            _dbg(
+                "ptp_fallback",
+                sym,
+                f"side={side}",
+                f"qty={part_tp_qty:.6g}",
+                f"price={part_tp_price}",
+                f"pos_mode={position_mode}",
+                f"candidates={len(ptp_candidates)}",
+            )
+            for otype, oside, oprice, pms in ptp_candidates:
+                r = _try(otype, oside, part_tp_qty, oprice, pms)
+                _dbg("ptp_try", {"type": otype, "side": oside, "price": oprice, "params": pms})
+                _dbg(
+                    "ptp_res",
+                    ("ok" if r.get("ok") else "ERR"),
+                    r.get("error", ""),
+                    (
+                        "order_id="
+                        + str((r.get("order") or {}).get("id") or (r.get("order") or {}).get("orderId"))
+                    )
+                    if r.get("ok")
+                    else "",
+                )
+                if r.get("ok"):
+                    break
 
         # ---- TP ----
         if tp_price is not None and tp_price > 0:
@@ -1149,7 +1199,18 @@ def run_live(cfg: dict, args):
                             positions[sym] = rec; save_positions(args.results_dir, positions)
                             position_notional += qty * entry_fill
                             # Fallback TP/SL placement as separate orders (reduce-only)
-                            try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode)
+                            part_tp_price = part_tp_qty = None
+                            if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
+                                trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
+                                frac = float(getattr(strat, 'partial_tp_frac', 0.5))
+                                if side_str == 'SHORT':
+                                    path = entry_px - tp_price
+                                    part_tp_price = entry_px - trig * path
+                                else:
+                                    path = tp_price - entry_px
+                                    part_tp_price = entry_px + trig * path
+                                part_tp_qty = qty * frac
+                            try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode, part_tp_price, part_tp_qty)
                             except Exception as e: _dbg('post_open_error', str(e))
                             try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                             except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
@@ -1192,8 +1253,27 @@ def run_live(cfg: dict, args):
                     positions[sym] = rec; save_positions(args.results_dir, positions)
                     position_notional += qty * entry_fill
                     # Fallback TP/SL placement as separate orders (reduce-only)
-                    try: _place_tp_sl_after_open(fetcher, sym, 'SHORT', qty, tp_price, sl_price, position_mode)
-                    except Exception as e: _dbg('post_open_error', str(e))
+                    part_tp_price = part_tp_qty = None
+                    if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
+                        trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
+                        frac = float(getattr(strat, 'partial_tp_frac', 0.5))
+                        path = entry_px - tp_price
+                        part_tp_price = entry_px - trig * path
+                        part_tp_qty = qty * frac
+                    try:
+                        _place_tp_sl_after_open(
+                            fetcher,
+                            sym,
+                            'SHORT',
+                            qty,
+                            tp_price,
+                            sl_price,
+                            position_mode,
+                            part_tp_price,
+                            part_tp_qty,
+                        )
+                    except Exception as e:
+                        _dbg('post_open_error', str(e))
                     try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                     except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
                     opened += 1
@@ -1261,8 +1341,27 @@ def run_live(cfg: dict, args):
                 save_positions(args.results_dir, positions)
                 position_notional += qty * entry_fill
                 # Fallback TP/SL placement as separate orders (reduce-only)
-                try: _place_tp_sl_after_open(fetcher, sym, side_str, qty, tp_price, sl_price, position_mode)
-                except Exception as e: _dbg('post_open_error', str(e))
+                part_tp_price = part_tp_qty = None
+                if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
+                    trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
+                    frac = float(getattr(strat, 'partial_tp_frac', 0.5))
+                    path = tp_price - entry_px
+                    part_tp_price = entry_px + trig * path
+                    part_tp_qty = qty * frac
+                try:
+                    _place_tp_sl_after_open(
+                        fetcher,
+                        sym,
+                        side_str,
+                        qty,
+                        tp_price,
+                        sl_price,
+                        position_mode,
+                        part_tp_price,
+                        part_tp_qty,
+                    )
+                except Exception as e:
+                    _dbg('post_open_error', str(e))
                 try:
                     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                 except Exception as e:
