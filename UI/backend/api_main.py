@@ -187,32 +187,59 @@ def _session_closed_trades(session_db):
     return df.to_dict(orient="records")
 
 
-def _make_live_equity_png(base_dir):
-    """Save viz_equity_vs_time.png into the live session dir, return path or None."""
+def _make_live_plots(base_dir):
+    """Generate basic live session plots from ``session.sqlite``."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    import numpy as np
+    import pandas as pd
 
     session_db = os.path.join(base_dir, "session.sqlite")
-    df = _session_equity_df(session_db)
-    if df is None or df.empty:
-        return None
-    out_png = os.path.join(base_dir, "viz_equity_vs_time.png")
+    eq_df = _session_equity_df(session_db)
+    trades = _session_closed_trades(session_db)
+    if eq_df is None or eq_df.empty or not trades:
+        return
+
+    # Convert trades to DataFrame for return histogram
+    df = pd.DataFrame(trades)
+    for c in ("entry_fill", "exit_fill", "qty", "fees_paid"):
+        if c in df:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    ret = np.where(
+        df["side"].str.upper() == "LONG",
+        (df["exit_fill"] - df["entry_fill"]) / df["entry_fill"],
+        (df["entry_fill"] - df["exit_fill"]) / df["entry_fill"],
+    )
+    plt.figure(); plt.hist(ret, bins=30)
+    plt.title("Distribution of Returns per Trade")
+    plt.xlabel("Return per trade"); plt.ylabel("Count")
+    plt.tight_layout(); plt.savefig(os.path.join(base_dir, "returns_hist.png"), dpi=140); plt.close()
+
+    eq_curve = eq_df["equity"].to_numpy()
+    plt.figure(); plt.plot(range(len(eq_curve)), eq_curve)
+    plt.title("Equity vs Trade #")
+    plt.xlabel("Trade #"); plt.ylabel("Equity")
+    plt.tight_layout(); plt.savefig(os.path.join(base_dir, "equity_by_trade.png"), dpi=140); plt.close()
+
+    if len(eq_curve) > 1:
+        peaks = np.maximum.accumulate(eq_curve)
+        dd = (eq_curve - peaks) / peaks
+        plt.figure(); plt.plot(range(len(dd)), dd)
+        plt.title("Drawdown vs Trade #")
+        plt.xlabel("Trade #"); plt.ylabel("Drawdown (fraction)")
+        plt.tight_layout(); plt.savefig(os.path.join(base_dir, "drawdown_by_trade.png"), dpi=140); plt.close()
+
     plt.figure(figsize=(8, 4))
-    plt.plot(df["ts"], df["equity"])
+    plt.plot(eq_df["ts"], eq_curve)
     ax = plt.gca()
-    # show hours alongside the date for readability
     ax.xaxis.set_major_locator(mdates.HourLocator())
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
     plt.xticks(rotation=45)
     plt.title("Live Equity vs Time")
-    plt.xlabel("Time")
-    plt.ylabel("Equity")
-    plt.tight_layout()
-    plt.savefig(out_png)
-    plt.close()
-    return out_png
+    plt.xlabel("Time"); plt.ylabel("Equity")
+    plt.tight_layout(); plt.savefig(os.path.join(base_dir, "equity_by_time.png"), dpi=160); plt.close()
 
 def load_backtester_version() -> str:
     try:
@@ -620,7 +647,7 @@ def live_result(name: str, debug: int = Query(0)):
         except Exception:
             log.exception("live_result %s: failed to generate viz plots", name)
     try:
-        _make_live_equity_png(base)
+        _make_live_plots(base)
     except Exception:
         pass
     arts: Dict[str, str] = {}
