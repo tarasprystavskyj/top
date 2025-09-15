@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch } from '../utils/api';
 
+type CacheDbOption = {
+  name: string;
+  path: string;
+};
+
 export default function Run() {
   const router = useRouter();
   const [cfgs, setCfgs] = useState<any[]>([]);
@@ -18,6 +23,7 @@ export default function Run() {
   const [logs, setLogs] = useState('');
   const [backtesters, setBacktesters] = useState<string[]>([]);
   const [backtester, setBacktester] = useState('');
+  const [cacheDbs, setCacheDbs] = useState<CacheDbOption[]>([]);
   const [cacheDb, setCacheDb] = useState('');
 
   // if ?id=JOB_ID is present load that job's result
@@ -57,19 +63,44 @@ export default function Run() {
       });
   }, []);
 
+  useEffect(() => {
+    apiFetch('/api/cache_dbs')
+      .then(r => r.json())
+      .then(data => {
+        if (!Array.isArray(data)) {
+          setCacheDbs([]);
+          return;
+        }
+        const normalized: CacheDbOption[] = data
+          .filter((item: any) => item && typeof item.name === 'string' && typeof item.path === 'string')
+          .map((item: any) => ({ name: item.name, path: item.path }));
+        setCacheDbs(normalized);
+      })
+      .catch(() => setCacheDbs([]));
+  }, []);
+
   async function start() {
-    const override = {
-      symbols_file: universe ? `universe/${universe}` : null,
-    };
-    // Trim any stray whitespace. Backend will resolve relative paths, so we
-    // forward the path as-is without prepending directories that may create
-    // incorrect locations.
+    const override: Record<string, any> = {};
+    if (universe) {
+      const universePath = `universe/${universe}`;
+      override.symbols_file = universePath;
+      override.universe_file = universePath;
+      override.universe = { file: universePath };
+    }
+    const payloadOverride = Object.keys(override).length > 0 ? override : undefined;
+    // Trim any stray whitespace. Backend resolves the value relative to the repository.
     const cacheDbPath = cacheDb.trim();
-    console.log('cacheDbPath', cacheDbPath);
     const j = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cfg_name: cfg, limit_bars: bars, debug, override, backtester, cache_db: cacheDbPath || undefined }),
+      body: JSON.stringify({
+        cfg_name: cfg,
+        limit_bars: bars,
+        debug,
+        override: payloadOverride,
+        backtester,
+        cache_db: cacheDbPath || undefined,
+      }),
     }).then(r => r.json());
     setJob(j);
     setRes(null);
@@ -124,6 +155,10 @@ export default function Run() {
     .filter(Boolean) as string[];
 
   const isReadOnly = !!router.query.id;
+  const hasCustomCacheDb = cacheDb !== '' && !cacheDbs.some(opt => opt.path === cacheDb);
+  const displayedCacheDbs: CacheDbOption[] = hasCustomCacheDb
+    ? [...cacheDbs, { name: `Custom: ${cacheDb}`, path: cacheDb }]
+    : cacheDbs;
 
   return (
     <div>
@@ -152,13 +187,18 @@ export default function Run() {
               value={bars}
               onChange={e => setBars(parseInt(e.target.value || '0'))}
             />
-            <input
-              type='text'
-              placeholder='cache db path'
+            <select
               value={cacheDb}
               onChange={e => setCacheDb(e.target.value)}
               style={{ width: '300px' }}
-            />
+            >
+              <option value=''>--select cache db--</option>
+              {displayedCacheDbs.map(opt => (
+                <option key={opt.path} value={opt.path}>
+                  {opt.name}
+                </option>
+              ))}
+            </select>
             <label>
               <input
                 type='checkbox'
@@ -225,6 +265,37 @@ export default function Run() {
               {vizUrls.map((u, i) => (
                 <img key={i} src={u} style={{ maxWidth: '400px' }} />
               ))}
+            </div>
+          )}
+          {res.debug && (
+            <div style={{ marginTop: '10px' }}>
+              <strong>Debug info</strong>
+              {res.debug.cmd && (
+                <pre
+                  style={{
+                    whiteSpace: 'pre-wrap',
+                    background: '#f5f5f5',
+                    padding: '6px',
+                    overflowX: 'auto',
+                  }}
+                >
+                  {res.debug.cmd}
+                </pre>
+              )}
+              {res.debug.cache_db && (
+                <div>
+                  Cache DB: <code>{res.debug.cache_db}</code>
+                  {res.debug.cache_db_exists === false && (
+                    <span style={{ color: 'red' }}> (missing)</span>
+                  )}
+                </div>
+              )}
+              {res.debug.cache_db_label &&
+                (!res.debug.cache_db || res.debug.cache_db_label !== res.debug.cache_db) && (
+                  <div>
+                    Selected value: <code>{res.debug.cache_db_label}</code>
+                  </div>
+                )}
             </div>
           )}
           {logs && (

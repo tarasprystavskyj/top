@@ -1,5 +1,0 @@
-param,value,equity_end,profit_factor,trades,max_dd,monotonicity,elapsed_sec,daily_return,monthly_return,backtest_days
-adx_threshold,0,92.33709,0.694543,1104,-8.956,-7.304,51.85167,,,
-adx_threshold,15,92.33709,0.694543,1104,-8.956,-7.304,32.619349,,,
-adx_threshold,20,92.33709,0.694543,1104,-8.956,-7.304,34.165233,,,
-adx_threshold,25,92.33709,0.694543,1104,-8.956,-7.304,32.186453,,,

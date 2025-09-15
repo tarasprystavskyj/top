@@ -18,12 +18,16 @@ except Exception:  # pragma: no cover - best effort fallback
         _viz_plot = None
 
 APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+REPO_ROOT = os.path.abspath(os.path.join(APP_ROOT, ".."))
+BT_ROOT = os.path.join(REPO_ROOT, "obw_platform")
 DATA_ROOT = os.path.join(APP_ROOT, "data")
 MAIN_CONFIG_DIR = os.path.join(DATA_ROOT, "configs")
-OBW_CONFIG_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "configs"))
+OBW_CONFIG_DIR = os.path.abspath(os.path.join(BT_ROOT, "configs"))
 CONFIG_DIRS = [MAIN_CONFIG_DIR, OBW_CONFIG_DIR]
 RUNS_DIR = os.path.join(DATA_ROOT, "runs")
-UNIVERSE_DIR = os.path.abspath(os.path.join(APP_ROOT, "..", "obw_platform", "universe"))
+UNIVERSE_DIR = os.path.abspath(os.path.join(BT_ROOT, "universe"))
+# Cache DBs are stored in the repository root under ``DB``.
+CACHE_DB_DIR = os.path.join(REPO_ROOT, "DB")
 # Live session reports are stored within the obw_platform project under
 # ``_reports/_live``.  The previous implementation looked for them in the
 # repository root, which resulted in an empty list being returned to the
@@ -52,6 +56,81 @@ BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
     "backtester_core_speed3.py": {"plots": True},
     "backtester_core_speed3_veto.py": {"plots": True},
 }
+
+# --- helpers: cache DB discovery -------------------------------------------
+def _list_cache_db_files() -> List[Dict[str, str]]:
+    """Return available cache DB files under ``CACHE_DB_DIR``.
+
+    The deployment keeps cache databases in ``DB/``.  Expose both the display
+    name (filename) and the repository-relative path so the frontend can pass a
+    stable identifier while the backend resolves the absolute path before
+    launching the backtester.
+    """
+
+    entries: List[Dict[str, str]] = []
+    if not os.path.isdir(CACHE_DB_DIR):
+        return entries
+    try:
+        candidates = sorted(os.scandir(CACHE_DB_DIR), key=lambda e: e.name.lower())
+    except FileNotFoundError:  # pragma: no cover - directory removed between check and scan
+        return entries
+    for entry in candidates:
+        if not entry.is_file():
+            continue
+        name = entry.name
+        lower = name.lower()
+        if not lower.endswith((".db", ".sqlite", ".sqlite3")):
+            continue
+        rel_path = os.path.relpath(entry.path, REPO_ROOT)
+        entries.append({"name": name, "path": rel_path})
+    return entries
+
+
+def _is_within(path: str, root: str) -> bool:
+    try:
+        common = os.path.commonpath([os.path.abspath(path), os.path.abspath(root)])
+    except ValueError:
+        return False
+    return common == os.path.abspath(root)
+
+
+def resolve_cache_db(value: Optional[str]) -> Optional[str]:
+    """Resolve a cache DB selector value to an absolute path.
+
+    ``value`` may be an absolute path, a repository-relative path, or just the
+    filename present in ``DB/``.  Only paths that stay within the repository
+    root are accepted to avoid leaking files outside of the project.
+    """
+
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    normalized = raw.replace("\\", os.sep)
+    candidates = []
+    if os.path.isabs(normalized):
+        candidates.append(normalized)
+    else:
+        # As-is relative path (e.g. "DB/foo.db" or "../obw_platform/...").
+        candidates.append(os.path.join(REPO_ROOT, normalized))
+        # Relative to the DB directory when only a filename is provided.
+        candidates.append(os.path.join(CACHE_DB_DIR, normalized))
+        candidates.append(os.path.join(CACHE_DB_DIR, os.path.basename(normalized)))
+        # Relative to the backtester root as a final fallback.
+        candidates.append(os.path.join(BT_ROOT, normalized))
+    seen = set()
+    for cand in candidates:
+        full = os.path.abspath(cand)
+        if full in seen:
+            continue
+        seen.add(full)
+        if not os.path.isfile(full):
+            continue
+        if _is_within(full, REPO_ROOT):
+            return full
+    return None
+
 
 # --- helpers: live equity from session.sqlite --------------------------------
 def _session_equity_df(session_db):
@@ -150,6 +229,7 @@ def _session_closed_trades(session_db):
     """Return closed trades from session.sqlite as a list of dicts."""
     import sqlite3
     import pandas as pd
+    import numpy as np
 
     if not os.path.exists(session_db):
         return None
@@ -184,35 +264,72 @@ def _session_closed_trades(session_db):
     con.close()
     if df.empty:
         return None
+    for c in ("qty", "entry_fill", "exit_fill", "fees_paid"):
+        if c in df:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    df["realised_pnl"] = np.where(
+        df["side"].str.upper() == "LONG",
+        (df["exit_fill"] - df["entry_fill"]) * df["qty"],
+        (df["entry_fill"] - df["exit_fill"]) * df["qty"],
+    )
+    if has_fees and "fees_paid" in df:
+        df["realised_pnl"] = df["realised_pnl"] - df["fees_paid"]
     return df.to_dict(orient="records")
 
 
-def _make_live_equity_png(base_dir):
-    """Save viz_equity_vs_time.png into the live session dir, return path or None."""
+def _make_live_plots(base_dir):
+    """Generate basic live session plots from ``session.sqlite``."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    import numpy as np
+    import pandas as pd
 
     session_db = os.path.join(base_dir, "session.sqlite")
-    df = _session_equity_df(session_db)
-    if df is None or df.empty:
-        return None
-    out_png = os.path.join(base_dir, "viz_equity_vs_time.png")
+    eq_df = _session_equity_df(session_db)
+    trades = _session_closed_trades(session_db)
+    if eq_df is None or eq_df.empty or not trades:
+        return
+
+    # Convert trades to DataFrame for return histogram
+    df = pd.DataFrame(trades)
+    for c in ("entry_fill", "exit_fill", "qty", "fees_paid"):
+        if c in df:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    ret = np.where(
+        df["side"].str.upper() == "LONG",
+        (df["exit_fill"] - df["entry_fill"]) / df["entry_fill"],
+        (df["entry_fill"] - df["exit_fill"]) / df["entry_fill"],
+    )
+    plt.figure(); plt.hist(ret, bins=30)
+    plt.title("Distribution of Returns per Trade")
+    plt.xlabel("Return per trade"); plt.ylabel("Count")
+    plt.tight_layout(); plt.savefig(os.path.join(base_dir, "returns_hist.png"), dpi=140); plt.close()
+
+    eq_curve = eq_df["equity"].to_numpy()
+    plt.figure(); plt.plot(range(len(eq_curve)), eq_curve)
+    plt.title("Equity vs Trade #")
+    plt.xlabel("Trade #"); plt.ylabel("Equity")
+    plt.tight_layout(); plt.savefig(os.path.join(base_dir, "equity_by_trade.png"), dpi=140); plt.close()
+
+    if len(eq_curve) > 1:
+        peaks = np.maximum.accumulate(eq_curve)
+        dd = (eq_curve - peaks) / peaks
+        plt.figure(); plt.plot(range(len(dd)), dd)
+        plt.title("Drawdown vs Trade #")
+        plt.xlabel("Trade #"); plt.ylabel("Drawdown (fraction)")
+        plt.tight_layout(); plt.savefig(os.path.join(base_dir, "drawdown_by_trade.png"), dpi=140); plt.close()
+
     plt.figure(figsize=(8, 4))
-    plt.plot(df["ts"], df["equity"])
+    plt.plot(eq_df["ts"], eq_curve)
     ax = plt.gca()
-    # show hours alongside the date for readability
     ax.xaxis.set_major_locator(mdates.HourLocator())
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
     plt.xticks(rotation=45)
     plt.title("Live Equity vs Time")
-    plt.xlabel("Time")
-    plt.ylabel("Equity")
-    plt.tight_layout()
-    plt.savefig(out_png)
-    plt.close()
-    return out_png
+    plt.xlabel("Time"); plt.ylabel("Equity")
+    plt.tight_layout(); plt.savefig(os.path.join(base_dir, "equity_by_time.png"), dpi=160); plt.close()
 
 def load_backtester_version() -> str:
     try:
@@ -270,6 +387,7 @@ class BacktestReq(BaseModel):
     cache_db: Optional[str] = None
     override: Optional[Dict[str, Any]] = None
     backtester: Optional[str] = None
+    debug: bool = False
 
 class GridAxis(BaseModel):
     path: str
@@ -390,12 +508,25 @@ def run_backtest(job):
     with open(cfg_path, "w") as f:
         yaml.safe_dump(merged, f, sort_keys=False)
     logs = os.path.join(out_dir, "logs.txt")
-    repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
-    bt_root = os.path.join(repo_root, "obw_platform")
     bt_script = meta.get("backtester") or load_backtester_version()
-    cmd = cmd_backtester(cfg_path, meta["limit_bars"], meta.get("cache_db"), out_dir, bt_script, export_csv=True)
+    cmd = cmd_backtester(
+        cfg_path,
+        meta["limit_bars"],
+        meta.get("cache_db"),
+        out_dir,
+        bt_script,
+        export_csv=True,
+        debug=bool(meta.get("debug")),
+    )
+    cmd_str = " ".join(cmd)
+    with lock:
+        jobs.setdefault(jid, {}).setdefault("meta", {})
+        jobs[jid]["cmd"] = cmd_str
+        jobs[jid]["meta"].setdefault("cache_db", meta.get("cache_db"))
     with open(logs, "w") as lf:
-        p = subprocess.Popen(cmd, cwd=bt_root, stdout=lf, stderr=lf)
+        lf.write(f"[cmd] {cmd_str}\n")
+        lf.flush()
+        p = subprocess.Popen(cmd, cwd=BT_ROOT, stdout=lf, stderr=lf)
         p.wait()
     if p.returncode != 0:
         raise RuntimeError(f"backtester failed with code {p.returncode}")
@@ -430,11 +561,17 @@ def run_grid(job):
         cfg_path = os.path.join(subdir, "cfg_merged.yaml")
         with open(cfg_path,"w") as f: yaml.safe_dump(var, f, sort_keys=False)
         logs = os.path.join(subdir, "logs.txt")
-        cmd = cmd_backtester(cfg_path, req.get("limit_bars", 5000), req.get("cache_db"), export_csv=True)
+        grid_cache = resolve_cache_db(req.get("cache_db")) if req.get("cache_db") else None
+        cmd = cmd_backtester(
+            cfg_path,
+            req.get("limit_bars", 5000),
+            grid_cache,
+            export_csv=True,
+        )
         with open(logs, "w") as lf:
             p = subprocess.Popen(
                 cmd,
-                cwd=os.path.join(os.path.abspath(os.path.join(APP_ROOT, "..")), "obw_platform"),
+                cwd=BT_ROOT,
                 stdout=lf,
                 stderr=lf,
             )
@@ -468,6 +605,12 @@ def configs():
             out[name] = {"name": name, "path": p, "updated_at": st.st_mtime}
     return list(out.values())
 
+
+@app.get("/api/cache_dbs")
+def cache_dbs():
+    return _list_cache_db_files()
+
+
 @app.get("/api/configs/{name}")
 def config_get(name: str):
     p = find_config(name)
@@ -497,18 +640,31 @@ def universes():
 
 @app.post("/api/backtest")
 def backtest(req: BacktestReq):
+    req_meta = req.model_dump()
+    cache_label = (req_meta.get("cache_db") or "").strip() or None
+    resolved_cache = resolve_cache_db(cache_label) if cache_label else None
+    if cache_label and not resolved_cache:
+        raise HTTPException(400, f"cache db not found: {cache_label}")
+    req_meta["cache_db_label"] = cache_label
+    req_meta["cache_db"] = resolved_cache
     jid = str(uuid.uuid4())
-    jobs[jid] = {"status":"queued","meta": req.model_dump(),"kind":"backtest"}
+    jobs[jid] = {"status":"queued","meta": req_meta,"kind":"backtest"}
     out_dir = os.path.join(RUNS_DIR, jid); os.makedirs(out_dir, exist_ok=True)
     meta = {
         "cfg_name": req.cfg_name,
         "limit_bars": req.limit_bars,
         "started_at": time.time(),
-        "backtester": req.backtester or load_backtester_version(),
+        "backtester": req_meta.get("backtester") or load_backtester_version(),
     }
+    if resolved_cache:
+        meta["cache_db"] = resolved_cache
+    if cache_label and cache_label != resolved_cache:
+        meta["cache_db_label"] = cache_label
+    if req_meta.get("debug"):
+        meta["debug"] = True
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
-    job_q.put({"job_id": jid, "meta": req.model_dump(), "kind":"backtest"})
+    job_q.put({"job_id": jid, "meta": req_meta, "kind":"backtest"})
     return {"job_id": jid}
 
 @app.get("/api/jobs/{job_id}/status")
@@ -546,7 +702,24 @@ def result(job_id: str):
         import csv
         with open(os.path.join(out_dir, "trades.csv")) as f:
             trades = list(csv.DictReader(f))[:500]
-    return {"summary": summary, "trades": trades, "artifacts": arts}
+    resp: Dict[str, Any] = {"summary": summary, "trades": trades, "artifacts": arts}
+    job_info = jobs.get(job_id) or {}
+    job_meta = job_info.get("meta") or {}
+    if job_meta.get("debug"):
+        debug_info: Dict[str, Any] = {}
+        cmd = job_info.get("cmd")
+        if cmd:
+            debug_info["cmd"] = cmd
+        cache_db = job_meta.get("cache_db")
+        if cache_db:
+            debug_info["cache_db"] = cache_db
+            debug_info["cache_db_exists"] = os.path.isfile(cache_db)
+        cache_label = job_meta.get("cache_db_label")
+        if cache_label and cache_label != cache_db:
+            debug_info["cache_db_label"] = cache_label
+        if debug_info:
+            resp["debug"] = debug_info
+    return resp
 
 @app.get("/api/jobs/{job_id}/artifacts/{name}")
 def artifact(job_id: str, name: str):
@@ -620,7 +793,7 @@ def live_result(name: str, debug: int = Query(0)):
         except Exception:
             log.exception("live_result %s: failed to generate viz plots", name)
     try:
-        _make_live_equity_png(base)
+        _make_live_plots(base)
     except Exception:
         pass
     arts: Dict[str, str] = {}
@@ -690,14 +863,24 @@ def live_result(name: str, debug: int = Query(0)):
             import csv
             with open(trades_csv) as f:
                 live_trades = list(csv.DictReader(f))
+            for t in live_trades:
+                try:
+                    entry = float(t.get("entry_fill") or 0)
+                    exit_ = float(t.get("exit_fill") or 0)
+                    qty = float(t.get("qty") or 0)
+                    side = str(t.get("side") or "").upper()
+                    fees = float(t.get("fees_paid") or 0)
+                    pnl = (exit_ - entry) * qty if side == "LONG" else (entry - exit_) * qty
+                    pnl -= fees
+                    t["realised_pnl"] = pnl
+                except Exception:
+                    continue
         except Exception:
             log.exception("live_result %s: failed to parse trades.csv", name)
 
     bt_cmd = None
     bt_stdout = None
     if cfg_path and os.path.exists(cache_db):
-        repo_root = os.path.abspath(os.path.join(APP_ROOT, ".."))
-        bt_root = os.path.join(repo_root, "obw_platform")
         bt_plots = os.path.join(base, "bt_plots")
         if os.path.isdir(bt_plots):
             shutil.rmtree(bt_plots)
@@ -716,7 +899,7 @@ def live_result(name: str, debug: int = Query(0)):
             debug=bool(debug),
         )
         bt_cmd = " ".join(cmd)
-        result = subprocess.run(cmd, cwd=bt_root, capture_output=True, text=True)
+        result = subprocess.run(cmd, cwd=BT_ROOT, capture_output=True, text=True)
         with open(logs, "w") as lf:
             lf.write(result.stdout)
             lf.write(result.stderr)

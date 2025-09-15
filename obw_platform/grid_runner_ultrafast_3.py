@@ -24,6 +24,8 @@ alias_param_map = {
     'strategy_params.sl_atr_mult': 'sl',
     'strategy_params.adx_threshold': 'adx_threshold',
     'adx_threshold': 'adx_threshold',
+    "strategy_params.min_atr_ratio": "min-atr",
+    "strategy_params.min_momentum_sum": "min-mom",
 }
 
 # Will hold parsed args for access inside helpers without refactoring all signatures

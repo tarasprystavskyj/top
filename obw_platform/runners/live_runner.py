@@ -27,7 +27,9 @@ def cprint(*parts, fg: str = "", bold: bool = False, dim: bool = False, file=Non
 import importlib
 import os, sys, math, uuid, datetime as _dt, os
 import json
+import time
 from datetime import datetime, timezone
+from typing import Optional
 
 _last_dot_bar = None
 def _bar_key(now: datetime, bar_sec: int) -> int:
@@ -48,6 +50,124 @@ def cc_log_once_per_bar(sym, bar_key, msg):
         return
     _last_cc_print[k] = True
     cprint(msg, fg="magenta", dim=True)
+
+def _format_float_short(val):
+    try:
+        f = float(val)
+    except Exception:
+        return str(val)
+    try:
+        if not math.isfinite(f):
+            return str(f)
+    except Exception:
+        return str(f)
+    if abs(f) >= 1000 or (0 < abs(f) < 1e-4):
+        return f"{f:.3e}"
+    return f"{f:.4f}"
+
+def _format_dict_short(data):
+    if not isinstance(data, dict) or not data:
+        return "{}" if not data else str(data)
+    parts = []
+    for key in sorted(data.keys()):
+        parts.append(f"{key}:{_format_float_short(data[key])}")
+    return "{" + ", ".join(parts) + "}"
+
+def _call_entry_distance_safe(strat, t, sym, row):
+    fn = getattr(strat, 'entry_distance', None)
+    if not callable(fn):
+        return None
+    try:
+        return fn(t, sym, row, breadth=getattr(strat, '_last_breadth', 1.0))
+    except TypeError:
+        try:
+            return fn(t, sym, row)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+def _call_best_entry_distance_safe(strat, t, md_slice, symbols=None):
+    fn = getattr(strat, 'best_entry_distance', None)
+    if not callable(fn):
+        return None
+    try:
+        if symbols is None:
+            return fn(t, md_slice)
+        return fn(t, md_slice, symbols=symbols)
+    except TypeError:
+        try:
+            if symbols is None:
+                return fn(t, md_slice)
+            return fn(t, md_slice, symbols)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+def _log_heat_best(label, dist):
+    if not isinstance(dist, dict) or not dist:
+        return
+    sym = dist.get('symbol') or dist.get('sym') or '??'
+    gap = dist.get('combined_gap')
+    heat = None
+    try:
+        if gap is not None:
+            heat = max(0.0, min(1.0, 1.0 - float(gap)))
+    except Exception:
+        heat = None
+    reason = dist.get('reason') or '-'
+    parts = [
+        f"[heat.best {label}]",
+        str(sym),
+    ]
+    if gap is not None:
+        parts.append(f"gap={_format_float_short(gap)}")
+    if heat is not None:
+        parts.append(f"heat={_format_float_short(heat)}")
+    if reason:
+        parts.append(f"reason={reason}")
+    parts.append(f"gaps={_format_dict_short(dist.get('gaps') or {})}")
+    parts.append(f"actuals={_format_dict_short(dist.get('actuals') or {})}")
+    parts.append(f"thresholds={_format_dict_short(dist.get('thresholds') or {})}")
+    cprint(*parts, fg='cyan', dim=True)
+
+def _log_heat_distances(label, strat, t, md, symbols, limit, uni_set=None):
+    if not symbols:
+        cprint(f"[heat.dist {label}]", "no symbols", fg='yellow', dim=True)
+        return
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 0
+    if limit <= 0:
+        limit = len(symbols)
+    count = 0
+    for sym in symbols:
+        if count >= limit:
+            break
+        row = md.get(sym)
+        if row is None:
+            continue
+        dist = _call_entry_distance_safe(strat, t, sym, row)
+        if not isinstance(dist, dict):
+            continue
+        parts = [f"[heat.dist {label}]", str(sym)]
+        if uni_set is not None and label == 'pre':
+            parts.append(f"in_uni={'Y' if sym in uni_set else 'N'}")
+        gap = dist.get('combined_gap')
+        if gap is not None:
+            parts.append(f"gap={_format_float_short(gap)}")
+        reason = dist.get('reason')
+        if reason:
+            parts.append(f"reason={reason}")
+        parts.append(f"gaps={_format_dict_short(dist.get('gaps') or {})}")
+        parts.append(f"actuals={_format_dict_short(dist.get('actuals') or {})}")
+        parts.append(f"thresholds={_format_dict_short(dist.get('thresholds') or {})}")
+        cprint(*parts, fg=('blue' if label == 'pre' else 'green'), dim=True)
+        count += 1
+    if count == 0:
+        cprint(f"[heat.dist {label}]", "no distances", fg='yellow', dim=True)
 
 def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=None):
     ts = datetime.now(timezone.utc).isoformat()
@@ -181,27 +301,80 @@ def get_account_equity(fetcher: CCXTFetcher) -> float:
     except Exception as e:
         cprint('[balance fetch]', e, fg='red')
         return 0.0
+    def _as_float(v):
+        try:
+            if v is not None and v != "":
+                return float(v)
+        except Exception:
+            pass
+        return None
+
+    def _pick(d: dict, paths: tuple):
+        for path in paths:
+            cur = d
+            ok = True
+            for key in path:
+                if isinstance(cur, dict) and key in cur:
+                    cur = cur[key]
+                else:
+                    ok = False
+                    break
+            if ok:
+                fv = _as_float(cur)
+                if fv is not None:
+                    return fv
+        return None
+
     try:
         if isinstance(bal, dict):
-            total = bal.get('total')
-            if isinstance(total, dict):
-                for k in ('USDT', 'USD', 'USDC', 'BUSD'):
-                    v = total.get(k)
-                    if v is not None:
-                        return float(v)
-            for k in ('equity', 'total'):
-                v = bal.get(k)
-                if isinstance(v, (int, float)):
-                    return float(v)
+            # explicit stablecoins preferred
+            currency_paths = [
+                ('total', cur) for cur in ('USDT', 'USD', 'USDC', 'BUSD')
+            ] + [
+                (cur, fld) for cur in ('USDT', 'USD', 'USDC', 'BUSD')
+                for fld in ('equity', 'total', 'free', 'balance', 'walletBalance', 'availableBalance', 'cashBal')
+            ]
+            v = _pick(bal, currency_paths)
+            if v is not None:
+                return v
+
+            v = _pick(bal, [('equity',), ('total',), ('balance',), ('walletBalance',), ('availableBalance',), ('cashBal',)])
+            if v is not None:
+                return v
+
             info = bal.get('info')
             if isinstance(info, dict):
-                for k in ('equity', 'total'):
-                    v = info.get(k)
-                    if v is not None:
-                        try:
-                            return float(v)
-                        except Exception:
-                            pass
+                v = _pick(
+                    info,
+                    [('equity',), ('total',), ('balance',), ('walletBalance',), ('availableBalance',), ('cashBal',)]
+                    + [
+                        (cur, fld)
+                        for cur in ('USDT', 'USD', 'USDC', 'BUSD')
+                        for fld in (
+                            'equity', 'total', 'balance', 'walletBalance', 'availableBalance', 'cashBal'
+                        )
+                    ],
+                )
+                if v is not None:
+                    return v
+
+                if isinstance(info.get('balances'), list):
+                    for entry in info['balances']:
+                        if not isinstance(entry, dict):
+                            continue
+                        asset = str(
+                            entry.get('asset')
+                            or entry.get('currency')
+                            or entry.get('coin')
+                            or ''
+                        ).upper()
+                        if asset in ('USDT', 'USD', 'USDC', 'BUSD'):
+                            for fld in (
+                                'equity', 'total', 'balance', 'walletBalance', 'availableBalance', 'cashBal'
+                            ):
+                                fv = _as_float(entry.get(fld))
+                                if fv is not None:
+                                    return fv
     except Exception:
         pass
     return 0.0
@@ -240,48 +413,55 @@ def _sig_get(sig, key, default=None):
     return default
 
 
-def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str):
-    """Return (avg_price, datetime) for an order id, if available."""
-    try:
-        if not order_id:
-            return None, None
-        ccxt_sym = fetcher.resolve_symbol(sym)
-        od = fetcher.ex.fetch_order(order_id, ccxt_sym)
-        sleep_ms(RATE_MS)
-    except Exception as e:
-        _dbg('fetch_order', str(e))
+def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str, max_wait_ms: int = 5000):
+    """Return (avg_price, datetime) for an order id, polling until filled or timeout."""
+    if not order_id:
         return None, None
-    price = None
-    ts = None
-    try:
-        for k in ('average', 'price', 'avgPrice', 'avg_price'):
-            v = od.get(k)
-            if v is not None:
-                price = float(v)
-                break
-    except Exception:
-        pass
-    try:
-        ts = od.get('timestamp')
-        if ts is None:
-            dt_str = od.get('datetime')
-            if dt_str:
-                ts = int(_dt.datetime.fromisoformat(dt_str.replace('Z', '+00:00')).timestamp() * 1000)
-        if ts is None and isinstance(od.get('info'), dict):
-            info = od['info']
-            for k in ('updateTime', 'transactTime', 'ts'):
-                if info.get(k) is not None:
-                    ts = int(info.get(k))
-                    break
-    except Exception:
-        ts = None
-    fill_dt = None
-    if ts is not None:
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    deadline = time.time() + max_wait_ms / 1000.0
+    last_od = None
+    while True:
         try:
-            fill_dt = _dt.datetime.fromtimestamp(ts / 1000.0, tz=_dt.timezone.utc)
+            od = fetcher.ex.fetch_order(order_id, ccxt_sym)
+            last_od = od
+            sleep_ms(RATE_MS)
+        except Exception as e:
+            _dbg('fetch_order', str(e))
+            od = last_od or {}
+        price = None
+        ts = None
+        try:
+            for k in ('average', 'price', 'avgPrice', 'avg_price'):
+                v = od.get(k)
+                if v is not None:
+                    price = float(v)
+                    break
         except Exception:
             pass
-    return price, fill_dt
+        try:
+            ts = od.get('timestamp')
+            if ts is None:
+                dt_str = od.get('datetime')
+                if dt_str:
+                    ts = int(_dt.datetime.fromisoformat(dt_str.replace('Z', '+00:00')).timestamp() * 1000)
+            if ts is None and isinstance(od.get('info'), dict):
+                info = od['info']
+                for k in ('updateTime', 'transactTime', 'ts'):
+                    if info.get(k) is not None:
+                        ts = int(info.get(k))
+                        break
+        except Exception:
+            ts = None
+        status = str(od.get('status') or '').lower()
+        if price is not None or status in ('closed', 'canceled') or time.time() >= deadline:
+            fill_dt = None
+            if ts is not None:
+                try:
+                    fill_dt = _dt.datetime.fromtimestamp(ts / 1000.0, tz=_dt.timezone.utc)
+                except Exception:
+                    pass
+            return price, fill_dt
+        sleep_ms(250)
 
 def place_open_long(fetcher: CCXTFetcher, sym: str, notional: float, price: float, position_mode: str, tp_price=None, sl_price=None):
     ccxt_sym = fetcher.resolve_symbol(sym)
@@ -590,10 +770,10 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
                 return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
-                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
                 lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
-                cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
+                cprint('[tp close]', sym, f'@~{(fill or px):.6g} tp={tp:.6g}', fg='green', bold=True)
                 return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
         if sl is not None and px <= sl:
             od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
@@ -602,10 +782,10 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
                 return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
-                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
                 lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
-                cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
+                cprint('[sl close]', sym, f'@~{(fill or px):.6g} sl={sl:.6g}', fg='red', bold=True)
                 return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
     elif side == 'SHORT':
         if tp is not None and px <= tp:
@@ -615,10 +795,10 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
                 return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
-                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
                 lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
-                cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
+                cprint('[tp close]', sym, f'@~{(fill or px):.6g} tp={tp:.6g}', fg='green', bold=True)
                 return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
         if sl is not None and px >= sl:
             od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
@@ -627,10 +807,10 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
                 return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None}
             if od:
-                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
+                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
                 lag = (fdt - now_dt).total_seconds() if (fdt and now_dt) else None
-                cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
+                cprint('[sl close]', sym, f'@~{(fill or px):.6g} sl={sl:.6g}', fg='red', bold=True)
                 return {'fill_price': fill, 'fill_ts': fdt.isoformat() if fdt else None, 'slip_bp': slip, 'lag_sec': lag}
     return None
 
@@ -643,8 +823,8 @@ def _place_tp_sl_after_open(
     tp_price,
     sl_price,
     position_mode: str,
-    part_tp_price: float | None = None,
-    part_tp_qty: float | None = None,
+    part_tp_price: Optional[float] = None,
+    part_tp_qty: Optional[float] = None,
 ):
     """Place TP/SL (and optional partial TP) as reduce-only orders after a market open."""
     try:
@@ -662,6 +842,7 @@ def _place_tp_sl_after_open(
                 return {'ok': False, 'error': str(e), 'params': params}
 
         # ---- Partial TP (50% or as configured) ----
+        ptp_ok = False
         if (
             part_tp_price is not None
             and part_tp_price > 0
@@ -699,10 +880,14 @@ def _place_tp_sl_after_open(
                     else "",
                 )
                 if r.get("ok"):
+                    ptp_ok = True
                     break
 
+        # adjust remaining qty for full TP if partial TP succeeded
+        tp_qty = qty - (part_tp_qty if ptp_ok else 0.0)
+
         # ---- TP ----
-        if tp_price is not None and tp_price > 0:
+        if tp_price is not None and tp_price > 0 and tp_qty > 0:
             tp_side = 'sell' if side=='LONG' else 'buy'
             tp_candidates = [
                 ('take_profit', tp_side, float(tp_price), dict(base)),
@@ -710,9 +895,9 @@ def _place_tp_sl_after_open(
                 ('limit', tp_side, float(tp_price), {**base, 'takeProfit': True}),
                 ('market', tp_side, None, {**base, 'takeProfitPrice': float(tp_price)}),
             ]
-            _dbg('tp_fallback', sym, f'side={side}', f'qty={qty:.6g}', f'price={tp_price}', f'pos_mode={position_mode}', f'candidates={len(tp_candidates)}')
+            _dbg('tp_fallback', sym, f'side={side}', f'qty={tp_qty:.6g}', f'price={tp_price}', f'pos_mode={position_mode}', f'candidates={len(tp_candidates)}')
             for otype, oside, oprice, pms in tp_candidates:
-                r = _try(otype, oside, qty, oprice, pms)
+                r = _try(otype, oside, tp_qty, oprice, pms)
                 _dbg('tp_try', {'type': otype, 'side': oside, 'price': oprice, 'params': pms})
                 _dbg('tp_res', ('ok' if r.get('ok') else 'ERR'), r.get('error',''),
                      ('order_id=' + str((r.get('order') or {}).get('id') or (r.get('order') or {}).get('orderId'))) if r.get('ok') else '')
@@ -953,6 +1138,29 @@ def run_live(cfg: dict, args):
             allow = []
         all_syms = sorted(set(fetcher.by_base.values()))
         universe = [s for s in all_syms if (not allow or s in allow)]
+
+        # sync local positions with exchange; drop stale entries and update qty
+        sync_map = get_exchange_open_positions(fetcher) if positions else {}
+        sync_changed = False
+        for sym, rec in list(positions.items()):
+            ex_rec = sync_map.get(sym)
+            if not ex_rec or float(ex_rec.get('qty', 0.0)) <= 0.0:
+                cprint('[desync-miss]', sym, 'NOT found on exchange -> closing locally', fg='yellow')
+                mark_closed_now(fetcher, session_db_path, bot_id, sym, rec.get('order_id'))
+                positions.pop(sym, None)
+                sync_changed = True
+                continue
+            ex_qty = float(ex_rec.get('qty', 0.0))
+            try:
+                cur_qty = float(rec.get('qty', 0.0))
+            except Exception:
+                cur_qty = 0.0
+            if abs(ex_qty - cur_qty) > max(1e-8, 0.01 * max(1.0, ex_qty)):
+                rec['qty'] = ex_qty
+                sync_changed = True
+        if sync_changed:
+            save_positions(args.results_dir, positions)
+
         for sym, rec in list(positions.items()):
             now = datetime.now(timezone.utc)
             bar_key = _bar_key(now, BAR_SECONDS)
@@ -1031,8 +1239,8 @@ def run_live(cfg: dict, args):
                             if isinstance(od, dict) and od.get('error') == 'no_position':
                                 fill = px; fdt = now
                             else:
-                                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
-                            cprint('[exit close]', sym, f'@~{px:.6g}', fg='yellow')
+                                fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
+                            cprint('[exit close]', sym, f'@~{(fill or px):.6g}', fg='yellow')
                             gross = (fill - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill)/rec.get('entry',1.0)
                             fee_rate = float(getattr(strat,'fee_rate',0.0))
                             fees = (rec.get('entry',0.0)*qty_close + fill*qty_close)*fee_rate
@@ -1132,9 +1340,35 @@ def run_live(cfg: dict, args):
                             pass
                         save_positions(args.results_dir, positions)
 
+            md_symbols = list(md.keys())
+            heat_debug_enabled = bool(getattr(args, 'heat_report', False))
+            pre_rank_syms = []
+            if heat_debug_enabled and hasattr(strat, 'rank'):
+                try:
+                    pre_rank_syms = strat.rank(bar_close, md, md_symbols)
+                except Exception as e:
+                    cprint('[heat.debug]', f'rank(all) failed: {e}', fg='yellow', dim=True)
+                    pre_rank_syms = []
+
             uni = strat.universe(bar_close, md)
-            ranked = strat.rank(bar_close, md, uni)[:top_n]
+            # Strategy already enforces its own top_n; avoid double-slicing
+            ranked = strat.rank(bar_close, md, uni)
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
+            if heat_debug_enabled:
+                debug_limit = top_n if top_n > 0 else 10
+                if debug_limit <= 0:
+                    debug_limit = 10
+                uni_set = set(uni or [])
+                pre_syms = pre_rank_syms or md_symbols
+                _log_heat_distances('pre', strat, bar_close, md, pre_syms, debug_limit, uni_set=uni_set)
+                _log_heat_distances('post', strat, bar_close, md, ranked, debug_limit)
+                best_all = _call_best_entry_distance_safe(strat, bar_close, md, symbols=md_symbols)
+                if best_all:
+                    _log_heat_best('pre', best_all)
+                if uni:
+                    best_uni = _call_best_entry_distance_safe(strat, bar_close, md, symbols=uni)
+                    if best_uni:
+                        _log_heat_best('post', best_uni)
             opened = 0
             equity = get_account_equity(fetcher)
             position_notional = sum(
@@ -1146,8 +1380,14 @@ def run_live(cfg: dict, args):
                     _dbg(sym, 'skip: already tracked')
                     log_skip_reason(sym, 'already open by THIS bot')
                     continue
-                if position_notional + notional > max_notional_frac * initial_equity:
-                    log_skip_reason(sym, 'budget cap reached')
+                # Use CURRENT equity (fallback to initial if exchange returns 0)
+                #curr_equity = float(equity) if equity else float(initial_equity)
+                curr_equity = float(initial_equity)
+                if position_notional + notional > max_notional_frac * curr_equity:
+                    log_skip_reason(
+                        sym,
+                        f"budget cap reached (equity={float(equity):.2f}, pos={notional:.2f})",
+                    )
                     break
                 row = md.get(sym)
                 if row is None:
