@@ -1238,7 +1238,8 @@ def run_live(cfg: dict, args):
                     log_skip_reason(sym, 'already open by THIS bot')
                     continue
                 # Use CURRENT equity (fallback to initial if exchange returns 0)
-                curr_equity = float(equity) if equity else float(initial_equity)
+                #curr_equity = float(equity) if equity else float(initial_equity)
+                curr_equity = float(initial_equity)
                 if position_notional + notional > max_notional_frac * curr_equity:
                     log_skip_reason(
                         sym,
