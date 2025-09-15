@@ -213,6 +213,7 @@ def _log_heat_debug_snapshot(
         if best_uni:
             _log_heat_best('post', best_uni)
 
+
 def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=None):
     ts = datetime.now(timezone.utc).isoformat()
     px = px_hint or fetcher.fetch_ticker_price(sym)
@@ -1418,6 +1419,28 @@ def run_live(cfg: dict, args):
                     )
                 except Exception as exc:
                     cprint('[heat.debug]', f'log failed: {exc}', fg='yellow', dim=True)
+                debug_limit = top_n if top_n > 0 else 10
+                if debug_limit <= 0:
+                    debug_limit = 10
+                uni_set = set(uni or [])
+               pre_syms = pre_rank_syms if pre_rank_syms else md_symbols
+                cprint(
+                    '[heat.debug]',
+                    f'limit={debug_limit}',
+                    f'pre_candidates={len(pre_syms)}',
+                    f'post_candidates={len(ranked)}',
+                    fg='cyan',
+                    dim=True,
+                )
+                _log_heat_distances('pre', strat, bar_close, md, pre_syms, debug_limit, uni_set=uni_set)
+                _log_heat_distances('post', strat, bar_close, md, ranked, debug_limit)
+                best_all = _call_best_entry_distance_safe(strat, bar_close, md, symbols=md_symbols)
+                if best_all:
+                    _log_heat_best('pre', best_all)
+                if uni:
+                    best_uni = _call_best_entry_distance_safe(strat, bar_close, md, symbols=uni)
+                    if best_uni:
+                        _log_heat_best('post', best_uni)
             opened = 0
             equity = get_account_equity(fetcher)
             position_notional = sum(
