@@ -51,6 +51,124 @@ def cc_log_once_per_bar(sym, bar_key, msg):
     _last_cc_print[k] = True
     cprint(msg, fg="magenta", dim=True)
 
+def _format_float_short(val):
+    try:
+        f = float(val)
+    except Exception:
+        return str(val)
+    try:
+        if not math.isfinite(f):
+            return str(f)
+    except Exception:
+        return str(f)
+    if abs(f) >= 1000 or (0 < abs(f) < 1e-4):
+        return f"{f:.3e}"
+    return f"{f:.4f}"
+
+def _format_dict_short(data):
+    if not isinstance(data, dict) or not data:
+        return "{}" if not data else str(data)
+    parts = []
+    for key in sorted(data.keys()):
+        parts.append(f"{key}:{_format_float_short(data[key])}")
+    return "{" + ", ".join(parts) + "}"
+
+def _call_entry_distance_safe(strat, t, sym, row):
+    fn = getattr(strat, 'entry_distance', None)
+    if not callable(fn):
+        return None
+    try:
+        return fn(t, sym, row, breadth=getattr(strat, '_last_breadth', 1.0))
+    except TypeError:
+        try:
+            return fn(t, sym, row)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+def _call_best_entry_distance_safe(strat, t, md_slice, symbols=None):
+    fn = getattr(strat, 'best_entry_distance', None)
+    if not callable(fn):
+        return None
+    try:
+        if symbols is None:
+            return fn(t, md_slice)
+        return fn(t, md_slice, symbols=symbols)
+    except TypeError:
+        try:
+            if symbols is None:
+                return fn(t, md_slice)
+            return fn(t, md_slice, symbols)
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+def _log_heat_best(label, dist):
+    if not isinstance(dist, dict) or not dist:
+        return
+    sym = dist.get('symbol') or dist.get('sym') or '??'
+    gap = dist.get('combined_gap')
+    heat = None
+    try:
+        if gap is not None:
+            heat = max(0.0, min(1.0, 1.0 - float(gap)))
+    except Exception:
+        heat = None
+    reason = dist.get('reason') or '-'
+    parts = [
+        f"[heat.best {label}]",
+        str(sym),
+    ]
+    if gap is not None:
+        parts.append(f"gap={_format_float_short(gap)}")
+    if heat is not None:
+        parts.append(f"heat={_format_float_short(heat)}")
+    if reason:
+        parts.append(f"reason={reason}")
+    parts.append(f"gaps={_format_dict_short(dist.get('gaps') or {})}")
+    parts.append(f"actuals={_format_dict_short(dist.get('actuals') or {})}")
+    parts.append(f"thresholds={_format_dict_short(dist.get('thresholds') or {})}")
+    cprint(*parts, fg='cyan', dim=True)
+
+def _log_heat_distances(label, strat, t, md, symbols, limit, uni_set=None):
+    if not symbols:
+        cprint(f"[heat.dist {label}]", "no symbols", fg='yellow', dim=True)
+        return
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 0
+    if limit <= 0:
+        limit = len(symbols)
+    count = 0
+    for sym in symbols:
+        if count >= limit:
+            break
+        row = md.get(sym)
+        if row is None:
+            continue
+        dist = _call_entry_distance_safe(strat, t, sym, row)
+        if not isinstance(dist, dict):
+            continue
+        parts = [f"[heat.dist {label}]", str(sym)]
+        if uni_set is not None and label == 'pre':
+            parts.append(f"in_uni={'Y' if sym in uni_set else 'N'}")
+        gap = dist.get('combined_gap')
+        if gap is not None:
+            parts.append(f"gap={_format_float_short(gap)}")
+        reason = dist.get('reason')
+        if reason:
+            parts.append(f"reason={reason}")
+        parts.append(f"gaps={_format_dict_short(dist.get('gaps') or {})}")
+        parts.append(f"actuals={_format_dict_short(dist.get('actuals') or {})}")
+        parts.append(f"thresholds={_format_dict_short(dist.get('thresholds') or {})}")
+        cprint(*parts, fg=('blue' if label == 'pre' else 'green'), dim=True)
+        count += 1
+    if count == 0:
+        cprint(f"[heat.dist {label}]", "no distances", fg='yellow', dim=True)
+
 def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=None):
     ts = datetime.now(timezone.utc).isoformat()
     px = px_hint or fetcher.fetch_ticker_price(sym)
@@ -1222,10 +1340,35 @@ def run_live(cfg: dict, args):
                             pass
                         save_positions(args.results_dir, positions)
 
+            md_symbols = list(md.keys())
+            heat_debug_enabled = bool(getattr(args, 'heat_report', False))
+            pre_rank_syms = []
+            if heat_debug_enabled and hasattr(strat, 'rank'):
+                try:
+                    pre_rank_syms = strat.rank(bar_close, md, md_symbols)
+                except Exception as e:
+                    cprint('[heat.debug]', f'rank(all) failed: {e}', fg='yellow', dim=True)
+                    pre_rank_syms = []
+
             uni = strat.universe(bar_close, md)
             # Strategy already enforces its own top_n; avoid double-slicing
             ranked = strat.rank(bar_close, md, uni)
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
+            if heat_debug_enabled:
+                debug_limit = top_n if top_n > 0 else 10
+                if debug_limit <= 0:
+                    debug_limit = 10
+                uni_set = set(uni or [])
+                pre_syms = pre_rank_syms or md_symbols
+                _log_heat_distances('pre', strat, bar_close, md, pre_syms, debug_limit, uni_set=uni_set)
+                _log_heat_distances('post', strat, bar_close, md, ranked, debug_limit)
+                best_all = _call_best_entry_distance_safe(strat, bar_close, md, symbols=md_symbols)
+                if best_all:
+                    _log_heat_best('pre', best_all)
+                if uni:
+                    best_uni = _call_best_entry_distance_safe(strat, bar_close, md, symbols=uni)
+                    if best_uni:
+                        _log_heat_best('post', best_uni)
             opened = 0
             equity = get_account_equity(fetcher)
             position_notional = sum(
