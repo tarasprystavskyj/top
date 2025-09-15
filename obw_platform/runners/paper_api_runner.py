@@ -324,6 +324,14 @@ def run_paper_api(cfg: Mapping[str, Any], args):
             for sym in ranked:
                 curr_equity = float(equity) if equity else float(initial_equity)
                 if position_notional + notional > max_notional_frac * curr_equity:
+                    cprint(
+                        '[skip]',
+                        sym,
+                        '-',
+                        f"budget cap reached (equity={_fmt_float(equity)}, pos={_fmt_float(notional)})",
+                        fg='yellow',
+                        dim=True,
+                    )
                     break
                 row = md.get(sym)
                 if not row:

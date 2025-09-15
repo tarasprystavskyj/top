@@ -1187,7 +1187,10 @@ def run_live(cfg: dict, args):
                 # Use CURRENT equity (fallback to initial if exchange returns 0)
                 curr_equity = float(equity) if equity else float(initial_equity)
                 if position_notional + notional > max_notional_frac * curr_equity:
-                    log_skip_reason(sym, 'budget cap reached')
+                    log_skip_reason(
+                        sym,
+                        f"budget cap reached (equity={float(equity):.2f}, pos={notional:.2f})",
+                    )
                     break
                 row = md.get(sym)
                 if row is None:
