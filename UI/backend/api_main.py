@@ -277,6 +277,7 @@ def _update_perf_profile(duration: float, limit_bars: int, symbol_count: int) ->
         _save_perf_stats({"per_100_per_symbol": new_val, "samples": samples + 1})
 
 
+
 # --- helpers: live equity from session.sqlite --------------------------------
 def _session_equity_df(session_db):
     import sqlite3, json, pandas as pd, numpy as np

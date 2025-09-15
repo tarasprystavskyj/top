@@ -535,16 +535,53 @@ def main():
 
 
     cur_yaml = Path(args.cfg)
-    for i, (mode, params) in enumerate(plan, 1):
+    for i, stage in enumerate(plan, 1):
+        mode = params = None
+        # Allow stages expressed as tuples/lists, dicts, or mappings with extra fields
+        if isinstance(stage, (list, tuple)):
+            if len(stage) >= 2:
+                mode, params = stage[0], stage[1]
+            elif len(stage) == 1 and isinstance(stage[0], dict) and len(stage[0]) == 1:
+                mode, params = next(iter(stage[0].items()))
+        elif isinstance(stage, dict):
+            if len(stage) == 1:
+                mode, params = next(iter(stage.items()))
+
+        if mode is None or params is None:
+            print(f"[plan] malformed stage {i}: {stage}; skipping")
+            continue
+
         prefix = f"{args.prefix}_s{i}_{mode}"
         if not params:
             print(f"[{mode}] no parameters provided; skipping stage {i}")
             continue
+
         if mode == "rays":
             (pname, cand) = list(params.items())[0]
-            base, rays_results = do_rays(base, args.limit_bars, pname, cand, prefix, log_csv, weights, args.min_trades, args.target_trades, args.jobs)
+            base, rays_results = do_rays(
+                base,
+                args.limit_bars,
+                pname,
+                cand,
+                prefix,
+                log_csv,
+                weights,
+                args.min_trades,
+                args.target_trades,
+                args.jobs,
+            )
         elif mode == "grid":
-            base, grid_results = do_grid(base, args.limit_bars, params, prefix, log_csv, weights, args.min_trades, args.target_trades, args.jobs)
+            base, grid_results = do_grid(
+                base,
+                args.limit_bars,
+                params,
+                prefix,
+                log_csv,
+                weights,
+                args.min_trades,
+                args.target_trades,
+                args.jobs,
+            )
         else:
             raise ValueError(mode)
 

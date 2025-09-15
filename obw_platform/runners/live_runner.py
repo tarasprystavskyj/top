@@ -19,6 +19,8 @@ try:
     from .common import cprint as _cprint
 except Exception:
     _cprint = None
+
+
 def cprint(*parts, fg: str = "", bold: bool = False, dim: bool = False, file=None, end="\n", flush=False):
     if _cprint:
         return _cprint(*parts, fg=fg, bold=bold, dim=dim, file=file, end=end, flush=flush)
@@ -168,6 +170,49 @@ def _log_heat_distances(label, strat, t, md, symbols, limit, uni_set=None):
         count += 1
     if count == 0:
         cprint(f"[heat.dist {label}]", "no distances", fg='yellow', dim=True)
+
+
+def _log_heat_debug_snapshot(
+    strat,
+    bar_close,
+    md,
+    md_symbols,
+    pre_rank_syms,
+    universe_syms,
+    ranked_syms,
+    top_n,
+):
+    try:
+        debug_limit = int(top_n)
+    except Exception:
+        try:
+            debug_limit = int(float(top_n))
+        except Exception:
+            debug_limit = 0
+    if debug_limit <= 0:
+        debug_limit = 10
+    pre_syms = list(pre_rank_syms or [])
+    if not pre_syms:
+        pre_syms = list(md_symbols or [])
+    uni_set = set(universe_syms or [])
+    cprint(
+        '[heat.debug]',
+        f'limit={debug_limit}',
+        f'pre_candidates={len(pre_syms)}',
+        f'post_candidates={len(ranked_syms or [])}',
+        fg='cyan',
+        dim=True,
+    )
+    _log_heat_distances('pre', strat, bar_close, md, pre_syms, debug_limit, uni_set=uni_set)
+    _log_heat_distances('post', strat, bar_close, md, ranked_syms or [], debug_limit)
+    best_all = _call_best_entry_distance_safe(strat, bar_close, md, symbols=md_symbols)
+    if best_all:
+        _log_heat_best('pre', best_all)
+    if universe_syms:
+        best_uni = _call_best_entry_distance_safe(strat, bar_close, md, symbols=universe_syms)
+        if best_uni:
+            _log_heat_best('post', best_uni)
+
 
 def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=None):
     ts = datetime.now(timezone.utc).isoformat()
@@ -1346,20 +1391,47 @@ def run_live(cfg: dict, args):
             if heat_debug_enabled and hasattr(strat, 'rank'):
                 try:
                     pre_rank_syms = strat.rank(bar_close, md, md_symbols)
+                    if pre_rank_syms is None:
+                        pre_rank_syms = []
+                    else:
+                        pre_rank_syms = list(pre_rank_syms)
                 except Exception as e:
                     cprint('[heat.debug]', f'rank(all) failed: {e}', fg='yellow', dim=True)
                     pre_rank_syms = []
 
-            uni = strat.universe(bar_close, md)
+            uni_raw = strat.universe(bar_close, md)
+            uni = list(uni_raw) if uni_raw is not None else []
             # Strategy already enforces its own top_n; avoid double-slicing
-            ranked = strat.rank(bar_close, md, uni)
+            ranked_raw = strat.rank(bar_close, md, uni)
+            ranked = list(ranked_raw) if ranked_raw is not None else []
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
             if heat_debug_enabled:
+                try:
+                    _log_heat_debug_snapshot(
+                        strat,
+                        bar_close,
+                        md,
+                        md_symbols,
+                        pre_rank_syms,
+                        uni,
+                        ranked,
+                        top_n,
+                    )
+                except Exception as exc:
+                    cprint('[heat.debug]', f'log failed: {exc}', fg='yellow', dim=True)
                 debug_limit = top_n if top_n > 0 else 10
                 if debug_limit <= 0:
                     debug_limit = 10
                 uni_set = set(uni or [])
-                pre_syms = pre_rank_syms or md_symbols
+               pre_syms = pre_rank_syms if pre_rank_syms else md_symbols
+                cprint(
+                    '[heat.debug]',
+                    f'limit={debug_limit}',
+                    f'pre_candidates={len(pre_syms)}',
+                    f'post_candidates={len(ranked)}',
+                    fg='cyan',
+                    dim=True,
+                )
                 _log_heat_distances('pre', strat, bar_close, md, pre_syms, debug_limit, uni_set=uni_set)
                 _log_heat_distances('post', strat, bar_close, md, ranked, debug_limit)
                 best_all = _call_best_entry_distance_safe(strat, bar_close, md, symbols=md_symbols)
