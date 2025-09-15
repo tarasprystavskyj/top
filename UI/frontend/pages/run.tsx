@@ -392,7 +392,6 @@ export default function Run() {
   const jobCacheLabel = jobStatus?.cache_db_label || jobStatus?.cache_db || null;
   const configDirty = cfg !== '' && configText !== configOriginalText;
 
-  const isReadOnly = !!router.query.id;
   const hasCustomCacheDb = cacheDb !== '' && !cacheDbs.some(opt => opt.path === cacheDb);
   const displayedCacheDbs: CacheDbOption[] = hasCustomCacheDb
     ? [...cacheDbs, { name: `Custom: ${cacheDb}`, path: cacheDb }]
