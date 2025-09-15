@@ -181,7 +181,8 @@ def _log_heat_debug_snapshot(
     universe_syms,
     ranked_syms,
     top_n,
-):
+    *,
+    log_pre: bool = False,):
     try:
         debug_limit = int(top_n)
     except Exception:
@@ -194,7 +195,7 @@ def _log_heat_debug_snapshot(
     pre_syms = list(pre_rank_syms or [])
     if not pre_syms:
         pre_syms = list(md_symbols or [])
-    uni_set = set(universe_syms or [])
+    uni_set = set(universe_syms or []) if log_pre else None
     cprint(
         '[heat.debug]',
         f'limit={debug_limit}',
@@ -203,7 +204,8 @@ def _log_heat_debug_snapshot(
         fg='cyan',
         dim=True,
     )
-    _log_heat_distances('pre', strat, bar_close, md, pre_syms, debug_limit, uni_set=uni_set)
+    if log_pre:
+        _log_heat_distances('pre', strat, bar_close, md, pre_syms, debug_limit, uni_set=uni_set)
     _log_heat_distances('post', strat, bar_close, md, ranked_syms or [], debug_limit)
     best_all = _call_best_entry_distance_safe(strat, bar_close, md, symbols=md_symbols)
     if best_all:
@@ -212,7 +214,6 @@ def _log_heat_debug_snapshot(
         best_uni = _call_best_entry_distance_safe(strat, bar_close, md, symbols=universe_syms)
         if best_uni:
             _log_heat_best('post', best_uni)
-
 
 def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=None):
     ts = datetime.now(timezone.utc).isoformat()
@@ -1386,9 +1387,10 @@ def run_live(cfg: dict, args):
                         save_positions(args.results_dir, positions)
 
             md_symbols = list(md.keys())
-            heat_debug_enabled = bool(getattr(args, 'heat_report', False))
+            heat_report_enabled = bool(getattr(args, 'heat_report', False))
+            heat_debug_verbose = bool(heat_report_enabled and getattr(args, 'debug', False))
             pre_rank_syms = []
-            if heat_debug_enabled and hasattr(strat, 'rank'):
+            if heat_report_enabled and hasattr(strat, 'rank'):
                 try:
                     pre_rank_syms = strat.rank(bar_close, md, md_symbols)
                     if pre_rank_syms is None:
@@ -1405,7 +1407,7 @@ def run_live(cfg: dict, args):
             ranked_raw = strat.rank(bar_close, md, uni)
             ranked = list(ranked_raw) if ranked_raw is not None else []
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
-            if heat_debug_enabled:
+            if heat_report_enabled:
                 try:
                     _log_heat_debug_snapshot(
                         strat,
@@ -1416,6 +1418,7 @@ def run_live(cfg: dict, args):
                         uni,
                         ranked,
                         top_n,
+                        log_pre=heat_debug_verbose,
                     )
                 except Exception as exc:
                     cprint('[heat.debug]', f'log failed: {exc}', fg='yellow', dim=True)
