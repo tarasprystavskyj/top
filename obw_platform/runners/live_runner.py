@@ -1170,7 +1170,8 @@ def run_live(cfg: dict, args):
                         save_positions(args.results_dir, positions)
 
             uni = strat.universe(bar_close, md)
-            ranked = strat.rank(bar_close, md, uni)[:top_n]
+            # Strategy already enforces its own top_n; avoid double-slicing
+            ranked = strat.rank(bar_close, md, uni)
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
             opened = 0
             equity = get_account_equity(fetcher)
@@ -1183,7 +1184,9 @@ def run_live(cfg: dict, args):
                     _dbg(sym, 'skip: already tracked')
                     log_skip_reason(sym, 'already open by THIS bot')
                     continue
-                if position_notional + notional > max_notional_frac * initial_equity:
+                # Use CURRENT equity (fallback to initial if exchange returns 0)
+                curr_equity = float(equity) if equity else float(initial_equity)
+                if position_notional + notional > max_notional_frac * curr_equity:
                     log_skip_reason(sym, 'budget cap reached')
                     break
                 row = md.get(sym)
