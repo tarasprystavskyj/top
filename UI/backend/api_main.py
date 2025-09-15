@@ -150,6 +150,7 @@ def _session_closed_trades(session_db):
     """Return closed trades from session.sqlite as a list of dicts."""
     import sqlite3
     import pandas as pd
+    import numpy as np
 
     if not os.path.exists(session_db):
         return None
@@ -184,6 +185,16 @@ def _session_closed_trades(session_db):
     con.close()
     if df.empty:
         return None
+    for c in ("qty", "entry_fill", "exit_fill", "fees_paid"):
+        if c in df:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    df["realised_pnl"] = np.where(
+        df["side"].str.upper() == "LONG",
+        (df["exit_fill"] - df["entry_fill"]) * df["qty"],
+        (df["entry_fill"] - df["exit_fill"]) * df["qty"],
+    )
+    if has_fees and "fees_paid" in df:
+        df["realised_pnl"] = df["realised_pnl"] - df["fees_paid"]
     return df.to_dict(orient="records")
 
 
@@ -717,6 +728,18 @@ def live_result(name: str, debug: int = Query(0)):
             import csv
             with open(trades_csv) as f:
                 live_trades = list(csv.DictReader(f))
+            for t in live_trades:
+                try:
+                    entry = float(t.get("entry_fill") or 0)
+                    exit_ = float(t.get("exit_fill") or 0)
+                    qty = float(t.get("qty") or 0)
+                    side = str(t.get("side") or "").upper()
+                    fees = float(t.get("fees_paid") or 0)
+                    pnl = (exit_ - entry) * qty if side == "LONG" else (entry - exit_) * qty
+                    pnl -= fees
+                    t["realised_pnl"] = pnl
+                except Exception:
+                    continue
         except Exception:
             log.exception("live_result %s: failed to parse trades.csv", name)
 

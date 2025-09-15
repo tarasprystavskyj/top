@@ -238,13 +238,16 @@ export default function LiveResult() {
                           </tr>
                         </thead>
                         <tbody>
-                          {liveTrades.map((t, i) => (
-                            <tr key={i}>
-                              {Object.keys(liveTrades[0]).map(k => (
-                                <td key={k}>{formatVal(t[k])}</td>
-                              ))}
-                            </tr>
-                          ))}
+                          {liveTrades.map((t, i) => {
+                            const pnl = Number((t as any).realised_pnl);
+                            return (
+                              <tr key={i} style={pnl > 0 ? { backgroundColor: '#d4edda' } : undefined}>
+                                {Object.keys(liveTrades[0]).map(k => (
+                                  <td key={k}>{formatVal(t[k])}</td>
+                                ))}
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -312,13 +315,16 @@ export default function LiveResult() {
                     </tr>
                   </thead>
                   <tbody>
-                    {liveTrades.map((t, i) => (
-                      <tr key={i}>
-                        {Object.keys(liveTrades[0]).map(k => (
-                          <td key={k}>{formatVal(t[k])}</td>
-                        ))}
-                      </tr>
-                    ))}
+                    {liveTrades.map((t, i) => {
+                      const pnl = Number((t as any).realised_pnl);
+                      return (
+                        <tr key={i} style={pnl > 0 ? { backgroundColor: '#d4edda' } : undefined}>
+                          {Object.keys(liveTrades[0]).map(k => (
+                            <td key={k}>{formatVal(t[k])}</td>
+                          ))}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
