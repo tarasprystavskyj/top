@@ -306,7 +306,8 @@ def run_paper_api(cfg: Mapping[str, Any], args):
 
             # ---- Entries (strategy) ----
             uni = strat.universe(bar_close, md)
-            ranked = strat.rank(bar_close, md, uni)[:top_n]
+            # Strategy already enforces its own top_n; avoid double-slicing
+            ranked = strat.rank(bar_close, md, uni)
 
             # save decisions (for UI)
             try:
@@ -314,8 +315,23 @@ def run_paper_api(cfg: Mapping[str, Any], args):
             except Exception:
                 pass
 
+            equity = pf.mark_equity(price_map)
+            position_notional = sum(p.notional for p in pf.positions)
+            notional = float(port_cfg.get('position_notional', pf.default_notional))
+            max_notional_frac = float(port_cfg.get('max_notional_frac', 0.5))
+            initial_equity = float(port_cfg.get('initial_equity', pf.initial_equity))
+
             for sym in ranked:
-                if not pf.can_open(port_cfg, price_map=price_map):
+                curr_equity = float(equity) if equity else float(initial_equity)
+                if position_notional + notional > max_notional_frac * curr_equity:
+                    cprint(
+                        '[skip]',
+                        sym,
+                        '-',
+                        f"budget cap reached (equity={_fmt_float(equity)}, pos={_fmt_float(notional)})",
+                        fg='yellow',
+                        dim=True,
+                    )
                     break
                 row = md.get(sym)
                 if not row:
@@ -340,6 +356,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     except Exception:
                         qty = 0.0
                     setattr(pos, 'qty', qty)
+                position_notional += float(getattr(pos, 'notional', notional))
 
                 insert_order_row(orders_db, {
                     'order_id': str(uuid.uuid4()),
