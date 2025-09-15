@@ -183,27 +183,80 @@ def get_account_equity(fetcher: CCXTFetcher) -> float:
     except Exception as e:
         cprint('[balance fetch]', e, fg='red')
         return 0.0
+    def _as_float(v):
+        try:
+            if v is not None and v != "":
+                return float(v)
+        except Exception:
+            pass
+        return None
+
+    def _pick(d: dict, paths: tuple):
+        for path in paths:
+            cur = d
+            ok = True
+            for key in path:
+                if isinstance(cur, dict) and key in cur:
+                    cur = cur[key]
+                else:
+                    ok = False
+                    break
+            if ok:
+                fv = _as_float(cur)
+                if fv is not None:
+                    return fv
+        return None
+
     try:
         if isinstance(bal, dict):
-            total = bal.get('total')
-            if isinstance(total, dict):
-                for k in ('USDT', 'USD', 'USDC', 'BUSD'):
-                    v = total.get(k)
-                    if v is not None:
-                        return float(v)
-            for k in ('equity', 'total'):
-                v = bal.get(k)
-                if isinstance(v, (int, float)):
-                    return float(v)
+            # explicit stablecoins preferred
+            currency_paths = [
+                ('total', cur) for cur in ('USDT', 'USD', 'USDC', 'BUSD')
+            ] + [
+                (cur, fld) for cur in ('USDT', 'USD', 'USDC', 'BUSD')
+                for fld in ('equity', 'total', 'free', 'balance', 'walletBalance', 'availableBalance', 'cashBal')
+            ]
+            v = _pick(bal, currency_paths)
+            if v is not None:
+                return v
+
+            v = _pick(bal, [('equity',), ('total',), ('balance',), ('walletBalance',), ('availableBalance',), ('cashBal',)])
+            if v is not None:
+                return v
+
             info = bal.get('info')
             if isinstance(info, dict):
-                for k in ('equity', 'total'):
-                    v = info.get(k)
-                    if v is not None:
-                        try:
-                            return float(v)
-                        except Exception:
-                            pass
+                v = _pick(
+                    info,
+                    [('equity',), ('total',), ('balance',), ('walletBalance',), ('availableBalance',), ('cashBal',)]
+                    + [
+                        (cur, fld)
+                        for cur in ('USDT', 'USD', 'USDC', 'BUSD')
+                        for fld in (
+                            'equity', 'total', 'balance', 'walletBalance', 'availableBalance', 'cashBal'
+                        )
+                    ],
+                )
+                if v is not None:
+                    return v
+
+                if isinstance(info.get('balances'), list):
+                    for entry in info['balances']:
+                        if not isinstance(entry, dict):
+                            continue
+                        asset = str(
+                            entry.get('asset')
+                            or entry.get('currency')
+                            or entry.get('coin')
+                            or ''
+                        ).upper()
+                        if asset in ('USDT', 'USD', 'USDC', 'BUSD'):
+                            for fld in (
+                                'equity', 'total', 'balance', 'walletBalance', 'availableBalance', 'cashBal'
+                            ):
+                                fv = _as_float(entry.get(fld))
+                                if fv is not None:
+                                    return fv
     except Exception:
         pass
     return 0.0
