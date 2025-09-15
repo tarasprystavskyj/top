@@ -967,6 +967,29 @@ def run_live(cfg: dict, args):
             allow = []
         all_syms = sorted(set(fetcher.by_base.values()))
         universe = [s for s in all_syms if (not allow or s in allow)]
+
+        # sync local positions with exchange; drop stale entries and update qty
+        sync_map = get_exchange_open_positions(fetcher) if positions else {}
+        sync_changed = False
+        for sym, rec in list(positions.items()):
+            ex_rec = sync_map.get(sym)
+            if not ex_rec or float(ex_rec.get('qty', 0.0)) <= 0.0:
+                cprint('[desync-miss]', sym, 'NOT found on exchange -> closing locally', fg='yellow')
+                mark_closed_now(fetcher, session_db_path, bot_id, sym, rec.get('order_id'))
+                positions.pop(sym, None)
+                sync_changed = True
+                continue
+            ex_qty = float(ex_rec.get('qty', 0.0))
+            try:
+                cur_qty = float(rec.get('qty', 0.0))
+            except Exception:
+                cur_qty = 0.0
+            if abs(ex_qty - cur_qty) > max(1e-8, 0.01 * max(1.0, ex_qty)):
+                rec['qty'] = ex_qty
+                sync_changed = True
+        if sync_changed:
+            save_positions(args.results_dir, positions)
+
         for sym, rec in list(positions.items()):
             now = datetime.now(timezone.utc)
             bar_key = _bar_key(now, BAR_SECONDS)
