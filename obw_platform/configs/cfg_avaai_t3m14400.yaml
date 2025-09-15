@@ -16,7 +16,7 @@ strategy_params:
   atr_threshold_ratio: 0.0022
   tp_atr_mult: 3.8
   sl_atr_mult: 0.5
-  min_qv_24h: 20000
+  min_qv_24h: 10000
   min_qv_1h: 1000
   min_atr_ratio: 0.015
   min_momentum_sum: 0.036
