@@ -1365,7 +1365,7 @@ def run_live(cfg: dict, args):
                 if debug_limit <= 0:
                     debug_limit = 10
                 uni_set = set(uni or [])
-                pre_syms = pre_rank_syms if pre_rank_syms else md_symbols
+               pre_syms = pre_rank_syms if pre_rank_syms else md_symbols
                 cprint(
                     '[heat.debug]',
                     f'limit={debug_limit}',
