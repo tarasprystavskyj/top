@@ -16,6 +16,12 @@ type JobStatus = {
   elapsed_seconds?: number;
   symbol_count?: number;
   limit_bars?: number;
+  cfg_name?: string;
+  override?: Record<string, any>;
+  cache_db_label?: string;
+  cache_db?: string;
+  backtester?: string;
+  universe_file?: string;
 };
 
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -40,6 +46,17 @@ export default function Run() {
   const [cacheDbs, setCacheDbs] = useState<CacheDbOption[]>([]);
   const [cacheDb, setCacheDb] = useState('');
   const [spinnerIndex, setSpinnerIndex] = useState(0);
+  const [showConfigPanel, setShowConfigPanel] = useState(false);
+  const [configLoading, setConfigLoading] = useState(false);
+  const [configText, setConfigText] = useState('');
+  const [configOriginalText, setConfigOriginalText] = useState('');
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [configSaveError, setConfigSaveError] = useState<string | null>(null);
+  const [configSaveSuccess, setConfigSaveSuccess] = useState<string | null>(null);
+  const [configSaving, setConfigSaving] = useState(false);
+  const [configReloadKey, setConfigReloadKey] = useState(0);
+
+  const isReadOnly = typeof router.query.id === 'string';
 
   // if ?id=JOB_ID is present load that job's result
   useEffect(() => {
@@ -94,6 +111,58 @@ export default function Run() {
       .catch(() => setCacheDbs([]));
   }, []);
 
+  useEffect(() => {
+    if (!cfg) {
+      setConfigLoading(false);
+      setConfigText('');
+      setConfigOriginalText('');
+      setConfigError(null);
+      setConfigSaveError(null);
+      setConfigSaveSuccess(null);
+      return;
+    }
+    let cancelled = false;
+    async function loadConfig() {
+      setConfigLoading(true);
+      setConfigError(null);
+      setConfigSaveError(null);
+      setConfigSaveSuccess(null);
+      try {
+        const resp = await apiFetch(`/api/configs/${encodeURIComponent(cfg)}`);
+        let payload: any = null;
+        try {
+          payload = await resp.json();
+        } catch (parseErr) {
+          payload = null;
+        }
+        if (!resp.ok) {
+          const detail =
+            (payload && typeof payload.detail === 'string' && payload.detail) ||
+            (payload && typeof payload.message === 'string' && payload.message) ||
+            `Failed to load config (HTTP ${resp.status})`;
+          throw new Error(detail);
+        }
+        if (cancelled) return;
+        const text = typeof payload?.yaml_text === 'string' ? payload.yaml_text : '';
+        setConfigText(text);
+        setConfigOriginalText(text);
+      } catch (err) {
+        if (cancelled) return;
+        setConfigError(err instanceof Error ? err.message : 'Failed to load config');
+        setConfigText('');
+        setConfigOriginalText('');
+      } finally {
+        if (!cancelled) {
+          setConfigLoading(false);
+        }
+      }
+    }
+    loadConfig();
+    return () => {
+      cancelled = true;
+    };
+  }, [cfg, configReloadKey]);
+
   async function start() {
     const override: Record<string, any> = {};
     if (universe) {
@@ -123,6 +192,50 @@ export default function Run() {
     setRes(null);
     setErrMsg(null);
     setLogs('');
+  }
+
+  async function saveConfig() {
+    if (!cfg) return;
+    setConfigSaving(true);
+    setConfigSaveError(null);
+    setConfigSaveSuccess(null);
+    try {
+      const resp = await apiFetch(`/api/configs/${encodeURIComponent(cfg)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ yaml_text: configText }),
+      });
+      let payload: any = null;
+      try {
+        payload = await resp.json();
+      } catch (parseErr) {
+        payload = null;
+      }
+      if (!resp.ok) {
+        const detail =
+          (payload && typeof payload.detail === 'string' && payload.detail) ||
+          (payload && typeof payload.message === 'string' && payload.message) ||
+          `Failed to save config (HTTP ${resp.status})`;
+        throw new Error(detail);
+      }
+      setConfigOriginalText(configText);
+      setConfigSaveSuccess('Saved');
+    } catch (err) {
+      setConfigSaveError(err instanceof Error ? err.message : 'Failed to save config');
+    } finally {
+      setConfigSaving(false);
+    }
+  }
+
+  function resetConfig() {
+    setConfigText(configOriginalText);
+    setConfigSaveError(null);
+    setConfigSaveSuccess(null);
+  }
+
+  function reloadConfig() {
+    if (!cfg) return;
+    setConfigReloadKey(prev => prev + 1);
   }
 
   useEffect(() => {
@@ -167,6 +280,54 @@ export default function Run() {
         .catch(() => {});
     }
   }, [res, debug, errMsg]);
+
+  useEffect(() => {
+    if (!jobStatus) return;
+    const statusCfg = jobStatus.cfg_name;
+    if (statusCfg) {
+      if (!cfg || (isReadOnly && cfg !== statusCfg)) {
+        setCfg(statusCfg);
+      }
+    }
+    if (isReadOnly) {
+      const statusCache = jobStatus.cache_db_label || jobStatus.cache_db;
+      if (statusCache && cacheDb !== statusCache) {
+        setCacheDb(statusCache);
+      }
+      const statusUniverse =
+        extractUniverseName(jobStatus.override) || extractUniverseName(jobStatus.universe_file);
+      if (statusUniverse && universe !== statusUniverse) {
+        setUniverse(statusUniverse);
+      }
+      if (jobStatus.backtester && backtester !== jobStatus.backtester) {
+        setBacktester(jobStatus.backtester);
+      }
+    }
+  }, [jobStatus, isReadOnly, cfg, cacheDb, universe, backtester]);
+
+  useEffect(() => {
+    if (!res) return;
+    const resultCfg = res.cfg_name;
+    if (resultCfg) {
+      if (!cfg || (isReadOnly && cfg !== resultCfg)) {
+        setCfg(resultCfg);
+      }
+    }
+    if (isReadOnly) {
+      const resultCache = res.cache_db_label || res.cache_db;
+      if (resultCache && cacheDb !== resultCache) {
+        setCacheDb(resultCache);
+      }
+      const resultUniverse =
+        extractUniverseName(res.override) || extractUniverseName(res.universe_file);
+      if (resultUniverse && universe !== resultUniverse) {
+        setUniverse(resultUniverse);
+      }
+      if (res.backtester && backtester !== res.backtester) {
+        setBacktester(res.backtester);
+      }
+    }
+  }, [res, isReadOnly, cfg, cacheDb, universe, backtester]);
 
   useEffect(() => {
     if (!jobStatus) {
@@ -226,6 +387,10 @@ export default function Run() {
     !!jobStatus &&
     (jobStatus.status === 'running' || jobStatus.status === 'queued') &&
     ((totalExpectedSeconds ?? jobStatus.elapsed_seconds ?? 0) > 5);
+  const jobUniverseName =
+    extractUniverseName(jobStatus?.override) || extractUniverseName(jobStatus?.universe_file);
+  const jobCacheLabel = jobStatus?.cache_db_label || jobStatus?.cache_db || null;
+  const configDirty = cfg !== '' && configText !== configOriginalText;
 
   const isReadOnly = !!router.query.id;
   const hasCustomCacheDb = cacheDb !== '' && !cacheDbs.some(opt => opt.path === cacheDb);
@@ -235,6 +400,118 @@ export default function Run() {
 
   return (
     <div>
+      <button
+        onClick={() => setShowConfigPanel(prev => !prev)}
+        style={{
+          position: 'fixed',
+          top: '10px',
+          right: '10px',
+          zIndex: 1100,
+          padding: '6px 12px',
+        }}
+      >
+        {showConfigPanel ? 'Hide Config Editor' : 'Edit Config'}
+      </button>
+      {showConfigPanel && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            width: 'min(420px, 90vw)',
+            height: '100%',
+            background: '#fff',
+            borderLeft: '1px solid #ddd',
+            boxShadow: '-2px 0 8px rgba(0,0,0,0.15)',
+            zIndex: 1050,
+            display: 'flex',
+            flexDirection: 'column',
+            padding: '16px',
+            gap: '8px',
+            boxSizing: 'border-box',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <h4 style={{ margin: 0 }}>Config Editor</h4>
+            <button onClick={() => setShowConfigPanel(false)}>Close</button>
+          </div>
+          {cfg ? (
+            configLoading ? (
+              <div>Loading config...</div>
+            ) : (
+              <>
+                <div style={{ fontSize: '0.9em', color: '#555' }}>
+                  Editing: <code>{cfg}</code>
+                </div>
+                {configError ? (
+                  <div style={{ color: 'red' }}>
+                    {configError}
+                    <div style={{ marginTop: '6px' }}>
+                      <button onClick={reloadConfig} disabled={configSaving}>
+                        Retry
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <textarea
+                      value={configText}
+                      onChange={e => {
+                        setConfigText(e.target.value);
+                        setConfigSaveError(null);
+                        setConfigSaveSuccess(null);
+                      }}
+                      style={{
+                        flexGrow: 1,
+                        width: '100%',
+                        minHeight: '200px',
+                        fontFamily: 'monospace',
+                        fontSize: '0.9em',
+                        lineHeight: 1.4,
+                        padding: '8px',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: '8px',
+                      }}
+                    >
+                      <button onClick={saveConfig} disabled={!configDirty || configSaving}>
+                        Save
+                      </button>
+                      <button onClick={resetConfig} disabled={!configDirty || configSaving}>
+                        Reset
+                      </button>
+                      <button onClick={reloadConfig} disabled={configSaving || configLoading}>
+                        Reload
+                      </button>
+                      {configSaving && <span>Saving...</span>}
+                      {configSaveSuccess && (
+                        <span style={{ color: 'green' }}>{configSaveSuccess}</span>
+                      )}
+                      {configSaveError && (
+                        <span style={{ color: 'red' }}>{configSaveError}</span>
+                      )}
+                    </div>
+                  </>
+                )}
+              </>
+            )
+          ) : (
+            <div>Select a config to view and edit.</div>
+          )}
+        </div>
+      )}
       <h3>Run Backtest</h3>
       {!isReadOnly && (
         <div>
@@ -368,6 +645,22 @@ export default function Run() {
                   fontSize: '0.85em',
                 }}
               >
+                {jobStatus.cfg_name && (
+                  <span>
+                    Config: <code>{jobStatus.cfg_name}</code>
+                  </span>
+                )}
+                {jobUniverseName && (
+                  <span>
+                    Universe: <code>{jobUniverseName}</code>
+                  </span>
+                )}
+                {jobCacheLabel && (
+                  <span>
+                    Cache DB: <code>{jobCacheLabel}</code>
+                  </span>
+                )}
+                {jobStatus.backtester && <span>Backtester: {jobStatus.backtester}</span>}
                 {jobStatus.limit_bars != null && <span>Bars: {jobStatus.limit_bars}</span>}
                 {jobStatus.symbol_count != null && <span>Symbols: {jobStatus.symbol_count}</span>}
                 {jobStatus.elapsed_seconds != null && (
@@ -501,5 +794,39 @@ function formatDuration(seconds?: number | null) {
 function formatVal(v: any) {
   const num = Number(v);
   return isNaN(num) ? v : num.toFixed(3);
+}
+
+function extractUniverseName(source: any): string | null {
+  if (!source) return null;
+  const candidates: string[] = [];
+  if (typeof source === 'string') {
+    candidates.push(source);
+  } else if (typeof source === 'object') {
+    if (typeof source.symbols_file === 'string') {
+      candidates.push(source.symbols_file);
+    }
+    if (typeof source.universe_file === 'string') {
+      candidates.push(source.universe_file);
+    }
+    const nested = (source as any).universe;
+    if (nested && typeof nested === 'object') {
+      if (typeof nested.file === 'string') {
+        candidates.push(nested.file);
+      }
+      if (typeof nested.path === 'string') {
+        candidates.push(nested.path);
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const normalized = String(candidate).replace(/\\/g, '/');
+    const parts = normalized.split('/');
+    const last = parts[parts.length - 1];
+    if (last) {
+      return last;
+    }
+  }
+  return null;
 }
 

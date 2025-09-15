@@ -277,7 +277,6 @@ def _update_perf_profile(duration: float, limit_bars: int, symbol_count: int) ->
         _save_perf_stats({"per_100_per_symbol": new_val, "samples": samples + 1})
 
 
-
 # --- helpers: live equity from session.sqlite --------------------------------
 def _session_equity_df(session_db):
     import sqlite3, json, pandas as pd, numpy as np
@@ -900,6 +899,8 @@ def backtest(req: BacktestReq):
         meta["cache_db_label"] = cache_label
     if req_meta.get("debug"):
         meta["debug"] = True
+    if req_meta.get("override"):
+        meta["override"] = req_meta.get("override")
     meta["symbol_count"] = symbol_count
     meta["expected_duration_seconds"] = expected_duration
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
@@ -917,6 +918,34 @@ def status(job_id: str):
         "status": job_info.get("status"),
         "message": job_info.get("message"),
     }
+    meta = job_info.get("meta") or {}
+    if isinstance(meta, dict):
+        cfg_name = meta.get("cfg_name")
+        if isinstance(cfg_name, str):
+            resp["cfg_name"] = cfg_name
+        override = meta.get("override")
+        if isinstance(override, dict):
+            resp["override"] = override
+            if "universe_file" not in resp:
+                uni_val = override.get("symbols_file") or override.get("universe_file")
+                if isinstance(uni_val, str):
+                    resp["universe_file"] = uni_val
+                elif isinstance(override.get("universe"), dict):
+                    uni_obj = override["universe"]
+                    for key in ("file", "path"):
+                        val = uni_obj.get(key)
+                        if isinstance(val, str):
+                            resp["universe_file"] = val
+                            break
+        cache_label = meta.get("cache_db_label")
+        if cache_label:
+            resp["cache_db_label"] = cache_label
+        cache_path = meta.get("cache_db")
+        if cache_path:
+            resp["cache_db"] = cache_path
+        backtester = meta.get("backtester")
+        if isinstance(backtester, str):
+            resp["backtester"] = backtester
     timing = job_info.get("timing") or {}
     progress = job_info.get("progress")
     expected = timing.get("expected_duration")
@@ -985,22 +1014,66 @@ def result(job_id: str):
     resp: Dict[str, Any] = {"summary": summary, "trades": trades, "artifacts": arts}
     job_info = jobs.get(job_id) or {}
     job_meta = job_info.get("meta") or {}
-    if job_meta.get("debug"):
+    meta_path = os.path.join(out_dir, "meta.json")
+    file_meta: Dict[str, Any] = {}
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, "r") as mf:
+                loaded = json.load(mf)
+            if isinstance(loaded, dict):
+                file_meta = loaded
+        except Exception:
+            file_meta = {}
+    combined_meta: Dict[str, Any] = {}
+    if isinstance(file_meta, dict):
+        combined_meta.update(file_meta)
+    if isinstance(job_meta, dict):
+        combined_meta.update(job_meta)
+    cfg_name = combined_meta.get("cfg_name")
+    if isinstance(cfg_name, str):
+        resp["cfg_name"] = cfg_name
+    override_meta = combined_meta.get("override")
+    if isinstance(override_meta, dict):
+        resp["override"] = override_meta
+        if "universe_file" not in resp:
+            uni_val = override_meta.get("symbols_file") or override_meta.get("universe_file")
+            if isinstance(uni_val, str):
+                resp["universe_file"] = uni_val
+            elif isinstance(override_meta.get("universe"), dict):
+                uni_obj = override_meta["universe"]
+                for key in ("file", "path"):
+                    val = uni_obj.get(key)
+                    if isinstance(val, str):
+                        resp["universe_file"] = val
+                        break
+    cache_label = combined_meta.get("cache_db_label")
+    if cache_label:
+        resp["cache_db_label"] = cache_label
+    cache_path = combined_meta.get("cache_db")
+    if cache_path:
+        resp["cache_db"] = cache_path
+    backtester = combined_meta.get("backtester")
+    if isinstance(backtester, str):
+        resp["backtester"] = backtester
+    debug_enabled = bool((job_meta or {}).get("debug") or (file_meta or {}).get("debug"))
+    if debug_enabled:
         debug_info: Dict[str, Any] = {}
         cmd = job_info.get("cmd")
         if cmd:
             debug_info["cmd"] = cmd
-        cache_db = job_meta.get("cache_db")
+        cache_db = job_meta.get("cache_db") or combined_meta.get("cache_db")
         if cache_db:
             debug_info["cache_db"] = cache_db
             debug_info["cache_db_exists"] = os.path.isfile(cache_db)
-        cache_label = job_meta.get("cache_db_label")
+        cache_label = job_meta.get("cache_db_label") or combined_meta.get("cache_db_label")
         if cache_label and cache_label != cache_db:
             debug_info["cache_db_label"] = cache_label
-        symbol_count = job_meta.get("symbol_count")
+        symbol_count = job_meta.get("symbol_count") or combined_meta.get("symbol_count")
         if isinstance(symbol_count, (int, float)):
             debug_info["symbol_count"] = int(symbol_count)
-        expected_dbg = job_meta.get("expected_duration_seconds")
+        expected_dbg = job_meta.get("expected_duration_seconds") or combined_meta.get(
+            "expected_duration_seconds"
+        )
         timing_info = job_info.get("timing") or {}
         if isinstance(expected_dbg, (int, float)):
             debug_info["expected_duration_seconds"] = float(expected_dbg)
