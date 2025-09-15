@@ -257,21 +257,57 @@ class BreakoutAVAAIFull:
             if sl and close >= sl: return ExitSig("SL", exit_price=sl, reason="SL")
             if tp and close <= tp: return ExitSig("TP", exit_price=tp, reason="TP")
 
-        # Якщо немає потрібних даних — тримаємо
-        if entry is None or entry <= 0 or qty is None or qty <= 0:
+        if entry is None or entry <= 0:
             return ExitSig("HOLD")
 
-        # 2) Частковий TP (50%) — коли пройшли X% шляху до TP
-        if self.partial_tp_enable and tp:
-            path = (tp - entry) if side == "LONG" else (entry - tp)
-            prog = (close - entry) if side == "LONG" else (entry - close)
-            if path > 0 and prog >= self.partial_trigger_frac_of_tp * path:
-                part_qty = qty * self.partial_tp_frac
-                notional = part_qty * close
-                if (self.min_qty and part_qty < self.min_qty) or (notional < self.exchange_min_notional):
+        trigger_frac = max(0.0, float(self.partial_trigger_frac_of_tp))
+        path = prog = None
+        trigger_reached = False
+        if tp is not None:
+            if side == "LONG":
+                path = tp - entry
+                prog = close - entry
+            else:
+                path = entry - tp
+                prog = entry - close
+            if path is not None and path > 0 and trigger_frac > 0:
+                trigger_reached = prog >= trigger_frac * path
+
+        if trigger_reached:
+            be_price = float(entry)
+            tol = max(abs(be_price) * 1e-6, 1e-8)
+
+            def _set_stop(px: float) -> None:
+                try:
+                    if hasattr(pos, "stop_price"):
+                        pos.stop_price = float(px)
+                except Exception:
                     pass
-                else:
-                    return ExitSig("TP_PARTIAL", exit_price=close, reason="TP50", qty_frac=self.partial_tp_frac)
+                try:
+                    if hasattr(pos, "sl"):
+                        pos.sl = float(px)
+                except Exception:
+                    pass
+
+            if side == "LONG":
+                if sl is None or sl < be_price - tol:
+                    _set_stop(be_price)
+                    sl = be_price
+            else:
+                if sl is None or sl > be_price + tol:
+                    _set_stop(be_price)
+                    sl = be_price
+
+        if qty is None or qty <= 0:
+            return ExitSig("HOLD")
+
+        if self.partial_tp_enable and tp and path and path > 0 and trigger_reached:
+            part_qty = qty * self.partial_tp_frac
+            notional = part_qty * close
+            if (self.min_qty and part_qty < self.min_qty) or (notional < self.exchange_min_notional):
+                pass
+            else:
+                return ExitSig("TP_PARTIAL", exit_price=close, reason="TP50", qty_frac=self.partial_tp_frac)
 
         # 3) Heat-exit / Reverse-momentum exit за умови, що PnL >= буферу
         rr = self._unrealized_rr(side, entry, close)
