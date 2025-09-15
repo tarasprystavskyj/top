@@ -7,6 +7,19 @@ type CacheDbOption = {
   path: string;
 };
 
+type JobStatus = {
+  status?: string;
+  message?: string;
+  progress?: number;
+  expected_duration_seconds?: number;
+  eta_seconds?: number;
+  elapsed_seconds?: number;
+  symbol_count?: number;
+  limit_bars?: number;
+};
+
+const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 export default function Run() {
   const router = useRouter();
   const [cfgs, setCfgs] = useState<any[]>([]);
@@ -15,6 +28,7 @@ export default function Run() {
   const [universe, setUniverse] = useState('');
   const [bars, setBars] = useState(5000);
   const [job, setJob] = useState<any>(null);
+  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [res, setRes] = useState<any>(null);
   const [slide, setSlide] = useState(0);
   const [debug, setDebug] = useState(false);
@@ -25,6 +39,7 @@ export default function Run() {
   const [backtester, setBacktester] = useState('');
   const [cacheDbs, setCacheDbs] = useState<CacheDbOption[]>([]);
   const [cacheDb, setCacheDb] = useState('');
+  const [spinnerIndex, setSpinnerIndex] = useState(0);
 
   // if ?id=JOB_ID is present load that job's result
   useEffect(() => {
@@ -103,6 +118,8 @@ export default function Run() {
       }),
     }).then(r => r.json());
     setJob(j);
+    setJobStatus(null);
+    setSpinnerIndex(0);
     setRes(null);
     setErrMsg(null);
     setLogs('');
@@ -110,20 +127,36 @@ export default function Run() {
 
   useEffect(() => {
     if (!job) return;
-    const id = setInterval(async () => {
-      const st = await apiFetch('/api/jobs/' + job.job_id + '/status').then(r =>
-        r.json()
-      );
-      if (st.status === 'done' || st.status === 'error') {
-        const rs = await apiFetch('/api/jobs/' + job.job_id + '/result').then(r =>
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const fetchStatus = async () => {
+      try {
+        const st: JobStatus = await apiFetch('/api/jobs/' + job.job_id + '/status').then(r =>
           r.json()
         );
-        setRes(rs);
-        if (st.status === 'error') setErrMsg(st.message || 'error');
-        clearInterval(id);
+        if (cancelled) return;
+        setJobStatus(st);
+        if (st.status === 'done' || st.status === 'error') {
+          if (interval) clearInterval(interval);
+          const rs = await apiFetch('/api/jobs/' + job.job_id + '/result').then(r =>
+            r.json()
+          );
+          if (cancelled) return;
+          setRes(rs);
+          if (st.status === 'error') setErrMsg(st.message || 'error');
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Failed to fetch job status', err);
+        }
       }
-    }, 1000);
-    return () => clearInterval(id);
+    };
+    fetchStatus();
+    interval = setInterval(fetchStatus, 1000);
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
   }, [job]);
 
   useEffect(() => {
@@ -134,6 +167,30 @@ export default function Run() {
         .catch(() => {});
     }
   }, [res, debug, errMsg]);
+
+  useEffect(() => {
+    if (!jobStatus) {
+      setSpinnerIndex(0);
+      return;
+    }
+    const totalExpected =
+      jobStatus.expected_duration_seconds ??
+      (jobStatus.elapsed_seconds != null && jobStatus.eta_seconds != null
+        ? jobStatus.elapsed_seconds + jobStatus.eta_seconds
+        : undefined);
+    const fallbackElapsed = jobStatus.elapsed_seconds ?? 0;
+    const shouldAnimate =
+      (jobStatus.status === 'running' || jobStatus.status === 'queued') &&
+      ((totalExpected ?? fallbackElapsed) > 5);
+    if (!shouldAnimate) {
+      setSpinnerIndex(0);
+      return;
+    }
+    const id = setInterval(() => {
+      setSpinnerIndex(prev => (prev + 1) % spinnerFrames.length);
+    }, 120);
+    return () => clearInterval(id);
+  }, [jobStatus]);
 
   const plotNames = [
     'equity_by_time.png',
@@ -153,6 +210,22 @@ export default function Run() {
   const vizUrls = vizNames
     .map(n => res?.artifacts?.[n])
     .filter(Boolean) as string[];
+
+  const progressValue =
+    typeof jobStatus?.progress === 'number'
+      ? Math.min(Math.max(jobStatus.progress, 0), 1)
+      : null;
+  const progressPercent =
+    progressValue !== null ? Math.round(progressValue * 100) : null;
+  const totalExpectedSeconds =
+    jobStatus?.expected_duration_seconds ??
+    (jobStatus?.elapsed_seconds != null && jobStatus?.eta_seconds != null
+      ? jobStatus.elapsed_seconds + jobStatus.eta_seconds
+      : undefined);
+  const shouldShowSpinner =
+    !!jobStatus &&
+    (jobStatus.status === 'running' || jobStatus.status === 'queued') &&
+    ((totalExpectedSeconds ?? jobStatus.elapsed_seconds ?? 0) > 5);
 
   const isReadOnly = !!router.query.id;
   const hasCustomCacheDb = cacheDb !== '' && !cacheDbs.some(opt => opt.path === cacheDb);
@@ -228,7 +301,92 @@ export default function Run() {
           </div>
         </div>
       )}
-      {job && <p>Job: {job.job_id}</p>}
+      {job && (
+        <div style={{ marginTop: '10px', marginBottom: '10px' }}>
+          <p style={{ marginBottom: '6px' }}>
+            Job: <code>{job.job_id}</code>
+          </p>
+          {jobStatus ? (
+            <div
+              style={{
+                border: '1px solid #ddd',
+                padding: '10px',
+                borderRadius: '6px',
+                maxWidth: '440px',
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>
+                Status: {jobStatus.status || 'unknown'}
+                {jobStatus.status === 'error' && jobStatus.message && (
+                  <span style={{ color: 'red' }}> ({jobStatus.message})</span>
+                )}
+              </div>
+              {shouldShowSpinner && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    fontFamily: 'monospace',
+                    marginTop: '6px',
+                  }}
+                >
+                  <span>{spinnerFrames[spinnerIndex % spinnerFrames.length]}</span>
+                  <span>Backtest running...</span>
+                </div>
+              )}
+              {progressPercent !== null && (
+                <div style={{ marginTop: '8px' }}>
+                  <div
+                    style={{
+                      height: '8px',
+                      background: '#eee',
+                      borderRadius: '4px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${Math.min(100, Math.max(0, progressPercent))}%`,
+                        background: '#4a90e2',
+                        height: '100%',
+                        transition: 'width 0.4s ease',
+                      }}
+                    />
+                  </div>
+                  <div style={{ marginTop: '4px', fontSize: '0.9em' }}>
+                    Progress: {Math.min(100, Math.max(0, progressPercent))}%
+                  </div>
+                </div>
+              )}
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: '10px',
+                  marginTop: '8px',
+                  fontSize: '0.85em',
+                }}
+              >
+                {jobStatus.limit_bars != null && <span>Bars: {jobStatus.limit_bars}</span>}
+                {jobStatus.symbol_count != null && <span>Symbols: {jobStatus.symbol_count}</span>}
+                {jobStatus.elapsed_seconds != null && (
+                  <span>Elapsed: {formatDuration(jobStatus.elapsed_seconds)}</span>
+                )}
+                {jobStatus.eta_seconds != null &&
+                  (jobStatus.status === 'running' || jobStatus.status === 'queued') && (
+                    <span>ETA: {formatDuration(jobStatus.eta_seconds)}</span>
+                  )}
+                {totalExpectedSeconds != null && totalExpectedSeconds > 0 && (
+                  <span>Estimated total: {formatDuration(totalExpectedSeconds)}</span>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div style={{ color: '#666' }}>Loading status...</div>
+          )}
+        </div>
+      )}
       {res && (
         <div>
           {errMsg && <pre style={{ color: 'red' }}>Error: {errMsg}</pre>}
@@ -327,6 +485,17 @@ export default function Run() {
       )}
     </div>
   );
+}
+
+function formatDuration(seconds?: number | null) {
+  if (seconds == null || !isFinite(seconds)) return '';
+  const total = Math.max(0, Math.round(seconds));
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  if (mins > 0) {
+    return `${mins}m ${secs}s`;
+  }
+  return `${secs}s`;
 }
 
 function formatVal(v: any) {

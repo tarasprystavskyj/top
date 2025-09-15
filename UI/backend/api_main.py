@@ -28,6 +28,11 @@ RUNS_DIR = os.path.join(DATA_ROOT, "runs")
 UNIVERSE_DIR = os.path.abspath(os.path.join(BT_ROOT, "universe"))
 # Cache DBs are stored in the repository root under ``DB``.
 CACHE_DB_DIR = os.path.join(REPO_ROOT, "DB")
+# Persisted performance profile that tracks how long backtests take so we can
+# estimate progress for in-flight jobs.  We record the average runtime per 100
+# bars per symbol and reuse that for future estimates.
+PERF_STATS_FILE = os.path.join(DATA_ROOT, "perf_stats.json")
+DEFAULT_SECONDS_PER_100_BARS_PER_SYMBOL = 0.5
 # Live session reports are stored within the obw_platform project under
 # ``_reports/_live``.  The previous implementation looked for them in the
 # repository root, which resulted in an empty list being returned to the
@@ -130,6 +135,147 @@ def resolve_cache_db(value: Optional[str]) -> Optional[str]:
         if _is_within(full, REPO_ROOT):
             return full
     return None
+
+
+def _count_symbols_in_file(path: str) -> Optional[int]:
+    try:
+        count = 0
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                count += 1
+        return count or None
+    except Exception:
+        return None
+
+
+def _resolve_universe_path(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    normalized = raw.strip().replace("\\", os.sep)
+    if not normalized:
+        return None
+    candidates = []
+    if os.path.isabs(normalized):
+        candidates.append(normalized)
+    else:
+        candidates.append(os.path.join(BT_ROOT, normalized))
+        candidates.append(os.path.join(REPO_ROOT, normalized))
+        candidates.append(os.path.join(UNIVERSE_DIR, normalized))
+        base = os.path.basename(normalized)
+        if base != normalized:
+            candidates.append(os.path.join(UNIVERSE_DIR, base))
+    seen = set()
+    for cand in candidates:
+        full = os.path.abspath(cand)
+        if full in seen:
+            continue
+        seen.add(full)
+        if os.path.isfile(full):
+            return full
+    return None
+
+
+def _symbol_count_from_value(value: Any) -> Optional[int]:
+    if isinstance(value, dict):
+        symbols = value.get("symbols")
+        if isinstance(symbols, (list, tuple, set)):
+            items = [s for s in symbols if s]
+            if items:
+                return len(items)
+        for key in ("file", "path", "symbols_file", "symbols_path"):
+            path = value.get(key)
+            if isinstance(path, str):
+                resolved = _resolve_universe_path(path)
+                if resolved:
+                    cnt = _count_symbols_in_file(resolved)
+                    if cnt:
+                        return cnt
+    elif isinstance(value, (list, tuple, set)):
+        items = [s for s in value if s]
+        if items:
+            return len(items)
+    elif isinstance(value, str):
+        resolved = _resolve_universe_path(value)
+        if resolved:
+            cnt = _count_symbols_in_file(resolved)
+            if cnt:
+                return cnt
+    return None
+
+
+def _estimate_symbol_count(meta: Dict[str, Any]) -> int:
+    override = meta.get("override") or {}
+    if isinstance(override, dict):
+        for key in ("allow_symbols", "symbols"):
+            cnt = _symbol_count_from_value(override.get(key))
+            if cnt:
+                return max(1, cnt)
+        for key in ("symbols_file", "universe_file"):
+            path = override.get(key)
+            if isinstance(path, str):
+                resolved = _resolve_universe_path(path)
+                if resolved:
+                    cnt = _count_symbols_in_file(resolved)
+                    if cnt:
+                        return max(1, cnt)
+        uni_cnt = _symbol_count_from_value(override.get("universe"))
+        if uni_cnt:
+            return max(1, uni_cnt)
+    cfg_name = meta.get("cfg_name")
+    cfg_path = find_config(cfg_name) if cfg_name else None
+    if cfg_path and os.path.isfile(cfg_path):
+        try:
+            cfg_data = yaml.safe_load(open(cfg_path, "r")) or {}
+        except Exception:
+            cfg_data = {}
+        if isinstance(cfg_data, dict):
+            for key in ("universe", "symbols", "allow_symbols"):
+                cnt = _symbol_count_from_value(cfg_data.get(key))
+                if cnt:
+                    return max(1, cnt)
+    return 1
+
+
+def _seconds_per_100_bars_per_symbol() -> float:
+    with perf_lock:
+        val = perf_stats.get("per_100_per_symbol")
+    if isinstance(val, (int, float)) and val > 0:
+        return float(val)
+    return DEFAULT_SECONDS_PER_100_BARS_PER_SYMBOL
+
+
+def _estimate_expected_duration(limit_bars: int, symbol_count: int) -> float:
+    per_unit = _seconds_per_100_bars_per_symbol()
+    bars = max(1, int(limit_bars or 0))
+    symbols = max(1, int(symbol_count or 0))
+    units = (bars / 100.0) * symbols
+    return per_unit * units
+
+
+def _update_perf_profile(duration: float, limit_bars: int, symbol_count: int) -> None:
+    if duration <= 0 or limit_bars <= 0 or symbol_count <= 0:
+        return
+    units = (limit_bars / 100.0) * symbol_count
+    if units <= 0:
+        return
+    per_unit = duration / units
+    if per_unit <= 0:
+        return
+    with perf_lock:
+        current = perf_stats.get("per_100_per_symbol")
+        samples = perf_stats.get("samples", 0) or 0
+        if isinstance(samples, int) and samples >= 0 and isinstance(current, (int, float)) and current > 0:
+            new_val = (current * samples + per_unit) / (samples + 1)
+        else:
+            new_val = per_unit
+            samples = 0
+        perf_stats["per_100_per_symbol"] = new_val
+        perf_stats["samples"] = samples + 1
+        _save_perf_stats({"per_100_per_symbol": new_val, "samples": samples + 1})
+
 
 
 # --- helpers: live equity from session.sqlite --------------------------------
@@ -341,6 +487,7 @@ def load_backtester_version() -> str:
         pass
     return BACKTESTER_SCRIPTS[0]
 
+
 def save_backtester_version(ver: str) -> None:
     try:
         with open(BT_VERSION_FILE, "w") as f:
@@ -348,6 +495,36 @@ def save_backtester_version(ver: str) -> None:
     except Exception:
         pass
 
+
+def _load_perf_stats() -> Dict[str, Any]:
+    if not os.path.isdir(DATA_ROOT):
+        os.makedirs(DATA_ROOT, exist_ok=True)
+    try:
+        with open(PERF_STATS_FILE, "r") as f:
+            data = json.load(f) or {}
+        per_val = data.get("per_100_per_symbol")
+        samples = int(data.get("samples", 0) or 0)
+        if isinstance(per_val, (int, float)) and per_val > 0:
+            return {"per_100_per_symbol": float(per_val), "samples": samples}
+    except Exception:
+        pass
+    return {"per_100_per_symbol": None, "samples": 0}
+
+
+def _save_perf_stats(stats: Dict[str, Any]) -> None:
+    try:
+        tmp_path = PERF_STATS_FILE + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(stats, f)
+        os.replace(tmp_path, PERF_STATS_FILE)
+    except Exception:
+        pass
+
+
+perf_stats: Dict[str, Any] = _load_perf_stats()
+perf_lock = threading.Lock()
+
+os.makedirs(DATA_ROOT, exist_ok=True)
 os.makedirs(MAIN_CONFIG_DIR, exist_ok=True)
 os.makedirs(RUNS_DIR, exist_ok=True)
 os.makedirs(UNIVERSE_DIR, exist_ok=True)
@@ -356,6 +533,43 @@ job_q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 jobs: Dict[str, Dict[str, Any]] = {}
 lock = threading.Lock()
 
+
+def _mark_job_finished(job_id: str, success: bool) -> None:
+    finished_at = time.time()
+    duration: Optional[float] = None
+    limit_bars: Optional[int] = None
+    symbol_count: Optional[int] = None
+    with lock:
+        info = jobs.get(job_id)
+        if not info:
+            return
+        timing = info.setdefault("timing", {})
+        if "finished_at" not in timing:
+            timing["finished_at"] = finished_at
+        started_at = timing.get("started_at")
+        if isinstance(started_at, (int, float)):
+            duration = max(0.0, finished_at - float(started_at))
+            timing["duration"] = duration
+        if "limit_bars" in timing:
+            limit_bars = timing.get("limit_bars")
+        if limit_bars is None and isinstance(info.get("meta"), dict):
+            limit_bars = info["meta"].get("limit_bars")
+            if limit_bars is not None:
+                timing["limit_bars"] = limit_bars
+        if "symbol_count" in timing:
+            symbol_count = timing.get("symbol_count")
+        if symbol_count is None and isinstance(info.get("meta"), dict):
+            symbol_count = info["meta"].get("symbol_count")
+            if symbol_count is not None:
+                timing["symbol_count"] = symbol_count
+        info["progress"] = 1.0
+    if success and duration and limit_bars and symbol_count:
+        try:
+            _update_perf_profile(float(duration), int(limit_bars), int(symbol_count))
+        except Exception:
+            pass
+
+
 def worker():
     while True:
         job = job_q.get()
@@ -363,14 +577,21 @@ def worker():
         jid = job["job_id"]
         with lock:
             jobs[jid]["status"] = "running"
+            jobs[jid]["progress"] = max(jobs[jid].get("progress", 0.0) or 0.0, 0.0)
+            timing = jobs[jid].setdefault("timing", {})
+            timing.setdefault("started_at", time.time())
         try:
             if job["kind"] == "backtest":
                 run_backtest(job)
+                _mark_job_finished(jid, success=True)
             elif job["kind"] == "grid":
                 run_grid(job)
+                with lock:
+                    jobs[jid]["progress"] = 1.0
             with lock:
                 jobs[jid]["status"] = "done"
         except Exception as e:
+            _mark_job_finished(jid, success=False)
             with lock:
                 jobs[jid]["status"] = "error"
                 jobs[jid]["message"] = str(e)
@@ -647,8 +868,25 @@ def backtest(req: BacktestReq):
         raise HTTPException(400, f"cache db not found: {cache_label}")
     req_meta["cache_db_label"] = cache_label
     req_meta["cache_db"] = resolved_cache
+    symbol_count = _estimate_symbol_count(req_meta)
+    req_meta["symbol_count"] = symbol_count
+    expected_duration = _estimate_expected_duration(req.limit_bars, symbol_count)
+    req_meta["expected_duration_seconds"] = expected_duration
     jid = str(uuid.uuid4())
-    jobs[jid] = {"status":"queued","meta": req_meta,"kind":"backtest"}
+    timing_info = {
+        "limit_bars": req.limit_bars,
+        "symbol_count": symbol_count,
+        "expected_duration": expected_duration,
+        "created_at": time.time(),
+    }
+    with lock:
+        jobs[jid] = {
+            "status": "queued",
+            "meta": req_meta,
+            "kind": "backtest",
+            "progress": 0.0,
+            "timing": timing_info,
+        }
     out_dir = os.path.join(RUNS_DIR, jid); os.makedirs(out_dir, exist_ok=True)
     meta = {
         "cfg_name": req.cfg_name,
@@ -662,6 +900,8 @@ def backtest(req: BacktestReq):
         meta["cache_db_label"] = cache_label
     if req_meta.get("debug"):
         meta["debug"] = True
+    meta["symbol_count"] = symbol_count
+    meta["expected_duration_seconds"] = expected_duration
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
     job_q.put({"job_id": jid, "meta": req_meta, "kind":"backtest"})
@@ -669,9 +909,49 @@ def backtest(req: BacktestReq):
 
 @app.get("/api/jobs/{job_id}/status")
 def status(job_id: str):
-    j = jobs.get(job_id)
-    if not j: raise HTTPException(404,"job not found")
-    return {"status": j["status"], "message": j.get("message")}
+    with lock:
+        job_info = copy.deepcopy(jobs.get(job_id))
+    if not job_info:
+        raise HTTPException(404, "job not found")
+    resp: Dict[str, Any] = {
+        "status": job_info.get("status"),
+        "message": job_info.get("message"),
+    }
+    timing = job_info.get("timing") or {}
+    progress = job_info.get("progress")
+    expected = timing.get("expected_duration")
+    started_at = timing.get("started_at")
+    now = time.time()
+    status_val = job_info.get("status")
+    if status_val in ("done", "error"):
+        progress = 1.0
+    elif status_val == "running":
+        if isinstance(started_at, (int, float)) and isinstance(expected, (int, float)) and expected > 0:
+            elapsed = max(0.0, now - float(started_at))
+            progress = max(progress or 0.0, min(0.99, elapsed / expected))
+        elif progress is None:
+            progress = 0.0
+    elif progress is None:
+        progress = 0.0
+    if progress is not None:
+        resp["progress"] = max(0.0, min(1.0, float(progress)))
+    if isinstance(expected, (int, float)) and expected >= 0:
+        resp["expected_duration_seconds"] = float(expected)
+    if isinstance(started_at, (int, float)):
+        elapsed = max(0.0, now - float(started_at))
+        resp["started_at"] = float(started_at)
+        resp["elapsed_seconds"] = elapsed
+        if isinstance(expected, (int, float)) and expected > 0:
+            remaining = max(0.0, expected - elapsed)
+            resp["eta_seconds"] = remaining
+            resp["progress"] = max(resp.get("progress", 0.0), min(1.0, elapsed / expected))
+    symbol_count = timing.get("symbol_count")
+    if isinstance(symbol_count, (int, float)):
+        resp["symbol_count"] = int(symbol_count)
+    limit_bars = timing.get("limit_bars")
+    if isinstance(limit_bars, (int, float)):
+        resp["limit_bars"] = int(limit_bars)
+    return resp
 
 @app.get("/api/jobs/{job_id}/result")
 def result(job_id: str):
@@ -717,6 +997,18 @@ def result(job_id: str):
         cache_label = job_meta.get("cache_db_label")
         if cache_label and cache_label != cache_db:
             debug_info["cache_db_label"] = cache_label
+        symbol_count = job_meta.get("symbol_count")
+        if isinstance(symbol_count, (int, float)):
+            debug_info["symbol_count"] = int(symbol_count)
+        expected_dbg = job_meta.get("expected_duration_seconds")
+        timing_info = job_info.get("timing") or {}
+        if isinstance(expected_dbg, (int, float)):
+            debug_info["expected_duration_seconds"] = float(expected_dbg)
+        elif isinstance(timing_info.get("expected_duration"), (int, float)):
+            debug_info["expected_duration_seconds"] = float(timing_info["expected_duration"])
+        duration_val = timing_info.get("duration")
+        if isinstance(duration_val, (int, float)):
+            debug_info["duration_seconds"] = float(duration_val)
         if debug_info:
             resp["debug"] = debug_info
     return resp
@@ -743,8 +1035,16 @@ def runs(limit: int = 50):
 @app.post("/api/grid")
 def grid(req: GridReq):
     jid = str(uuid.uuid4())
-    jobs[jid] = {"status":"queued","meta":{"req": req.model_dump()}, "kind":"grid"}
-    job_q.put({"job_id": jid, "meta":{"req": req.model_dump()}, "kind":"grid"})
+    job_meta = {"req": req.model_dump()}
+    with lock:
+        jobs[jid] = {
+            "status": "queued",
+            "meta": job_meta,
+            "kind": "grid",
+            "progress": 0.0,
+            "timing": {"created_at": time.time()},
+        }
+    job_q.put({"job_id": jid, "meta": job_meta, "kind": "grid"})
     return {"job_id": jid}
 
 
