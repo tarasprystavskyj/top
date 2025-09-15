@@ -6,7 +6,7 @@ open_heat_min: 0.01
 position_mode: oneway
 strategy_params:
   side: BOTH
-  top_n: 8
+  top_n: 6.0
   length: 10.0
   macd_filter: 1
   volume_length: 20
@@ -15,15 +15,15 @@ strategy_params:
   atr_threshold_ratio: 0.0022
   tp_atr_mult: 4.0
   sl_atr_mult: 0.45
-  min_qv_24h: 10000
-  min_qv_1h: 1000
+  min_qv_24h: 0.0
+  min_qv_1h: 20000.0
   min_atr_ratio: 0.026
   min_momentum_sum: 0.06
   fee_rate: 0.001
   slippage_per_side: 0.0016
   exit_on_heat: true
   heat_exit_threshold: 0.95
-  heat_exit_min_rr: 1.0
+  heat_exit_min_rr: 1.05
   partial_tp_enable: true
   partial_tp_frac: 0.5
   partial_trigger_frac_of_tp: 0.5

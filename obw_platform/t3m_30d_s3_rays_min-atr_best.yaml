@@ -1,10 +1,8 @@
-tf: 3m
-limit_bars: 14400
-cache_db: DB/combined_cache_3m_14400_30u.db
-symbols_file: universe/universe_5m_7400_1.03.txt
+timeframe: 3m
+cache_db: ../DB/combined_cache_3m_14400_30u.db
 strategy_class: strategies.breakout_avaai_full_with_universe_4.BreakoutAVAAIFull
-report_prefix: t3m14400
-plan: tuner_plan_avaai_3m.py
+open_on_heat: false
+open_heat_min: 0.01
 position_mode: oneway
 strategy_params:
   side: BOTH
@@ -15,17 +13,17 @@ strategy_params:
   adx_length: 14
   adx_threshold: 22
   atr_threshold_ratio: 0.0022
-  tp_atr_mult: 3.8
-  sl_atr_mult: 0.5
-  min_qv_24h: 200000.0
-  min_qv_1h: 10000.0
-  min_atr_ratio: 0.02
-  min_momentum_sum: 0.07
+  tp_atr_mult: 4.0
+  sl_atr_mult: 0.45
+  min_qv_24h: 10000
+  min_qv_1h: 1000
+  min_atr_ratio: 0.026
+  min_momentum_sum: 0.036
   fee_rate: 0.001
   slippage_per_side: 0.0016
   exit_on_heat: true
-  heat_exit_threshold: 0.9
-  heat_exit_min_rr: 1.05
+  heat_exit_threshold: 0.95
+  heat_exit_min_rr: 1.0
   partial_tp_enable: true
   partial_tp_frac: 0.5
   partial_trigger_frac_of_tp: 0.5
