@@ -48,6 +48,29 @@ def cprint(*parts, fg: str = "", bold: bool = False, dim: bool = False, file=Non
     s = _st(s, fg=fg, bold=bold, dim=dim)
     print(s, file=file, end=end, flush=flush)
 
+def _format_float_short(val):
+    try:
+        f = float(val)
+    except Exception:
+        return str(val)
+    try:
+        if not math.isfinite(f):
+            return str(f)
+    except Exception:
+        return str(f)
+    if abs(f) >= 1000 or (0 < abs(f) < 1e-4):
+        return f"{f:.3e}"
+    return f"{f:.4f}"
+
+
+def _format_dict_short(data):
+    if not isinstance(data, dict) or not data:
+        return "{}" if not data else str(data)
+    parts = []
+    for key in sorted(data.keys()):
+        parts.append(f"{key}:{_format_float_short(data[key])}")
+    return "{" + ", ".join(parts) + "}"
+
 def dot():
     print(".", end="", flush=True)
 
@@ -700,6 +723,11 @@ def print_and_save_heat_from_strategy(strat, mode_label: str, bar_close, md: dic
         th = best.get('thresholds', {}) or {}
         a = best.get('actuals', {}) or {}
         cprint(f"[heat] nearest={best.get('symbol')} heat={heat*100:.1f}% (lower gap is closer to entry)", fg="yellow", bold=True)
+        reason = best.get('reason') or '-'
+        cprint(f"       reason: {reason}", fg="yellow", dim=True)
+        cprint(f"       gaps: {_format_dict_short(g)}", fg="yellow", dim=True)
+        cprint(f"       actuals: {_format_dict_short(a)}", fg="yellow", dim=True)
+        cprint(f"       thresholds: {_format_dict_short(th)}", fg="yellow", dim=True)
         if g.get('atr', 0.0) > 0:
             cprint(
                 f"       min_atr_ratio {a.get('atr_ratio',0.0):.6f} vs {th.get('min_atr_ratio',0.0):.6f} -> gap {g.get('atr',0.0)*100:.1f}%",

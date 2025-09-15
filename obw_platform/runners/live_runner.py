@@ -1346,20 +1346,34 @@ def run_live(cfg: dict, args):
             if heat_debug_enabled and hasattr(strat, 'rank'):
                 try:
                     pre_rank_syms = strat.rank(bar_close, md, md_symbols)
+                    if pre_rank_syms is None:
+                        pre_rank_syms = []
+                    else:
+                        pre_rank_syms = list(pre_rank_syms)
                 except Exception as e:
                     cprint('[heat.debug]', f'rank(all) failed: {e}', fg='yellow', dim=True)
                     pre_rank_syms = []
 
-            uni = strat.universe(bar_close, md)
+            uni_raw = strat.universe(bar_close, md)
+            uni = list(uni_raw) if uni_raw is not None else []
             # Strategy already enforces its own top_n; avoid double-slicing
-            ranked = strat.rank(bar_close, md, uni)
+            ranked_raw = strat.rank(bar_close, md, uni)
+            ranked = list(ranked_raw) if ranked_raw is not None else []
             _dbg('ranked', ranked[:5], 'top_n=', top_n)
             if heat_debug_enabled:
                 debug_limit = top_n if top_n > 0 else 10
                 if debug_limit <= 0:
                     debug_limit = 10
                 uni_set = set(uni or [])
-                pre_syms = pre_rank_syms or md_symbols
+               pre_syms = pre_rank_syms if pre_rank_syms else md_symbols
+                cprint(
+                    '[heat.debug]',
+                    f'limit={debug_limit}',
+                    f'pre_candidates={len(pre_syms)}',
+                    f'post_candidates={len(ranked)}',
+                    fg='cyan',
+                    dim=True,
+                )
                 _log_heat_distances('pre', strat, bar_close, md, pre_syms, debug_limit, uni_set=uni_set)
                 _log_heat_distances('post', strat, bar_close, md, ranked, debug_limit)
                 best_all = _call_best_entry_distance_safe(strat, bar_close, md, symbols=md_symbols)
