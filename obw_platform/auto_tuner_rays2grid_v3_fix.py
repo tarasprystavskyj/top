@@ -322,10 +322,18 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
         cand_lists[p] = vals
 
     keys = list(cand_lists.keys())
+    if not keys:
+        print("[grid] no parameters provided; skipping")
+        return base_cfg, []
+
     import itertools, copy, csv
     from datetime import datetime
 
     grid = list(itertools.product(*[cand_lists[k] for k in keys]))
+    if not grid:
+        print("[grid] no candidate combinations; skipping")
+        return base_cfg, []
+
     recs = []
     tasks = []
     for vec in grid:
@@ -371,6 +379,9 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
             recs.append(res)
 
     best = pick_best(recs, weights, min_trades, target_trades)
+    if not best:
+        print("[grid] no candidates evaluated; skipping")
+        return base_cfg, recs
     # regression guard: global (baseline or prev best)
     cur_vec = [str(get_current(base_cfg, k)[0]) for k in keys]
     cur_name = "|".join(cur_vec)
@@ -524,13 +535,53 @@ def main():
 
 
     cur_yaml = Path(args.cfg)
-    for i, (mode, params) in enumerate(plan, 1):
+    for i, stage in enumerate(plan, 1):
+        mode = params = None
+        # Allow stages expressed as tuples/lists, dicts, or mappings with extra fields
+        if isinstance(stage, (list, tuple)):
+            if len(stage) >= 2:
+                mode, params = stage[0], stage[1]
+            elif len(stage) == 1 and isinstance(stage[0], dict) and len(stage[0]) == 1:
+                mode, params = next(iter(stage[0].items()))
+        elif isinstance(stage, dict):
+            if len(stage) == 1:
+                mode, params = next(iter(stage.items()))
+
+        if mode is None or params is None:
+            print(f"[plan] malformed stage {i}: {stage}; skipping")
+            continue
+
         prefix = f"{args.prefix}_s{i}_{mode}"
+        if not params:
+            print(f"[{mode}] no parameters provided; skipping stage {i}")
+            continue
+
         if mode == "rays":
             (pname, cand) = list(params.items())[0]
-            base, rays_results = do_rays(base, args.limit_bars, pname, cand, prefix, log_csv, weights, args.min_trades, args.target_trades, args.jobs)
+            base, rays_results = do_rays(
+                base,
+                args.limit_bars,
+                pname,
+                cand,
+                prefix,
+                log_csv,
+                weights,
+                args.min_trades,
+                args.target_trades,
+                args.jobs,
+            )
         elif mode == "grid":
-            base, grid_results = do_grid(base, args.limit_bars, params, prefix, log_csv, weights, args.min_trades, args.target_trades, args.jobs)
+            base, grid_results = do_grid(
+                base,
+                args.limit_bars,
+                params,
+                prefix,
+                log_csv,
+                weights,
+                args.min_trades,
+                args.target_trades,
+                args.jobs,
+            )
         else:
             raise ValueError(mode)
 
@@ -551,27 +602,6 @@ def main():
     for p in tmp_dir.glob("*.yaml"):
         p.unlink(missing_ok=True)
 
-
-def include_seed_values(values, pname, current_value):
-    # include initial YAML seed (if present) and current stage value; de-duplicate
-    try:
-        init_val, _ = get_current(INIT_CFG, pname) if INIT_CFG is not None else (None, None)
-    except Exception:
-        init_val = None
-    vals = list(values) if isinstance(values,(list,tuple,set)) else ([values] if values is not None else [])
-    if current_value is not None and current_value not in vals:
-        vals.append(current_value)
-    if init_val is not None and init_val not in vals:
-        vals.append(init_val)
-    # try numeric sort, fallback to str
-    try:
-        vals = sorted(set(float(x) for x in vals))
-    except Exception:
-        try:
-            vals = sorted(set(vals))
-        except Exception:
-            vals = list(dict.fromkeys(vals))
-    return list(vals)
 
 if __name__ == "__main__":
     main()
