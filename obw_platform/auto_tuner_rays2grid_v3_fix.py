@@ -16,6 +16,7 @@ GLOBAL_BEST_S = -1e18
 GLOBAL_BEST_REC = None
 BT_SLEEP_SEC = 0
 BT_CACHE = {}
+SESSION_DIR = None
 
 
 KV_RE = re.compile(
@@ -66,10 +67,22 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
     if with_plots:
         from uuid import uuid4
         ts = time.strftime("%Y%m%d_%H%M%S")
-        tag = (label or "final") + "_" + uuid4().hex[:6]
-        plots_dir = f"_reports/_bt_plots/{tag}_{ts}"
-        os.makedirs(plots_dir, exist_ok=True)
-        cmd += ["--plots", plots_dir]
+        base_label = label or "final"
+        safe_label = (
+            base_label.replace(os.sep, "_")
+            .replace("/", "_")
+            .replace("\\", "_")
+        )
+        tag = safe_label + "_" + uuid4().hex[:6]
+        base_dir = (
+            Path(SESSION_DIR) / "_reports" / "_bt_plots"
+            if SESSION_DIR
+            else Path("_reports") / "_bt_plots"
+        )
+        base_dir.mkdir(parents=True, exist_ok=True)
+        plots_dir = base_dir / f"{tag}_{ts}"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        cmd += ["--plots", str(plots_dir)]
     t0 = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = time.time() - t0
@@ -95,7 +108,22 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
 
 def _eval_one(args_tuple):
     cfg_yaml_path, limit_bars = args_tuple
-    return run_backtest(cfg_yaml_path, limit_bars, with_plots=False)
+    start_ts = time.time()
+    try:
+        res = run_backtest(cfg_yaml_path, limit_bars, with_plots=False)
+    except Exception as e:
+        elapsed = time.time() - start_ts
+        return {
+            "equity_end": 100.0,
+            "profit_factor": 0.0,
+            "max_dd": 0.0,
+            "monotonicity": 0.0,
+            "trades": 0,
+            "error": str(e),
+            "elapsed_sec": elapsed,
+        }
+    res.setdefault("elapsed_sec", time.time() - start_ts)
+    return res
 
 
 
@@ -257,7 +285,7 @@ def include_seed_values(values, pname, current_value):
     return list(vals)
 
 
-def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_trades, target_trades, jobs):
+def do_rays(base_cfg, limit_bars, pname, cand, prefix, session_dir, log_csv, weights, min_trades, target_trades, jobs):
     global GLOBAL_BEST_S, GLOBAL_BEST_REC
     cur, _ = get_current(base_cfg, pname)
     cand = ensure_included(cand, cur) if isinstance(cand, (list,tuple)) else ([cur] if cur is not None else [])
@@ -269,7 +297,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
     for v in cand:
         cfg = copy.deepcopy(base_cfg)
         set_param(cfg, pname, v)
-        tmp = Path("tune_tmp") / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
+        tmp = Path(session_dir) / "tune_tmp" / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
         write_yaml(cfg, tmp)
         tasks.append((tmp, v, cfg))
 
@@ -286,10 +314,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
                 recs.append(res)
     else:
         for tmp, v, cfg in tasks:
-            try:
-                res = run_backtest(tmp, limit_bars, with_plots=False)
-            except Exception as e:
-                res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
+            res = _eval_one((tmp, limit_bars))
             res.update({"param":pname,"value":v,"cfg_path":str(tmp),"yaml":str(tmp),"ts":datetime.utcnow().isoformat(timespec="seconds")})
             recs.append(res)
 
@@ -299,7 +324,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
     if cur_rec and best.get('score', -1e18) < cur_rec.get('score', -1e18):
         best = cur_rec
     set_param(base_cfg, pname, best["value"])
-    best_yaml = Path(f"{prefix}_{pname}_best.yaml")
+    best_yaml = Path(session_dir) / f"{prefix}_{pname}_best.yaml"
     write_yaml(base_cfg, best_yaml)
     with open(log_csv, "a", newline="") as f:
         wr = csv.DictWriter(f, fieldnames=["ts","param","value","equity_end","profit_factor","max_dd","monotonicity","trades","elapsed_sec","yaml","score"], extrasaction="ignore")
@@ -309,7 +334,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
     return base_cfg, recs
 
 
-def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, target_trades, jobs):    # Expand search lists with current+seed inclusion
+def do_grid(base_cfg, limit_bars, params, prefix, session_dir, log_csv, weights, min_trades, target_trades, jobs):    # Expand search lists with current+seed inclusion
     cand_lists = {}
     for p, spec in params.items():
         cur, _ = get_current(base_cfg, p)
@@ -336,13 +361,89 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
 
     recs = []
     tasks = []
+    local_best_s = -1e18
+
+    def _fmt_val(val):
+        if isinstance(val, float):
+            return f"{val:.6f}"
+        return str(val)
+
+    def _print_new_best(vec, res, score):
+        params_str = ", ".join(f"{k}={_fmt_val(v)}" for k, v in zip(keys, vec))
+        metric_keys = [
+            "equity_end",
+            "profit_factor",
+            "max_dd",
+            "monotonicity",
+            "trades",
+            "apr",
+            "daily_ret",
+            "monthly_ret",
+            "yearly_ret",
+        ]
+        metric_parts = []
+        for mkey in metric_keys:
+            val = res.get(mkey)
+            if val is None:
+                continue
+            metric_parts.append(f"{mkey}={_fmt_val(val)}")
+        if res.get("elapsed_sec") is not None:
+            metric_parts.append(f"elapsed_sec={_fmt_val(res['elapsed_sec'])}")
+        if res.get("trades_csv"):
+            metric_parts.append(f"trades_csv={res['trades_csv']}")
+        if res.get("yaml"):
+            metric_parts.append(f"yaml={res['yaml']}")
+        metrics_str = " ".join(metric_parts)
+        print(f"[grid][new-best] params: {params_str}")
+        print(f"[grid][new-best] report: score={score:.6f} {metrics_str}".rstrip())
+
+    def _process_result(vec, res):
+        nonlocal local_best_s
+        score = risk_averse_score(
+            res,
+            *weights,
+            min_trades=min_trades,
+            target_trades=target_trades,
+        )
+        res["score"] = score
+        if score > local_best_s:
+            local_best_s = score
+            _print_new_best(vec, res, score)
+        recs.append(res)
+    first_key = keys[0]
+    row_values = cand_lists[first_key]
+    row_lookup = {val: idx for idx, val in enumerate(row_values)}
+    row_count = len(row_values)
+    combos_per_row = (len(grid) // row_count) if row_count else len(grid)
+    if combos_per_row == 0:
+        combos_per_row = 1
+    row_counts = [0] * row_count
+    row_done = [False] * row_count
+    next_emit_row = 0
+    progress_marks = []
+
+    def _emit_progress_if_ready():
+        nonlocal next_emit_row
+        updated = False
+        while next_emit_row < len(row_values) and row_done[next_emit_row]:
+            pct = ((next_emit_row + 1) * combos_per_row) / len(grid) * 100.0
+            progress_marks.append(f"{pct:.1f}%")
+            next_emit_row += 1
+            updated = True
+        if updated:
+            text = ", ".join(progress_marks)
+            if next_emit_row == len(row_values):
+                print(text)
+            else:
+                print(text, end="\r", flush=True)
+
     for vec in grid:
         cfg = copy.deepcopy(base_cfg)
         name = []
         for k, v in zip(keys, vec):
             set_param(cfg, k, v)
             name.append(f"{k}={v}")
-        tmp = Path("tune_tmp") / f"{prefix}_grid_{'_'.join(str(x).replace('.', 'p') for x in vec)}.yaml"
+        tmp = Path(session_dir) / "tune_tmp" / f"{prefix}_grid_{'_'.join(str(x).replace('.', 'p') for x in vec)}.yaml"
         write_yaml(cfg, tmp)
         tasks.append((tmp, vec, cfg))
 
@@ -354,7 +455,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                 try:
                     res = fut.result()
                 except Exception as e:
-                    res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
+                    res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e), "elapsed_sec": None}
                 res.update({
                     "param": "|".join(keys),
                     "value": "|".join(map(str, vec)),
@@ -362,13 +463,16 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                     "yaml": str(tmp),
                     "ts": datetime.utcnow().isoformat(timespec="seconds"),
                 })
-                recs.append(res)
+                _process_result(vec, res)
+                row_idx = row_lookup.get(vec[0])
+                if row_idx is not None:
+                    row_counts[row_idx] += 1
+                    if row_counts[row_idx] >= combos_per_row:
+                        row_done[row_idx] = True
+                        _emit_progress_if_ready()
     else:
         for tmp, vec, cfg in tasks:
-            try:
-                res = run_backtest(tmp, limit_bars, with_plots=False)
-            except Exception as e:
-                res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
+            res = _eval_one((tmp, limit_bars))
             res.update({
                 "param": "|".join(keys),
                 "value": "|".join(map(str, vec)),
@@ -376,7 +480,13 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                 "yaml": str(tmp),
                 "ts": datetime.utcnow().isoformat(timespec="seconds"),
             })
-            recs.append(res)
+            _process_result(vec, res)
+            row_idx = row_lookup.get(vec[0])
+            if row_idx is not None:
+                row_counts[row_idx] += 1
+                if row_counts[row_idx] >= combos_per_row:
+                    row_done[row_idx] = True
+                    _emit_progress_if_ready()
 
     best = pick_best(recs, weights, min_trades, target_trades)
     if not best:
@@ -401,7 +511,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
             v2 = v
         set_param(base_cfg, k, v2)
 
-    write_yaml(base_cfg, Path(f"{prefix}_grid_best.yaml"))
+    write_yaml(base_cfg, Path(session_dir) / f"{prefix}_grid_best.yaml")
     with open(log_csv, "a", newline="") as f:
         wr = csv.DictWriter(f, fieldnames=["ts","param","value","equity_end","profit_factor","max_dd","monotonicity","trades","elapsed_sec","yaml","score"], extrasaction="ignore")
         if f.tell() == 0:
@@ -486,14 +596,26 @@ def main():
     weights = (args.w_equity, args.w_pf, args.w_dd, args.w_mono, args.dd_target)
     global BT_SLEEP_SEC
     BT_SLEEP_SEC = args.sleep_sec
-    
+
+    prefix_path = Path(args.prefix)
+    file_prefix = prefix_path.name or "tuner"
+    session_ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    base_session_dir = prefix_path.parent / f"{file_prefix}_{session_ts}"
+    session_dir = base_session_dir
+    counter = 1
+    while session_dir.exists():
+        session_dir = prefix_path.parent / f"{file_prefix}_{session_ts}_{counter}"
+        counter += 1
+    session_dir.mkdir(parents=True, exist_ok=False)
+    global SESSION_DIR
+    SESSION_DIR = session_dir
 
 
     base = read_yaml(Path(args.cfg))
     rays_results = []
     grid_results = []
     # ---- Baseline (original cfg) ----
-    baseline_yaml = Path(f"{args.prefix}_baseline.yaml")
+    baseline_yaml = session_dir / f"{file_prefix}_baseline.yaml"
     write_yaml(base, baseline_yaml)
     base_res = run_backtest(baseline_yaml, args.limit_bars)
     baseline = {
@@ -512,7 +634,7 @@ def main():
     print(f"[baseline] equity_end={baseline['equity_end']:.6f} trades={baseline['trades']} "
       f"pf={baseline['profit_factor']:.6f} max_dd={baseline['max_dd']:.6f} "
       f"mono={baseline['monotonicity']:.6f} score={GLOBAL_BEST_S:.6f}")
-    log_csv = Path(f"{args.prefix}_tuner_log.csv")
+    log_csv = session_dir / f"{file_prefix}_tuner_log.csv"
 
     # Load plan: external module if provided, else fallback to internal default_plan
     plan = None
@@ -551,7 +673,7 @@ def main():
             print(f"[plan] malformed stage {i}: {stage}; skipping")
             continue
 
-        prefix = f"{args.prefix}_s{i}_{mode}"
+        prefix = f"{file_prefix}_s{i}_{mode}"
         if not params:
             print(f"[{mode}] no parameters provided; skipping stage {i}")
             continue
@@ -564,6 +686,7 @@ def main():
                 pname,
                 cand,
                 prefix,
+                session_dir,
                 log_csv,
                 weights,
                 args.min_trades,
@@ -576,6 +699,7 @@ def main():
                 args.limit_bars,
                 params,
                 prefix,
+                session_dir,
                 log_csv,
                 weights,
                 args.min_trades,
@@ -585,7 +709,7 @@ def main():
         else:
             raise ValueError(mode)
 
-    final = Path(f"{args.prefix}_final_best.yaml")
+    final = session_dir / f"{file_prefix}_final_best.yaml"
     write_yaml(base, final)
     print(f"DONE -> {final}")
 
@@ -593,12 +717,22 @@ def main():
     if rays_results:
         best = sorted(rays_results, key=lambda r: r.get("score", -1e18), reverse=True)[:TOPK_RAYS_PLOTS]
         for i, r in enumerate(best, 1):
-            run_backtest(Path(r["cfg_path"]), args.limit_bars, with_plots=True, label=f"{args.prefix}_rays_final_{i}")
+            run_backtest(
+                Path(r["cfg_path"]),
+                args.limit_bars,
+                with_plots=True,
+                label=f"{file_prefix}_rays_final_{i}",
+            )
     if grid_results:
         best_grid = pick_best(grid_results, weights, args.min_trades, args.target_trades)
-        run_backtest(Path(best_grid["cfg_path"]), args.limit_bars, with_plots=True, label=f"{args.prefix}_grid_final")
+        run_backtest(
+            Path(best_grid["cfg_path"]),
+            args.limit_bars,
+            with_plots=True,
+            label=f"{file_prefix}_grid_final",
+        )
     prune_reports(args.prefix)
-    tmp_dir = Path("tune_tmp")
+    tmp_dir = session_dir / "tune_tmp"
     for p in tmp_dir.glob("*.yaml"):
         p.unlink(missing_ok=True)
 
