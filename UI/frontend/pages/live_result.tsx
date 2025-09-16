@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch, resolveApiUrl, resolveArtifactMap } from '../utils/api';
+import { apiFetch } from '../utils/api';
 
 export default function LiveResult() {
   const router = useRouter();
@@ -48,8 +48,7 @@ export default function LiveResult() {
         return r.json();
       })
       .then(data => {
-        const normalized = normalizeLiveResultPayload(data);
-        console.debug('Session data', normalized);
+        console.debug('Session data', data);
         // Кожному «базовому» файлу даємо список альтернатив viz_*,
         // бо бекенд може породити саме їх.
         const plotDefs = [
@@ -75,33 +74,29 @@ export default function LiveResult() {
 
         const ps = plotDefs
           .map(({ key, alts }) => {
-            const back = pick(normalized.backtest?.artifacts, key, alts);
-            const live = pick(normalized.artifacts, key, alts);
+            const back = pick(data.backtest?.artifacts, key, alts);
+            const live = pick(data.artifacts, key, alts);
             return back || live ? { name: label(key), back, live } : null;
           })
           .filter(Boolean) as { name: string; back: string | null; live: string | null }[];
         console.debug('Plot pairs', ps);
-        console.debug('Backtest summary', normalized.backtest?.summary || null);
+        console.debug('Backtest summary', data.backtest?.summary || null);
         setPairs(ps);
-        setSummary(normalized.backtest?.summary || null);
-        setTrades(normalized.backtest?.trades || []);
-        setLiveTrades(normalized.live_trades || []);
+        setSummary(data.backtest?.summary || null);
+        setTrades(data.backtest?.trades || []);
+        setLiveTrades(data.live_trades || []);
         setSlide(0);
         setError(ps.length ? null : 'No data available for this session');
-        setBtRangeText(normalized.backtest?.time_range_text || '');
-        setLiveRange(normalized.live_range || null);
-        if (debug && normalized?.debug) {
-          console.debug('Live debug:', normalized.debug);
-          setDebugData(normalized.debug);
+        setBtRangeText(data.backtest?.time_range_text || '');
+        setLiveRange(data.live_range || null);
+        if (debug && data?.debug) {
+          console.debug('Live debug:', data.debug);
+          setDebugData(data.debug);
         } else {
           setDebugData(null);
         }
-        const logUrl =
-          typeof normalized.backtest?.logs === 'string'
-            ? resolveApiUrl(normalized.backtest.logs) ?? normalized.backtest.logs
-            : null;
-        if (logUrl) {
-          fetch(logUrl)
+        if (data.backtest?.logs) {
+          fetch(data.backtest.logs)
             .then(r => r.text())
             .then(setLogs)
             .catch(() => setLogs(''));
@@ -339,27 +334,6 @@ export default function LiveResult() {
       )}
     </div>
   );
-}
-
-function normalizeLiveResultPayload(payload: any) {
-  if (!payload || typeof payload !== 'object') return payload;
-  const normalized: any = { ...payload };
-  const rootArtifacts = resolveArtifactMap(payload.artifacts);
-  if (rootArtifacts) {
-    normalized.artifacts = rootArtifacts;
-  }
-  if (payload.backtest && typeof payload.backtest === 'object') {
-    const bt: any = { ...payload.backtest };
-    const btArtifacts = resolveArtifactMap(payload.backtest.artifacts);
-    if (btArtifacts) {
-      bt.artifacts = btArtifacts;
-    }
-    if (typeof payload.backtest.logs === 'string') {
-      bt.logs = resolveApiUrl(payload.backtest.logs) ?? payload.backtest.logs;
-    }
-    normalized.backtest = bt;
-  }
-  return normalized;
 }
 
 function formatVal(v: any) {

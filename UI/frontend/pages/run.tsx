@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
-import { apiFetch, resolveArtifactMap } from '../utils/api';
+import { apiFetch } from '../utils/api';
 
 type CacheDbOption = {
   name: string;
@@ -255,10 +255,7 @@ export default function Run() {
             r.json()
           );
           if (cancelled) return;
-          const normalized = { ...rs };
-          const artifacts = resolveArtifactMap(rs?.artifacts);
-          if (artifacts) normalized.artifacts = artifacts;
-          setRes(normalized);
+          setRes(rs);
           if (st.status === 'error') setErrMsg(st.message || 'error');
         }
       } catch (err) {
