@@ -336,6 +336,55 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
 
     recs = []
     tasks = []
+    local_best_s = -1e18
+
+    def _fmt_val(val):
+        if isinstance(val, float):
+            return f"{val:.6f}"
+        return str(val)
+
+    def _print_new_best(vec, res, score):
+        params_str = ", ".join(f"{k}={_fmt_val(v)}" for k, v in zip(keys, vec))
+        metric_keys = [
+            "equity_end",
+            "profit_factor",
+            "max_dd",
+            "monotonicity",
+            "trades",
+            "apr",
+            "daily_ret",
+            "monthly_ret",
+            "yearly_ret",
+        ]
+        metric_parts = []
+        for mkey in metric_keys:
+            val = res.get(mkey)
+            if val is None:
+                continue
+            metric_parts.append(f"{mkey}={_fmt_val(val)}")
+        if res.get("elapsed_sec") is not None:
+            metric_parts.append(f"elapsed_sec={_fmt_val(res['elapsed_sec'])}")
+        if res.get("trades_csv"):
+            metric_parts.append(f"trades_csv={res['trades_csv']}")
+        if res.get("yaml"):
+            metric_parts.append(f"yaml={res['yaml']}")
+        metrics_str = " ".join(metric_parts)
+        print(f"[grid][new-best] params: {params_str}")
+        print(f"[grid][new-best] report: score={score:.6f} {metrics_str}".rstrip())
+
+    def _process_result(vec, res):
+        nonlocal local_best_s
+        score = risk_averse_score(
+            res,
+            *weights,
+            min_trades=min_trades,
+            target_trades=target_trades,
+        )
+        res["score"] = score
+        if score > local_best_s:
+            local_best_s = score
+            _print_new_best(vec, res, score)
+        recs.append(res)
     for vec in grid:
         cfg = copy.deepcopy(base_cfg)
         name = []
@@ -362,7 +411,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                     "yaml": str(tmp),
                     "ts": datetime.utcnow().isoformat(timespec="seconds"),
                 })
-                recs.append(res)
+                _process_result(vec, res)
     else:
         for tmp, vec, cfg in tasks:
             try:
@@ -376,7 +425,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                 "yaml": str(tmp),
                 "ts": datetime.utcnow().isoformat(timespec="seconds"),
             })
-            recs.append(res)
+            _process_result(vec, res)
 
     best = pick_best(recs, weights, min_trades, target_trades)
     if not best:
