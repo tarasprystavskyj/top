@@ -95,7 +95,22 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
 
 def _eval_one(args_tuple):
     cfg_yaml_path, limit_bars = args_tuple
-    return run_backtest(cfg_yaml_path, limit_bars, with_plots=False)
+    start_ts = time.time()
+    try:
+        res = run_backtest(cfg_yaml_path, limit_bars, with_plots=False)
+    except Exception as e:
+        elapsed = time.time() - start_ts
+        return {
+            "equity_end": 100.0,
+            "profit_factor": 0.0,
+            "max_dd": 0.0,
+            "monotonicity": 0.0,
+            "trades": 0,
+            "error": str(e),
+            "elapsed_sec": elapsed,
+        }
+    res.setdefault("elapsed_sec", time.time() - start_ts)
+    return res
 
 
 
@@ -286,10 +301,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
                 recs.append(res)
     else:
         for tmp, v, cfg in tasks:
-            try:
-                res = run_backtest(tmp, limit_bars, with_plots=False)
-            except Exception as e:
-                res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
+            res = _eval_one((tmp, limit_bars))
             res.update({"param":pname,"value":v,"cfg_path":str(tmp),"yaml":str(tmp),"ts":datetime.utcnow().isoformat(timespec="seconds")})
             recs.append(res)
 
@@ -395,6 +407,16 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
         write_yaml(cfg, tmp)
         tasks.append((tmp, vec, cfg))
 
+    processed = 0
+    progress_marks = []
+
+    def _report_progress():
+        if not grid:
+            return
+        pct = (processed / len(grid)) * 100.0
+        progress_marks.append(f"{pct:.1f}%")
+        print(f"[grid][progress] {', '.join(progress_marks)}")
+
     if jobs > 1:
         with ProcessPoolExecutor(max_workers=jobs) as ex:
             fut_map = {ex.submit(_eval_one, (tmp, limit_bars)): (tmp, vec, cfg) for tmp, vec, cfg in tasks}
@@ -403,7 +425,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                 try:
                     res = fut.result()
                 except Exception as e:
-                    res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
+                    res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e), "elapsed_sec": None}
                 res.update({
                     "param": "|".join(keys),
                     "value": "|".join(map(str, vec)),
@@ -412,12 +434,11 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                     "ts": datetime.utcnow().isoformat(timespec="seconds"),
                 })
                 _process_result(vec, res)
+                processed += 1
+                _report_progress()
     else:
         for tmp, vec, cfg in tasks:
-            try:
-                res = run_backtest(tmp, limit_bars, with_plots=False)
-            except Exception as e:
-                res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
+            res = _eval_one((tmp, limit_bars))
             res.update({
                 "param": "|".join(keys),
                 "value": "|".join(map(str, vec)),
@@ -426,6 +447,8 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                 "ts": datetime.utcnow().isoformat(timespec="seconds"),
             })
             _process_result(vec, res)
+            processed += 1
+            _report_progress()
 
     best = pick_best(recs, weights, min_trades, target_trades)
     if not best:
