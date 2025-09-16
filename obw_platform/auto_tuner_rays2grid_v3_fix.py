@@ -95,7 +95,22 @@ def run_backtest(cfg_path: Path, limit_bars: int, with_plots: bool = False, labe
 
 def _eval_one(args_tuple):
     cfg_yaml_path, limit_bars = args_tuple
-    return run_backtest(cfg_yaml_path, limit_bars, with_plots=False)
+    start_ts = time.time()
+    try:
+        res = run_backtest(cfg_yaml_path, limit_bars, with_plots=False)
+    except Exception as e:
+        elapsed = time.time() - start_ts
+        return {
+            "equity_end": 100.0,
+            "profit_factor": 0.0,
+            "max_dd": 0.0,
+            "monotonicity": 0.0,
+            "trades": 0,
+            "error": str(e),
+            "elapsed_sec": elapsed,
+        }
+    res.setdefault("elapsed_sec", time.time() - start_ts)
+    return res
 
 
 
@@ -286,10 +301,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, log_csv, weights, min_tra
                 recs.append(res)
     else:
         for tmp, v, cfg in tasks:
-            try:
-                res = run_backtest(tmp, limit_bars, with_plots=False)
-            except Exception as e:
-                res = {"equity_end":100.0,"profit_factor":0.0,"max_dd":0.0,"monotonicity":0.0,"trades":0,"error":str(e)}
+            res = _eval_one((tmp, limit_bars))
             res.update({"param":pname,"value":v,"cfg_path":str(tmp),"yaml":str(tmp),"ts":datetime.utcnow().isoformat(timespec="seconds")})
             recs.append(res)
 
@@ -336,6 +348,55 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
 
     recs = []
     tasks = []
+    local_best_s = -1e18
+
+    def _fmt_val(val):
+        if isinstance(val, float):
+            return f"{val:.6f}"
+        return str(val)
+
+    def _print_new_best(vec, res, score):
+        params_str = ", ".join(f"{k}={_fmt_val(v)}" for k, v in zip(keys, vec))
+        metric_keys = [
+            "equity_end",
+            "profit_factor",
+            "max_dd",
+            "monotonicity",
+            "trades",
+            "apr",
+            "daily_ret",
+            "monthly_ret",
+            "yearly_ret",
+        ]
+        metric_parts = []
+        for mkey in metric_keys:
+            val = res.get(mkey)
+            if val is None:
+                continue
+            metric_parts.append(f"{mkey}={_fmt_val(val)}")
+        if res.get("elapsed_sec") is not None:
+            metric_parts.append(f"elapsed_sec={_fmt_val(res['elapsed_sec'])}")
+        if res.get("trades_csv"):
+            metric_parts.append(f"trades_csv={res['trades_csv']}")
+        if res.get("yaml"):
+            metric_parts.append(f"yaml={res['yaml']}")
+        metrics_str = " ".join(metric_parts)
+        print(f"[grid][new-best] params: {params_str}")
+        print(f"[grid][new-best] report: score={score:.6f} {metrics_str}".rstrip())
+
+    def _process_result(vec, res):
+        nonlocal local_best_s
+        score = risk_averse_score(
+            res,
+            *weights,
+            min_trades=min_trades,
+            target_trades=target_trades,
+        )
+        res["score"] = score
+        if score > local_best_s:
+            local_best_s = score
+            _print_new_best(vec, res, score)
+        recs.append(res)
     for vec in grid:
         cfg = copy.deepcopy(base_cfg)
         name = []
@@ -346,6 +407,16 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
         write_yaml(cfg, tmp)
         tasks.append((tmp, vec, cfg))
 
+    processed = 0
+    progress_marks = []
+
+    def _report_progress():
+        if not grid:
+            return
+        pct = (processed / len(grid)) * 100.0
+        progress_marks.append(f"{pct:.1f}%")
+        print(f"[grid][progress] {', '.join(progress_marks)}")
+
     if jobs > 1:
         with ProcessPoolExecutor(max_workers=jobs) as ex:
             fut_map = {ex.submit(_eval_one, (tmp, limit_bars)): (tmp, vec, cfg) for tmp, vec, cfg in tasks}
@@ -354,7 +425,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                 try:
                     res = fut.result()
                 except Exception as e:
-                    res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
+                    res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e), "elapsed_sec": None}
                 res.update({
                     "param": "|".join(keys),
                     "value": "|".join(map(str, vec)),
@@ -362,13 +433,12 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                     "yaml": str(tmp),
                     "ts": datetime.utcnow().isoformat(timespec="seconds"),
                 })
-                recs.append(res)
+                _process_result(vec, res)
+                processed += 1
+                _report_progress()
     else:
         for tmp, vec, cfg in tasks:
-            try:
-                res = run_backtest(tmp, limit_bars, with_plots=False)
-            except Exception as e:
-                res = {"equity_end": 100.0, "profit_factor": 0.0, "max_dd": 0.0, "monotonicity": 0.0, "trades": 0, "error": str(e)}
+            res = _eval_one((tmp, limit_bars))
             res.update({
                 "param": "|".join(keys),
                 "value": "|".join(map(str, vec)),
@@ -376,7 +446,9 @@ def do_grid(base_cfg, limit_bars, params, prefix, log_csv, weights, min_trades, 
                 "yaml": str(tmp),
                 "ts": datetime.utcnow().isoformat(timespec="seconds"),
             })
-            recs.append(res)
+            _process_result(vec, res)
+            processed += 1
+            _report_progress()
 
     best = pick_best(recs, weights, min_trades, target_trades)
     if not best:
