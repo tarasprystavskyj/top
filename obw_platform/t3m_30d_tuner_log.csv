@@ -162,3 +162,15 @@ ts,param,value,equity_end,profit_factor,max_dd,monotonicity,trades,elapsed_sec,y
 2025-09-15T21:28:42,strategy_params.top_n,8.0,125.223554,1.924769,-2.341,12.918,494,2.6178135871887207,tune_tmp/t3m_30d_s9_rays_strategy_params.top_n_8p0.yaml,100.910782
 2025-09-15T21:28:44,strategy_params.top_n,10.0,125.223554,1.924769,-2.341,12.918,494,2.38594126701355,tune_tmp/t3m_30d_s9_rays_strategy_params.top_n_10p0.yaml,100.910782
 2025-09-15T21:28:47,strategy_params.top_n,12.0,125.223554,1.924769,-2.341,12.918,494,2.4069342613220215,tune_tmp/t3m_30d_s9_rays_strategy_params.top_n_12p0.yaml,100.910782
+2025-09-16T06:54:00,strategy_params.top_n,6.0,100.100559,1.134958,-0.602,3.995,12,1.5114288330078125,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_6p0.yaml,16.764360681818186
+2025-09-16T06:54:02,strategy_params.top_n,8.0,100.100559,1.134958,-0.602,3.995,12,1.8085236549377441,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_8p0.yaml,16.764360681818186
+2025-09-16T06:54:04,strategy_params.top_n,10.0,100.100559,1.134958,-0.602,3.995,12,2.112832546234131,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_10p0.yaml,16.764360681818186
+2025-09-16T06:54:06,strategy_params.top_n,12.0,100.100559,1.134958,-0.602,3.995,12,1.8380544185638428,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_12p0.yaml,16.764360681818186
+2025-09-16T07:21:18,strategy_params.top_n,6.0,100.100559,1.134958,-0.602,3.995,12,1.9261572360992432,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_6p0.yaml,16.764360681818186
+2025-09-16T07:21:20,strategy_params.top_n,8.0,100.100559,1.134958,-0.602,3.995,12,1.7574946880340576,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_8p0.yaml,16.764360681818186
+2025-09-16T07:21:21,strategy_params.top_n,10.0,100.100559,1.134958,-0.602,3.995,12,1.7565348148345947,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_10p0.yaml,16.764360681818186
+2025-09-16T07:21:23,strategy_params.top_n,12.0,100.100559,1.134958,-0.602,3.995,12,1.9906775951385498,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_12p0.yaml,16.764360681818186
+2025-09-16T19:26:07,strategy_params.top_n,6.0,100.100559,1.134958,-0.602,3.995,12,2.0333383083343506,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_6p0.yaml,16.764360681818186
+2025-09-16T19:26:09,strategy_params.top_n,8.0,100.100559,1.134958,-0.602,3.995,12,1.8687355518341064,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_8p0.yaml,16.764360681818186
+2025-09-16T19:26:11,strategy_params.top_n,10.0,100.100559,1.134958,-0.602,3.995,12,1.9761013984680176,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_10p0.yaml,16.764360681818186
+2025-09-16T19:26:13,strategy_params.top_n,12.0,100.100559,1.134958,-0.602,3.995,12,1.9944097995758057,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_12p0.yaml,16.764360681818186

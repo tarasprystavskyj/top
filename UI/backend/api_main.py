@@ -2,6 +2,7 @@
 import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy
 from typing import Any, Dict, Optional, List
 from fastapi import FastAPI, HTTPException, Body, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import logging
@@ -61,6 +62,36 @@ BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
     "backtester_core_speed3.py": {"plots": True},
     "backtester_core_speed3_veto.py": {"plots": True},
 }
+
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://0.0.0.0:3000",
+    "https://localhost:3000",
+    "https://127.0.0.1:3000",
+    "https://0.0.0.0:3000",
+]
+
+
+def _load_cors_origins() -> List[str]:
+    origins: List[str] = []
+    seen = set()
+    for origin in DEFAULT_CORS_ORIGINS:
+        if not origin or origin in seen:
+            continue
+        origins.append(origin)
+        seen.add(origin)
+    for env_name in ("CORS_ALLOW_ORIGINS", "FRONTEND_ORIGINS"):
+        raw = os.getenv(env_name)
+        if not raw:
+            continue
+        for item in raw.split(","):
+            value = item.strip()
+            if not value or value in seen:
+                continue
+            origins.append(value)
+            seen.add(value)
+    return origins
 
 # --- helpers: cache DB discovery -------------------------------------------
 def _list_cache_db_files() -> List[Dict[str, str]]:
@@ -800,6 +831,19 @@ def run_grid(job):
             raise RuntimeError(f"backtester failed with code {p.returncode}")
 
 app = FastAPI()
+
+_cors_origins = _load_cors_origins()
+if _cors_origins:
+    if "*" in _cors_origins:
+        allow_origins = ["*"]
+    else:
+        allow_origins = _cors_origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 @app.get("/api/health")
 def health(): return {"ok": True}

@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 BASE_REPORT_DIR = Path(__file__).resolve().parent.parent / "_reports" / "_backtest"
-PREFIX = "backtest_t3m_30d"
+PREFIX = "backtest_t3m_30d_s10_grid_grid"
+#backtest_t3m_30d_s10_grid_grid_3p8_0p5_0p024_0p056_10000p0_25000p0_0p9_1p05_6p0_20250916_062906
+#backtestt5m5000_slip16_s13_grid_grid_3p9_1p04_0p0_0p0_100000p0_5000p0_5p0_50p0_0p2_12p0_0p020250913_081423
+#backtest_t5m_30d_s6_grid_grid_5p2_1p08_0p03_0p07_0p9_20250914_185417
 SUMMARY_FILENAME = "bt_summary.csv"
 
 
