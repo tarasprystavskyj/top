@@ -166,3 +166,7 @@ ts,param,value,equity_end,profit_factor,max_dd,monotonicity,trades,elapsed_sec,y
 2025-09-16T06:54:02,strategy_params.top_n,8.0,100.100559,1.134958,-0.602,3.995,12,1.8085236549377441,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_8p0.yaml,16.764360681818186
 2025-09-16T06:54:04,strategy_params.top_n,10.0,100.100559,1.134958,-0.602,3.995,12,2.112832546234131,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_10p0.yaml,16.764360681818186
 2025-09-16T06:54:06,strategy_params.top_n,12.0,100.100559,1.134958,-0.602,3.995,12,1.8380544185638428,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_12p0.yaml,16.764360681818186
+2025-09-16T07:21:18,strategy_params.top_n,6.0,100.100559,1.134958,-0.602,3.995,12,1.9261572360992432,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_6p0.yaml,16.764360681818186
+2025-09-16T07:21:20,strategy_params.top_n,8.0,100.100559,1.134958,-0.602,3.995,12,1.7574946880340576,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_8p0.yaml,16.764360681818186
+2025-09-16T07:21:21,strategy_params.top_n,10.0,100.100559,1.134958,-0.602,3.995,12,1.7565348148345947,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_10p0.yaml,16.764360681818186
+2025-09-16T07:21:23,strategy_params.top_n,12.0,100.100559,1.134958,-0.602,3.995,12,1.9906775951385498,tune_tmp/t3m_30d_s1_rays_strategy_params.top_n_12p0.yaml,16.764360681818186
