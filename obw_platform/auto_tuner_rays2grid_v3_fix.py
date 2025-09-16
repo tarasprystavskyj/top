@@ -447,6 +447,16 @@ def do_grid(base_cfg, limit_bars, params, prefix, session_dir, log_csv, weights,
         write_yaml(cfg, tmp)
         tasks.append((tmp, vec, cfg))
 
+    processed = 0
+    progress_marks = []
+
+    def _report_progress():
+        if not grid:
+            return
+        pct = (processed / len(grid)) * 100.0
+        progress_marks.append(f"{pct:.1f}%")
+        print(f"[grid][progress] {', '.join(progress_marks)}")
+
     if jobs > 1:
         with ProcessPoolExecutor(max_workers=jobs) as ex:
             fut_map = {ex.submit(_eval_one, (tmp, limit_bars)): (tmp, vec, cfg) for tmp, vec, cfg in tasks}
