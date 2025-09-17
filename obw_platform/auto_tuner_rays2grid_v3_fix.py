@@ -297,7 +297,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, session_dir, log_csv, wei
     for v in cand:
         cfg = copy.deepcopy(base_cfg)
         set_param(cfg, pname, v)
-        tmp = Path(session_dir) / "tune_tmp" / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
+        tmp = "tune_tmp" / Path(session_dir) / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
         write_yaml(cfg, tmp)
         tasks.append((tmp, v, cfg))
 
@@ -742,7 +742,7 @@ def main():
             label=f"{file_prefix}_grid_final",
         )
     prune_reports(args.prefix)
-    tmp_dir = session_dir / "tune_tmp"
+    tmp_dir = "tune_tmp" / session_dir
     for p in tmp_dir.glob("*.yaml"):
         p.unlink(missing_ok=True)
 
