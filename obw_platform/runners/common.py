@@ -308,6 +308,70 @@ class CCXTFetcher:
             cprint("[ticker]", sym, ":", e, fg="red")
             return None
 
+    def fetch_mark_price(self, sym: str) -> Optional[float]:
+        ccxt_sym = self.resolve_symbol(sym) or sym
+
+        def _extract_mark(obj) -> Optional[float]:
+            if not isinstance(obj, dict):
+                return None
+            for key in (
+                'markPrice',
+                'mark_price',
+                'indexPrice',
+                'index_price',
+                'lastMarkPrice',
+                'last_mark_price',
+                'marketPrice',
+                'market_price',
+            ):
+                val = obj.get(key)
+                if val in (None, ''):
+                    continue
+                try:
+                    fv = float(val)
+                    if math.isfinite(fv):
+                        return fv
+                except Exception:
+                    continue
+            return None
+
+        try:
+            fetch_fn = getattr(self.ex, 'fetch_mark_price', None)
+            if callable(fetch_fn):
+                data = fetch_fn(ccxt_sym)
+                sleep_ms(RATE_MS)
+                if isinstance(data, list):
+                    data = data[0] if data else {}
+                price = _extract_mark(data)
+                if price is None and isinstance(data, dict):
+                    info = data.get('info')
+                    if isinstance(info, dict):
+                        price = _extract_mark(info)
+                if price is not None and price > 0:
+                    return price
+        except Exception as e:
+            if self.debug:
+                cprint('[mark.fetch]', sym, ':', e, fg='yellow', dim=True)
+
+        try:
+            t = self.ex.fetch_ticker(ccxt_sym)
+            sleep_ms(RATE_MS)
+        except Exception as e:
+            cprint('[mark.ticker]', sym, ':', e, fg='yellow')
+            return None
+
+        price = _extract_mark(t)
+        if price is None and isinstance(t, dict):
+            info = t.get('info')
+            if isinstance(info, dict):
+                price = _extract_mark(info)
+        try:
+            if price is not None and price > 0 and math.isfinite(float(price)):
+                return float(price)
+        except Exception:
+            pass
+        return None
+
 # ---------- Orders table helpers ----------
 def ensure_orders_db(path: str):
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
@@ -386,6 +450,8 @@ def ensure_session_dbs(results_dir: str, session_db: str = '', cache_out: str = 
         entry_lag_sec REAL,
         exit_slip_bp REAL,
         exit_lag_sec REAL,
+        entry_mark_price REAL,
+        exit_mark_price REAL,
         PRIMARY KEY(bot_id, symbol, local_order_uuid)
     )''')
 
@@ -401,6 +467,8 @@ def ensure_session_dbs(results_dir: str, session_db: str = '', cache_out: str = 
             ("entry_lag_sec", "REAL"),
             ("exit_slip_bp", "REAL"),
             ("exit_lag_sec", "REAL"),
+            ("entry_mark_price", "REAL"),
+            ("exit_mark_price", "REAL"),
         ]
         for name, typ in add_cols:
             if name not in cols:
@@ -553,7 +621,8 @@ def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]
             """
             SELECT symbol, side, qty, entry, tp_price, sl_price, ts_open, run_id,
                    local_order_uuid, exchange_order_id, exchange, timeframe,
-                   entry_fill, entry_fill_ts, entry_slip_bp, entry_lag_sec
+                   entry_fill, entry_fill_ts, entry_slip_bp, entry_lag_sec,
+                   entry_mark_price, exit_mark_price
             FROM open_positions
             WHERE bot_id=? AND status='OPEN'
             ORDER BY ts_open ASC
@@ -565,7 +634,7 @@ def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]
             (
                 sym, side, qty, entry, tp, sl, ts_open, run_id,
                 luid, exid, exch, tf, entry_fill, entry_fill_ts,
-                entry_slip_bp, entry_lag_sec
+                entry_slip_bp, entry_lag_sec, entry_mark_price, exit_mark_price
             ) = r
             out[sym] = {
                 'symbol': sym,
@@ -584,6 +653,8 @@ def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]
                 'entry_fill_ts': entry_fill_ts,
                 'entry_slip_bp': entry_slip_bp,
                 'entry_lag_sec': entry_lag_sec,
+                'entry_mark_price': entry_mark_price,
+                'exit_mark_price': exit_mark_price,
             }
     except Exception as e:
         cprint('[db load open_positions]', e, fg='red')
@@ -599,8 +670,9 @@ def db_upsert_open_position(session_db_path: str, bot_id: str, rec: dict):
                 bot_id, symbol, side, qty, entry, tp_price, sl_price, ts_open, run_id,
                 local_order_uuid, exchange_order_id, exchange, timeframe, status, ts_close,
                 entry_fill, entry_fill_ts, exit_fill, exit_fill_ts,
-                entry_slip_bp, entry_lag_sec, exit_slip_bp, exit_lag_sec
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                entry_slip_bp, entry_lag_sec, exit_slip_bp, exit_lag_sec,
+                entry_mark_price, exit_mark_price
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 bot_id,
@@ -625,7 +697,9 @@ def db_upsert_open_position(session_db_path: str, bot_id: str, rec: dict):
                 rec.get('entry_slip_bp'),
                 rec.get('entry_lag_sec'),
                 rec.get('exit_slip_bp'),
-                rec.get('exit_lag_sec')
+                rec.get('exit_lag_sec'),
+                rec.get('entry_mark_price'),
+                rec.get('exit_mark_price')
             )
         )
         con.commit()
@@ -643,6 +717,7 @@ def db_mark_closed(
     exit_fill_ts=None,
     exit_slip_bp=None,
     exit_lag_sec=None,
+    exit_mark_price=None,
 ):
     try:
         con = sqlite3.connect(session_db_path)
@@ -650,7 +725,8 @@ def db_mark_closed(
         cur.execute(
             """
             UPDATE open_positions SET status='CLOSED', ts_close=?,
-                exit_fill=?, exit_fill_ts=?, exit_slip_bp=?, exit_lag_sec=?
+                exit_fill=?, exit_fill_ts=?, exit_slip_bp=?, exit_lag_sec=?,
+                exit_mark_price=?
             WHERE bot_id=? AND local_order_uuid=?
             """,
             (
@@ -659,6 +735,7 @@ def db_mark_closed(
                 exit_fill_ts,
                 exit_slip_bp,
                 exit_lag_sec,
+                exit_mark_price,
                 bot_id,
                 local_order_uuid,
             ),
