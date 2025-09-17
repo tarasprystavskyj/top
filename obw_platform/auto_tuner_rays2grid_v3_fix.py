@@ -335,6 +335,7 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, session_dir, log_csv, wei
 
 
 def do_grid(base_cfg, limit_bars, params, prefix, session_dir, log_csv, weights, min_trades, target_trades, jobs):    # Expand search lists with current+seed inclusion
+    global GLOBAL_BEST_S, GLOBAL_BEST_REC
     cand_lists = {}
     for p, spec in params.items():
         cur, _ = get_current(base_cfg, p)
@@ -432,10 +433,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, session_dir, log_csv, weights,
             updated = True
         if updated:
             text = ", ".join(progress_marks)
-            if next_emit_row == len(row_values):
-                print(text)
-            else:
-                print(text, end="\r", flush=True)
+            print(text)
 
     for vec in grid:
         cfg = copy.deepcopy(base_cfg)
