@@ -1280,16 +1280,23 @@ def run_live(cfg: dict, args):
                     if px:
                         side_close = 'sell' if str(rec.get('side', 'LONG')).upper() == 'LONG' else 'buy'
                         qty_close = float(rec.get('qty', 0.0))
+                        exit_mark_px = float(px) if px else None
                         od = place_reduce_only(fetcher, sym, side_close, qty_close, position_mode)
                         if od:
                             if isinstance(od, dict) and od.get('error') == 'no_position':
-                                fill = px; fdt = now
+                                fill = exit_mark_px
+                                fdt = now
                             else:
                                 fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
-                            cprint('[exit close]', sym, f'@~{(fill or px):.6g}', fg='yellow')
-                            gross = (fill - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill)/rec.get('entry',1.0)
+                            fill_px = float(fill) if fill is not None else exit_mark_px
+                            display_px = fill_px if fill_px is not None else (exit_mark_px if exit_mark_px is not None else px)
+                            cprint('[exit close]', sym, f'@~{display_px:.6g}', fg='yellow')
+                            rec['exit_mark_px'] = exit_mark_px
+                            rec['exit_fill'] = float(fill) if fill else None
+                            rec['exit_fill_ts'] = fdt.isoformat() if fdt else None
+                            gross = (fill_px - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill_px)/rec.get('entry',1.0)
                             fee_rate = float(getattr(strat,'fee_rate',0.0))
-                            fees = (rec.get('entry',0.0)*qty_close + fill*qty_close)*fee_rate
+                            fees = (rec.get('entry',0.0)*qty_close + (fill_px if fill_px is not None else 0.0)*qty_close)*fee_rate
                             net = gross - (fees / (rec.get('entry',0.0)*qty_close))
                             realized = net * rec.get('entry',0.0)*qty_close
                             try:
@@ -1301,12 +1308,20 @@ def run_live(cfg: dict, args):
                                     'symbol': sym,
                                     'side': side_close,
                                     'type': 'market',
-                                    'price': fill,
+                                    'price': float(fill) if fill else exit_mark_px,
                                     'qty': qty_close,
                                     'status': 'filled',
                                     'reason': getattr(ex, 'reason', ''),
                                     'run_id': run_id,
-                                    'extra': json.dumps({'gross_return': gross, 'net_return': net, 'fees_paid': fees, 'realized_pnl': realized})
+                                    'extra': json.dumps({
+                                        'gross_return': gross,
+                                        'net_return': net,
+                                        'fees_paid': fees,
+                                        'realized_pnl': realized,
+                                        'exit_mark_px': exit_mark_px,
+                                        'exit_fill': float(fill) if fill else None,
+                                        'exit_fill_ts': fdt.isoformat() if fdt else None,
+                                    })
                                 })
                             except Exception:
                                 pass
@@ -1344,15 +1359,18 @@ def run_live(cfg: dict, args):
                         cprint('[tp_partial skip] too small', sym, fg='yellow')
                         continue
                     side_close = 'sell' if str(rec.get('side', 'LONG')).upper() == 'LONG' else 'buy'
+                    exit_mark_px = float(price) if price else None
                     od = place_reduce_only(fetcher, sym, side_close, qty_close, position_mode)
                     if od:
                         if isinstance(od, dict) and od.get('error') == 'no_position':
-                            fill = price; fdt = now
+                            fill = exit_mark_px
+                            fdt = now
                         else:
-                            fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''))
-                        gross = (fill - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill)/rec.get('entry',1.0)
+                            fill, fdt = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
+                        fill_px = float(fill) if fill is not None else exit_mark_px
+                        gross = (fill_px - rec.get('entry',0.0))/rec.get('entry',1.0) if str(rec.get('side','LONG')).upper()== 'LONG' else (rec.get('entry',0.0)-fill_px)/rec.get('entry',1.0)
                         fee_rate = float(getattr(strat,'fee_rate',0.0))
-                        fees = (rec.get('entry',0.0)*qty_close + fill*qty_close)*fee_rate
+                        fees = (rec.get('entry',0.0)*qty_close + (fill_px if fill_px is not None else 0.0)*qty_close)*fee_rate
                         net = gross - (fees / (rec.get('entry',0.0)*qty_close))
                         realized = net * rec.get('entry',0.0)*qty_close
                         try:
@@ -1364,16 +1382,27 @@ def run_live(cfg: dict, args):
                                 'symbol': sym,
                                 'side': side_close,
                                 'type': 'market',
-                                'price': fill,
+                                'price': float(fill) if fill else exit_mark_px,
                                 'qty': qty_close,
                                 'status': 'filled',
                                 'reason': getattr(ex, 'reason', 'TP_PARTIAL'),
                                 'run_id': run_id,
-                                'extra': json.dumps({'gross_return': gross, 'net_return': net, 'fees_paid': fees, 'realized_pnl': realized})
+                                'extra': json.dumps({
+                                    'gross_return': gross,
+                                    'net_return': net,
+                                    'fees_paid': fees,
+                                    'realized_pnl': realized,
+                                    'exit_mark_px': exit_mark_px,
+                                    'exit_fill': float(fill) if fill else None,
+                                    'exit_fill_ts': fdt.isoformat() if fdt else None,
+                                })
                             })
                         except Exception:
                             pass
                         rec['qty'] = qty_total - qty_close
+                        rec['last_partial_exit_mark_px'] = exit_mark_px
+                        rec['last_partial_exit_fill'] = float(fill) if fill else None
+                        rec['last_partial_exit_fill_ts'] = fdt.isoformat() if fdt else None
                         try:
                             db_upsert_open_position(session_db_path, bot_id, rec)
                         except Exception:
@@ -1510,7 +1539,7 @@ def run_live(cfg: dict, args):
                             lag_sec = (fdt - bar_close).total_seconds() if fdt else None
                             slip_bp = (entry_fill / float(entry_px) - 1.0) * 10000.0 * (1 if side_str == 'LONG' else -1)
                             cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
-                            rec = {'symbol': sym,'side': side_str,'qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec}
+                            rec = {'symbol': sym,'side': side_str,'qty': qty,'entry_mark_px': float(entry_px),'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec}
                             positions[sym] = rec; save_positions(args.results_dir, positions)
                             position_notional += qty * entry_fill
                             # Fallback TP/SL placement as separate orders (reduce-only)
@@ -1564,7 +1593,7 @@ def run_live(cfg: dict, args):
                     lag_sec = (fdt - bar_close).total_seconds() if fdt else None
                     slip_bp = (entry_fill / float(entry_px) - 1.0) * 10000.0 * -1  # SHORT
                     cprint('[open OK]', f'{sym} SHORT qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
-                    rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec}
+                    rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry_mark_px': float(entry_px),'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec}
                     positions[sym] = rec; save_positions(args.results_dir, positions)
                     position_notional += qty * entry_fill
                     # Fallback TP/SL placement as separate orders (reduce-only)
@@ -1640,6 +1669,7 @@ def run_live(cfg: dict, args):
                     'symbol': sym,
                     'side': 'LONG',
                     'qty': qty,
+                    'entry_mark_px': float(entry_px),
                     'entry': float(entry_px),
                     'tp_price': float(tp_price) if tp_price is not None else None,
                     'sl_price': float(sl_price) if sl_price is not None else None,
