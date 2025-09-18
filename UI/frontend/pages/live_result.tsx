@@ -164,16 +164,6 @@ export default function LiveResult() {
                 {pairs[slide].back && (
                   <img src={pairs[slide].back!} style={{ width: '100%', maxWidth: '420px' }} />
                 )}
-                {pairs.length > 1 && (
-                  <input
-                    type="range"
-                    min={0}
-                    max={pairs.length - 1}
-                    value={slide}
-                    onChange={e => setSlide(Number(e.target.value))}
-                    style={{ width: '100%' }}
-                  />
-                )}
               </div>
               <div style={{ flex: '1 1 320px', textAlign: 'center' }}>
                 <h3>
