@@ -13,7 +13,7 @@ strategy_params:
   adx_length: 14
   adx_threshold: 22
   atr_threshold_ratio: 0.0022
-  tp_atr_mult: 1.5
+  tp_atr_mult: 1.0
   sl_atr_mult: 0.38
   min_qv_24h: 0.0
   min_qv_1h: 0.0
