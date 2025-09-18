@@ -1,122 +1,112 @@
-# pip install ccxt==4.* (або актуальну)
-import time
-import ccxt
+
+
+# pip install ccxt==4.*
+# test_sl.py — відкриває LONG/SHORT БЕЗ базових TP/SL і ставить 2 умовні reduce-only
+# LONG:  SL нижче (stop_market)  +  TP вище (take_profit_market)
+# SHORT: SL вище (stop_market)   +  TP нижче (take_profit_market)
+import os, time
 from datetime import datetime, timezone
+import ccxt
 
-API_KEY = "1zpDoyS5MzGJzcgXeKMx8qp974MKXio4CRXLaYPETssQVah7Zfk9bFLDUtLVhBpFXZkcwbEaFQcBpS9nA"
-API_SECRET = "amCFzf7hgaI8WQmPCVcciwB2yhsYKCdUyR7D5GUWoG2hzIFxfauHora1ADtsl6wjfjCtudvnRujeAcsWJw"
+API_KEY    = os.getenv("BINGX_KEY",    "1zpDoyS5MzGJzcgXeKMx8qp974MKXio4CRXLaYPETssQVah7Zfk9bFLDUtLVhBpFXZkcwbEaFQcBpS9nA")
+API_SECRET = os.getenv("BINGX_SECRET", "amCFzf7hgaI8WQmPCVcciwB2yhsYKCdUyR7D5GUWoG2hzIFxfauHora1ADtsl6wjfjCtudvnRujeAcsWJw")
+SYMBOL     = os.getenv("SYMBOL", "HIFI/USDT:USDT")
+NOTIONAL   = float(os.getenv("NOTIONAL", "4.5"))
+LEVERAGE   = int(os.getenv("LEVERAGE", "1"))
+POSITION_MODE = os.getenv("POSITION_MODE", "oneway")  # "oneway"|"hedge"
+SIDE       = os.getenv("SIDE", "long").lower()        # "long"|"short"
+OFFSET_PCT = float(os.getenv("OFFSET_PCT", "0.007"))  # 0.7% від mark
 
-# Приклад: HIFI перп на BingX у форматі CCXT:
-SYMBOL = "HIFI/USDT:USDT"     # USDT-M perp
-SIDE_OPEN = "buy"            # приклад для SHORT; для LONG → "buy"
-NOTIONAL_USDT = 4.5            # скільки USDT витратити на вхід (підбери під мін.ноціонал)
-LEVERAGE = 1
-POSITION_MODE = "oneway"      # BingX USDT-M: "oneway" (BOTH) або "hedge"
+def utcnow(): return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-# SL як умова: якщо ціна піде проти нас → спрацює stop_market
-# Для SHORT: SL вище за entry; для LONG: нижче за entry.
-SL_TRIGGER = 0.204           # твій тригер-сл (наприклад, з розрахунку BE або ATR)
-USE_MARK_PRICE = True         # BingX дозволяє Last/Mark як базу тригера (Index знімають)
+def ensure_pos_mode_and_lev(ex, symbol):
+    try: ex.set_position_mode(POSITION_MODE == "hedge")
+    except Exception as e: print("[warn] set_position_mode:", e)
+    try: ex.set_leverage(LEVERAGE, symbol, params={"side":"BOTH"})
+    except Exception as e: print("[warn] set_leverage:", e)
 
-def utcnow():
-    return datetime.now(timezone.utc).isoformat()
+def amount_for_notional(ex, symbol, last, notional):
+    ex.load_markets()
+    m = ex.markets[symbol]
+    qty = notional / float(last)
+    if "precision" in m and m["precision"].get("amount") is not None:
+        qty = ex.amount_to_precision(symbol, qty)
+    min_qty = float(m.get("limits", {}).get("amount", {}).get("min") or 0)
+    if min_qty and float(qty) < min_qty: qty = min_qty
+    return float(qty)
+
+def open_pos(ex, symbol, qty, side):
+    side_mkt = "buy" if side=="long" else "sell"
+    print(f"[{utcnow()}] OPEN {side.upper()} {qty} {symbol}")
+    od = ex.create_order(symbol, "market", side_mkt, qty, None,
+                         {"reduceOnly": False, "positionSide":"BOTH"})
+    print("open_order:", od.get("id"), od.get("info"))
+    time.sleep(0.7)
+    pos = ex.fetch_positions([symbol])[0]
+    entry = float(pos.get("entryPrice") or 0.0)
+    mark  = float(pos.get("markPrice") or 0.0)
+    qty_p = float(pos.get("contracts") or 0.0)
+    print(f"[{utcnow()}] entry={entry} mark={mark} qty={qty_p}")
+    return entry, mark, qty_p
+
+def place_conditional(ex, symbol, otype, side, qty, trig, label):
+    """otype: 'stop_market' | 'take_profit_market'"""
+    base = {"reduceOnly": True, "positionSide":"BOTH", "workingType":"MARK_PRICE"}
+    # спроба 1: triggerPrice
+    try:
+        od = ex.create_order(symbol, otype, side, qty, None, {**base, "triggerPrice": float(trig)})
+        print(f"[{utcnow()}] [{label}] via triggerPrice OK id={od.get('id')}")
+        return True, str(od.get("id") or od.get("orderId") or "")
+    except Exception as e:
+        print(f"[{utcnow()}] [{label}] triggerPrice failed -> retry stopPrice: {e}")
+        # спроба 2: stopPrice
+        od = ex.create_order(symbol, otype, side, qty, None, {**base, "stopPrice": float(trig)})
+        print(f"[{utcnow()}] [{label}] via stopPrice OK id={od.get('id')}")
+        return True, str(od.get("id") or od.get("orderId") or "")
 
 def main():
     ex = ccxt.bingx({
-        "apiKey": API_KEY,
-        "secret": API_SECRET,
-        "options": {
-            "defaultType": "swap",   # USDT-M futures у CCXT
-        },
+        "apiKey": API_KEY, "secret": API_SECRET,
+        "options": {"defaultType":"swap"},
         "enableRateLimit": True,
     })
+    ensure_pos_mode_and_lev(ex, SYMBOL)
 
-    # 1) Переконайся, що тип позиції та плече встановлені (якщо API дозволяє)
-    try:
-        # режим позиції
-        # bingx: 'oneway' → positionSide='BOTH'; 'hedge' → LONG/SHORT роздільно.
-        ex.set_position_mode(POSITION_MODE == "hedge")
-    except Exception as e:
-        print("[warn] set_position_mode not supported:", e)
+    last = float(ex.fetch_ticker(SYMBOL)["last"])
+    qty  = amount_for_notional(ex, SYMBOL, last, NOTIONAL)
+    entry, mark, pos_qty = open_pos(ex, SYMBOL, qty, SIDE)
 
-    try:
-        # встановити плече для SYMBOL
-        ex.set_leverage(LEVERAGE, SYMBOL, params={"side": "BOTH"})
-    except Exception as e:
-        print("[warn] set_leverage not supported:", e)
+    # робимо «вилку» по обидва боки mark
+    above = mark * (1 + OFFSET_PCT)
+    below = mark * (1 - OFFSET_PCT)
 
-    # 2) Оцінимо поточну ціну й порахуємо кількість з ноціоналу
-    ticker = ex.fetch_ticker(SYMBOL)
-    last = float(ticker["last"])
-    # BingX вимагає кроки/мін-кількість — беремо з markets
-    ex.load_markets()
-    mkt = ex.markets[SYMBOL]
-    amt_step = mkt.get("precision", {}).get("amount", None)
-    min_qty = mkt.get("limits", {}).get("amount", {}).get("min", 0) or 0
-    min_notional = mkt.get("limits", {}).get("cost", {}).get("min", 0) or 0
+    # логіка ордерів залежно від напряму позиції
+    if SIDE == "long":
+        # закриваюча сторона для LONG — sell
+        sl_type, sl_trig, sl_side = "stop_market", below, "sell"            # SL нижче
+        tp_type, tp_trig, tp_side = "take_profit_market", above, "sell"     # TP вище
+    else:  # short
+        # закриваюча сторона для SHORT — buy
+        sl_type, sl_trig, sl_side = "stop_market", above, "buy"             # SL вище
+        tp_type, tp_trig, tp_side = "take_profit_market", below, "buy"      # TP нижче
 
-    qty = NOTIONAL_USDT / last
-    if amt_step:
-        qty = ex.amount_to_precision(SYMBOL, qty)
-    if min_qty and float(qty) < float(min_qty):
-        raise ValueError(f"qty {qty} < min_qty {min_qty}")
-    if min_notional and last * float(qty) < float(min_notional):
-        raise ValueError(f"notional {last*float(qty):.6g} < min_notional {min_notional}")
+    qty_each = min(pos_qty, max(0.0, pos_qty * 0.6))
+    print(f"[{utcnow()}] placing conditionals: {sl_type}@{sl_trig:.8f} & {tp_type}@{tp_trig:.8f}, qty_each={qty_each}")
 
-    print(f"[{utcnow()}] Opening {SIDE_OPEN.upper()} {qty} {SYMBOL} @~{last}")
+    ok1, id1 = place_conditional(ex, SYMBOL, sl_type, sl_side, qty_each, sl_trig, "COND_SL")
+    ok2, id2 = place_conditional(ex, SYMBOL, tp_type, tp_side, qty_each, tp_trig, "COND_TP")
 
-    # 3) Відкриваємо MARKET ордер
-    # BingX в one-way використовує positionSide='BOTH'; reduceOnly=False для відкриття
-    order = ex.create_order(
-        SYMBOL,
-        "market",
-        SIDE_OPEN,
-        qty,
-        None,
-        {"reduceOnly": False, "positionSide": "BOTH"}
-    )
-    print("open_order:", order.get("id"), order.get("info"))
-
-    # Дамо біржі завершити філл
     time.sleep(0.7)
-    # after you fetched ticker/position and know entry
-    pos = ex.fetch_positions([SYMBOL])[0]
-    entry = float(pos["entryPrice"]) or last
+    oo = ex.fetch_open_orders(SYMBOL) or []
+    print(f"[{utcnow()}] open_orders({len(oo)}):")
+    for o in oo:
+        info = o.get("info") or {}
+        print(" -", o.get("id"), info.get("type"), o.get("side"),
+              "qty=", o.get("amount"),
+              "stop/trigger=", (o.get("triggerPrice") or info.get("stopPrice") or o.get("stopLossPrice") or o.get("takeProfitPrice")),
+              "reduceOnly=", info.get("reduceOnly"), "wt=", info.get("workingType"))
 
-    side_is_long = (SIDE_OPEN == "buy")
-    # example: stop 1.5% away
-    sl_trigger = entry * (1 - 0.015) if side_is_long else entry * (1 + 0.015)
-
-    # 1) leverage with side
-    try:
-        ex.set_leverage(LEVERAGE, SYMBOL, params={"side": "BOTH"})
-    except Exception as e:
-        print("[warn] set_leverage:", e)
-
-    # 2) conditional stop-market (reduceOnly) on the correct side
-    params = {
-        "reduceOnly": True,
-        "positionSide": "BOTH",
-        "triggerPrice": float(sl_trigger),    # <--- for LONG below entry, for SHORT above
-        "workingType": "MARK_PRICE",          # optional; default is last price
-    }
-    side_close = "sell" if side_is_long else "buy"
-
-    try:
-        sl_order = ex.create_order(SYMBOL, "stop_market", side_close, qty, None, params)
-        print("sl_order:", sl_order.get("id"), sl_order.get("info"))
-    except ccxt.ExchangeError as e:
-        print("[info] retrying with stopPrice:", e)
-        # some BingX routes want 'stopPrice' key
-        params_alt = dict(params)
-        params_alt.pop("triggerPrice", None)
-        params_alt["stopPrice"] = float(sl_trigger)
-        sl_order = ex.create_order(SYMBOL, "stop_market", side_close, qty, None, params_alt)
-        print("sl_order:", sl_order.get("id"), sl_order.get("info"))
-    # 5) Перевіряємо відкриті умовні ордери
-    time.sleep(0.5)
-    oo = ex.fetch_open_orders(SYMBOL)
-    print("open_orders:", oo)
+    print("\nГотово. У BingX → TPSL/Open Orders мають з’явитися два умовні reduce-only: SL (stop_market) і TP (take_profit_market).")
 
 if __name__ == "__main__":
     main()
