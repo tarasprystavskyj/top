@@ -9,13 +9,21 @@ import logging
 log = logging.getLogger(__name__)
 
 try:
-    # Prefer the variant with additional comments if available
-    from obw_platform.engine.visualize_results_1 import plot_equity_curves as _viz_plot
+    from obw_platform.engine.visualize_results_3 import (
+        plot_equity_curves as _viz_plot,
+        plot_equity_from_dataframe as _viz_plot_df,
+    )
 except Exception:  # pragma: no cover - best effort fallback
+    _viz_plot_df = None
     try:
-        from obw_platform.engine.visualize_results import plot_equity_curves as _viz_plot
-    except Exception:  # pragma: no cover - missing dependency (e.g. matplotlib)
-        _viz_plot = None
+        # Prefer the variant with additional comments if available
+        from obw_platform.engine.visualize_results_1 import plot_equity_curves as _viz_plot
+    except Exception:  # pragma: no cover - best effort fallback
+        try:
+            from obw_platform.engine.visualize_results import plot_equity_curves as _viz_plot
+        except Exception:  # pragma: no cover - missing dependency (e.g. matplotlib)
+            _viz_plot = None
+            _viz_plot_df = None
 
 APP_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 REPO_ROOT = os.path.abspath(os.path.join(APP_ROOT, ".."))
@@ -301,6 +309,10 @@ def _session_equity_df(session_db):
                     df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
                     df = df.dropna(subset=["ts", "equity"]).sort_values("ts")
                     if len(df) >= 2:
+                        try:
+                            df.attrs["initial_equity"] = float(df["equity"].iloc[0])
+                        except Exception:
+                            pass
                         con.close()
                         return df
         except Exception:
@@ -367,6 +379,10 @@ def _session_equity_df(session_db):
     eq = (init_eq + df["pnl"].cumsum()).rename("equity")
     out = pd.DataFrame({"ts": df["ts"], "equity": eq})
     out = out.dropna(subset=["ts"]).sort_values("ts")
+    try:
+        out.attrs["initial_equity"] = float(init_eq)
+    except Exception:
+        pass
     return out
 
 
@@ -466,44 +482,94 @@ def _make_live_plots(base_dir):
     if eq_df is None or eq_df.empty or not trades:
         return
 
-    # Convert trades to DataFrame for return histogram
-    df = pd.DataFrame(trades)
-    for c in ("entry_fill", "exit_fill", "qty", "fees_paid"):
-        if c in df:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    trade_df = pd.DataFrame(trades)
+    for col in ("entry_fill", "exit_fill", "qty", "fees_paid", "realised_pnl", "realized_pnl"):
+        if col in trade_df:
+            trade_df[col] = pd.to_numeric(trade_df[col], errors="coerce").fillna(0.0)
+    if "exit_fill_ts" in trade_df.columns:
+        trade_df["exit_fill_ts"] = pd.to_datetime(trade_df["exit_fill_ts"], errors="coerce")
     ret = np.where(
-        df["side"].str.upper() == "LONG",
-        (df["exit_fill"] - df["entry_fill"]) / df["entry_fill"],
-        (df["entry_fill"] - df["exit_fill"]) / df["entry_fill"],
+        trade_df["side"].str.upper() == "LONG",
+        (trade_df["exit_fill"] - trade_df["entry_fill"]) / trade_df["entry_fill"],
+        (trade_df["entry_fill"] - trade_df["exit_fill"]) / trade_df["entry_fill"],
     )
     plt.figure(); plt.hist(ret, bins=30)
     plt.title("Distribution of Returns per Trade")
     plt.xlabel("Return per trade"); plt.ylabel("Count")
     plt.tight_layout(); plt.savefig(os.path.join(base_dir, "returns_hist.png"), dpi=140); plt.close()
 
-    eq_curve = eq_df["equity"].to_numpy()
-    plt.figure(); plt.plot(range(len(eq_curve)), eq_curve)
-    plt.title("Equity vs Trade #")
-    plt.xlabel("Trade #"); plt.ylabel("Equity")
-    plt.tight_layout(); plt.savefig(os.path.join(base_dir, "equity_by_trade.png"), dpi=140); plt.close()
+    eq_series = pd.to_numeric(eq_df["equity"], errors="coerce")
+    eq_series = eq_series.dropna()
+    if eq_series.empty:
+        return
+    eq_curve = eq_series.to_numpy()
 
-    if len(eq_curve) > 1:
-        peaks = np.maximum.accumulate(eq_curve)
-        dd = (eq_curve - peaks) / peaks
-        plt.figure(); plt.plot(range(len(dd)), dd)
-        plt.title("Drawdown vs Trade #")
-        plt.xlabel("Trade #"); plt.ylabel("Drawdown (fraction)")
-        plt.tight_layout(); plt.savefig(os.path.join(base_dir, "drawdown_by_trade.png"), dpi=140); plt.close()
+    produced = False
+    if _viz_plot_df:
+        try:
+            pnl_col = "realised_pnl" if "realised_pnl" in trade_df.columns else "realized_pnl"
+            if pnl_col not in trade_df.columns:
+                trade_df[pnl_col] = np.where(
+                    trade_df["side"].str.upper() == "LONG",
+                    (trade_df["exit_fill"] - trade_df["entry_fill"]) * trade_df["qty"],
+                    (trade_df["entry_fill"] - trade_df["exit_fill"]) * trade_df["qty"],
+                )
+                if "fees_paid" in trade_df.columns:
+                    trade_df[pnl_col] = trade_df[pnl_col] - trade_df["fees_paid"]
+            init_eq = eq_df.attrs.get("initial_equity")
+            if init_eq is None and pnl_col in trade_df.columns:
+                pnl_series = trade_df[pnl_col].astype(float)
+                if not pnl_series.empty:
+                    init_eq = float(eq_series.iloc[-1] - pnl_series.cumsum().iloc[-1])
+            title_suffix = os.path.basename(base_dir.rstrip(os.sep)) or "live"
+            paths = _viz_plot_df(
+                trade_df,
+                initial_equity=init_eq,
+                time_column="exit_fill_ts" if "exit_fill_ts" in trade_df.columns else None,
+                show=False,
+                save_dir=base_dir,
+                file_prefix="viz",
+                title_suffix=title_suffix,
+            )
+            alias_map = {
+                "equity_vs_trade": "equity_by_trade.png",
+                "dd_vs_trade": "drawdown_by_trade.png",
+                "equity_vs_time": "equity_by_time.png",
+            }
+            for key, dest in alias_map.items():
+                src = paths.get(key)
+                if src and os.path.exists(src):
+                    try:
+                        shutil.copyfile(src, os.path.join(base_dir, dest))
+                    except Exception:
+                        pass
+            produced = True
+        except Exception:
+            log.exception("live_result %s: failed to render live equity plots", base_dir)
 
-    plt.figure(figsize=(8, 4))
-    plt.plot(eq_df["ts"], eq_curve)
-    ax = plt.gca()
-    ax.xaxis.set_major_locator(mdates.HourLocator())
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-    plt.xticks(rotation=45)
-    plt.title("Live Equity vs Time")
-    plt.xlabel("Time"); plt.ylabel("Equity")
-    plt.tight_layout(); plt.savefig(os.path.join(base_dir, "equity_by_time.png"), dpi=160); plt.close()
+    if not produced:
+        plt.figure(); plt.plot(range(len(eq_curve)), eq_curve)
+        plt.title("Equity vs Trade #")
+        plt.xlabel("Trade #"); plt.ylabel("Equity")
+        plt.tight_layout(); plt.savefig(os.path.join(base_dir, "equity_by_trade.png"), dpi=140); plt.close()
+
+        if len(eq_curve) > 1:
+            peaks = np.maximum.accumulate(eq_curve)
+            dd = (eq_curve - peaks) / peaks
+            plt.figure(); plt.plot(range(len(dd)), dd)
+            plt.title("Drawdown vs Trade #")
+            plt.xlabel("Trade #"); plt.ylabel("Drawdown (fraction)")
+            plt.tight_layout(); plt.savefig(os.path.join(base_dir, "drawdown_by_trade.png"), dpi=140); plt.close()
+
+        plt.figure(figsize=(8, 4))
+        plt.plot(eq_df["ts"], eq_curve)
+        ax = plt.gca()
+        ax.xaxis.set_major_locator(mdates.HourLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+        plt.xticks(rotation=45)
+        plt.title("Live Equity vs Time")
+        plt.xlabel("Time"); plt.ylabel("Equity")
+        plt.tight_layout(); plt.savefig(os.path.join(base_dir, "equity_by_time.png"), dpi=160); plt.close()
 
 def load_backtester_version() -> str:
     try:
