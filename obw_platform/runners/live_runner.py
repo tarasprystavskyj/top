@@ -1442,9 +1442,10 @@ def run_live(cfg: dict, args):
                         else:
                             od = place_reduce_only(fetcher, sym, side_close, qty_close, position_mode)
                             executed = False
+                            now_utc = datetime.now(timezone.utc)
                             if isinstance(od, dict) and od.get('error') == 'no_position':
                                 fill = price
-                                fdt = datetime.now(timezone.utc)
+                                fdt = now_utc
                                 try:
                                     mark_price = fetcher.fetch_mark_price(sym)
                                 except Exception:
@@ -1458,6 +1459,7 @@ def run_live(cfg: dict, args):
                                 executed = True
 
                             if executed:
+                                now_utc = datetime.now(timezone.utc)
                                 entry = float(rec.get('entry', 0.0))
                                 is_long = (str(rec.get('side', 'LONG')).upper() == 'LONG')
                                 gross = (fill - entry) / entry if entry and is_long else ((entry - fill) / entry if entry else 0.0)
@@ -1471,8 +1473,8 @@ def run_live(cfg: dict, args):
                                 try:
                                     insert_order_row(session_db_path, {
                                         'order_id': str(uuid.uuid4()),
-                                        'ts_utc': datetime.now(timezone.utc).isoformat(),
-                                        'bar_time_utc': datetime.now(timezone.utc).isoformat(),
+                                        'ts_utc': now_utc.isoformat(),
+                                        'bar_time_utc': now_utc.isoformat(),
                                         'mode': 'TP_PARTIAL',
                                         'symbol': sym,
                                         'side': side_close,
@@ -1499,47 +1501,68 @@ def run_live(cfg: dict, args):
                                 except Exception:
                                     pass
 
-                                try:
-                                    fetcher.ex.cancel_all_orders(ccxt_sym)
-                                    sleep_ms(RATE_MS)
-                                    _place_tp_sl_after_open(fetcher, sym, rec.get('side', 'LONG'), rec['qty'], rec.get('tp_price'), rec.get('sl_price'), position_mode)
-                                except Exception:
-                                    pass
-
-                                save_positions(args.results_dir, positions)
-
-                                # --- move SL to breakeven after successful TP_PARTIAL ---
-                                try:
-                                    entry_px = float(rec.get('entry_fill') or rec.get('entry') or 0.0)
-                                    old_sl = float(rec.get('sl_price') or rec.get('sl') or 0.0)
+                                remaining_qty = float(rec.get('qty', 0.0))
+                                if remaining_qty > 0:
+                                    entry_px = None
+                                    old_sl = None
+                                    new_sl = None
                                     side_is_long = (str(rec.get('side') or '').upper() == 'LONG')
-                                    new_sl = max(old_sl, entry_px) if side_is_long else min(old_sl, entry_px)
-                                    need_replace = (new_sl > old_sl) if side_is_long else (new_sl < old_sl)
-                                    if need_replace and new_sl > 0.0:
-                                        ccxt_sym = fetcher.resolve_symbol(sym)
-                                        side_close = 'sell' if side_is_long else 'buy'
+                                    try:
+                                        entry_px = float(rec.get('entry_fill') or rec.get('entry') or 0.0)
+                                    except Exception:
+                                        entry_px = 0.0
+                                    try:
+                                        old_sl = float(rec.get('sl_price') or rec.get('sl') or 0.0)
+                                    except Exception:
+                                        old_sl = 0.0
+                                    try:
+                                        candidate_sl = max(old_sl, entry_px) if side_is_long else min(old_sl, entry_px)
+                                        need_replace = (candidate_sl > old_sl) if side_is_long else (candidate_sl < old_sl)
+                                        if need_replace and candidate_sl > 0.0:
+                                            new_sl = candidate_sl
+                                        else:
+                                            new_sl = None
+                                    except Exception:
+                                        new_sl = None
+
+                                    placed_be_stop = False
+                                    try:
+                                        fetcher.ex.cancel_all_orders(ccxt_sym)
+                                        sleep_ms(RATE_MS)
+                                    except Exception:
+                                        pass
+
+                                    if new_sl is not None:
                                         try:
-                                            fetcher.ex.cancel_all_orders(ccxt_sym)
-                                            sleep_ms(RATE_MS)
-                                        except Exception:
-                                            pass
-                                        try:
+                                            side_close_sl = 'sell' if side_is_long else 'buy'
                                             fetcher.ex.create_order(
                                                 ccxt_sym,
                                                 'stop_market',
-                                                side_close,
-                                                float(rec['qty']),
+                                                side_close_sl,
+                                                float(remaining_qty),
                                                 None,
                                                 {'reduceOnly': True, 'positionSide': 'BOTH', 'triggerPrice': new_sl},
                                             )
                                             rec['sl_price'] = float(new_sl)
-                                            save_positions(args.results_dir, positions)
+                                            placed_be_stop = True
                                             cprint(f'[sl->BE] {sym} new_sl={new_sl:.6g}', fg='cyan')
                                         except Exception as e:
                                             cprint(f'[sl->BE ERR] {sym} {e}', fg='red')
-                                except Exception:
-                                    pass
-                                # --- end BE move ---
+
+                                    try:
+                                        _place_tp_sl_after_open(
+                                            fetcher,
+                                            sym,
+                                            rec.get('side', 'LONG'),
+                                            remaining_qty,
+                                            rec.get('tp_price'),
+                                            None if placed_be_stop else rec.get('sl_price'),
+                                            position_mode,
+                                        )
+                                    except Exception:
+                                        pass
+
+                                save_positions(args.results_dir, positions)
 
                                 continue
 
@@ -1548,9 +1571,10 @@ def run_live(cfg: dict, args):
                         px_for_reason = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
                         od = place_reduce_only(fetcher, sym, side_close, qty_close, position_mode)
                         executed = False
+                        now_utc = datetime.now(timezone.utc)
                         if isinstance(od, dict) and od.get('error') == 'no_position':
                             fill = px_for_reason
-                            fdt = datetime.now(timezone.utc)
+                            fdt = now_utc
                             try:
                                 mark_price = fetcher.fetch_mark_price(sym)
                             except Exception:
@@ -1564,6 +1588,7 @@ def run_live(cfg: dict, args):
                             executed = True
 
                         if executed:
+                            now_utc = datetime.now(timezone.utc)
                             entry = float(rec.get('entry', 0.0))
                             is_long = (str(rec.get('side', 'LONG')).upper() == 'LONG')
                             gross = (fill - entry) / entry if entry and is_long else ((entry - fill) / entry if entry else 0.0)
@@ -1577,8 +1602,8 @@ def run_live(cfg: dict, args):
                             try:
                                 insert_order_row(session_db_path, {
                                     'order_id': str(uuid.uuid4()),
-                                    'ts_utc': datetime.now(timezone.utc).isoformat(),
-                                    'bar_time_utc': datetime.now(timezone.utc).isoformat(),
+                                    'ts_utc': now_utc.isoformat(),
+                                    'bar_time_utc': now_utc.isoformat(),
                                     'mode': 'EXIT',
                                     'symbol': sym,
                                     'side': side_close,
@@ -1604,7 +1629,7 @@ def run_live(cfg: dict, args):
                                     session_db_path,
                                     bot_id,
                                     rec.get('order_id'),
-                                    datetime.now(timezone.utc).isoformat(),
+                                    now_utc.isoformat(),
                                     exit_fill=fill,
                                     exit_fill_ts=fdt.isoformat() if fdt else None,
                                     exit_mark_price=mark_price,
