@@ -227,16 +227,36 @@ def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price):
     if qty <= 0.0 or not be_price:
         return None
     side = str(rec.get('side', 'LONG')).upper()
-    ccxt_sym = fetcher.resolve_symbol(sym)
+    ccxt_sym = fetcher.resolve_symbol(sym) or sym
+    mkt = fetcher.markets.get(ccxt_sym, {})
+    step = float(mkt.get('precision', {}).get('amount') or 0.0)
+    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
+    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
+    if step and step > 0:
+        qty = round_to_step(qty, step)
+    qty = float(qty)
+    if qty <= 0.0:
+        return None
+    price_for_notional = (
+        _safe_float(rec.get('entry_fill'))
+        or _safe_float(rec.get('entry'))
+        or _safe_float(rec.get('mark'))
+        or _safe_float(be_price)
+        or 0.0
+    )
+    notional_val = price_for_notional * qty if price_for_notional > 0 else 0.0
+    min_qty_req = max(min_qty, 0.0)
+    if qty < min_qty_req - 1e-12:
+        return None
+    if min_notional > 0 and notional_val > 0 and notional_val < min_notional - 1e-9:
+        return None
     pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
-    base = {'reduceOnly': True}
+    base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
     base['positionSide'] = 'BOTH' if pos_oneway else ('LONG' if side == 'LONG' else 'SHORT')
     sl_side = 'sell' if side == 'LONG' else 'buy'
     candidates = [
         ('stop_market', sl_side, None, {**base, 'triggerPrice': float(be_price)}),
         ('stop_market', sl_side, None, {**base, 'stopPrice': float(be_price)}),
-        ('market', sl_side, None, {**base, 'stopLossPrice': float(be_price)}),
-        ('stop', sl_side, float(be_price), dict(base)),
     ]
     for otype, oside, oprice, params in candidates:
         try:
