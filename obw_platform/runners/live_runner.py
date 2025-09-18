@@ -222,7 +222,7 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
             return False
 
 
-def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price):
+def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price, now_utc):
     qty = float(rec.get('qty') or 0.0)
     if qty <= 0.0 or not be_price:
         return None
@@ -246,9 +246,28 @@ def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price):
     )
     notional_val = price_for_notional * qty if price_for_notional > 0 else 0.0
     min_qty_req = max(min_qty, 0.0)
+    ts = None
+    if isinstance(now_utc, datetime):
+        try:
+            ts = now_utc.isoformat()
+        except Exception:
+            ts = None
+
     if qty < min_qty_req - 1e-12:
+        cprint(
+            f"[sl->BE extra-fail] {sym} qty<{min_qty_req:.6g} (qty={qty:.6g})"
+            + (f" ts={ts}" if ts else ""),
+            fg="yellow",
+            dim=True,
+        )
         return None
     if min_notional > 0 and notional_val > 0 and notional_val < min_notional - 1e-9:
+        cprint(
+            f"[sl->BE extra-fail] {sym} notional<{min_notional:.6g} (val={notional_val:.6g})"
+            + (f" ts={ts}" if ts else ""),
+            fg="yellow",
+            dim=True,
+        )
         return None
     pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
     base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
@@ -258,13 +277,37 @@ def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price):
         ('stop_market', sl_side, None, {**base, 'triggerPrice': float(be_price)}),
         ('stop_market', sl_side, None, {**base, 'stopPrice': float(be_price)}),
     ]
+    last_err = None
+    diag_verbose = bool(int(os.environ.get('BE_EXTRA_SL_VERBOSE', '0')))
     for otype, oside, oprice, params in candidates:
         try:
-            od = fetcher.ex.create_order(ccxt_sym, otype, oside, qty, oprice, params)
+            if diag_verbose and hasattr(fetcher.ex, 'verbose'):
+                old_verbose = getattr(fetcher.ex, 'verbose', False)
+                fetcher.ex.verbose = True
+            else:
+                old_verbose = None
+            try:
+                od = fetcher.ex.create_order(ccxt_sym, otype, oside, qty, oprice, params)
+            finally:
+                if old_verbose is not None:
+                    fetcher.ex.verbose = old_verbose
             sleep_ms(RATE_MS)
             return od
-        except Exception:
+        except Exception as e:
+            trig = params.get('triggerPrice') or params.get('stopPrice')
+            emsg = (e.args[0] if getattr(e, 'args', None) else str(e))
+            msg = (
+                f"[sl->BE extra-try-fail] {sym} {otype} {oside} qty={qty:.6g} trig={trig} -> {emsg}"
+            )
+            if ts:
+                msg += f" ts={ts}"
+            cprint(msg, fg="yellow", dim=True)
+            last_err = emsg
             continue
+    msg = f"[sl->BE extra-fail] {sym} exhausted candidates; last_error={last_err or 'none'}"
+    if ts:
+        msg += f" ts={ts}"
+    cprint(msg, fg="red")
     return None
 
 
@@ -1778,7 +1821,14 @@ def run_live(cfg: dict, args):
                     if last_extra_dt and (now_utc - last_extra_dt).total_seconds() < extra_delay:
                         allow_extra = False
                     if allow_extra:
-                        od = _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price)
+                        od = _place_additional_stop_at_BE(
+                            fetcher,
+                            sym,
+                            rec,
+                            position_mode,
+                            be_price,
+                            now_utc,
+                        )
                         rec['be_extra_sl_last_attempt_ts'] = now_utc.isoformat()
                         if od:
                             rec['be_extra_sl_done'] = True
