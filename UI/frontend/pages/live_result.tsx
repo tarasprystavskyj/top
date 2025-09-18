@@ -118,6 +118,9 @@ export default function LiveResult() {
       });
   }, [sel, debug]);
 
+  const tableColumnWidth = 'calc((100% - 20px) / 2)';
+  const fallbackTableWidth = 'calc((100% - 16px) / 2)';
+
   return (
     <div>
       <h3>Live Result{sel ? ` – ${sel}` : ''}</h3>
@@ -198,7 +201,7 @@ export default function LiveResult() {
             {(trades.length > 0 || liveTrades.length > 0) && (
               <div style={{ display: 'flex', gap: 20, flexWrap: 'nowrap', alignItems: 'flex-start', overflowX: 'auto' }}>
                 {trades.length > 0 && (
-                  <div style={{ flex: '0 0 360px', minWidth: 360 }}>
+                  <div style={{ flex: `0 0 ${tableColumnWidth}`, width: tableColumnWidth }}>
                     <h4>Backtest trades ({trades.length})</h4>
                     <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                       <table border={1}>
@@ -223,7 +226,7 @@ export default function LiveResult() {
                   </div>
                 )}
                 {liveTrades.length > 0 && (
-                  <div style={{ flex: '0 0 360px', minWidth: 360 }}>
+                  <div style={{ flex: `0 0 ${tableColumnWidth}`, width: tableColumnWidth }}>
                     <h4>Live trades ({liveTrades.length})</h4>
                     <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                       <table border={1}>
@@ -266,7 +269,7 @@ export default function LiveResult() {
       {pairs.length === 0 && (trades.length > 0 || liveTrades.length > 0) && (
         <div style={{ display: 'flex', gap: 16, flexWrap: 'nowrap', overflowX: 'auto' }}>
           {trades.length > 0 && (
-            <div style={{ flex: '0 0 360px', minWidth: 360 }}>
+            <div style={{ flex: `0 0 ${fallbackTableWidth}`, width: fallbackTableWidth }}>
               <h4>Backtest trades ({trades.length})</h4>
               <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                 <table border={1}>
@@ -291,7 +294,7 @@ export default function LiveResult() {
             </div>
           )}
           {liveTrades.length > 0 && (
-            <div style={{ flex: '0 0 360px', minWidth: 360 }}>
+            <div style={{ flex: `0 0 ${fallbackTableWidth}`, width: fallbackTableWidth }}>
               <h4>Live trades ({liveTrades.length})</h4>
               <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                 <table border={1}>
