@@ -155,14 +155,14 @@ export default function LiveResult() {
       )}
       {pairs.length > 0 && (
         <div>
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
-              <div style={{ textAlign: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'stretch' }}>
+              <div style={{ flex: '1 1 320px', textAlign: 'center' }}>
                 <h3>
                   Backtest {btRangeText ? `(${btRangeText})` : ''}
                 </h3>
                 {pairs[slide].back && (
-                  <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
+                  <img src={pairs[slide].back!} style={{ width: '100%', maxWidth: '420px' }} />
                 )}
                 {pairs.length > 1 && (
                   <input
@@ -175,14 +175,14 @@ export default function LiveResult() {
                   />
                 )}
               </div>
-              <div style={{ textAlign: 'center' }}>
+              <div style={{ flex: '1 1 320px', textAlign: 'center' }}>
                 <h3>
                   Live {liveRange ? `(${liveRange.start} — ${liveRange.end})` : ''}
                 </h3>
                 {pairs[slide].live ? (
-                  <img src={pairs[slide].live!} style={{ maxWidth: '400px' }} />
+                  <img src={pairs[slide].live!} style={{ width: '100%', maxWidth: '420px' }} />
                 ) : (
-                  <div style={{ maxWidth: '400px', textAlign: 'center' }}>
+                  <div style={{ width: '100%', maxWidth: '420px', margin: '0 auto' }}>
                     No live trade data
                   </div>
                 )}
@@ -199,9 +199,9 @@ export default function LiveResult() {
               </div>
             </div>
             {(trades.length > 0 || liveTrades.length > 0) && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
                 {trades.length > 0 && (
-                  <>
+                  <div style={{ flex: '1 1 360px' }}>
                     <h4>Backtest trades ({trades.length})</h4>
                     <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                       <table border={1}>
@@ -223,10 +223,10 @@ export default function LiveResult() {
                         </tbody>
                       </table>
                     </div>
-                  </>
+                  </div>
                 )}
                 {liveTrades.length > 0 && (
-                  <>
+                  <div style={{ flex: '1 1 360px' }}>
                     <h4>Live trades ({liveTrades.length})</h4>
                     <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                       <table border={1}>
@@ -251,7 +251,7 @@ export default function LiveResult() {
                         </tbody>
                       </table>
                     </div>
-                  </>
+                  </div>
                 )}
               </div>
             )}
@@ -276,9 +276,9 @@ export default function LiveResult() {
         </pre>
       )}
       {pairs.length === 0 && (trades.length > 0 || liveTrades.length > 0) && (
-        <div style={{ display: 'flex', gap: 16 }}>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
           {trades.length > 0 && (
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: '1 1 360px' }}>
               <h4>Backtest trades ({trades.length})</h4>
               <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                 <table border={1}>
@@ -303,7 +303,7 @@ export default function LiveResult() {
             </div>
           )}
           {liveTrades.length > 0 && (
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: '1 1 360px' }}>
               <h4>Live trades ({liveTrades.length})</h4>
               <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                 <table border={1}>
