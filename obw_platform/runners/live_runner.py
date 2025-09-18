@@ -222,6 +222,52 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
             return False
 
 
+def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price):
+    qty = float(rec.get('qty') or 0.0)
+    if qty <= 0.0 or not be_price:
+        return None
+    side = str(rec.get('side', 'LONG')).upper()
+    ccxt_sym = fetcher.resolve_symbol(sym) or sym
+    mkt = fetcher.markets.get(ccxt_sym, {})
+    step = float(mkt.get('precision', {}).get('amount') or 0.0)
+    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
+    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
+    if step and step > 0:
+        qty = round_to_step(qty, step)
+    qty = float(qty)
+    if qty <= 0.0:
+        return None
+    price_for_notional = (
+        _safe_float(rec.get('entry_fill'))
+        or _safe_float(rec.get('entry'))
+        or _safe_float(rec.get('mark'))
+        or _safe_float(be_price)
+        or 0.0
+    )
+    notional_val = price_for_notional * qty if price_for_notional > 0 else 0.0
+    min_qty_req = max(min_qty, 0.0)
+    if qty < min_qty_req - 1e-12:
+        return None
+    if min_notional > 0 and notional_val > 0 and notional_val < min_notional - 1e-9:
+        return None
+    pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
+    base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
+    base['positionSide'] = 'BOTH' if pos_oneway else ('LONG' if side == 'LONG' else 'SHORT')
+    sl_side = 'sell' if side == 'LONG' else 'buy'
+    candidates = [
+        ('stop_market', sl_side, None, {**base, 'triggerPrice': float(be_price)}),
+        ('stop_market', sl_side, None, {**base, 'stopPrice': float(be_price)}),
+    ]
+    for otype, oside, oprice, params in candidates:
+        try:
+            od = fetcher.ex.create_order(ccxt_sym, otype, oside, qty, oprice, params)
+            sleep_ms(RATE_MS)
+            return od
+        except Exception:
+            continue
+    return None
+
+
 def _ensure_be_fields(rec):
     if 'entry_qty' not in rec:
         try:
@@ -235,6 +281,19 @@ def _ensure_be_fields(rec):
     rec.setdefault('be_plan_last_fallback_ts', None)
     tp50, _ = _calc_tp50_and_be(rec)
     rec['tp50_trigger'] = tp50
+    try:
+        entry_val = float(rec.get('entry') or rec.get('entry_fill') or 0.0)
+    except Exception:
+        entry_val = 0.0
+    if rec.get('be_high_price') is None and entry_val:
+        rec['be_high_price'] = entry_val
+    if rec.get('be_low_price') is None and entry_val:
+        rec['be_low_price'] = entry_val
+    rec.setdefault('be_high_price', None)
+    rec.setdefault('be_low_price', None)
+    rec.setdefault('be_extra_sl_done', False)
+    rec.setdefault('be_extra_sl_order_id', None)
+    rec.setdefault('be_extra_sl_last_attempt_ts', None)
 
 _last_dot_bar = None
 def _bar_key(now: datetime, bar_sec: int) -> int:
@@ -1598,6 +1657,21 @@ def run_live(cfg: dict, args):
                 tp50_trigger = rec.get('tp50_trigger')
                 _, be_price = _calc_tp50_and_be(rec)
                 try:
+                    px_f = float(px)
+                except Exception:
+                    px_f = None
+                if px_f is not None:
+                    if side_long:
+                        prev_high = _safe_float(rec.get('be_high_price'))
+                        if prev_high is None or px_f > prev_high + 1e-12:
+                            rec['be_high_price'] = px_f
+                            rec_changed = True
+                    else:
+                        prev_low = _safe_float(rec.get('be_low_price'))
+                        if prev_low is None or px_f < prev_low - 1e-12:
+                            rec['be_low_price'] = px_f
+                            rec_changed = True
+                try:
                     sl_cur = float(rec.get('sl_price') or rec.get('sl') or 0.0)
                 except Exception:
                     sl_cur = 0.0
@@ -1621,6 +1695,15 @@ def run_live(cfg: dict, args):
                         trigger_hit = True
                     elif (not side_long) and px <= tp50_trigger + 1e-9:
                         trigger_hit = True
+                    if not trigger_hit:
+                        if side_long:
+                            high_val = _safe_float(rec.get('be_high_price'))
+                            if high_val is not None and high_val >= tp50_trigger - 1e-9:
+                                trigger_hit = True
+                        else:
+                            low_val = _safe_float(rec.get('be_low_price'))
+                            if low_val is not None and low_val <= tp50_trigger + 1e-9:
+                                trigger_hit = True
 
                 if plan_id and trigger_hit and not rec.get('be_plan_active'):
                     rec['be_plan_active'] = True
@@ -1675,6 +1758,44 @@ def run_live(cfg: dict, args):
                     except Exception:
                         pass
                     rec_changed = True
+
+                extra_sl_done = bool(rec.get('be_extra_sl_done'))
+                extra_qty = float(rec.get('qty') or 0.0)
+                high_hit = False
+                if tp50_trigger is not None and be_price and extra_qty > 0.0 and not extra_sl_done:
+                    if side_long:
+                        high_val = _safe_float(rec.get('be_high_price'))
+                        if high_val is not None and high_val >= tp50_trigger - 1e-9:
+                            high_hit = True
+                    else:
+                        low_val = _safe_float(rec.get('be_low_price'))
+                        if low_val is not None and low_val <= tp50_trigger + 1e-9:
+                            high_hit = True
+                if high_hit and not extra_sl_done:
+                    extra_delay = max(float(fallback_delay), 5.0)
+                    last_extra_dt = _parse_iso(rec.get('be_extra_sl_last_attempt_ts'))
+                    allow_extra = True
+                    if last_extra_dt and (now_utc - last_extra_dt).total_seconds() < extra_delay:
+                        allow_extra = False
+                    if allow_extra:
+                        od = _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price)
+                        rec['be_extra_sl_last_attempt_ts'] = now_utc.isoformat()
+                        if od:
+                            rec['be_extra_sl_done'] = True
+                            rec['be_extra_sl_order_id'] = str(
+                                od.get('id')
+                                or od.get('orderId')
+                                or od.get('clientOrderId')
+                                or ''
+                            )
+                            cprint(
+                                f'[sl->BE extra] {sym} qty={extra_qty:.6g} price={float(be_price):.6g}',
+                                fg='cyan',
+                                dim=True,
+                            )
+                        else:
+                            cprint(f'[sl->BE extra-fail] {sym}', fg='yellow', dim=True)
+                        rec_changed = True
 
                 if rec_changed:
                     save_positions(args.results_dir, positions)
