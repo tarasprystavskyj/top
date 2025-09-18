@@ -183,7 +183,10 @@ class BreakoutAVAAIFull:
         scored: List[Tuple[float,int,str]] = []
         for idx, sym in enumerate(universe_syms):
             m = self._mom_sum(md_map.get(sym, {}))
-            score = (-m) if invert else (m)
+            if self.side == "BOTH":
+                score = abs(m)
+            else:
+                score = (-m) if invert else (m)
             scored.append((score, idx, sym))
         scored.sort(key=lambda x: x[0], reverse=True)  # stable via index
         # CUT to top_n here (moved from backtester); top_n<=0 disables the limit
