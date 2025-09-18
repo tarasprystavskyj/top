@@ -1687,6 +1687,7 @@ def run_live(cfg: dict, args):
                     except Exception:
                         pass
 
+
                 tf_sec_local = int(_tf_to_seconds(tf))
                 try:
                     bar_close_local = bar_close
@@ -1828,9 +1829,22 @@ def run_live(cfg: dict, args):
 
                                 remaining_qty = float(rec.get('qty', 0.0))
                                 if remaining_qty > 0:
-                                    placed_be_stop = _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode)
-                                    if placed_be_stop:
-                                        rec['be_plan_last_fallback_ts'] = now_utc.isoformat()
+                                    placed_be_stop = False
+                                    try:
+                                        placed_be_stop = _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode)
+                                        if placed_be_stop:
+                                            rec['be_plan_last_fallback_ts'] = now_utc.isoformat()
+                                            # зберігаємо стан позиції локально та в БД
+                                            save_positions(args.results_dir, positions)
+                                            try:
+                                                db_upsert_open_position(session_db_path, bot_id, rec)
+                                            except Exception:
+                                                pass
+                                            cprint(f'[sl->BE] {sym} new_sl={float(rec.get("sl_price") or 0.0):.6g}', fg='cyan')
+                                        else:
+                                            cprint(f'[sl->BE skip] {sym} (no change / qty=0)', fg='yellow', dim=True)
+                                    except Exception as e:
+                                        cprint(f'[sl->BE ERR] {sym} {e}', fg='red')
                                     try:
                                         _place_tp_sl_after_open(
                                             fetcher,
