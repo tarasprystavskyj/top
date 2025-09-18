@@ -2,7 +2,6 @@
 import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy
 from typing import Any, Dict, Optional, List
 from fastapi import FastAPI, HTTPException, Body, Query
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import logging
@@ -62,36 +61,6 @@ BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
     "backtester_core_speed3.py": {"plots": True},
     "backtester_core_speed3_veto.py": {"plots": True},
 }
-
-DEFAULT_CORS_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://0.0.0.0:3000",
-    "https://localhost:3000",
-    "https://127.0.0.1:3000",
-    "https://0.0.0.0:3000",
-]
-
-
-def _load_cors_origins() -> List[str]:
-    origins: List[str] = []
-    seen = set()
-    for origin in DEFAULT_CORS_ORIGINS:
-        if not origin or origin in seen:
-            continue
-        origins.append(origin)
-        seen.add(origin)
-    for env_name in ("CORS_ALLOW_ORIGINS", "FRONTEND_ORIGINS"):
-        raw = os.getenv(env_name)
-        if not raw:
-            continue
-        for item in raw.split(","):
-            value = item.strip()
-            if not value or value in seen:
-                continue
-            origins.append(value)
-            seen.add(value)
-    return origins
 
 # --- helpers: cache DB discovery -------------------------------------------
 def _list_cache_db_files() -> List[Dict[str, str]]:
@@ -425,9 +394,29 @@ def _session_closed_trades(session_db):
     cols = [r[1] for r in cur.execute(f"PRAGMA table_info({tbl});").fetchall()]
     has_status = "status" in cols
     has_fees = "fees_paid" in cols
-    sel = "symbol, side, qty, entry_fill, entry_fill_ts, exit_fill, exit_fill_ts"
+    sel_cols = [
+        "symbol",
+        "side",
+        "qty",
+        "entry_fill",
+        "entry_fill_ts",
+        "exit_fill",
+        "exit_fill_ts",
+    ]
     if has_fees:
-        sel += ", fees_paid"
+        sel_cols.append("fees_paid")
+    extra_cols = [
+        col
+        for col in (
+            "entry_slip_bp",
+            "entry_lag_sec",
+            "exit_slip_bp",
+            "exit_lag_sec",
+        )
+        if col in cols
+    ]
+    sel_cols.extend(extra_cols)
+    sel = ", ".join(sel_cols)
     where = "WHERE exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
     if has_status:
         where = (
@@ -440,7 +429,16 @@ def _session_closed_trades(session_db):
     con.close()
     if df.empty:
         return None
-    for c in ("qty", "entry_fill", "exit_fill", "fees_paid"):
+    for c in (
+        "qty",
+        "entry_fill",
+        "exit_fill",
+        "fees_paid",
+        "entry_slip_bp",
+        "entry_lag_sec",
+        "exit_slip_bp",
+        "exit_lag_sec",
+    ):
         if c in df:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     df["realised_pnl"] = np.where(
@@ -831,19 +829,6 @@ def run_grid(job):
             raise RuntimeError(f"backtester failed with code {p.returncode}")
 
 app = FastAPI()
-
-_cors_origins = _load_cors_origins()
-if _cors_origins:
-    if "*" in _cors_origins:
-        allow_origins = ["*"]
-    else:
-        allow_origins = _cors_origins
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=allow_origins,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
 @app.get("/api/health")
 def health(): return {"ok": True}

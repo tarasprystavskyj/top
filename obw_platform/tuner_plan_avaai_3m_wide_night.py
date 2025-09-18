@@ -1,14 +1,12 @@
-# tuner_plan_avaai_3m_wide_night.py
-# Wide exploratory tuner plan for 3m strategy (overnight run).
-# Built on top of the standard 3m plan, but with broader ranges to search
-# for higher profitability and to naturally increase candidate coverage.
+# tuner_plan_avaai_3m_night_fast.py
+# Compact overnight tuner plan for 3m strategy.
+# Target: finish in one night at ~3s/point. Centered around current best:
+#   tp_atr_mult≈4.0, sl_atr_mult≈0.40, min_atr≈0.015, min_mom≈0.064,
+#   min_qv_24h≈0, min_qv_1h≈1000, heat_thr≈0.90, heat_rr≈1.10, top_n≈4.
 #
-# Aliases your tuner runtime supports:
+# Aliases supported by your tuner runtime:
 #   'min-atr' -> strategy_params.min_atr_ratio
 #   'min-mom' -> strategy_params.min_momentum_sum
-#
-# Structure: list of steps like ("rays", {...}) for 1-D sweeps,
-# and ("grid", {...}) for local refinements around the best results.
 
 def _seq(lo, hi, step):
     xs, x = [], float(lo)
@@ -24,56 +22,47 @@ def _choices(*vals):
     return list(vals)
 
 def default_plan(limit_bars=None):
-    # 3m: ~480 bars/day => 30d ≈ 14_400; 90d ≈ 43_200.
-    is_30d = (limit_bars or 0) <= 16000
+    # 3m: ~480 bars/day => 30d ≈ 14_400. Keep plan tight so it finishes overnight.
+    # Rough point budget: Rays sum of lengths (~<60) + a small Grid (~<=200 combos).
 
-    # --- Phase A: Wide rays (exploration) -----------------------------------
-    # Broadened ranges to cover more profitable regimes.
+    # ---------------- Phase A: focused 1-D rays (exploration) ----------------
     rays = [
-        # Take-profit / Stop-loss (ATR-based)
-        # ("rays", {"strategy_params.tp_atr_mult": _seq(2.0, 6.0, 0.20)}),
-        # ("rays", {"strategy_params.sl_atr_mult": _seq(0.40, 1.40, 0.05)}),
+        # TP/SL around current best (narrow ranges)
+        ("rays", {"strategy_params.tp_atr_mult": _seq(3.2, 4.8, 0.20)}),   # 3.2..4.8 step 0.2 (9)
+        ("rays", {"strategy_params.sl_atr_mult": _seq(0.35, 0.55, 0.02)}),  # 0.35..0.55 step 0.02 (11)
 
-        #Entry filters (looser on 3m to allow more candidates)
-        # ("rays", {"min-atr": _seq(0.010, 0.030, 0.002)}),          # 3m ATR ratio often lower
-        # ("rays", {"min-mom": _seq(0.000, 0.060, 0.004)}),          # includes 0 to allow momentum-free entries
+        # Entry filters: allow a tad looser ATR on 3m; momentum clustered near current
+        ("rays", {"min-atr": _seq(0.010, 0.022, 0.002)}),                  # (7)
+        ("rays", {"min-mom": _seq(0.040, 0.080, 0.004)}),                  # (11)
 
-        #Liquidity thresholds (to make heat informative and control slippage)
-        # ("rays", {"strategy_params.min_qv_24h": _choices(0, 100000, 200000, 300000)}),
-        # ("rays", {"strategy_params.min_qv_1h":  _choices(0, 5000, 10000, 20000)}),
+        # Liquidity thresholds (kept tiny to make HEAT informative w/o blowing budget)
+        ("rays", {"strategy_params.min_qv_24h": _choices(0, 100000, 200000)}),  # (3)
+        ("rays", {"strategy_params.min_qv_1h":  _choices(0, 1000, 5000)}),      # (3)
 
-        #Exit on heat (state exit); scan for best stability
-        # ("rays", {"strategy_params.heat_exit_threshold": _seq(0.90, 0.95, 0.05)}),
-        # ("rays", {"strategy_params.heat_exit_min_rr": _choices(1.00, 1.05, 1.10, 1.20)}),
+        # State exit (heat)
+        ("rays", {"strategy_params.heat_exit_threshold": _seq(0.75, 0.95, 0.05)}),  # (5)
+        ("rays", {"strategy_params.heat_exit_min_rr": _choices(1.05, 1.10, 1.15)}), # (3)
 
         # Portfolio breadth
-        ("rays", {"strategy_params.top_n": _choices(6, 8, 10, 12)}),
+        ("rays", {"strategy_params.top_n": _choices(4, 6, 8)}),                  # (3) 
     ]
 
-    # --- Phase B: Local grids around the best --------------------------------
-    # Two progressively tighter grids to polish around the top configs.
-    grid1 = ("grid", {
-        "strategy_params.tp_atr_mult":           "around:0.20",
-        "strategy_params.sl_atr_mult":           "around:0.05",
-        "min-atr":                               "around:0.002",
-        "min-mom":                               "around:0.004",
-        "strategy_params.min_qv_24h":            "around:100000",
-        "strategy_params.min_qv_1h":             "around:5000",
-        "strategy_params.heat_exit_threshold":   "around:0.05",
-        "strategy_params.heat_exit_min_rr":      "around:0.05",
-        "strategy_params.top_n":                 "around:2",
+    # ---------------- Phase B: small neighborhood grid (polish) --------------
+    # Keep grid tiny (explicit choices), centered around the best from Rays.
+    # NOTE: We intentionally grid only the most sensitive params to cap combos.
+    grid = ("grid", {
+        "strategy_params.tp_atr_mult":         [ -0.20, 0.0, +0.20 ],   # relative nudge around best
+        "strategy_params.sl_atr_mult":         [ -0.02, 0.0, +0.02 ],
+        "min-atr":                             [ -0.002, 0.0, +0.002 ],
+        "min-mom":                             [ -0.004, 0.0, +0.004 ],
+        "strategy_params.heat_exit_threshold": [ -0.05, 0.0, +0.05 ],
+        # Fix/minimize other dims in grid to contain multiplicative explosion:
+        "strategy_params.min_qv_24h":          "fix",
+        "strategy_params.min_qv_1h":           "fix",
+        "strategy_params.heat_exit_min_rr":    "fix",
+        "strategy_params.top_n":               "fix",
     })
 
-    grid2 = ("grid", {
-         "strategy_params.tp_atr_mult":           "around:0.10",
-        # "strategy_params.sl_atr_mult":           "around:0.02",
-        # "min-atr":                               "around:0.001",
-        # "min-mom":                               "around:0.002",
-        # "strategy_params.min_qv_24h":            "around:50000",
-        # "strategy_params.min_qv_1h":             "around:2500",
-        # "strategy_params.heat_exit_threshold":   "around:0.02",
-        # "strategy_params.heat_exit_min_rr":      "around:0.02",
-        # "strategy_params.top_n":                 "around:1",
-    })
-
-    return rays + [grid1, grid2]
+    # Your tuner should interpret numeric lists here as deltas around best,
+    # and "fix" as "keep the best-found value".
+    return rays + [grid]
