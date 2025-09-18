@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch } from '../utils/api';
 
@@ -17,7 +17,13 @@ export default function LiveResult() {
   const [debug, setDebug] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
   const [btRangeText, setBtRangeText] = useState<string>('');
-  const liveEquitySeries = useMemo(() => buildLiveEquitySeries(liveTrades), [liveTrades]);
+  const sortedTrades = useMemo(() => sortTradesDescending(trades), [trades]);
+  const sortedLiveTrades = useMemo(() => sortTradesDescending(liveTrades), [liveTrades]);
+  const matchedTradeRows = useMemo(
+    () => buildMatchedTradeRows(sortedTrades, sortedLiveTrades),
+    [sortedTrades, sortedLiveTrades],
+  );
+  const liveEquitySeries = useMemo(() => buildLiveEquitySeries(sortedLiveTrades), [sortedLiveTrades]);
 
   const slideIndex = pairs.length > 0 ? Math.min(slide, pairs.length - 1) : 0;
   const currentPair = pairs.length > 0 ? pairs[slideIndex] : null;
@@ -207,62 +213,13 @@ export default function LiveResult() {
                 </div>
               )}
             </div>
-            {(trades.length > 0 || liveTrades.length > 0) && (
-              <div style={{ display: 'flex', gap: 20, flexWrap: 'nowrap', alignItems: 'flex-start', overflowX: 'auto' }}>
-                {trades.length > 0 && (
-                  <div style={{ flex: `0 0 ${tableColumnWidth}`, width: tableColumnWidth }}>
-                    <h4>Backtest trades ({trades.length})</h4>
-                    <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                      <table border={1}>
-                        <thead>
-                          <tr>
-                            {Object.keys(trades[0]).map(k => (
-                              <th key={k}>{k}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {trades.map((t, i) => (
-                            <tr key={i}>
-                              {Object.keys(trades[0]).map(k => (
-                                <td key={k}>{formatVal(t[k])}</td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-                {liveTrades.length > 0 && (
-                  <div style={{ flex: `0 0 ${tableColumnWidth}`, width: tableColumnWidth }}>
-                    <h4>Live trades ({liveTrades.length})</h4>
-                    <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                      <table border={1}>
-                        <thead>
-                          <tr>
-                            {Object.keys(liveTrades[0]).map(k => (
-                              <th key={k}>{k}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {liveTrades.map((t, i) => {
-                            const pnl = Number((t as any).realised_pnl);
-                            return (
-                              <tr key={i} style={pnl > 0 ? { backgroundColor: '#d4edda' } : undefined}>
-                                {Object.keys(liveTrades[0]).map(k => (
-                                  <td key={k}>{formatVal(t[k])}</td>
-                                ))}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
+            {(sortedTrades.length > 0 || sortedLiveTrades.length > 0) && (
+              <TradesTables
+                backTrades={sortedTrades}
+                liveTrades={sortedLiveTrades}
+                matchedRows={matchedTradeRows}
+                columnWidth={tableColumnWidth}
+              />
             )}
           </div>
         </div>
@@ -275,61 +232,133 @@ export default function LiveResult() {
           {JSON.stringify(debugData, null, 2)}
         </pre>
       )}
-      {pairs.length === 0 && (trades.length > 0 || liveTrades.length > 0) && (
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'nowrap', overflowX: 'auto' }}>
-          {trades.length > 0 && (
-            <div style={{ flex: `0 0 ${fallbackTableWidth}`, width: fallbackTableWidth }}>
-              <h4>Backtest trades ({trades.length})</h4>
-              <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                <table border={1}>
-                  <thead>
-                    <tr>
-                      {Object.keys(trades[0]).map(k => (
-                        <th key={k}>{k}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trades.map((t, i) => (
-                      <tr key={i}>
-                        {Object.keys(trades[0]).map(k => (
-                          <td key={k}>{formatVal(t[k])}</td>
-                        ))}
-                      </tr>
+      {pairs.length === 0 && (sortedTrades.length > 0 || sortedLiveTrades.length > 0) && (
+        <TradesTables
+          backTrades={sortedTrades}
+          liveTrades={sortedLiveTrades}
+          matchedRows={matchedTradeRows}
+          columnWidth={fallbackTableWidth}
+        />
+      )}
+    </div>
+  );
+}
+
+type EquityPoint = {
+  xValue: number;
+  y: number;
+  ts: number | null;
+};
+
+type LiveEquitySeries = {
+  trade: EquityPoint[];
+  time: EquityPoint[];
+};
+
+type MatchedTradeRow = {
+  id: string;
+  back: any | null;
+  live: any | null;
+  sortValue: number;
+  sequence: number;
+};
+
+function TradesTables({
+  backTrades,
+  liveTrades,
+  matchedRows,
+  columnWidth,
+}: {
+  backTrades: any[];
+  liveTrades: any[];
+  matchedRows: MatchedTradeRow[];
+  columnWidth: string;
+}) {
+  const backScrollRef = useRef<HTMLDivElement | null>(null);
+  const liveScrollRef = useRef<HTMLDivElement | null>(null);
+  const syncLockRef = useRef(false);
+  const enableSync = backTrades.length > 0 && liveTrades.length > 0;
+
+  const backColumns = backTrades.length > 0 ? Object.keys(backTrades[0]) : [];
+  const liveColumns = liveTrades.length > 0 ? Object.keys(liveTrades[0]) : [];
+
+  const syncScroll = (source: 'back' | 'live', scrollTop: number) => {
+    if (!enableSync) return;
+    if (syncLockRef.current) return;
+    syncLockRef.current = true;
+    const targetRef = source === 'back' ? liveScrollRef : backScrollRef;
+    const target = targetRef.current;
+    if (target) {
+      target.scrollTop = scrollTop;
+    }
+    setTimeout(() => {
+      syncLockRef.current = false;
+    }, 0);
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 20, flexWrap: 'nowrap', alignItems: 'flex-start', overflowX: 'auto' }}>
+      {backTrades.length > 0 && (
+        <div style={{ flex: `0 0 ${columnWidth}`, width: columnWidth }}>
+          <h4>Backtest trades ({backTrades.length})</h4>
+          <div
+            ref={backScrollRef}
+            style={{ maxHeight: '200px', overflow: 'auto' }}
+            onScroll={e => syncScroll('back', (e.currentTarget as HTMLDivElement).scrollTop)}
+          >
+            <table border={1}>
+              <thead>
+                <tr>
+                  {backColumns.map(k => (
+                    <th key={k}>{k}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {matchedRows.map(row => (
+                  <tr key={`back-${row.id}`}>
+                    {backColumns.map(k => (
+                      <td key={k}>{row.back ? formatVal(row.back[k]) : ''}</td>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-          {liveTrades.length > 0 && (
-            <div style={{ flex: `0 0 ${fallbackTableWidth}`, width: fallbackTableWidth }}>
-              <h4>Live trades ({liveTrades.length})</h4>
-              <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-                <table border={1}>
-                  <thead>
-                    <tr>
-                      {Object.keys(liveTrades[0]).map(k => (
-                        <th key={k}>{k}</th>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {liveTrades.length > 0 && (
+        <div style={{ flex: `0 0 ${columnWidth}`, width: columnWidth }}>
+          <h4>Live trades ({liveTrades.length})</h4>
+          <div
+            ref={liveScrollRef}
+            style={{ maxHeight: '200px', overflow: 'auto' }}
+            onScroll={e => syncScroll('live', (e.currentTarget as HTMLDivElement).scrollTop)}
+          >
+            <table border={1}>
+              <thead>
+                <tr>
+                  {liveColumns.map(k => (
+                    <th key={k}>{k}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {matchedRows.map(row => {
+                  const live = row.live;
+                  const pnl = live ? Number((live as any).realised_pnl) : NaN;
+                  const style = live && pnl > 0 ? { backgroundColor: '#d4edda' } : undefined;
+                  return (
+                    <tr key={`live-${row.id}`} style={style}>
+                      {liveColumns.map(k => (
+                        <td key={k}>{live ? formatVal(live[k]) : ''}</td>
                       ))}
                     </tr>
-                  </thead>
-                  <tbody>
-                    {liveTrades.map((t, i) => {
-                      const pnl = Number((t as any).realised_pnl);
-                      return (
-                        <tr key={i} style={pnl > 0 ? { backgroundColor: '#d4edda' } : undefined}>
-                          {Object.keys(liveTrades[0]).map(k => (
-                            <td key={k}>{formatVal(t[k])}</td>
-                          ))}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
@@ -517,4 +546,155 @@ function formatObj(obj: any) {
     out[k] = isNaN(num) ? v : num.toFixed(3);
   }
   return out;
+}
+
+function sortTradesDescending(trades: any[]): Record<string, any>[] {
+  if (!Array.isArray(trades)) return [];
+  const safeTrades = trades.filter((trade): trade is Record<string, any> => trade != null);
+  return [...safeTrades].sort((a, b) => {
+    const aValue = getTradeSortValue(a ?? null);
+    const bValue = getTradeSortValue(b ?? null);
+    return bValue - aValue;
+  });
+}
+
+function buildMatchedTradeRows(backTrades: any[], liveTrades: any[]): MatchedTradeRow[] {
+  const backBuckets = new Map<string, any[]>();
+  const unmatchedBack: any[] = [];
+  backTrades.forEach(trade => {
+    const key = createTradeMatchKey(trade);
+    if (key) {
+      const bucket = backBuckets.get(key) || [];
+      bucket.push(trade);
+      backBuckets.set(key, bucket);
+    } else {
+      unmatchedBack.push(trade);
+    }
+  });
+
+  let rowId = 0;
+  const rows: MatchedTradeRow[] = [];
+
+  const takeBackMatch = (key: string | null) => {
+    if (!key) return null;
+    const bucket = backBuckets.get(key);
+    if (bucket && bucket.length > 0) {
+      const trade = bucket.shift()!;
+      if (bucket.length === 0) backBuckets.delete(key);
+      return trade;
+    }
+    return null;
+  };
+
+  liveTrades.forEach(live => {
+    const key = createTradeMatchKey(live);
+    const back = takeBackMatch(key);
+    const sortValue = Math.max(getTradeSortValue(back), getTradeSortValue(live));
+    const sequence = ++rowId;
+    rows.push({
+      id: `${sequence}-${key || getTradeSortValue(live)}`,
+      back,
+      live,
+      sortValue,
+      sequence,
+    });
+  });
+
+  const remainingBack = Array.from(backBuckets.values()).flat().concat(unmatchedBack);
+  remainingBack.forEach(back => {
+    const sortValue = getTradeSortValue(back);
+    const sequence = ++rowId;
+    rows.push({
+      id: `${sequence}-back-${sortValue}`,
+      back,
+      live: null,
+      sortValue,
+      sequence,
+    });
+  });
+
+  rows.sort((a, b) => {
+    const diff = b.sortValue - a.sortValue;
+    if (diff !== 0) return diff;
+    return a.sequence - b.sequence;
+  });
+  return rows;
+}
+
+function getTradeSortValue(trade: any): number {
+  if (!trade) return -Infinity;
+  const ts = extractTradeTimestamp(trade);
+  if (Number.isFinite(ts)) return ts as number;
+  const numericIdFields = ['trade_id', 'id', 'position_id', 'index'];
+  for (const field of numericIdFields) {
+    const v = Number(trade[field]);
+    if (!Number.isNaN(v)) return v;
+  }
+  return 0;
+}
+
+function extractTradeTimestamp(trade: any): number | null {
+  if (!trade) return null;
+  const timestampFields = [
+    'exit_fill_ts',
+    'exit_ts',
+    'close_ts',
+    'close_time',
+    'exit_time',
+    'entry_fill_ts',
+    'entry_ts',
+    'open_ts',
+  ];
+  for (const field of timestampFields) {
+    const value = trade[field];
+    const parsed = parseTimestampValue(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function parseTimestampValue(value: any): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    if (value > 1e12) return value;
+    if (value > 1e10) return value; // already milliseconds in most cases
+    return value * 1000;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const numeric = Number(trimmed);
+    if (!Number.isNaN(numeric)) {
+      return parseTimestampValue(numeric);
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
+function createTradeMatchKey(trade: any): string | null {
+  if (!trade) return null;
+  const priorityFields = ['trade_id', 'id', 'position_id', 'uid'];
+  for (const field of priorityFields) {
+    const value = trade[field];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return `${field}:${value}`;
+    }
+  }
+  const parts: string[] = [];
+  const symbol = trade.symbol || trade.asset || trade.ticker;
+  if (symbol) parts.push(`symbol:${String(symbol).toLowerCase()}`);
+  const side = trade.side || trade.direction;
+  if (side) parts.push(`side:${String(side).toLowerCase()}`);
+  const exitTs = extractTradeTimestamp(trade);
+  if (exitTs !== null) parts.push(`exit:${exitTs}`);
+  const qty = trade.qty ?? trade.quantity ?? trade.size;
+  if (qty !== undefined && qty !== null) {
+    const numQty = Number(qty);
+    if (!Number.isNaN(numQty)) parts.push(`qty:${numQty.toFixed(8)}`);
+  }
+  if (parts.length === 0) return null;
+  return parts.join('|');
 }
