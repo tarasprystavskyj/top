@@ -1453,6 +1453,8 @@ def run_live(cfg: dict, args):
                             elif od:
                                 order_id = str(od.get('id') or od.get('orderId') or '')
                                 fill, fdt, mark_price = _fetch_order_fill(fetcher, sym, order_id, 8000)
+                                if fill is None:
+                                    fill = float(price if 'price' in locals() and price is not None else row.get('close') or 0.0)
                                 executed = True
 
                             if executed:
@@ -1505,6 +1507,40 @@ def run_live(cfg: dict, args):
                                     pass
 
                                 save_positions(args.results_dir, positions)
+
+                                # --- move SL to breakeven after successful TP_PARTIAL ---
+                                try:
+                                    entry_px = float(rec.get('entry_fill') or rec.get('entry') or 0.0)
+                                    old_sl = float(rec.get('sl_price') or rec.get('sl') or 0.0)
+                                    side_is_long = (str(rec.get('side') or '').upper() == 'LONG')
+                                    new_sl = max(old_sl, entry_px) if side_is_long else min(old_sl, entry_px)
+                                    need_replace = (new_sl > old_sl) if side_is_long else (new_sl < old_sl)
+                                    if need_replace and new_sl > 0.0:
+                                        ccxt_sym = fetcher.resolve_symbol(sym)
+                                        side_close = 'sell' if side_is_long else 'buy'
+                                        try:
+                                            fetcher.ex.cancel_all_orders(ccxt_sym)
+                                            sleep_ms(RATE_MS)
+                                        except Exception:
+                                            pass
+                                        try:
+                                            fetcher.ex.create_order(
+                                                ccxt_sym,
+                                                'stop_market',
+                                                side_close,
+                                                float(rec['qty']),
+                                                None,
+                                                {'reduceOnly': True, 'positionSide': 'BOTH', 'triggerPrice': new_sl},
+                                            )
+                                            rec['sl_price'] = float(new_sl)
+                                            save_positions(args.results_dir, positions)
+                                            cprint(f'[sl->BE] {sym} new_sl={new_sl:.6g}', fg='cyan')
+                                        except Exception as e:
+                                            cprint(f'[sl->BE ERR] {sym} {e}', fg='red')
+                                except Exception:
+                                    pass
+                                # --- end BE move ---
+
                                 continue
 
                     if getattr(ex, 'action', None) in ('EXIT', 'TP', 'SL'):
@@ -1523,6 +1559,8 @@ def run_live(cfg: dict, args):
                         elif od:
                             order_id = str(od.get('id') or od.get('orderId') or '')
                             fill, fdt, mark_price = _fetch_order_fill(fetcher, sym, order_id, 8000)
+                            if fill is None:
+                                fill = float(px_for_reason if 'px_for_reason' in locals() and px_for_reason is not None else row.get('close') or 0.0)
                             executed = True
 
                         if executed:
