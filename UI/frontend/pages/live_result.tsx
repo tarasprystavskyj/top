@@ -155,53 +155,50 @@ export default function LiveResult() {
       )}
       {pairs.length > 0 && (
         <div>
-          <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
-              <div style={{ textAlign: 'center' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'stretch' }}>
+              <div style={{ flex: '1 1 320px', textAlign: 'center' }}>
                 <h3>
                   Backtest {btRangeText ? `(${btRangeText})` : ''}
                 </h3>
                 {pairs[slide].back && (
-                  <img src={pairs[slide].back!} style={{ maxWidth: '400px' }} />
-                )}
-                {pairs.length > 1 && (
-                  <input
-                    type="range"
-                    min={0}
-                    max={pairs.length - 1}
-                    value={slide}
-                    onChange={e => setSlide(Number(e.target.value))}
-                    style={{ width: '100%' }}
-                  />
+                  <img src={pairs[slide].back!} style={{ width: '100%', maxWidth: '420px' }} />
                 )}
               </div>
-              <div style={{ textAlign: 'center' }}>
+              <div style={{ flex: '1 1 320px', textAlign: 'center' }}>
                 <h3>
                   Live {liveRange ? `(${liveRange.start} — ${liveRange.end})` : ''}
                 </h3>
                 {pairs[slide].live ? (
-                  <img src={pairs[slide].live!} style={{ maxWidth: '400px' }} />
+                  <img src={pairs[slide].live!} style={{ width: '100%', maxWidth: '420px' }} />
                 ) : (
-                  <div style={{ maxWidth: '400px', textAlign: 'center' }}>
+                  <div style={{ width: '100%', maxWidth: '420px', margin: '0 auto' }}>
                     No live trade data
                   </div>
                 )}
-                {pairs.length > 1 && (
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
+              <strong>{pairs[slide].name}</strong>
+              {pairs.length > 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', maxWidth: 520 }}>
+                  <button onClick={() => setSlide((slide - 1 + pairs.length) % pairs.length)}>Prev</button>
                   <input
                     type="range"
                     min={0}
                     max={pairs.length - 1}
                     value={slide}
                     onChange={e => setSlide(Number(e.target.value))}
-                    style={{ width: '100%' }}
+                    style={{ flex: 1 }}
                   />
-                )}
-              </div>
+                  <button onClick={() => setSlide((slide + 1) % pairs.length)}>Next</button>
+                </div>
+              )}
             </div>
             {(trades.length > 0 || liveTrades.length > 0) && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 20, flexWrap: 'nowrap', alignItems: 'flex-start', overflowX: 'auto' }}>
                 {trades.length > 0 && (
-                  <>
+                  <div style={{ flex: '0 0 360px', minWidth: 360 }}>
                     <h4>Backtest trades ({trades.length})</h4>
                     <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                       <table border={1}>
@@ -223,10 +220,10 @@ export default function LiveResult() {
                         </tbody>
                       </table>
                     </div>
-                  </>
+                  </div>
                 )}
                 {liveTrades.length > 0 && (
-                  <>
+                  <div style={{ flex: '0 0 360px', minWidth: 360 }}>
                     <h4>Live trades ({liveTrades.length})</h4>
                     <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                       <table border={1}>
@@ -251,20 +248,11 @@ export default function LiveResult() {
                         </tbody>
                       </table>
                     </div>
-                  </>
+                  </div>
                 )}
               </div>
             )}
           </div>
-          {pairs.length > 1 && (
-            <div>
-              <button onClick={() => setSlide((slide - 1 + pairs.length) % pairs.length)}>
-                Prev
-              </button>
-              <span style={{ margin: '0 8px' }}>{pairs[slide].name}</span>
-              <button onClick={() => setSlide((slide + 1) % pairs.length)}>Next</button>
-            </div>
-          )}
         </div>
       )}
       {logs && (
@@ -276,9 +264,9 @@ export default function LiveResult() {
         </pre>
       )}
       {pairs.length === 0 && (trades.length > 0 || liveTrades.length > 0) && (
-        <div style={{ display: 'flex', gap: 16 }}>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'nowrap', overflowX: 'auto' }}>
           {trades.length > 0 && (
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: '0 0 360px', minWidth: 360 }}>
               <h4>Backtest trades ({trades.length})</h4>
               <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                 <table border={1}>
@@ -303,7 +291,7 @@ export default function LiveResult() {
             </div>
           )}
           {liveTrades.length > 0 && (
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: '0 0 360px', minWidth: 360 }}>
               <h4>Live trades ({liveTrades.length})</h4>
               <div style={{ maxHeight: '200px', overflow: 'auto' }}>
                 <table border={1}>
