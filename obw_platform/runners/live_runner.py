@@ -78,91 +78,81 @@ def _place_be_plan_on_exchange(fetcher, sym, rec, position_mode):
         return None
     side_long = str(rec['side']).upper() == 'LONG'
     side_close = 'sell' if side_long else 'buy'
+    pos_oneway = str(position_mode or '').lower().startswith('one')
+    position_side = 'BOTH' if pos_oneway else ('LONG' if side_long else 'SHORT')
 
-    def _confirm_plan(order):
-        if not isinstance(order, dict):
-            return None
-        order_id = str(order.get('id') or order.get('orderId') or order.get('clientOrderId') or '')
+    def _confirm_plan(order_id: str) -> bool:
         if not order_id:
-            return None
+            return False
         try:
             open_orders = fetcher.ex.fetch_open_orders(ccxt_sym)
         except Exception:
             open_orders = None
         if not open_orders:
-            return None
+            return False
         for oo in open_orders:
             try:
                 oo_id = str(oo.get('id') or oo.get('orderId') or oo.get('clientOrderId') or '')
             except Exception:
                 oo_id = ''
             if oo_id and oo_id == order_id:
-                return order
+                return True
+        return False
+
+    def _place(order_type, price, params):
+        try:
+            od = fetcher.ex.create_order(ccxt_sym, order_type, side_close, qty, price, params)
+        except Exception:
+            return None
+        if not isinstance(od, dict):
+            return None
+        order_id = str(od.get('id') or od.get('orderId') or od.get('clientOrderId') or '')
+        if not order_id:
+            return None
+        if _confirm_plan(order_id):
+            cprint(
+                f"[be.plan] {sym} tp50={_format_float_short(tp50)} be={_format_float_short(be)} id={order_id}",
+                fg='cyan',
+            )
+            return order_id
         return None
 
-    try:
-        od = fetcher.ex.create_order(
-            ccxt_sym,
-            'trigger',
-            side_close,
-            qty,
-            be,
-            {
-                'reduceOnly': True,
-                'positionSide': 'BOTH',
-                'triggerPrice': tp50,
-                'stopPrice': be,
-                'workingType': 'MARK_PRICE',
-            },
-        )
-        confirmed = _confirm_plan(od)
-        if confirmed:
-            return confirmed
-    except Exception:
-        pass
+    params_base = {
+        'reduceOnly': True,
+        'positionSide': position_side,
+        'workingType': 'MARK_PRICE',
+    }
 
-    try:
-        od = fetcher.ex.create_order(
-            ccxt_sym,
-            'stop_limit',
-            side_close,
-            qty,
-            be,
-            {
-                'reduceOnly': True,
-                'positionSide': 'BOTH',
-                'triggerPrice': tp50,
-                'workingType': 'MARK_PRICE',
-            },
-        )
-        confirmed = _confirm_plan(od)
-        if confirmed:
-            return confirmed
-    except Exception:
-        pass
-
-    try:
-        od = fetcher.ex.create_order(
-            ccxt_sym,
+    attempts = [
+        (
             'stop_market',
-            side_close,
-            qty,
             None,
-            {
-                'reduceOnly': True,
-                'positionSide': 'BOTH',
-                'triggerPrice': float(tp50),
-                'workingType': 'MARK_PRICE',
-                'price': None,
-            },
-        )
-        confirmed = _confirm_plan(od)
-        if confirmed:
-            return confirmed
-    except Exception:
-        pass
+            {**params_base, 'triggerPrice': float(tp50), 'stopPrice': float(be)},
+        ),
+        (
+            'trigger',
+            float(be),
+            {**params_base, 'triggerPrice': float(tp50), 'stopPrice': float(be)},
+        ),
+        (
+            'stop_limit',
+            float(be),
+            {**params_base, 'triggerPrice': float(tp50)},
+        ),
+    ]
 
-    return None
+    for order_type, price, params in attempts:
+        order_id = _place(order_type, price, params)
+        if order_id:
+            return order_id
+
+    # final fallback: try stop_market without stopPrice in params
+    fallback_id = _place(
+        'stop_market',
+        None,
+        {**params_base, 'triggerPrice': float(tp50)},
+    )
+    return fallback_id
 
 
 def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
@@ -177,49 +167,88 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
     if (not side_long) and old_sl <= be + 1e-12:
         return False
     ccxt_sym = fetcher.resolve_symbol(sym)
-    try:
-        fetcher.ex.cancel_all_orders(ccxt_sym)
-        sleep_ms(RATE_MS)
-    except Exception:
-        pass
     side_close = 'sell' if side_long else 'buy'
+    pos_oneway = str(position_mode or '').lower().startswith('one')
+    position_side = 'BOTH' if pos_oneway else ('LONG' if side_long else 'SHORT')
+
+    def _is_stop_type(od):
+        t = str((od or {}).get('type') or '').lower()
+        if any(key in t for key in ('stop', 'trigger')):
+            return True
+        info_t = str(((od or {}).get('info') or {}).get('type') or '').lower()
+        return any(key in info_t for key in ('stop', 'trigger'))
+
+    open_orders = []
     try:
-        fetcher.ex.create_order(
-            ccxt_sym,
-            'stop_market',
-            side_close,
-            qty,
-            None,
-            {
-                'reduceOnly': True,
-                'positionSide': 'BOTH',
-                'triggerPrice': float(be),
-                'workingType': 'MARK_PRICE',
-            },
-        )
-        rec['sl_price'] = be
-        rec['sl_be_done'] = True
-        return True
+        open_orders = fetcher.ex.fetch_open_orders(ccxt_sym)
     except Exception:
+        open_orders = []
+    for oo in open_orders or []:
+        if not _is_stop_type(oo):
+            continue
         try:
-            fetcher.ex.create_order(
-                ccxt_sym,
-                'stop_market',
-                side_close,
-                qty,
-                None,
-                {
-                    'reduceOnly': True,
-                    'positionSide': 'BOTH',
-                    'stopPrice': float(be),
-                    'workingType': 'MARK_PRICE',
-                },
-            )
+            if not bool((oo or {}).get('reduceOnly', False)):
+                ro = (oo or {}).get('info') or {}
+                if not bool(ro.get('reduceOnly', False)):
+                    continue
+        except Exception:
+            continue
+        try:
+            side_val = str(oo.get('side') or '').lower()
+        except Exception:
+            side_val = ''
+        if side_val and side_val != side_close:
+            continue
+        try:
+            oid = str(oo.get('id') or oo.get('orderId') or oo.get('clientOrderId') or '')
+        except Exception:
+            oid = ''
+        if not oid:
+            continue
+        try:
+            fetcher.ex.cancel_order(oid, ccxt_sym)
+            sleep_ms(RATE_MS)
+        except Exception:
+            continue
+
+    params_base = {
+        'reduceOnly': True,
+        'positionSide': position_side,
+        'workingType': 'MARK_PRICE',
+    }
+    attempts = [
+        (
+            'stop_market',
+            None,
+            {**params_base, 'triggerPrice': float(be), 'stopPrice': float(be)},
+        ),
+        (
+            'stop_market',
+            None,
+            {**params_base, 'triggerPrice': float(be)},
+        ),
+        (
+            'trigger',
+            float(be),
+            {**params_base, 'triggerPrice': float(be), 'stopPrice': float(be)},
+        ),
+        (
+            'stop_limit',
+            float(be),
+            {**params_base, 'triggerPrice': float(be)},
+        ),
+    ]
+
+    for order_type, price, params in attempts:
+        try:
+            fetcher.ex.create_order(ccxt_sym, order_type, side_close, qty, price, params)
             rec['sl_price'] = be
             rec['sl_be_done'] = True
             return True
         except Exception:
-            return False
+            continue
+
+    return False
 
 
 def _ensure_be_fields(rec):
@@ -1269,8 +1298,11 @@ def _place_tp_sl_after_open(
 
         if sl_price is not None and sl_price > 0:
             sl_side = 'sell' if side=='LONG' else 'buy'
-            sl_candidates = [  # prefer stop_market with triggerPrice only to avoid "SL Price must be lower than Trigger Price"
+            sl_candidates = [
+                ('stop_market', sl_side, None, {**base, 'triggerPrice': float(sl_price), 'stopPrice': float(sl_price)}),
                 ('stop_market', sl_side, None, {**base, 'triggerPrice': float(sl_price)}),
+                ('trigger', sl_side, float(sl_price), {**base, 'triggerPrice': float(sl_price), 'stopPrice': float(sl_price)}),
+                ('stop_limit', sl_side, float(sl_price), {**base, 'triggerPrice': float(sl_price)}),
                 ('stop_market', sl_side, None, {**base, 'stopPrice': float(sl_price)}),
                 ('market', sl_side, None, {**base, 'stopLossPrice': float(sl_price)}),
                 ('stop', sl_side, float(sl_price), dict(base)),
@@ -1625,6 +1657,10 @@ def run_live(cfg: dict, args):
                 if plan_id and trigger_hit and not rec.get('be_plan_active'):
                     rec['be_plan_active'] = True
                     rec['be_plan_activated_ts'] = now_utc.isoformat()
+                    cprint(
+                        f"[be.plan hit] {sym} px={_format_float_short(px)} tp50={_format_float_short(tp50_trigger)}",
+                        fg='cyan',
+                    )
                     rec_changed = True
 
                 if plan_id and rec.get('be_plan_active') and not rec.get('be_plan_activated_ts'):
@@ -1651,6 +1687,11 @@ def run_live(cfg: dict, args):
                             if not last_fb_dt or (now_utc - last_fb_dt).total_seconds() >= fallback_delay:
                                 placed_be = _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode)
                                 rec['be_plan_last_fallback_ts'] = now_utc.isoformat()
+                                if placed_be:
+                                    cprint(
+                                        f"[sl->BE] {sym} new_sl={_format_float_short(be_price)} via fallback",
+                                        fg='cyan',
+                                    )
                                 rec_changed = True
                     elif trigger_hit:
                         last_fb_dt = _parse_iso(rec.get('be_plan_last_fallback_ts'))
@@ -1658,6 +1699,11 @@ def run_live(cfg: dict, args):
                         if allow_fb:
                             placed_be = _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode)
                             rec['be_plan_last_fallback_ts'] = now_utc.isoformat()
+                            if placed_be:
+                                cprint(
+                                    f"[sl->BE] {sym} new_sl={_format_float_short(be_price)} via fallback",
+                                    fg='cyan',
+                                )
                             rec_changed = True
 
                 if placed_be and float(rec.get('qty', 0.0)) > 0:
@@ -1840,7 +1886,10 @@ def run_live(cfg: dict, args):
                                                 db_upsert_open_position(session_db_path, bot_id, rec)
                                             except Exception:
                                                 pass
-                                            cprint(f'[sl->BE] {sym} new_sl={float(rec.get("sl_price") or 0.0):.6g}', fg='cyan')
+                                            cprint(
+                                                f"[sl->BE] {sym} new_sl={_format_float_short(rec.get('sl_price'))} via partial",
+                                                fg='cyan',
+                                            )
                                         else:
                                             cprint(f'[sl->BE skip] {sym} (no change / qty=0)', fg='yellow', dim=True)
                                     except Exception as e:
@@ -2143,32 +2192,33 @@ def run_live(cfg: dict, args):
                             except Exception as e: _dbg('post_open_error', str(e))
                             tp50, be_price = _calc_tp50_and_be(rec)
                             rec['tp50_trigger'] = tp50
-                            od = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
-                            if isinstance(od, dict) and (od.get('id') or od.get('orderId')):
-                                rec['be_plan_id'] = str(od.get('id') or od.get('orderId'))
-                                rec['be_plan_active'] = False
-                                rec['be_plan_activated_ts'] = None
-                                rec['be_plan_last_fallback_ts'] = None
-                                try:
-                                    insert_order_row(session_db_path, {
-                                        'order_id': str(uuid.uuid4()),
-                                        'ts_utc': datetime.now(timezone.utc).isoformat(),
-                                        'bar_time_utc': bar_close.isoformat(),
-                                        'mode': 'PLAN',
-                                        'symbol': sym,
-                                        'side': 'sell' if side_str == 'LONG' else 'buy',
-                                        'type': 'conditional',
-                                        'price': float(be_price or 0.0),
-                                        'qty': float(qty),
-                                        'status': 'open',
-                                        'reason': 'BE_AFTER_TP50',
-                                        'run_id': run_id,
-                                        'extra': json.dumps({'tp50_trigger': tp50, 'be_price': be_price}),
-                                    })
-                                except Exception:
-                                    pass
-                            else:
-                                rec['be_plan_id'] = None
+                            rec['be_plan_id'] = None
+                            rec['be_plan_active'] = False
+                            rec['be_plan_activated_ts'] = None
+                            rec['be_plan_last_fallback_ts'] = None
+                            if tp_price is not None and qty > 0 and tp50 is not None:
+                                order_id = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
+                                if order_id:
+                                    rec['be_plan_id'] = order_id
+                                    plan_side = 'sell' if side_str == 'LONG' else 'buy'
+                                    try:
+                                        insert_order_row(session_db_path, {
+                                            'order_id': str(uuid.uuid4()),
+                                            'ts_utc': datetime.now(timezone.utc).isoformat(),
+                                            'bar_time_utc': bar_close.isoformat(),
+                                            'mode': 'PLAN',
+                                            'symbol': sym,
+                                            'side': plan_side,
+                                            'type': 'conditional',
+                                            'price': float(be_price or 0.0),
+                                            'qty': float(qty),
+                                            'status': 'open',
+                                            'reason': 'BE_AFTER_TP50',
+                                            'run_id': run_id,
+                                            'extra': json.dumps({'tp50_trigger': tp50, 'be_price': be_price}),
+                                        })
+                                    except Exception:
+                                        pass
                             positions[sym] = rec; save_positions(args.results_dir, positions)
                             try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                             except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
@@ -2236,32 +2286,32 @@ def run_live(cfg: dict, args):
                         _dbg('post_open_error', str(e))
                     tp50, be_price = _calc_tp50_and_be(rec)
                     rec['tp50_trigger'] = tp50
-                    od = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
-                    if isinstance(od, dict) and (od.get('id') or od.get('orderId')):
-                        rec['be_plan_id'] = str(od.get('id') or od.get('orderId'))
-                        rec['be_plan_active'] = False
-                        rec['be_plan_activated_ts'] = None
-                        rec['be_plan_last_fallback_ts'] = None
-                        try:
-                            insert_order_row(session_db_path, {
-                                'order_id': str(uuid.uuid4()),
-                                'ts_utc': datetime.now(timezone.utc).isoformat(),
-                                'bar_time_utc': bar_close.isoformat(),
-                                'mode': 'PLAN',
-                                'symbol': sym,
-                                'side': 'buy',
-                                'type': 'conditional',
-                                'price': float(be_price or 0.0),
-                                'qty': float(qty),
-                                'status': 'open',
-                                'reason': 'BE_AFTER_TP50',
-                                'run_id': run_id,
-                                'extra': json.dumps({'tp50_trigger': tp50, 'be_price': be_price}),
-                            })
-                        except Exception:
-                            pass
-                    else:
-                        rec['be_plan_id'] = None
+                    rec['be_plan_id'] = None
+                    rec['be_plan_active'] = False
+                    rec['be_plan_activated_ts'] = None
+                    rec['be_plan_last_fallback_ts'] = None
+                    if tp_price is not None and qty > 0 and tp50 is not None:
+                        order_id = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
+                        if order_id:
+                            rec['be_plan_id'] = order_id
+                            try:
+                                insert_order_row(session_db_path, {
+                                    'order_id': str(uuid.uuid4()),
+                                    'ts_utc': datetime.now(timezone.utc).isoformat(),
+                                    'bar_time_utc': bar_close.isoformat(),
+                                    'mode': 'PLAN',
+                                    'symbol': sym,
+                                    'side': 'buy',
+                                    'type': 'conditional',
+                                    'price': float(be_price or 0.0),
+                                    'qty': float(qty),
+                                    'status': 'open',
+                                    'reason': 'BE_AFTER_TP50',
+                                    'run_id': run_id,
+                                    'extra': json.dumps({'tp50_trigger': tp50, 'be_price': be_price}),
+                                })
+                            except Exception:
+                                pass
                     positions[sym] = rec; save_positions(args.results_dir, positions)
                     try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                     except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
@@ -2355,32 +2405,32 @@ def run_live(cfg: dict, args):
                     _dbg('post_open_error', str(e))
                 tp50, be_price = _calc_tp50_and_be(rec)
                 rec['tp50_trigger'] = tp50
-                od = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
-                if isinstance(od, dict) and (od.get('id') or od.get('orderId')):
-                    rec['be_plan_id'] = str(od.get('id') or od.get('orderId'))
-                    rec['be_plan_active'] = False
-                    rec['be_plan_activated_ts'] = None
-                    rec['be_plan_last_fallback_ts'] = None
-                    try:
-                        insert_order_row(session_db_path, {
-                            'order_id': str(uuid.uuid4()),
-                            'ts_utc': datetime.now(timezone.utc).isoformat(),
-                            'bar_time_utc': bar_close.isoformat(),
-                            'mode': 'PLAN',
-                            'symbol': sym,
-                            'side': 'sell',
-                            'type': 'conditional',
-                            'price': float(be_price or 0.0),
-                            'qty': float(qty),
-                            'status': 'open',
-                            'reason': 'BE_AFTER_TP50',
-                            'run_id': run_id,
-                            'extra': json.dumps({'tp50_trigger': tp50, 'be_price': be_price}),
-                        })
-                    except Exception:
-                        pass
-                else:
-                    rec['be_plan_id'] = None
+                rec['be_plan_id'] = None
+                rec['be_plan_active'] = False
+                rec['be_plan_activated_ts'] = None
+                rec['be_plan_last_fallback_ts'] = None
+                if tp_price is not None and qty > 0 and tp50 is not None:
+                    order_id = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
+                    if order_id:
+                        rec['be_plan_id'] = order_id
+                        try:
+                            insert_order_row(session_db_path, {
+                                'order_id': str(uuid.uuid4()),
+                                'ts_utc': datetime.now(timezone.utc).isoformat(),
+                                'bar_time_utc': bar_close.isoformat(),
+                                'mode': 'PLAN',
+                                'symbol': sym,
+                                'side': 'sell',
+                                'type': 'conditional',
+                                'price': float(be_price or 0.0),
+                                'qty': float(qty),
+                                'status': 'open',
+                                'reason': 'BE_AFTER_TP50',
+                                'run_id': run_id,
+                                'extra': json.dumps({'tp50_trigger': tp50, 'be_price': be_price}),
+                            })
+                        except Exception:
+                            pass
                 positions[sym] = rec
                 save_positions(args.results_dir, positions)
                 try:
