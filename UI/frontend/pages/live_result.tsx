@@ -365,6 +365,17 @@ function TradesTables({
   );
 }
 
+type EquityPoint = {
+  xValue: number;
+  y: number;
+  ts: number | null;
+};
+
+type LiveEquitySeries = {
+  trade: EquityPoint[];
+  time: EquityPoint[];
+};
+
 function LiveEquityChart({ series, mode }: { series: LiveEquitySeries; mode: 'trade' | 'time' }) {
   const hasTimePoints = series.time.length > 0;
   const effectiveMode: 'trade' | 'time' = mode === 'time' && hasTimePoints ? 'time' : 'trade';
