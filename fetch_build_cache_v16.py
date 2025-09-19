@@ -60,6 +60,72 @@ except Exception:
 def normalize_token(s: str) -> str:
     return str(s).strip().upper()
 
+
+def _clean_symbol_entry(raw: str) -> Optional[str]:
+    s = str(raw).strip()
+    if not s:
+        return None
+    lowered = s.lower()
+    if lowered in {"symbol", "symbols"}:
+        return None
+    if s.startswith("#"):
+        return None
+    return s
+
+
+def load_universe_symbols(path: str) -> List[str]:
+    """Load symbols from either CSV (with a 'symbol' column) or newline TXT."""
+
+    if not os.path.exists(path):
+        raise SystemExit(f"Universe file not found: {path}")
+
+    symbols: List[str] = []
+
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        df = None
+
+    if df is not None:
+        if not df.columns.empty:
+            lowered_cols = {str(c).strip().lower(): str(c) for c in df.columns}
+            if "symbol" in lowered_cols:
+                col_name = lowered_cols["symbol"]
+                for val in df[col_name].tolist():
+                    cleaned = _clean_symbol_entry(val)
+                    if cleaned:
+                        symbols.append(cleaned)
+            elif df.shape[1] == 1:
+                col_name = str(df.columns[0]).strip()
+                header_candidate = _clean_symbol_entry(col_name)
+                if header_candidate:
+                    symbols.append(header_candidate)
+                for val in df.iloc[:, 0].tolist():
+                    cleaned = _clean_symbol_entry(val)
+                    if cleaned:
+                        symbols.append(cleaned)
+
+    if not symbols:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                cleaned = _clean_symbol_entry(line)
+                if cleaned:
+                    symbols.append(cleaned)
+
+    deduped: List[str] = []
+    seen = set()
+    for sym in symbols:
+        key = sym.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(sym)
+
+    if not deduped:
+        raise SystemExit(f"No symbols found in universe file: {path}")
+
+    return deduped
+
 def parse_base_quote(raw: str) -> Tuple[str, Optional[str]]:
     """
     Accepts: BTC, BTCUSDT, BTC-USDT, BTC/USDT, BTC/USDT:USDT
@@ -423,10 +489,8 @@ def main():
             end_ms = ex.milliseconds() if hasattr(ex, "milliseconds") else int(pd.Timestamp.utcnow().value // 10**6)
 
     # Load universe
-    uni = pd.read_csv(args.input_csv)
-    if "symbol" not in uni.columns:
-        raise SystemExit("CSV must contain 'symbol' column.")
-    bases = [normalize_token(x) for x in uni["symbol"].dropna().unique().tolist()]
+    symbols = load_universe_symbols(args.input_csv)
+    bases = [normalize_token(x) for x in symbols]
 
     tf_seconds = timeframe_to_seconds(args.timeframe)
     tf_ms = tf_seconds * 1000
