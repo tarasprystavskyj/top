@@ -453,6 +453,8 @@ def _session_closed_trades(session_db):
     con.close()
     if df.empty:
         return None
+    # Ensure the close_reason column always exists so the frontend can rely on it.
+    df["close_reason"] = [""] * len(df)
     for c in (
         "qty",
         "entry_fill",
@@ -479,7 +481,12 @@ def _session_closed_trades(session_db):
             orders_df["symbol"] = orders_df["symbol"].astype(str)
             orders_df["ts_utc"] = orders_df["ts_utc"].astype(str)
             orders_df["_key"] = orders_df["symbol"] + "|" + orders_df["ts_utc"]
-            reason_map = dict(zip(orders_df["_key"], orders_df["reason"].where(orders_df["reason"].notna(), None)))
+            reason_map = dict(
+                zip(
+                    orders_df["_key"],
+                    orders_df["reason"].where(orders_df["reason"].notna(), None),
+                )
+            )
 
             def _clean(value):
                 if value is None or pd.isna(value):
@@ -504,7 +511,8 @@ def _session_closed_trades(session_db):
                     else:
                         txt = str(r).strip()
                         reasons.append("" if txt.lower() in {"", "nan", "none"} else txt)
-                df["close_reason"] = reasons
+                if reasons:
+                    df["close_reason"] = reasons
     except Exception:
         pass
     df = df.drop(columns=["ts_close"], errors="ignore")
