@@ -26,6 +26,18 @@ def cprint(*parts, fg: str = "", bold: bool = False, dim: bool = False, file=Non
         return _cprint(*parts, fg=fg, bold=bold, dim=dim, file=file, end=end, flush=flush)
     print(" ".join(str(p) for p in parts), file=file, end=end, flush=flush)
 
+
+def _normalize_close_reason(value, fallback: str = "") -> str:
+    if value is None:
+        return fallback
+    try:
+        text = str(value)
+    except Exception:
+        text = f"{value}"
+    text = text.strip()
+    return fallback if not text or text.lower() in {"", "nan", "none", "null", "nat"} else text
+
+
 import importlib
 import os, sys, math, uuid, datetime as _dt
 import json
@@ -1132,7 +1144,7 @@ def _log_heat_debug_snapshot(
         if best_uni:
             _log_heat_best('post', best_uni)
 
-def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=None, mark_hint=None):
+def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=None, mark_hint=None, reason=None):
     ts = datetime.now(timezone.utc).isoformat()
     px = px_hint or fetcher.fetch_ticker_price(sym)
     mark_px = mark_hint
@@ -1141,9 +1153,11 @@ def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=Non
             mark_px = fetcher.fetch_mark_price(sym)
         except Exception:
             mark_px = None
+    reason_text = _normalize_close_reason(reason, fallback="market_exit")
     try:
         db_mark_closed(session_db_path, bot_id, order_id, ts,
-                       exit_fill=px, exit_fill_ts=ts, exit_mark_price=mark_px)
+                       exit_fill=px, exit_fill_ts=ts, exit_mark_price=mark_px,
+                       close_reason=reason_text)
     except Exception as e:
         cprint('db_mark_closed_failed', str(e), fg='yellow')
 
@@ -1789,7 +1803,7 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 except Exception:
                     mark_price = None
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
-                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'mark_price': mark_price}
+                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'mark_price': mark_price, 'reason': 'TP'}
             if od:
                 fill, fdt, mark_price = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
@@ -1801,6 +1815,7 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                     'slip_bp': slip,
                     'lag_sec': lag,
                     'mark_price': mark_price,
+                    'reason': 'TP',
                 }
         if sl is not None and px <= sl:
             od = place_reduce_only(fetcher, sym, 'sell', float(pos_rec.get('qty', 0.0)), position_mode)
@@ -1812,7 +1827,7 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 except Exception:
                     mark_price = None
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
-                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'mark_price': mark_price}
+                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'mark_price': mark_price, 'reason': 'SL'}
             if od:
                 fill, fdt, mark_price = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
@@ -1824,6 +1839,7 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                     'slip_bp': slip,
                     'lag_sec': lag,
                     'mark_price': mark_price,
+                    'reason': 'SL',
                 }
     elif side == 'SHORT':
         if tp is not None and px <= tp:
@@ -1836,7 +1852,7 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 except Exception:
                     mark_price = None
                 cprint('[tp close]', sym, f'@~{px:.6g} tp={tp:.6g}', fg='green', bold=True)
-                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'mark_price': mark_price}
+                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'mark_price': mark_price, 'reason': 'TP'}
             if od:
                 fill, fdt, mark_price = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
@@ -1848,6 +1864,7 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                     'slip_bp': slip,
                     'lag_sec': lag,
                     'mark_price': mark_price,
+                    'reason': 'TP',
                 }
         if sl is not None and px >= sl:
             od = place_reduce_only(fetcher, sym, 'buy', float(pos_rec.get('qty', 0.0)), position_mode)
@@ -1859,7 +1876,7 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                 except Exception:
                     mark_price = None
                 cprint('[sl close]', sym, f'@~{px:.6g} sl={sl:.6g}', fg='red', bold=True)
-                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'mark_price': mark_price}
+                return {'fill_price': px, 'fill_ts': now_iso, 'slip_bp': None, 'lag_sec': None, 'mark_price': mark_price, 'reason': 'SL'}
             if od:
                 fill, fdt, mark_price = _fetch_order_fill(fetcher, sym, str(od.get('id') or od.get('orderId') or ''), 8000)
                 slip = (fill / px - 1.0) * 10000.0 * sign if fill else None
@@ -1871,6 +1888,7 @@ def _close_if_hit(fetcher: CCXTFetcher, sym: str, entry_side: str, px: float, po
                     'slip_bp': slip,
                     'lag_sec': lag,
                     'mark_price': mark_price,
+                    'reason': 'SL',
                 }
     return None
 
@@ -2208,6 +2226,7 @@ def run_live(cfg: dict, args):
                     mark_px_now = fetcher.fetch_mark_price(sym)
                 except Exception:
                     mark_px_now = None
+                reason_text = 'sync_cleanup'
                 db_mark_closed(
                     session_db_path,
                     bot_id,
@@ -2216,6 +2235,7 @@ def run_live(cfg: dict, args):
                     exit_fill=px_now,
                     exit_fill_ts=now_iso,
                     exit_mark_price=mark_px_now,
+                    close_reason=reason_text,
                 )
             except Exception:
                 pass
@@ -2250,7 +2270,7 @@ def run_live(cfg: dict, args):
             ex_rec = sync_map.get(sym)
             if not ex_rec or float(ex_rec.get('qty', 0.0)) <= 0.0:
                 cprint('[desync-miss]', sym, 'NOT found on exchange -> closing locally', fg='yellow')
-                mark_closed_now(fetcher, session_db_path, bot_id, sym, rec.get('order_id'))
+                mark_closed_now(fetcher, session_db_path, bot_id, sym, rec.get('order_id'), reason='sync_cleanup')
                 positions.pop(sym, None)
                 sync_changed = True
                 continue
@@ -2640,6 +2660,13 @@ def run_live(cfg: dict, args):
                         od = place_reduce_only(fetcher, sym, side_close, qty_close, position_mode)
                         executed = False
                         now_utc = datetime.now(timezone.utc)
+                        action = str(getattr(ex, 'action', '')).upper()
+                        fallback_reason = {
+                            'TP': 'TP',
+                            'SL': 'SL',
+                            'EXIT': 'market_exit',
+                        }.get(action, action or 'market_exit')
+                        reason_text = _normalize_close_reason(getattr(ex, 'reason', None), fallback=fallback_reason)
                         if isinstance(od, dict) and od.get('error') == 'no_position':
                             fill = px_for_reason
                             fdt = now_utc
@@ -2679,7 +2706,7 @@ def run_live(cfg: dict, args):
                                     'price': float(fill),
                                     'qty': float(qty_close),
                                     'status': 'filled',
-                                    'reason': getattr(ex, 'reason', 'EXIT'),
+                                    'reason': reason_text,
                                     'run_id': run_id,
                                     'extra': json.dumps({
                                         'gross_return': gross,
@@ -2692,6 +2719,7 @@ def run_live(cfg: dict, args):
                             except Exception:
                                 pass
 
+                            rec['close_reason'] = reason_text
                             try:
                                 db_mark_closed(
                                     session_db_path,
@@ -2701,6 +2729,7 @@ def run_live(cfg: dict, args):
                                     exit_fill=fill,
                                     exit_fill_ts=fdt.isoformat() if fdt else None,
                                     exit_mark_price=mark_price,
+                                    close_reason=reason_text,
                                 )
                             except Exception:
                                 pass
@@ -2717,6 +2746,7 @@ def run_live(cfg: dict, args):
                             continue
                 closed = _close_if_hit(fetcher, sym, rec.get('side', 'LONG'), px, rec, position_mode, now, session_db_path, bot_id)
                 if closed:
+                    reason_text = _normalize_close_reason(closed.get('reason'), fallback='market_exit')
                     if not closed.get('already_marked'):
                         try:
                             db_mark_closed(
@@ -2729,9 +2759,11 @@ def run_live(cfg: dict, args):
                                 exit_slip_bp=closed.get('slip_bp'),
                                 exit_lag_sec=closed.get('lag_sec'),
                                 exit_mark_price=closed.get('mark_price'),
+                                close_reason=reason_text,
                             )
                         except Exception:
                             pass
+                    rec['close_reason'] = reason_text
                     positions.pop(sym, None)
                     save_positions(args.results_dir, positions)
                     continue
