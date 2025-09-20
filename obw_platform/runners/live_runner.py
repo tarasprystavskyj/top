@@ -1153,7 +1153,7 @@ def mark_closed_now(fetcher, session_db_path, bot_id, sym, order_id, px_hint=Non
             mark_px = fetcher.fetch_mark_price(sym)
         except Exception:
             mark_px = None
-    reason_text = _normalize_close_reason(reason, fallback="market_exit" if reason is None else "")
+    reason_text = _normalize_close_reason(reason, fallback="market_exit")
     try:
         db_mark_closed(session_db_path, bot_id, order_id, ts,
                        exit_fill=px, exit_fill_ts=ts, exit_mark_price=mark_px,

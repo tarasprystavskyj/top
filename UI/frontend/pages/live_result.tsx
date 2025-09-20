@@ -20,8 +20,8 @@ export default function LiveResult() {
   const liveEquitySeries = useMemo(() => buildLiveEquitySeries(liveTrades), [liveTrades]);
   const liveHeaders = useMemo(() => {
     if (!Array.isArray(liveTrades) || liveTrades.length === 0) return [] as string[];
-  const keys = new Set<string>();
-  for (const trade of liveTrades) {
+    const keys = new Set<string>();
+    for (const trade of liveTrades) {
       if (trade && typeof trade === 'object') {
         for (const key of Object.keys(trade)) keys.add(key);
       }
