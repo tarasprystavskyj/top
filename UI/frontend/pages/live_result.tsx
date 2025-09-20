@@ -20,8 +20,8 @@ export default function LiveResult() {
   const liveEquitySeries = useMemo(() => buildLiveEquitySeries(liveTrades), [liveTrades]);
   const liveHeaders = useMemo(() => {
     if (!Array.isArray(liveTrades) || liveTrades.length === 0) return [] as string[];
-    const keys = new Set<string>();
-    for (const trade of liveTrades) {
+  const keys = new Set<string>();
+  for (const trade of liveTrades) {
       if (trade && typeof trade === 'object') {
         for (const key of Object.keys(trade)) keys.add(key);
       }
@@ -515,8 +515,9 @@ function formatTimeLabel(value: number) {
 }
 
 function formatVal(v: any) {
+  if (typeof v === 'string') return v;
   const num = Number(v);
-  return isNaN(num) ? v : num.toFixed(3);
+  return Number.isFinite(num) ? num.toFixed(3) : String(v ?? '');
 }
 
 function formatObj(obj: any) {

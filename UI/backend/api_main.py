@@ -410,6 +410,7 @@ def _session_closed_trades(session_db):
     cols = [r[1] for r in cur.execute(f"PRAGMA table_info({tbl});").fetchall()]
     has_status = "status" in cols
     has_fees = "fees_paid" in cols
+    has_close_reason = "close_reason" in cols
     sel_cols = [
         "symbol",
         "side",
@@ -420,6 +421,8 @@ def _session_closed_trades(session_db):
         "exit_fill_ts",
         "ts_close",
     ]
+    if has_close_reason:
+        sel_cols.insert(sel_cols.index("ts_close"), "close_reason")
     if has_fees:
         sel_cols.append("fees_paid")
     extra_cols = [
@@ -453,8 +456,17 @@ def _session_closed_trades(session_db):
     con.close()
     if df.empty:
         return None
-    # Ensure the close_reason column always exists so the frontend can rely on it.
-    df["close_reason"] = [""] * len(df)
+
+    def _clean_reason(value):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        text = str(value).strip()
+        return "" if text.lower() in {"", "nan", "none", "null", "nat"} else text
+
+    if has_close_reason and "close_reason" in df.columns:
+        df["close_reason"] = df["close_reason"].apply(_clean_reason)
+    else:
+        df["close_reason"] = pd.Series([""] * len(df), dtype="object")
     for c in (
         "qty",
         "entry_fill",
@@ -476,7 +488,8 @@ def _session_closed_trades(session_db):
         df["realised_pnl"] = df["realised_pnl"] - df["fees_paid"]
     # map close reasons from recorded exit orders
     try:
-        if orders_df is not None and not orders_df.empty:
+        missing_mask = df["close_reason"].astype(str).str.strip() == ""
+        if orders_df is not None and not orders_df.empty and missing_mask.any():
             orders_df = orders_df.dropna(subset=["symbol", "ts_utc"])
             orders_df["symbol"] = orders_df["symbol"].astype(str)
             orders_df["ts_utc"] = orders_df["ts_utc"].astype(str)
@@ -500,21 +513,18 @@ def _session_closed_trades(session_db):
                 ts_val = _clean(row.get("exit_fill_ts")) or _clean(row.get("ts_close"))
                 keys.append(f"{sym}|{ts_val}" if sym and ts_val else "")
             if keys:
-                reasons = []
-                for k in keys:
-                    if not k:
-                        reasons.append("")
+                # only fill rows where close_reason is still empty
+                for idx, k in enumerate(keys):
+                    if not k or not missing_mask.iloc[idx]:
                         continue
                     r = reason_map.get(k)
-                    if r is None or pd.isna(r):
-                        reasons.append("")
-                    else:
-                        txt = str(r).strip()
-                        reasons.append("" if txt.lower() in {"", "nan", "none"} else txt)
-                if reasons:
-                    df["close_reason"] = reasons
+                    txt = _clean_reason(r)
+                    if txt:
+                        df.at[idx, "close_reason"] = txt
     except Exception:
         pass
+    # final cleanup: enforce textual reasons
+    df["close_reason"] = df["close_reason"].apply(_clean_reason)
     df = df.drop(columns=["ts_close"], errors="ignore")
     if "close_reason" in df.columns:
         cols = list(df.columns)

@@ -359,6 +359,7 @@ def ensure_session_dbs(results_dir: str, session_db: str = '', cache_out: str = 
         entry_fill_ts TEXT,
         exit_fill REAL,
         exit_fill_ts TEXT,
+        close_reason TEXT,
         entry_slip_bp REAL,
         entry_lag_sec REAL,
         exit_slip_bp REAL,
@@ -374,6 +375,7 @@ def ensure_session_dbs(results_dir: str, session_db: str = '', cache_out: str = 
             ("entry_fill_ts", "TEXT"),
             ("exit_fill", "REAL"),
             ("exit_fill_ts", "TEXT"),
+            ("close_reason", "TEXT"),
             ("entry_slip_bp", "REAL"),
             ("entry_lag_sec", "REAL"),
             ("exit_slip_bp", "REAL"),
@@ -382,6 +384,14 @@ def ensure_session_dbs(results_dir: str, session_db: str = '', cache_out: str = 
         for name, typ in add_cols:
             if name not in cols:
                 cur.execute(f"ALTER TABLE open_positions ADD COLUMN {name} {typ}")
+    except Exception:
+        pass
+
+    # ensure positions table also has close_reason when present
+    try:
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(positions)").fetchall()]
+        if cols and "close_reason" not in cols:
+            cur.execute("ALTER TABLE positions ADD COLUMN close_reason TEXT")
     except Exception:
         pass
 
@@ -575,9 +585,9 @@ def db_upsert_open_position(session_db_path: str, bot_id: str, rec: dict):
             INSERT OR REPLACE INTO open_positions(
                 bot_id, symbol, side, qty, entry, tp_price, sl_price, ts_open, run_id,
                 local_order_uuid, exchange_order_id, exchange, timeframe, status, ts_close,
-                entry_fill, entry_fill_ts, exit_fill, exit_fill_ts,
+                entry_fill, entry_fill_ts, exit_fill, exit_fill_ts, close_reason,
                 entry_slip_bp, entry_lag_sec, exit_slip_bp, exit_lag_sec
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 bot_id,
@@ -599,6 +609,7 @@ def db_upsert_open_position(session_db_path: str, bot_id: str, rec: dict):
                 rec.get('entry_fill_ts'),
                 rec.get('exit_fill'),
                 rec.get('exit_fill_ts'),
+                rec.get('close_reason'),
                 rec.get('entry_slip_bp'),
                 rec.get('entry_lag_sec'),
                 rec.get('exit_slip_bp'),
@@ -620,26 +631,73 @@ def db_mark_closed(
     exit_fill_ts=None,
     exit_slip_bp=None,
     exit_lag_sec=None,
+    close_reason=None,
 ):
     try:
         con = sqlite3.connect(session_db_path)
         cur = con.cursor()
+        reason_val = None
+        if close_reason is not None:
+            try:
+                reason_text = str(close_reason).strip()
+            except Exception:
+                reason_text = str(close_reason)
+            reason_val = reason_text if reason_text else ""
+        has_close_reason = False
+        try:
+            cols = [r[1] for r in cur.execute("PRAGMA table_info(open_positions)").fetchall()]
+            has_close_reason = "close_reason" in cols
+        except Exception:
+            has_close_reason = False
         cur.execute(
-            """
-            UPDATE open_positions SET status='CLOSED', ts_close=?,
-                exit_fill=?, exit_fill_ts=?, exit_slip_bp=?, exit_lag_sec=?
-            WHERE bot_id=? AND local_order_uuid=?
-            """,
+            (
+                """
+                UPDATE open_positions SET status='CLOSED', ts_close=?,
+                    exit_fill=?, exit_fill_ts=?, exit_slip_bp=?, exit_lag_sec=?{suffix}
+                WHERE bot_id=? AND local_order_uuid=?
+                """
+            ).format(suffix=", close_reason=?" if has_close_reason else ""),
             (
                 ts_close_iso,
                 exit_fill,
                 exit_fill_ts,
                 exit_slip_bp,
                 exit_lag_sec,
-                bot_id,
-                local_order_uuid,
+                *(
+                    (reason_val, bot_id, local_order_uuid)
+                    if has_close_reason
+                    else (bot_id, local_order_uuid)
+                ),
             ),
         )
+        if reason_val is not None and has_close_reason:
+            try:
+                cur.execute(
+                    """
+                    UPDATE open_positions SET close_reason=?
+                    WHERE bot_id=? AND local_order_uuid=?
+                    """,
+                    (reason_val, bot_id, local_order_uuid),
+                )
+            except Exception:
+                pass
+        try:
+            pos_cols = [r[1] for r in cur.execute("PRAGMA table_info(positions)").fetchall()]
+        except Exception:
+            pos_cols = []
+        if reason_val is not None and pos_cols and {
+            'close_reason', 'bot_id', 'local_order_uuid'
+        }.issubset(set(pos_cols)):
+            try:
+                cur.execute(
+                    """
+                    UPDATE positions SET close_reason=?
+                    WHERE bot_id=? AND local_order_uuid=?
+                    """,
+                    (reason_val, bot_id, local_order_uuid),
+                )
+            except Exception:
+                pass
         con.commit()
         con.close()
     except Exception as e:
