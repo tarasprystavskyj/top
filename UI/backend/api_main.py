@@ -418,6 +418,7 @@ def _session_closed_trades(session_db):
         "entry_fill_ts",
         "exit_fill",
         "exit_fill_ts",
+        "ts_close",
     ]
     if has_fees:
         sel_cols.append("fees_paid")
@@ -442,9 +443,18 @@ def _session_closed_trades(session_db):
     df = pd.read_sql(
         f"SELECT {sel} FROM {tbl} {where} ORDER BY exit_fill_ts;", con
     )
+    try:
+        orders_df = pd.read_sql(
+            "SELECT symbol, ts_utc, reason FROM orders WHERE mode='EXIT';",
+            con,
+        )
+    except Exception:
+        orders_df = None
     con.close()
     if df.empty:
         return None
+    # Ensure the close_reason column always exists so the frontend can rely on it.
+    df["close_reason"] = [""] * len(df)
     for c in (
         "qty",
         "entry_fill",
@@ -464,6 +474,54 @@ def _session_closed_trades(session_db):
     )
     if has_fees and "fees_paid" in df:
         df["realised_pnl"] = df["realised_pnl"] - df["fees_paid"]
+    # map close reasons from recorded exit orders
+    try:
+        if orders_df is not None and not orders_df.empty:
+            orders_df = orders_df.dropna(subset=["symbol", "ts_utc"])
+            orders_df["symbol"] = orders_df["symbol"].astype(str)
+            orders_df["ts_utc"] = orders_df["ts_utc"].astype(str)
+            orders_df["_key"] = orders_df["symbol"] + "|" + orders_df["ts_utc"]
+            reason_map = dict(
+                zip(
+                    orders_df["_key"],
+                    orders_df["reason"].where(orders_df["reason"].notna(), None),
+                )
+            )
+
+            def _clean(value):
+                if value is None or pd.isna(value):
+                    return ""
+                text = str(value).strip()
+                return "" if text.lower() in {"", "nan", "none", "nat"} else text
+
+            keys = []
+            for _, row in df.iterrows():
+                sym = _clean(row.get("symbol"))
+                ts_val = _clean(row.get("exit_fill_ts")) or _clean(row.get("ts_close"))
+                keys.append(f"{sym}|{ts_val}" if sym and ts_val else "")
+            if keys:
+                reasons = []
+                for k in keys:
+                    if not k:
+                        reasons.append("")
+                        continue
+                    r = reason_map.get(k)
+                    if r is None or pd.isna(r):
+                        reasons.append("")
+                    else:
+                        txt = str(r).strip()
+                        reasons.append("" if txt.lower() in {"", "nan", "none"} else txt)
+                if reasons:
+                    df["close_reason"] = reasons
+    except Exception:
+        pass
+    df = df.drop(columns=["ts_close"], errors="ignore")
+    if "close_reason" in df.columns:
+        cols = list(df.columns)
+        cols.remove("close_reason")
+        insert_at = cols.index("exit_fill_ts") + 1 if "exit_fill_ts" in cols else len(cols)
+        cols.insert(insert_at, "close_reason")
+        df = df[cols]
     return df.to_dict(orient="records")
 
 

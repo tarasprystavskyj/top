@@ -18,6 +18,16 @@ export default function LiveResult() {
   const [debugData, setDebugData] = useState<any>(null);
   const [btRangeText, setBtRangeText] = useState<string>('');
   const liveEquitySeries = useMemo(() => buildLiveEquitySeries(liveTrades), [liveTrades]);
+  const liveHeaders = useMemo(() => {
+    if (!Array.isArray(liveTrades) || liveTrades.length === 0) return [] as string[];
+    const keys = new Set<string>();
+    for (const trade of liveTrades) {
+      if (trade && typeof trade === 'object') {
+        for (const key of Object.keys(trade)) keys.add(key);
+      }
+    }
+    return Array.from(keys);
+  }, [liveTrades]);
 
   const slideIndex = pairs.length > 0 ? Math.min(slide, pairs.length - 1) : 0;
   const currentPair = pairs.length > 0 ? pairs[slideIndex] : null;
@@ -241,7 +251,7 @@ export default function LiveResult() {
                       <table border={1}>
                         <thead>
                           <tr>
-                            {Object.keys(liveTrades[0]).map(k => (
+                            {liveHeaders.map(k => (
                               <th key={k}>{k}</th>
                             ))}
                           </tr>
@@ -251,7 +261,7 @@ export default function LiveResult() {
                             const pnl = Number((t as any).realised_pnl);
                             return (
                               <tr key={i} style={pnl > 0 ? { backgroundColor: '#d4edda' } : undefined}>
-                                {Object.keys(liveTrades[0]).map(k => (
+                                {liveHeaders.map(k => (
                                   <td key={k}>{formatVal(t[k])}</td>
                                 ))}
                               </tr>
@@ -309,7 +319,7 @@ export default function LiveResult() {
                 <table border={1}>
                   <thead>
                     <tr>
-                      {Object.keys(liveTrades[0]).map(k => (
+                      {liveHeaders.map(k => (
                         <th key={k}>{k}</th>
                       ))}
                     </tr>
@@ -319,7 +329,7 @@ export default function LiveResult() {
                       const pnl = Number((t as any).realised_pnl);
                       return (
                         <tr key={i} style={pnl > 0 ? { backgroundColor: '#d4edda' } : undefined}>
-                          {Object.keys(liveTrades[0]).map(k => (
+                          {liveHeaders.map(k => (
                             <td key={k}>{formatVal(t[k])}</td>
                           ))}
                         </tr>
