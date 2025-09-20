@@ -513,6 +513,7 @@ def _session_closed_trades(session_db):
                 ts_val = _clean(row.get("exit_fill_ts")) or _clean(row.get("ts_close"))
                 keys.append(f"{sym}|{ts_val}" if sym and ts_val else "")
             if keys:
+                # only fill rows where close_reason is still empty
                 for idx, k in enumerate(keys):
                     if not k or not missing_mask.iloc[idx]:
                         continue
@@ -522,6 +523,7 @@ def _session_closed_trades(session_db):
                         df.at[idx, "close_reason"] = txt
     except Exception:
         pass
+    # final cleanup: enforce textual reasons
     df["close_reason"] = df["close_reason"].apply(_clean_reason)
     df = df.drop(columns=["ts_close"], errors="ignore")
     if "close_reason" in df.columns:

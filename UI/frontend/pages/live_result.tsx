@@ -20,9 +20,13 @@ export default function LiveResult() {
   const liveEquitySeries = useMemo(() => buildLiveEquitySeries(liveTrades), [liveTrades]);
   const liveHeaders = useMemo(() => {
     if (!Array.isArray(liveTrades) || liveTrades.length === 0) return [] as string[];
-    return Array.from(
-      new Set(liveTrades.flatMap(t => Object.keys(t ?? {})))
-    );
+  const keys = new Set<string>();
+  for (const trade of liveTrades) {
+      if (trade && typeof trade === 'object') {
+        for (const key of Object.keys(trade)) keys.add(key);
+      }
+    }
+    return Array.from(keys);
   }, [liveTrades]);
 
   const slideIndex = pairs.length > 0 ? Math.min(slide, pairs.length - 1) : 0;
