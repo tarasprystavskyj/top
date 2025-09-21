@@ -87,6 +87,13 @@ class BreakoutAVAAIFull:
         self.position_downscale_on_high_vol: bool = bool(_read("position_downscale_on_high_vol", False))
         self.target_atr_ratio: float = float(_read("target_atr_ratio", 0.0))
 
+        # shared allocation knobs
+        self.alloc_enabled: bool = bool(_read("alloc_enabled", True))
+        self.alloc_scheme: str = str(_read("alloc_scheme", "risk_parity"))
+        self.per_bar_notional: Optional[float] = _f(_read("per_bar_notional", None), None)
+        self.alloc_min_clip: float = float(_read("alloc_min_clip", 0.0))
+        self.alloc_max_per_name: float = float(_read("alloc_max_per_name", 1.0))
+
         # exit-specific filters (can be overridden via exit_filters section)
         exit_f = (self.cfg.get("exit_filters") or sp.get("exit_filters") or {})
         self.exit_min_atr_ratio: float = float(exit_f.get("min_atr_ratio", 0.03))
@@ -438,7 +445,8 @@ class BreakoutAVAAIFull:
             self._last_entry_debug = debug_info
             return None
 
-        qty = self._estimate_base_qty(ctx, close)
+        shared_alloc = isinstance(ctx, Mapping) and bool((ctx or {}).get("_shared_allocation"))
+        qty = None if shared_alloc else self._estimate_base_qty(ctx, close)
         downscale_factor = 1.0
         if (
             self.position_downscale_on_high_vol
@@ -452,7 +460,7 @@ class BreakoutAVAAIFull:
 
         downscale_applied = downscale_factor if downscale_factor < 1.0 else None
 
-        if qty is not None and qty > 0:
+        if qty is not None and qty > 0 and not shared_alloc:
             notional = qty * close
             if (self.min_qty and qty < self.min_qty) or (
                 self.exchange_min_notional and notional < self.exchange_min_notional
@@ -498,6 +506,182 @@ class BreakoutAVAAIFull:
         sig.tags = tags
         self._last_entry_debug = final_debug
         return sig
+
+    def plan_bar_entries(
+        self,
+        t: Any,
+        md_map: Mapping[str, Mapping[str, Any]],
+        candidates: List[str],
+        ctx: Optional[Mapping[str, Any]] = None,
+    ) -> List[Tuple[str, Sig]]:
+        """Plan entries for a bar by splitting a shared notional budget across candidates."""
+
+        if not self.alloc_enabled or not candidates:
+            return []
+
+        budget = _f(self.per_bar_notional, None)
+        if budget is None and isinstance(ctx, Mapping):
+            budget = _f(ctx.get("position_notional"), None)
+            if budget is None:
+                pf = ctx.get("portfolio")
+                if pf is not None:
+                    for attr in ("position_notional", "default_notional", "notional"):
+                        val = getattr(pf, attr, None)
+                        if isinstance(val, (int, float)) and val > 0:
+                            budget = float(val)
+                            break
+                    if budget is None:
+                        cfg = getattr(pf, "cfg", None)
+                        if isinstance(cfg, Mapping):
+                            budget = _f(cfg.get("position_notional"), None)
+        if budget is None or budget <= 0:
+            return []
+
+        opens_before = self._opens_this_bar
+        rows: List[Dict[str, Any]] = []
+        for sym in candidates:
+            row = md_map.get(sym) or {}
+            if isinstance(ctx, Mapping):
+                ctx_sig: Dict[str, Any] = dict(ctx)
+            else:
+                ctx_sig = {}
+            ctx_sig["_shared_allocation"] = True
+            sig = self.entry_signal(t, sym, row, ctx_sig)
+            if not sig:
+                continue
+            close = _f(row.get("close", None), None)
+            if close is None or close <= 0:
+                continue
+            stop_price = _f(sig.stop_price, None)
+            if stop_price is None:
+                continue
+            entry_px = float(close)
+            sl_dist_pct = abs((entry_px - float(stop_price)) / max(entry_px, 1e-12))
+            atrr = _f(row.get("atr_ratio", None), None)
+            edge = abs(self._mom_sum(row))
+            scale = 1.0
+            tags = sig.tags or {}
+            if isinstance(tags, Mapping):
+                scale_val = _f(tags.get("position_scale"), None)
+                if scale_val is not None and scale_val > 0:
+                    scale = float(scale_val)
+            sig.size = None
+            rows.append(
+                {
+                    "symbol": sym,
+                    "sig": sig,
+                    "close": entry_px,
+                    "sl_dist": max(sl_dist_pct, 1e-9),
+                    "atr_ratio": atrr,
+                    "edge": float(edge),
+                    "scale": float(scale),
+                }
+            )
+
+        if not rows:
+            self._opens_this_bar = opens_before
+            return []
+
+        vals: List[float] = []
+        for row in rows:
+            if self.alloc_scheme == "vol_parity":
+                key = 1.0 / max(row.get("atr_ratio") or 0.0, 1e-9)
+            elif self.alloc_scheme == "edge_risk":
+                key = (row.get("edge") or 0.0) / max(row.get("sl_dist"), 1e-9)
+            else:
+                key = 1.0 / max(row.get("sl_dist"), 1e-9)
+            vals.append(max(0.0, float(key)))
+
+        total = sum(vals)
+        if total <= 0:
+            self._opens_this_bar = opens_before
+            return []
+
+        weights = [v / total for v in vals]
+        if self.alloc_min_clip > 0:
+            weights = [0.0 if w < self.alloc_min_clip else w for w in weights]
+        total = sum(weights)
+        if total <= 0:
+            self._opens_this_bar = opens_before
+            return []
+        weights = [w / total for w in weights]
+
+        if self.alloc_max_per_name < 1.0:
+            weights = [min(w, self.alloc_max_per_name) for w in weights]
+            total = sum(weights)
+            if total <= 0:
+                self._opens_this_bar = opens_before
+                return []
+            weights = [w / total for w in weights]
+
+        alloc_items = [
+            (row, weight)
+            for row, weight in zip(rows, weights)
+            if weight > 0
+        ]
+        if not alloc_items:
+            self._opens_this_bar = opens_before
+            return []
+
+        final_allocs: List[Tuple[Dict[str, Any], float, float, float, float, float]] = []
+        remaining = alloc_items
+        while remaining:
+            total_w = sum(w for _, w in remaining)
+            if total_w <= 0:
+                break
+            interim: List[Tuple[Dict[str, Any], float, float, float, float, float]] = []
+            removed = False
+            for row, orig_w in remaining:
+                norm_w = orig_w / total_w if total_w > 0 else 0.0
+                close = row.get("close")
+                if close is None or close <= 0:
+                    removed = True
+                    continue
+                base_notional = float(budget) * norm_w
+                scale = max(row.get("scale", 1.0), 0.0)
+                if scale <= 0:
+                    removed = True
+                    continue
+                actual_notional = base_notional * scale
+                qty = actual_notional / max(close, 1e-12)
+                if qty <= 0:
+                    removed = True
+                    continue
+                if (self.min_qty and qty < self.min_qty) or (
+                    self.exchange_min_notional and actual_notional < self.exchange_min_notional
+                ):
+                    removed = True
+                    continue
+                interim.append((row, orig_w, norm_w, qty, actual_notional, base_notional))
+            if not interim:
+                remaining = []
+                break
+            if removed:
+                remaining = [(row, orig_w) for row, orig_w, *_ in interim]
+                continue
+            final_allocs = interim
+            break
+
+        if not final_allocs:
+            self._opens_this_bar = opens_before
+            return []
+
+        out: List[Tuple[str, Sig]] = []
+        for row, _, norm_w, qty, actual_notional, base_notional in final_allocs:
+            sig = row["sig"]
+            tags = dict(sig.tags or {})
+            tags.setdefault("filters_hit", tags.get("filters_hit", []))
+            tags["alloc_weight"] = float(norm_w)
+            tags["alloc_notional"] = float(actual_notional)
+            tags["alloc_budget"] = float(budget)
+            tags["alloc_scheme"] = self.alloc_scheme
+            tags["alloc_notional_pre_scale"] = float(base_notional)
+            sig.tags = tags
+            sig.size = float(qty)
+            out.append((row["symbol"], sig))
+
+        self._opens_this_bar = opens_before + len(out)
+        return out
 
     def manage_position(self, symbol, row, pos, ctx=None):
         close = _f(row.get("close", 0.0))
