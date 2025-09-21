@@ -1,5 +1,5 @@
 timeframe: 3m
-cache_db: ../DB/combined_cache_3m_14400_24u.db #../DB/combined_cache_3m_7200_500u.db #_reports/_live/livecfg_cfg_t3m_30d_newbest_full_3m/combined_cache_session.db # ../DB/combined_cache_3m_14400_30u.db 
+cache_db: _reports/_live/livecfg_cfg_t3m_30d_newbest_full_3m/combined_cache_session.db #../DB/combined_cache_3m_14400_24u.db #../DB/combined_cache_3m_7200_500u.db # # ../DB/combined_cache_3m_14400_30u.db 
 strategy_class: strategies.breakout_avaai_full_with_universe_4.BreakoutAVAAIFull
 open_on_heat: false
 open_heat_min: 0.01

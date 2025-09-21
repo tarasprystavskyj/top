@@ -63,7 +63,7 @@ portfolio:
   position_notional: 4.5
   position_notional_max: 5
   initial_equity: 100.0
-  max_notional_frac: 0.11
+  max_notional_frac: 0.10
   slippage_per_side: 0.0016
   fee_rate: 0.001
 session:
