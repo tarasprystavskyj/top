@@ -58,6 +58,51 @@ export default function Run() {
 
   const isReadOnly = typeof router.query.id === 'string';
 
+  const tradesData = Array.isArray(res?.trades) ? res.trades : [];
+  const renderTradesTable = (
+    title: string,
+    rows: any[],
+    highlightKey?: string
+  ) => {
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    const firstRow = rows.find(row => row && typeof row === 'object');
+    if (!firstRow) return null;
+    const headers = Object.keys(firstRow);
+    if (headers.length === 0) return null;
+
+    return (
+      <div style={{ flex: '1 1 360px', minWidth: 320 }}>
+        <h4>
+          {title} ({rows.length})
+        </h4>
+        <div style={{ maxHeight: '200px', overflow: 'auto' }}>
+          <table border={1}>
+            <thead>
+              <tr>
+                {headers.map(k => (
+                  <th key={k}>{k}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => {
+                const highlightValue = highlightKey ? Number(row?.[highlightKey]) : NaN;
+                const rowStyle = !isNaN(highlightValue) && highlightValue > 0 ? { backgroundColor: '#d4edda' } : undefined;
+                return (
+                  <tr key={i} style={rowStyle}>
+                    {headers.map(k => (
+                      <td key={k}>{formatVal(row?.[k])}</td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
   // if ?id=JOB_ID is present load that job's result
   useEffect(() => {
     const qid = router.query.id;
@@ -751,26 +796,15 @@ export default function Run() {
           {logs && (
             <pre style={{ maxHeight: '200px', overflowY: 'auto' }}>{logs}</pre>
           )}
-          {showTrades && res.trades && res.trades.length > 0 && (
-            <div style={{ maxHeight: '200px', overflow: 'auto' }}>
-              <table border={1}>
-                <thead>
-                  <tr>
-                    {Object.keys(res.trades[0]).map(k => (
-                      <th key={k}>{k}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {res.trades.map((t: any, i: number) => (
-                    <tr key={i}>
-                      {Object.keys(res.trades[0]).map(k => (
-                        <td key={k}>{formatVal(t[k])}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {showTrades && tradesData.length > 0 && (
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              {renderTradesTable('Backtest trades', tradesData)}
+            </div>
+          )}
+          {showTrades && res?.files?.bt_trades && (
+            <div style={{ marginTop: '10px' }}>
+              <em>Backtest trades file:</em>{' '}
+              <code>{res.files.bt_trades}</code>
             </div>
           )}
         </div>
