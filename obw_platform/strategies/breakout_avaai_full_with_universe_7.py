@@ -1,5 +1,5 @@
 
-# strategies/breakout_avaai_full_with_universe_7.py
+# strategies/breakout_avaai_full_with_universe_4.py
 # Refactored strategy: ALL entry/exit & TP/SL decisions live here.
 # Backtester must only:
 #   - apply allow/deny universe for OPENING,
@@ -8,8 +8,6 @@
 #   - call manage_position() to close,
 #   - optionally print "heat" (purely reporting; not used for decisions).
 from __future__ import annotations
-
-import math
 
 from dataclasses import dataclass
 from typing import Optional, Literal, Mapping, Any, List, Dict, Tuple
@@ -72,37 +70,9 @@ class BreakoutAVAAIFull:
 
         self.side: str = str(_read("side", "BOTH")).upper()
         self.top_n: int = int(_read("top_n", _read("top-n", 8)))  # accept both spellings
-
-        # entry filters: disabled by default
-        self.entry_min_atr_ratio: float = float(_read("min_atr_ratio", 0.0))
-        self.entry_min_momentum_sum: float = float(_read("min_momentum_sum", 0.0))
-
-        # volatility/SL guards (all optional; defaults keep legacy behaviour)
-        self.max_atr_ratio_entry: float = float(_read("max_atr_ratio_entry", 0.0))
-        self.max_sl_bps: float = float(_read("max_sl_bps", 0.0))
-        self.vol_spike_k_median: float = float(_read("vol_spike_k_median", 0.0))
-        self.vol_median_window: int = int(_read("vol_median_window", 0))
-        self.impulse_bps: float = float(_read("impulse_bps", 0.0))
-        self.wick_ratio_max: float = float(_read("wick_ratio_max", 1.0))
-        self.position_downscale_on_high_vol: bool = bool(_read("position_downscale_on_high_vol", False))
-        self.target_atr_ratio: float = float(_read("target_atr_ratio", 0.0))
-
-        # shared allocation knobs
-        self.alloc_enabled: bool = bool(_read("alloc_enabled", True))
-        self.alloc_scheme: str = str(_read("alloc_scheme", "risk_parity"))
-        self.per_bar_notional: Optional[float] = _f(_read("per_bar_notional", None), None)
-        self.alloc_min_clip: float = float(_read("alloc_min_clip", 0.0))
-        self.alloc_max_per_name: float = float(_read("alloc_max_per_name", 1.0))
-
-        # exit-specific filters (can be overridden via exit_filters section)
-        exit_f = (self.cfg.get("exit_filters") or sp.get("exit_filters") or {})
-        self.exit_min_atr_ratio: float = float(exit_f.get("min_atr_ratio", 0.03))
-        self.exit_min_momentum_sum: float = float(exit_f.get("min_momentum_sum", 0.05))
-
-        # keep legacy names for compatibility
-        self.min_atr_ratio = self.entry_min_atr_ratio
-        self.min_momentum_sum = self.entry_min_momentum_sum
-
+        self.min_atr_ratio: float = float(_read("min_atr_ratio", 0.02))
+        # Important: default to 0.0 to reproduce the wide-entry behaviour unless overridden
+        self.min_momentum_sum: float = float(_read("min_momentum_sum", 0.0))
         self.tp_mult: float = float(_read("tp_atr_mult", 3.8))
         self.sl_mult: float = float(_read("sl_atr_mult", 1.04))
 
@@ -135,7 +105,6 @@ class BreakoutAVAAIFull:
         self._first_bar_ts: Optional[Any] = None
         self._last_bar_ts: Optional[Any] = None
         self._opens_this_bar: int = 0
-        self._last_entry_debug: Dict[str, Any] = {}
     # ---------- helpers ----------
     def _mom_sum(self, row: Mapping[str, Any]) -> float:
         return _f(row.get("dp6h", 0.0)) + _f(row.get("dp12h", 0.0))
@@ -157,119 +126,6 @@ class BreakoutAVAAIFull:
             return 0.0
         pnl = (px - entry) / entry if side == "LONG" else (entry - px) / entry
         return float(pnl)
-
-    def _resolve_atr_median(self, row: Mapping[str, Any], ctx: Optional[Mapping[str, Any]]) -> Optional[float]:
-        """Best-effort lookup of rolling median atr_ratio for volatility guards."""
-        if self.vol_median_window <= 0:
-            return None
-
-        cand_keys = [
-            f"atr_ratio_median_{self.vol_median_window}",
-            f"atr_ratio_med_{self.vol_median_window}",
-            f"atr_ratio_median{self.vol_median_window}",
-            f"atr_ratio_{self.vol_median_window}_median",
-            "atr_ratio_median",
-            "atr_ratio_med",
-        ]
-        for key in cand_keys:
-            try:
-                val = row.get(key)
-            except Exception:
-                val = None
-            med = _f(val, None)
-            if med is not None and med > 0:
-                return med
-
-        if ctx:
-            history = None
-            for hist_key in ("atr_history", "history", "df", "md"):
-                if history is None:
-                    history = ctx.get(hist_key) if isinstance(ctx, Mapping) else None
-            if history is not None:
-                try:
-                    series = None
-                    if hasattr(history, "get"):
-                        try:
-                            series = history.get("atr_ratio")
-                        except Exception:
-                            series = None
-                    if series is None and hasattr(history, "__getitem__"):
-                        try:
-                            series = history["atr_ratio"]
-                        except Exception:
-                            series = None
-                    if series is None:
-                        return None
-                    if hasattr(series, "tail"):
-                        series = series.tail(self.vol_median_window)
-                    values = []
-                    if hasattr(series, "tolist"):
-                        values = series.tolist()
-                    else:
-                        try:
-                            values = list(series)
-                        except Exception:
-                            values = []
-                    if not values:
-                        return None
-                    tail = values[-self.vol_median_window :]
-                    clean: List[float] = []
-                    for v in tail:
-                        fv = _f(v, None)
-                        if fv is None or math.isnan(fv):
-                            continue
-                        clean.append(fv)
-                    if not clean:
-                        return None
-                    clean.sort()
-                    n = len(clean)
-                    mid = n // 2
-                    if n % 2:
-                        return clean[mid]
-                    return 0.5 * (clean[mid - 1] + clean[mid])
-                except Exception:
-                    return None
-        return None
-
-    def _estimate_base_qty(self, ctx: Optional[Mapping[str, Any]], price: Optional[float]) -> Optional[float]:
-        if price is None or price <= 0:
-            return None
-        if ctx is None:
-            return None
-
-        try_keys = ("qty", "size", "base_qty", "position_qty")
-        for key in try_keys:
-            if isinstance(ctx, Mapping) and key in ctx:
-                val = _f(ctx.get(key), None)
-                if val is not None and val > 0:
-                    return val
-
-        if isinstance(ctx, Mapping):
-            notional = None
-            for key in ("position_notional", "notional"):
-                val = _f(ctx.get(key), None)
-                if val is not None and val > 0:
-                    notional = val
-                    break
-            if notional is not None and notional > 0:
-                return float(notional) / price
-
-            pf = ctx.get("portfolio")
-            if pf is not None:
-                try:
-                    for attr in ("position_notional", "default_notional", "notional"):
-                        val = getattr(pf, attr, None)
-                        if val is not None and isinstance(val, (int, float)) and val > 0:
-                            return float(val) / price
-                    cfg = getattr(pf, "cfg", None)
-                    if isinstance(cfg, Mapping):
-                        val = _f(cfg.get("position_notional"), None)
-                        if val is not None and val > 0:
-                            return float(val) / price
-                except Exception:
-                    pass
-
-        return None
 
     @staticmethod
     def _pct_gap(actual: float, thresh: float) -> float:
@@ -304,13 +160,13 @@ class BreakoutAVAAIFull:
         out: List[str] = []
         for sym, row in md_map.items():
             atr = _f(row.get("atr_ratio", 0.0))
-            if self.entry_min_atr_ratio > 0 and atr < self.entry_min_atr_ratio:
+            if self.min_atr_ratio > 0 and atr < self.min_atr_ratio:
                 continue
             if not self._liq_ok(row):
                 continue
             # Optional momentum threshold (mm<=0 disables)
             m = self._mom_sum(row)
-            mm = self.entry_min_momentum_sum
+            mm = self.min_momentum_sum
             if mm > 0:
                 if self.side == "LONG" and m < +mm:
                     continue
@@ -328,6 +184,10 @@ class BreakoutAVAAIFull:
         for idx, sym in enumerate(universe_syms):
             m = self._mom_sum(md_map.get(sym, {}))
             score = (-m) if invert else (m)
+            # if self.side == "BOTH":
+                # score = abs(m)
+            # else:
+                # score = (-m) if invert else (m)
             scored.append((score, idx, sym))
         scored.sort(key=lambda x: x[0], reverse=True)  # stable via index
         # CUT to top_n here (moved from backtester); top_n<=0 disables the limit
@@ -361,327 +221,22 @@ class BreakoutAVAAIFull:
             side = "LONG" if m >= 0.0 else "SHORT"
 
         close = _f(row.get("close", None), None)
-        atrr = _f(row.get("atr_ratio", None), None)
+        atrr  = _f(row.get("atr_ratio", None), None)
         if close is None or atrr is None or close <= 0 or atrr <= 0:
-            self._last_entry_debug = {
-                "symbol": symbol,
-                "time": t,
-                "filters_hit": ["missing_data"],
-            }
             return None
 
         atr_abs = max(1e-12, close * atrr)
         if side == "LONG":
             tp = close + self.tp_mult * atr_abs
             sl = close - self.sl_mult * atr_abs
-            sl_dist_pct = max(0.0, (close - sl) / max(close, 1e-12))
         else:
             tp = close - self.tp_mult * atr_abs
             sl = close + self.sl_mult * atr_abs
-            sl_dist_pct = max(0.0, (sl - close) / max(close, 1e-12))
-
-        open_px = _f(row.get("open", None), None)
-        high = _f(row.get("high", None), None)
-        low = _f(row.get("low", None), None)
-        true_range = _f(row.get("true_range", None), None)
-        if true_range is None or true_range <= 0:
-            if high is not None and low is not None:
-                true_range = max(0.0, high - low)
-            else:
-                true_range = atr_abs
-        true_range = max(true_range, 1e-12)
-
-        impulse_ratio = 0.0
-        if open_px is not None and open_px > 0:
-            impulse_ratio = abs(close - open_px) / max(close, 1e-12)
-
-        wick_ratio = 0.0
-        if high is not None and low is not None and open_px is not None:
-            body_high = max(open_px, close)
-            body_low = min(open_px, close)
-            upper_wick = max(0.0, high - body_high)
-            lower_wick = max(0.0, body_low - low)
-            wick_ratio = max(upper_wick, lower_wick) / true_range
-
-        atr_median = self._resolve_atr_median(row, ctx)
-
-        filters_hit: List[str] = []
-        if self.max_atr_ratio_entry > 0 and atrr > self.max_atr_ratio_entry:
-            filters_hit.append("atr_cap")
-
-        if (
-            self.vol_spike_k_median > 0
-            and atr_median is not None
-            and atr_median > 0
-            and atrr > self.vol_spike_k_median * atr_median
-        ):
-            filters_hit.append("vol_spike")
-
-        impulse_limit = self.impulse_bps / 10000.0 if self.impulse_bps > 0 else 0.0
-        if impulse_limit > 0 and impulse_ratio > impulse_limit:
-            filters_hit.append("impulse")
-
-        if self.wick_ratio_max >= 0 and wick_ratio > self.wick_ratio_max:
-            filters_hit.append("wick")
-
-        max_sl_frac = self.max_sl_bps / 10000.0 if self.max_sl_bps > 0 else 0.0
-        if max_sl_frac > 0 and sl_dist_pct > max_sl_frac:
-            filters_hit.append("max_sl_bps")
-
-        debug_info: Dict[str, Any] = {
-            "symbol": symbol,
-            "time": t,
-            "entry_atr_ratio": float(atrr),
-            "atr_median": (float(atr_median) if atr_median is not None else None),
-            "sl_dist_pct": float(sl_dist_pct),
-            "impulse_ratio": float(impulse_ratio),
-            "wick_ratio": float(wick_ratio),
-            "filters_hit": list(filters_hit),
-        }
-
-        if filters_hit:
-            reason = "max_sl_bps" if "max_sl_bps" in filters_hit else "vol_spike"
-            debug_info["reason"] = reason
-            self._last_entry_debug = debug_info
-            return None
-
-        shared_alloc = isinstance(ctx, Mapping) and bool((ctx or {}).get("_shared_allocation"))
-        qty = None if shared_alloc else self._estimate_base_qty(ctx, close)
-        downscale_factor = 1.0
-        if (
-            self.position_downscale_on_high_vol
-            and self.target_atr_ratio > 0
-            and atrr > self.target_atr_ratio
-        ):
-            denom = max(atrr, 1e-9)
-            downscale_factor = min(1.0, self.target_atr_ratio / denom)
-            if qty is not None and qty > 0:
-                qty *= downscale_factor
-
-        downscale_applied = downscale_factor if downscale_factor < 1.0 else None
-
-        if qty is not None and qty > 0 and not shared_alloc:
-            notional = qty * close
-            if (self.min_qty and qty < self.min_qty) or (
-                self.exchange_min_notional and notional < self.exchange_min_notional
-            ):
-                debug_info["filters_hit"] = debug_info.get("filters_hit", []) + ["min_qty"]
-                debug_info["reason"] = "min_qty"
-                debug_info["qty"] = float(qty)
-                debug_info["notional"] = float(notional)
-                if downscale_applied is not None:
-                    debug_info["downscale"] = float(downscale_applied)
-                self._last_entry_debug = debug_info
-                return None
 
         self._opens_this_bar += 1
         entry_heat = self.heat(t, symbol, row)
-
-        tags: Dict[str, Any] = {
-            "entry_atr_ratio": float(atrr),
-            "sl_dist_pct": float(sl_dist_pct),
-            "filters_hit": [],
-            "atr_median": debug_info.get("atr_median"),
-            "impulse_ratio": float(impulse_ratio),
-            "wick_ratio": float(wick_ratio),
-        }
-        if downscale_applied is not None:
-            tags["position_scale"] = float(downscale_applied)
-
-        sig = Sig(
-            side=side,
-            take_profit=float(tp),
-            stop_price=float(sl),
-            reason="rule/atr-multipliers",
-            heat=float(entry_heat),
-        )
-        final_debug = dict(debug_info)
-        final_debug["filters_hit"] = []
-        if downscale_applied is not None:
-            final_debug["downscale"] = float(downscale_applied)
-        if qty is not None and qty > 0:
-            sig.size = float(qty)
-            final_debug["qty"] = float(qty)
-            final_debug["notional"] = float(qty * close)
-        sig.tags = tags
-        self._last_entry_debug = final_debug
-        return sig
-
-    def plan_bar_entries(
-        self,
-        t: Any,
-        md_map: Mapping[str, Mapping[str, Any]],
-        candidates: List[str],
-        ctx: Optional[Mapping[str, Any]] = None,
-    ) -> List[Tuple[str, Sig]]:
-        """Plan entries for a bar by splitting a shared notional budget across candidates."""
-
-        if not self.alloc_enabled or not candidates:
-            return []
-
-        budget = _f(self.per_bar_notional, None)
-        if budget is None and isinstance(ctx, Mapping):
-            budget = _f(ctx.get("position_notional"), None)
-            if budget is None:
-                pf = ctx.get("portfolio")
-                if pf is not None:
-                    for attr in ("position_notional", "default_notional", "notional"):
-                        val = getattr(pf, attr, None)
-                        if isinstance(val, (int, float)) and val > 0:
-                            budget = float(val)
-                            break
-                    if budget is None:
-                        cfg = getattr(pf, "cfg", None)
-                        if isinstance(cfg, Mapping):
-                            budget = _f(cfg.get("position_notional"), None)
-        if budget is None or budget <= 0:
-            return []
-
-        opens_before = self._opens_this_bar
-        rows: List[Dict[str, Any]] = []
-        for sym in candidates:
-            row = md_map.get(sym) or {}
-            if isinstance(ctx, Mapping):
-                ctx_sig: Dict[str, Any] = dict(ctx)
-            else:
-                ctx_sig = {}
-            ctx_sig["_shared_allocation"] = True
-            sig = self.entry_signal(t, sym, row, ctx_sig)
-            if not sig:
-                continue
-            close = _f(row.get("close", None), None)
-            if close is None or close <= 0:
-                continue
-            stop_price = _f(sig.stop_price, None)
-            if stop_price is None:
-                continue
-            entry_px = float(close)
-            sl_dist_pct = abs((entry_px - float(stop_price)) / max(entry_px, 1e-12))
-            atrr = _f(row.get("atr_ratio", None), None)
-            edge = abs(self._mom_sum(row))
-            scale = 1.0
-            tags = sig.tags or {}
-            if isinstance(tags, Mapping):
-                scale_val = _f(tags.get("position_scale"), None)
-                if scale_val is not None and scale_val > 0:
-                    scale = float(scale_val)
-            sig.size = None
-            rows.append(
-                {
-                    "symbol": sym,
-                    "sig": sig,
-                    "close": entry_px,
-                    "sl_dist": max(sl_dist_pct, 1e-9),
-                    "atr_ratio": atrr,
-                    "edge": float(edge),
-                    "scale": float(scale),
-                }
-            )
-
-        if not rows:
-            self._opens_this_bar = opens_before
-            return []
-
-        vals: List[float] = []
-        for row in rows:
-            if self.alloc_scheme == "vol_parity":
-                key = 1.0 / max(row.get("atr_ratio") or 0.0, 1e-9)
-            elif self.alloc_scheme == "edge_risk":
-                key = (row.get("edge") or 0.0) / max(row.get("sl_dist"), 1e-9)
-            else:
-                key = 1.0 / max(row.get("sl_dist"), 1e-9)
-            vals.append(max(0.0, float(key)))
-
-        total = sum(vals)
-        if total <= 0:
-            self._opens_this_bar = opens_before
-            return []
-
-        weights = [v / total for v in vals]
-        if self.alloc_min_clip > 0:
-            weights = [0.0 if w < self.alloc_min_clip else w for w in weights]
-        total = sum(weights)
-        if total <= 0:
-            self._opens_this_bar = opens_before
-            return []
-        weights = [w / total for w in weights]
-
-        if self.alloc_max_per_name < 1.0:
-            weights = [min(w, self.alloc_max_per_name) for w in weights]
-            total = sum(weights)
-            if total <= 0:
-                self._opens_this_bar = opens_before
-                return []
-            weights = [w / total for w in weights]
-
-        alloc_items = [
-            (row, weight)
-            for row, weight in zip(rows, weights)
-            if weight > 0
-        ]
-        if not alloc_items:
-            self._opens_this_bar = opens_before
-            return []
-
-        final_allocs: List[Tuple[Dict[str, Any], float, float, float, float, float]] = []
-        remaining = alloc_items
-        while remaining:
-            total_w = sum(w for _, w in remaining)
-            if total_w <= 0:
-                break
-            interim: List[Tuple[Dict[str, Any], float, float, float, float, float]] = []
-            removed = False
-            for row, orig_w in remaining:
-                norm_w = orig_w / total_w if total_w > 0 else 0.0
-                close = row.get("close")
-                if close is None or close <= 0:
-                    removed = True
-                    continue
-                base_notional = float(budget) * norm_w
-                scale = max(row.get("scale", 1.0), 0.0)
-                if scale <= 0:
-                    removed = True
-                    continue
-                actual_notional = base_notional * scale
-                qty = actual_notional / max(close, 1e-12)
-                if qty <= 0:
-                    removed = True
-                    continue
-                if (self.min_qty and qty < self.min_qty) or (
-                    self.exchange_min_notional and actual_notional < self.exchange_min_notional
-                ):
-                    removed = True
-                    continue
-                interim.append((row, orig_w, norm_w, qty, actual_notional, base_notional))
-            if not interim:
-                remaining = []
-                break
-            if removed:
-                remaining = [(row, orig_w) for row, orig_w, *_ in interim]
-                continue
-            final_allocs = interim
-            break
-
-        if not final_allocs:
-            self._opens_this_bar = opens_before
-            return []
-
-        out: List[Tuple[str, Sig]] = []
-        for row, _, norm_w, qty, actual_notional, base_notional in final_allocs:
-            sig = row["sig"]
-            tags = dict(sig.tags or {})
-            tags.setdefault("filters_hit", tags.get("filters_hit", []))
-            tags["alloc_weight"] = float(norm_w)
-            tags["alloc_notional"] = float(actual_notional)
-            tags["alloc_budget"] = float(budget)
-            tags["alloc_scheme"] = self.alloc_scheme
-            tags["alloc_notional_pre_scale"] = float(base_notional)
-            sig.tags = tags
-            sig.size = float(qty)
-            out.append((row["symbol"], sig))
-
-        self._opens_this_bar = opens_before + len(out)
-        return out
+        return Sig(side=side, take_profit=float(tp), stop_price=float(sl),
+                   reason="rule/atr-multipliers", heat=float(entry_heat))
 
     def manage_position(self, symbol, row, pos, ctx=None):
         close = _f(row.get("close", 0.0))
@@ -706,21 +261,57 @@ class BreakoutAVAAIFull:
             if sl and close >= sl: return ExitSig("SL", exit_price=sl, reason="SL")
             if tp and close <= tp: return ExitSig("TP", exit_price=tp, reason="TP")
 
-        # Якщо немає потрібних даних — тримаємо
-        if entry is None or entry <= 0 or qty is None or qty <= 0:
+        if entry is None or entry <= 0:
             return ExitSig("HOLD")
 
-        # 2) Частковий TP (50%) — коли пройшли X% шляху до TP
-        if self.partial_tp_enable and tp:
-            path = (tp - entry) if side == "LONG" else (entry - tp)
-            prog = (close - entry) if side == "LONG" else (entry - close)
-            if path > 0 and prog >= self.partial_trigger_frac_of_tp * path:
-                part_qty = qty * self.partial_tp_frac
-                notional = part_qty * close
-                if (self.min_qty and part_qty < self.min_qty) or (notional < self.exchange_min_notional):
+        trigger_frac = max(0.0, float(self.partial_trigger_frac_of_tp))
+        path = prog = None
+        trigger_reached = False
+        if tp is not None:
+            if side == "LONG":
+                path = tp - entry
+                prog = close - entry
+            else:
+                path = entry - tp
+                prog = entry - close
+            if path is not None and path > 0 and trigger_frac > 0:
+                trigger_reached = prog >= trigger_frac * path
+
+        if trigger_reached:
+            be_price = float(entry)
+            tol = max(abs(be_price) * 1e-6, 1e-8)
+
+            def _set_stop(px: float) -> None:
+                try:
+                    if hasattr(pos, "stop_price"):
+                        pos.stop_price = float(px)
+                except Exception:
                     pass
-                else:
-                    return ExitSig("TP_PARTIAL", exit_price=close, reason="TP50", qty_frac=self.partial_tp_frac)
+                try:
+                    if hasattr(pos, "sl"):
+                        pos.sl = float(px)
+                except Exception:
+                    pass
+
+            if side == "LONG":
+                if sl is None or sl < be_price - tol:
+                    _set_stop(be_price)
+                    sl = be_price
+            else:
+                if sl is None or sl > be_price + tol:
+                    _set_stop(be_price)
+                    sl = be_price
+
+        if qty is None or qty <= 0:
+            return ExitSig("HOLD")
+
+        if self.partial_tp_enable and tp and path and path > 0 and trigger_reached:
+            part_qty = qty * self.partial_tp_frac
+            notional = part_qty * close
+            if (self.min_qty and part_qty < self.min_qty) or (notional < self.exchange_min_notional):
+                pass
+            else:
+                return ExitSig("TP_PARTIAL", exit_price=close, reason="TP50", qty_frac=self.partial_tp_frac)
 
         # 3) Heat-exit / Reverse-momentum exit за умови, що PnL >= буферу
         rr = self._unrealized_rr(side, entry, close)
@@ -747,10 +338,10 @@ class BreakoutAVAAIFull:
         if qv1 <= 0.0:
             qv1 = _f(row.get("volume", 0.0)) * _f(row.get("close", 0.0))
 
-        min_atr = float(self.exit_min_atr_ratio)
+        min_atr = float(self.min_atr_ratio)
         min_qv24 = float(self.min_qv_24h)
         min_qv1h = float(self.min_qv_1h)
-        min_mom = float(self.exit_min_momentum_sum)
+        min_mom = float(self.min_momentum_sum)
 
         if self.side == "LONG":
             gap_mom = self._pct_gap_rev(m, +min_mom)
