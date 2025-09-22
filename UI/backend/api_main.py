@@ -1169,12 +1169,78 @@ def result(job_id: str):
         with open(os.path.join(out_dir, "summary.csv")) as f:
             rows = list(csv.DictReader(f))
             if rows: summary = rows[0]
-    trades = []
+    trades: List[Dict[str, Any]] = []
     if "trades.csv" in arts:
         import csv
         with open(os.path.join(out_dir, "trades.csv")) as f:
             trades = list(csv.DictReader(f))[:500]
+
+    files_meta: Dict[str, str] = {}
+    logs_path = os.path.join(out_dir, "logs.txt")
+    bt_trades_path = None
+    bt_summary_path = None
+    if os.path.isfile(logs_path):
+        try:
+            with open(logs_path, "r") as lf:
+                for line in lf:
+                    if line.startswith("[files]"):
+                        tokens = line[len("[files]") :].strip().split()
+                        for token in tokens:
+                            if "=" not in token:
+                                continue
+                            key, value = token.split("=", 1)
+                            if key == "bt_trades" and value:
+                                bt_trades_path = value
+                            elif key == "bt_summary" and value:
+                                bt_summary_path = value
+                        # stop after first [files] line
+                        break
+        except Exception:
+            log.exception("result %s: failed to parse logs for file paths", job_id)
+
+    if bt_trades_path and os.path.exists(bt_trades_path):
+        import csv
+
+        files_meta["bt_trades"] = bt_trades_path
+        try:
+            with open(bt_trades_path, "r") as f:
+                trades = list(csv.DictReader(f))[:500]
+        except Exception:
+            log.exception("result %s: failed to parse bt_trades", job_id)
+        else:
+            local_bt_trades = os.path.join(out_dir, "bt_trades.csv")
+            same_file = False
+            try:
+                same_file = os.path.samefile(bt_trades_path, local_bt_trades)
+            except Exception:
+                same_file = False
+            if not same_file:
+                try:
+                    shutil.copy(bt_trades_path, local_bt_trades)
+                except Exception:
+                    log.exception("result %s: failed to copy bt_trades", job_id)
+            if os.path.exists(local_bt_trades):
+                arts["bt_trades.csv"] = f"/api/jobs/{job_id}/artifacts/bt_trades.csv"
+
+    if bt_summary_path and os.path.exists(bt_summary_path):
+        files_meta["bt_summary"] = bt_summary_path
+        local_bt_summary = os.path.join(out_dir, "bt_summary.csv")
+        same_file = False
+        try:
+            same_file = os.path.samefile(bt_summary_path, local_bt_summary)
+        except Exception:
+            same_file = False
+        if not same_file:
+            try:
+                shutil.copy(bt_summary_path, local_bt_summary)
+            except Exception:
+                log.exception("result %s: failed to copy bt_summary", job_id)
+        if os.path.exists(local_bt_summary):
+            arts.setdefault("bt_summary.csv", f"/api/jobs/{job_id}/artifacts/bt_summary.csv")
+
     resp: Dict[str, Any] = {"summary": summary, "trades": trades, "artifacts": arts}
+    if files_meta:
+        resp["files"] = files_meta
     job_info = jobs.get(job_id) or {}
     job_meta = job_info.get("meta") or {}
     meta_path = os.path.join(out_dir, "meta.json")
