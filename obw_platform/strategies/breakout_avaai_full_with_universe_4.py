@@ -84,19 +84,6 @@ class BreakoutAVAAIFull:
         self.exit_on_heat: bool = bool(_read("exit_on_heat", True))
         self.heat_exit_threshold: float = float(_read("heat_exit_threshold", 0.40))
         self.heat_exit_min_rr: float = float(_read("heat_exit_min_rr", 1.05))
-        self.heat_exit_require_adverse_momentum: bool = bool(
-            _read("heat_exit_require_adverse_momentum", True)
-        )
-        self.heat_exit_use_momentum_slope: bool = bool(
-            _read("heat_exit_use_momentum_slope", True)
-        )
-        self.heat_exit_slope_window: int = int(_read("heat_exit_slope_window", 1))
-        self.exit_grace_bars: int = int(_read("exit_grace_bars", 2))
-        self.ignore_htf_on_local_reversal: bool = bool(
-            _read("ignore_htf_on_local_reversal", True)
-        )
-        self.local_reversal_m_abs: float = float(_read("local_reversal_m_abs", 0.002))
-        self.heat_drop_k: float = float(_read("heat_drop_k", 0.90))
 
         # Partial take-profit
         self.partial_tp_enable: bool = bool(_read("partial_tp_enable", True))
@@ -248,31 +235,8 @@ class BreakoutAVAAIFull:
 
         self._opens_this_bar += 1
         entry_heat = self.heat(t, symbol, row)
-        sig = Sig(
-            side=side,
-            take_profit=float(tp),
-            stop_price=float(sl),
-            reason="rule/atr-multipliers",
-            heat=float(entry_heat),
-        )
-        try:
-            tags = {"last_mom": float(m)}
-            try:
-                tags["mom_hist"] = [float(m)]
-            except Exception:
-                pass
-            try:
-                tags["last_heat"] = float(entry_heat)
-            except Exception:
-                pass
-            sig.tags = tags
-        except Exception:
-            pass
-        try:
-            setattr(sig, "bars_held", 0)
-        except Exception:
-            pass
-        return sig
+        return Sig(side=side, take_profit=float(tp), stop_price=float(sl),
+                   reason="rule/atr-multipliers", heat=float(entry_heat))
 
     def manage_position(self, symbol, row, pos, ctx=None):
         close = _f(row.get("close", 0.0))
@@ -289,120 +253,6 @@ class BreakoutAVAAIFull:
             except Exception:
                 qty = None
 
-        m_now = self._mom_sum(row)
-        try:
-            bars_held = int(getattr(pos, "bars_held", 0))
-        except Exception:
-            bars_held = 0
-
-        try:
-            tags_raw = getattr(pos, "tags", {}) or {}
-            tags_map = dict(tags_raw)
-        except Exception:
-            tags_map = {}
-
-        last_mom = _f(tags_map.get("last_mom"), None)
-        mom_hist_list: List[float] = []
-        try:
-            hist_src = tags_map.get("mom_hist")
-            if isinstance(hist_src, list):
-                for val in hist_src:
-                    fv = _f(val, None)
-                    if fv is not None:
-                        mom_hist_list.append(float(fv))
-        except Exception:
-            mom_hist_list = []
-
-        last_heat = _f(tags_map.get("last_heat"), None)
-
-        def _normalize_bias(val: Any) -> Optional[str]:
-            if val is None:
-                return None
-            if isinstance(val, (int, float)):
-                if float(val) > 0:
-                    return "LONG"
-                if float(val) < 0:
-                    return "SHORT"
-                return None
-            try:
-                text = str(val).strip().upper()
-            except Exception:
-                return None
-            if not text:
-                return None
-            mapping = {
-                "LONG": "LONG",
-                "L": "LONG",
-                "BUY": "LONG",
-                "UP": "LONG",
-                "BULL": "LONG",
-                "SHORT": "SHORT",
-                "S": "SHORT",
-                "SELL": "SHORT",
-                "DOWN": "SHORT",
-                "BEAR": "SHORT",
-            }
-            return mapping.get(text)
-
-        def _extract_htf_bias(*sources: Any) -> Optional[str]:
-            keys = (
-                "htf_bias",
-                "htf_bias_side",
-                "htf_trend",
-                "htf_trend_side",
-                "htf_side",
-                "htf_direction",
-                "htf_dir",
-            )
-            for src in sources:
-                if src is None:
-                    continue
-                if isinstance(src, Mapping):
-                    for key in keys:
-                        if key in src:
-                            bias_val = _normalize_bias(src.get(key))
-                            if bias_val:
-                                return bias_val
-                else:
-                    bias_val = _normalize_bias(src)
-                    if bias_val:
-                        return bias_val
-            return None
-
-        htf_bias_side = _extract_htf_bias(
-            tags_map,
-            getattr(pos, "meta", None),
-            getattr(pos, "htf_bias", None),
-            ctx or {},
-            row,
-        )
-        htf_supports_side = htf_bias_side == side
-
-        heat_for_update: Optional[float] = None
-
-        def _finalize(sig: ExitSig, heat_val: Optional[float] = None) -> ExitSig:
-            try:
-                updated_tags = dict(tags_map)
-                updated_tags["last_mom"] = float(m_now)
-                hist_out = list(mom_hist_list)
-                hist_out.append(float(m_now))
-                keep = max(1, int(self.heat_exit_slope_window))
-                hist_out = hist_out[-keep:]
-                updated_tags["mom_hist"] = hist_out
-                if heat_val is not None:
-                    updated_tags["last_heat"] = float(heat_val)
-                if hasattr(pos, "tags"):
-                    pos.tags = updated_tags
-                else:
-                    setattr(pos, "tags", updated_tags)
-                if hasattr(pos, "bars_held"):
-                    pos.bars_held = bars_held + 1
-                else:
-                    setattr(pos, "bars_held", bars_held + 1)
-            except Exception:
-                pass
-            return sig
-
         # 1) Стандартні TP/SL по close (як було)
         if side == "LONG":
             if sl and close <= sl: return ExitSig("SL", exit_price=sl, reason="SL")
@@ -412,7 +262,7 @@ class BreakoutAVAAIFull:
             if tp and close <= tp: return ExitSig("TP", exit_price=tp, reason="TP")
 
         if entry is None or entry <= 0:
-            return _finalize(ExitSig("HOLD"), heat_for_update)
+            return ExitSig("HOLD")
 
         trigger_frac = max(0.0, float(self.partial_trigger_frac_of_tp))
         path = prog = None
@@ -453,7 +303,7 @@ class BreakoutAVAAIFull:
                     sl = be_price
 
         if qty is None or qty <= 0:
-            return _finalize(ExitSig("HOLD"), heat_for_update)
+            return ExitSig("HOLD")
 
         if self.partial_tp_enable and tp and path and path > 0 and trigger_reached:
             part_qty = qty * self.partial_tp_frac
@@ -461,10 +311,7 @@ class BreakoutAVAAIFull:
             if (self.min_qty and part_qty < self.min_qty) or (notional < self.exchange_min_notional):
                 pass
             else:
-                return _finalize(
-                    ExitSig("TP_PARTIAL", exit_price=close, reason="TP50", qty_frac=self.partial_tp_frac),
-                    heat_for_update,
-                )
+                return ExitSig("TP_PARTIAL", exit_price=close, reason="TP50", qty_frac=self.partial_tp_frac)
 
         # 3) Heat-exit / Reverse-momentum exit за умови, що PnL >= буферу
         rr = self._unrealized_rr(side, entry, close)
@@ -472,52 +319,14 @@ class BreakoutAVAAIFull:
 
         if rr >= need:
             h_now = self.heat(None, symbol, row)
-            heat_for_update = h_now
-            allow_heat = self.exit_on_heat and (h_now < self.heat_exit_threshold)
-
-            if self.exit_grace_bars > 0 and bars_held < self.exit_grace_bars:
-                allow_heat = False
-
-            adverse = (side == "LONG" and m_now < 0) or (side == "SHORT" and m_now > 0)
-            if allow_heat and self.heat_exit_require_adverse_momentum and not adverse:
-                allow_heat = False
-
-            if allow_heat and self.heat_exit_use_momentum_slope:
-                prev_for_slope: Optional[float] = None
-                window = max(1, int(self.heat_exit_slope_window))
-                if mom_hist_list and len(mom_hist_list) >= window:
-                    prev_for_slope = mom_hist_list[-window]
-                elif last_mom is not None:
-                    prev_for_slope = float(last_mom)
-                if prev_for_slope is not None:
-                    improving = (m_now - prev_for_slope) > 0 if side == "LONG" else (m_now - prev_for_slope) < 0
-                    if improving:
-                        allow_heat = False
-
-            local_reversal = False
-            if adverse and abs(m_now) >= self.local_reversal_m_abs:
-                heat_drop_ok = True
-                if last_heat is not None and self.heat_drop_k > 0:
-                    try:
-                        heat_drop_ok = h_now < float(last_heat) * float(self.heat_drop_k)
-                    except Exception:
-                        heat_drop_ok = True
-                if heat_drop_ok:
-                    local_reversal = True
-
-            if allow_heat and htf_supports_side and not (
-                self.ignore_htf_on_local_reversal and local_reversal
-            ):
-                allow_heat = False
-
-            if allow_heat:
+            if self.exit_on_heat and h_now < self.heat_exit_threshold:
                 return ExitSig("EXIT", exit_price=close, reason=f"heat<{self.heat_exit_threshold:.2f}")
 
-            if (self.exit_grace_bars <= 0) or (bars_held >= self.exit_grace_bars):
-                if adverse:
-                    return ExitSig("EXIT", exit_price=close, reason="mom_reverse")
+            m = self._mom_sum(row)
+            if (side == "LONG" and m < 0) or (side == "SHORT" and m > 0):
+                return ExitSig("EXIT", exit_price=close, reason="mom_reverse")
 
-        return _finalize(ExitSig("HOLD"), heat_for_update)
+        return ExitSig("HOLD")
 
     # ---------- optional: heat reporting only (no decisions here) ----------
     def entry_distance(self, t: Any, sym: str, row: Mapping[str, Any]) -> Dict[str, Any]:
