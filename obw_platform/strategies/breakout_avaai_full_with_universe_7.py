@@ -92,6 +92,13 @@ class BreakoutAVAAIFull:
         self.exchange_min_notional: float = float(_read("exchange_min_notional", 2.2))
         self.min_qty: float = float(_read("min_qty", 0.0))
 
+        # allocation knobs (shared-budget position sizing)
+        self.alloc_enabled = bool(_read("alloc_enabled", True))
+        self.alloc_scheme = str(_read("alloc_scheme", "risk_parity")).lower()
+        self.per_bar_notional = _f(_read("per_bar_notional", None), None)
+        self.alloc_min_clip = float(_read("alloc_min_clip", 0.0))
+        self.alloc_max_per_name = float(_read("alloc_max_per_name", 1.0))
+
         # liquidity floors (kept but set lenient defaults; can be overridden in YAML)
         self.min_qv_24h: float = float(_read("min_qv_24h", 0.0))
         self.min_qv_1h: float  = float(_read("min_qv_1h", 0.0))
@@ -197,6 +204,143 @@ class BreakoutAVAAIFull:
         return [sym for _, __, sym in scored[:take]]
 
     # ---------- entry / exit ----------
+    def plan_bar_entries(self, t, md_map, candidates, ctx=None):
+        """
+        Return list[(symbol, Sig)] with sizes computed from a shared notional budget.
+        Uses entry_signal() to compute TP/SL and sl_dist_pct per candidate, then assigns
+        notional by scheme and converts to qty.
+        """
+        if not self.alloc_enabled or not candidates:
+            return []
+
+        def _revert(count: int) -> None:
+            if not count:
+                return
+            try:
+                self._opens_this_bar = max(0, self._opens_this_bar - int(count))
+            except Exception:
+                pass
+
+        budget = _f(self.per_bar_notional, None)
+        if budget is None and isinstance(ctx, dict):
+            budget = _f(ctx.get("position_notional"), None)
+            if budget is None:
+                pf = ctx.get("portfolio") if isinstance(ctx, dict) else None
+                if pf is not None:
+                    for k in ("position_notional", "default_notional", "notional"):
+                        v = getattr(pf, k, None)
+                        if isinstance(v, (int, float)) and v > 0:
+                            budget = float(v)
+                            break
+        if budget is None or budget <= 0:
+            return []
+
+        rows = []
+        for sym in candidates:
+            row = md_map.get(sym) or {}
+            sig = self.entry_signal(t, sym, row, ctx)
+            if not sig:
+                continue
+            close = _f(row.get("close"), None)
+            if close is None or close <= 0:
+                continue
+            sl = _f(getattr(sig, "stop_price", getattr(sig, "sl", None)), None)
+            if sl is None:
+                continue
+            entry = close
+            sl_dist = abs((entry - sl) / entry) if entry else 0.0
+            atrr = _f(row.get("atr_ratio"), None)
+            edge = abs(self._mom_sum(row))
+            rows.append((sym, sig, float(close), float(sl_dist), _f(atrr, None), float(edge)))
+
+        if not rows:
+            return []
+
+        rows_count = len(rows)
+
+        vals = []
+        for sym, sig, close, sl_dist, atrr, edge in rows:
+            if self.alloc_scheme == "vol_parity":
+                key = 1.0 / max(atrr or 0.0, 1e-9)
+            elif self.alloc_scheme == "edge_risk":
+                key = (edge or 0.0) / max(sl_dist, 1e-9)
+            else:
+                key = 1.0 / max(sl_dist, 1e-9)
+            vals.append(max(0.0, float(key)))
+
+        total = sum(vals)
+        if total <= 0:
+            _revert(rows_count)
+            return []
+
+        weights = [v / total for v in vals]
+        weights = [0.0 if w < self.alloc_min_clip else w for w in weights]
+        s = sum(weights)
+        if s <= 0:
+            _revert(rows_count)
+            return []
+        weights = [w / s for w in weights]
+
+        if self.alloc_max_per_name < 1.0:
+            weights = [min(w, self.alloc_max_per_name) for w in weights]
+            s = sum(weights)
+            if s <= 0:
+                _revert(rows_count)
+                return []
+            weights = [w / s for w in weights]
+
+        n = len(rows)
+        active = [w > 0 for w in weights]
+        if not any(active):
+            _revert(rows_count)
+            return []
+
+        while True:
+            total_active = sum(weights[i] for i in range(n) if active[i])
+            if total_active <= 0:
+                _revert(rows_count)
+                return []
+            changed = False
+            for idx in range(n):
+                if not active[idx]:
+                    continue
+                w_eff = weights[idx] / total_active
+                sym, sig, close, sl_dist, atrr, edge = rows[idx]
+                notional_i = budget * w_eff
+                qty_i = notional_i / close if close > 0 else 0.0
+                if (self.min_qty and qty_i < self.min_qty) or (
+                    self.exchange_min_notional and notional_i < self.exchange_min_notional
+                ):
+                    active[idx] = False
+                    changed = True
+            if not any(active):
+                _revert(rows_count)
+                return []
+            if not changed:
+                break
+
+        total_active = sum(weights[i] for i in range(n) if active[i])
+        if total_active <= 0:
+            _revert(rows_count)
+            return []
+
+        out = []
+        for idx in range(n):
+            if not active[idx]:
+                continue
+            sym, sig, close, sl_dist, atrr, edge = rows[idx]
+            w_eff = weights[idx] / total_active
+            notional_i = budget * w_eff
+            qty_i = notional_i / close
+            sig.size = float(qty_i)
+            out.append((sym, sig))
+
+        dropped = rows_count - len(out)
+        if dropped > 0:
+            _revert(dropped)
+
+        return out
+
     def entry_signal(self, t: Any, symbol: str, row: Mapping[str, Any], ctx: Optional[Mapping[str, Any]] = None) -> Optional[Sig]:
         """Return full Sig with TP/SL and enforce per-bar entry caps."""
         # Track bar transition
