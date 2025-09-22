@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Optional, Literal, Mapping, Any, List, Dict, Tuple
 
 Side = Literal["LONG","SHORT"]
@@ -36,17 +35,6 @@ class Sig:
     def sl(self): return self.stop_price
     @property
     def sl_price(self): return self.stop_price
-
-    def get(self, key: str, default=None):
-        try:
-            return getattr(self, key)
-        except AttributeError:
-            return default
-
-    def __getitem__(self, key: str):
-        if hasattr(self, key):
-            return getattr(self, key)
-        raise KeyError(key)
 
 @dataclass
 class ExitSig:
@@ -111,17 +99,6 @@ class BreakoutAVAAIFull:
         self.alloc_min_clip = float(_read("alloc_min_clip", 0.0))
         self.alloc_max_per_name = float(_read("alloc_max_per_name", 1.0))
 
-        # HTF bias controls
-        self.htf_break_min = float(_read("htf_break_min", 0.0025))
-        self.htf_break_confirm_bars = int(_read("htf_break_confirm_bars", 2))
-        self.htf_hysteresis_mult = float(_read("htf_hysteresis_mult", 1.5))
-        self.htf_cooldown_bars = int(_read("htf_cooldown_bars", 6))
-        self.bias_mode = str(_read("bias_mode", "enforce")).strip().lower()
-        self.bias_tilt_penalty = float(_read("bias_tilt_penalty", 0.5))
-        self.allow_counter_if_strong = bool(_read("allow_counter_if_strong", True))
-        self.counter_m_min = float(_read("counter_m_min", 0.004))
-        self.counter_heat_improving = bool(_read("counter_heat_improving", True))
-
         # liquidity floors (kept but set lenient defaults; can be overridden in YAML)
         self.min_qv_24h: float = float(_read("min_qv_24h", 0.0))
         self.min_qv_1h: float  = float(_read("min_qv_1h", 0.0))
@@ -133,31 +110,8 @@ class BreakoutAVAAIFull:
         )
         # internal counters
         self._first_bar_ts: Optional[Any] = None
-        self._first_bar_dt: Optional[datetime] = None
         self._last_bar_ts: Optional[Any] = None
-        self._current_bar_ts: Optional[Any] = None
-        self._current_bar_dt: Optional[datetime] = None
-        self._bar_index: int = 0
-        self._bar_ts_map: Dict[Any, int] = {}
         self._opens_this_bar: int = 0
-        self._bar_minutes: float = self._parse_timeframe_minutes(
-            self.cfg.get("tf") or self.cfg.get("timeframe") or _read("tf", _read("timeframe", ""))
-        )
-        if not self._bar_minutes:
-            self._bar_minutes = float(_read("bar_minutes", 0.0) or 0.0)
-        if not self._bar_minutes:
-            self._bar_minutes = 1.0
-
-        # HTF bias state
-        self._htf_bias: str = "NEUTRAL"
-        self._htf_bias_ts: Optional[Any] = None
-        self._htf_bias_dt: Optional[datetime] = None
-        self._htf_confirm_left: int = 0
-        self._htf_pending_bias: Optional[str] = None
-        self._htf_m_prev: float = 0.0
-        self._htf_m_now: float = 0.0
-        self._htf_cooldown_left: int = 0
-        self._last_heat_map: Dict[str, float] = {}
     # ---------- helpers ----------
     def _mom_sum(self, row: Mapping[str, Any]) -> float:
         return _f(row.get("dp6h", 0.0)) + _f(row.get("dp12h", 0.0))
@@ -206,176 +160,6 @@ class BreakoutAVAAIFull:
             return 0.0
         return max(0.0, min(1.0, (t - a) / t))
 
-    def _parse_timeframe_minutes(self, tf: Any) -> float:
-        if tf is None:
-            return 0.0
-        if isinstance(tf, (int, float)):
-            try:
-                return float(tf)
-            except Exception:
-                return 0.0
-        txt = str(tf).strip().lower()
-        if not txt:
-            return 0.0
-        units = (
-            ("min", 1.0),
-            ("m", 1.0),
-            ("h", 60.0),
-            ("d", 1440.0),
-        )
-        for suf, mult in units:
-            if txt.endswith(suf):
-                num = txt[:-len(suf)]
-                try:
-                    return float(num) * mult
-                except Exception:
-                    return 0.0
-        try:
-            return float(txt)
-        except Exception:
-            return 0.0
-
-    def _normalize_ts(self, ts: Any) -> Optional[datetime]:
-        if ts is None:
-            return None
-        if isinstance(ts, datetime):
-            return ts
-        if hasattr(ts, "to_pydatetime"):
-            try:
-                return ts.to_pydatetime()
-            except Exception:
-                pass
-        try:
-            import pandas as _pd  # type: ignore
-
-            return _pd.Timestamp(ts).to_pydatetime()
-        except Exception:
-            pass
-        try:
-            return datetime.fromtimestamp(float(ts))
-        except Exception:
-            return None
-
-    @staticmethod
-    def _diff_minutes(a: Optional[datetime], b: Optional[datetime]) -> Optional[float]:
-        if a is None or b is None:
-            return None
-        delta = a - b
-        try:
-            return float(delta.total_seconds()) / 60.0
-        except Exception:
-            return None
-
-    def _advance_bar(self, t: Any) -> bool:
-        dt = self._normalize_ts(t)
-        if dt is None:
-            return False
-        if self._current_bar_dt is None or dt != self._current_bar_dt:
-            self._current_bar_dt = dt
-            self._current_bar_ts = t
-            self._last_bar_ts = t
-            self._bar_index += 1
-            self._opens_this_bar = 0
-            self._bar_ts_map[dt] = self._bar_index
-            return True
-        self._bar_ts_map.setdefault(dt, self._bar_index)
-        return False
-
-    def _bars_since(self, ref_ts: Any, now_ts: Any = None) -> int:
-        if ref_ts is None:
-            return int(1e9)
-        ref_dt = self._normalize_ts(ref_ts if now_ts is not ref_ts else ref_ts)
-        now_dt = self._normalize_ts(now_ts) if now_ts is not None else self._current_bar_dt
-        if ref_dt is None or now_dt is None:
-            return 0
-        now_idx = self._bar_ts_map.get(now_dt)
-        ref_idx = self._bar_ts_map.get(ref_dt)
-        if now_idx is not None and ref_idx is not None:
-            return max(0, now_idx - ref_idx)
-        mins = self._diff_minutes(now_dt, ref_dt)
-        if mins is None or self._bar_minutes <= 0:
-            return 0
-        return max(0, int(mins / self._bar_minutes + 1e-9))
-
-    def _apply_htf_bias(self, new_bias: Optional[str], t: Any) -> None:
-        if new_bias not in ("LONG", "SHORT"):
-            return
-        self._htf_bias = str(new_bias)
-        self._htf_bias_ts = t
-        dt = self._normalize_ts(t)
-        self._htf_bias_dt = dt
-        if dt is not None:
-            self._bar_ts_map[dt] = self._bar_index
-        self._htf_confirm_left = 0
-        self._htf_pending_bias = None
-
-    def _update_htf_bias(self, t: Any, row: Optional[Mapping[str, Any]]) -> None:
-        self._advance_bar(t)
-        r = row or {}
-        m = (_f(r.get("dp6h", 0.0)) or 0.0) + (_f(r.get("dp12h", 0.0)) or 0.0)
-        self._htf_m_now = float(m)
-        prev = float(getattr(self, "_htf_m_prev", 0.0))
-        bias = self._htf_bias
-
-        crossed = (m * prev) < 0 and abs(m) >= self.htf_break_min
-        if bias == "NEUTRAL" and abs(m) >= self.htf_break_min:
-            crossed = True
-        if crossed:
-            self._htf_pending_bias = "LONG" if m > 0 else "SHORT"
-            self._htf_confirm_left = max(0, int(self.htf_break_confirm_bars))
-            if self._htf_confirm_left == 0:
-                self._apply_htf_bias(self._htf_pending_bias, t)
-
-        if self._htf_confirm_left > 0 and self._htf_pending_bias:
-            if (m > 0 and self._htf_pending_bias == "LONG") or (m < 0 and self._htf_pending_bias == "SHORT"):
-                self._htf_confirm_left -= 1
-                if self._htf_confirm_left <= 0:
-                    self._apply_htf_bias(self._htf_pending_bias, t)
-            else:
-                self._htf_confirm_left = 0
-                self._htf_pending_bias = None
-
-        bias = self._htf_bias
-        if bias == "LONG" and m < 0 and abs(m) >= self.htf_hysteresis_mult * self.htf_break_min:
-            self._htf_pending_bias = "SHORT"
-            self._htf_confirm_left = max(0, int(self.htf_break_confirm_bars))
-            if self._htf_confirm_left == 0:
-                self._apply_htf_bias("SHORT", t)
-        elif bias == "SHORT" and m > 0 and abs(m) >= self.htf_hysteresis_mult * self.htf_break_min:
-            self._htf_pending_bias = "LONG"
-            self._htf_confirm_left = max(0, int(self.htf_break_confirm_bars))
-            if self._htf_confirm_left == 0:
-                self._apply_htf_bias("LONG", t)
-
-        self._htf_m_prev = float(m)
-
-    def _is_in_cooldown(self, now_ts: Any = None) -> bool:
-        if self._htf_bias_ts is None:
-            return False
-        return self._bars_since(self._htf_bias_ts, now_ts) < int(self.htf_cooldown_bars)
-
-    def _allow_counter(self, row: Mapping[str, Any], side: Side, symbol: Optional[str] = None, t: Any = None) -> bool:
-        if not self.allow_counter_if_strong:
-            return False
-        row = row or {}
-        m = self._mom_sum(row)
-        if abs(m) < self.counter_m_min:
-            return False
-        if not self.counter_heat_improving:
-            return True
-        h = self.heat(t, symbol, row)
-        key = symbol or "__global__"
-        try:
-            prev = float(self._last_heat_map.get(key, 1.0))
-        except Exception:
-            prev = 1.0
-        try:
-            h_val = float(h)
-        except Exception:
-            h_val = 0.0
-        self._last_heat_map[key] = h_val
-        return h_val >= prev
-
     # ---------- universe & ranking ----------
     def universe(self, t: Any, md_map: Mapping[str, Mapping[str, Any]]) -> List[str]:
         """Filter symbols by minimal ATR and liquidity. Momentum threshold is optional and
@@ -402,58 +186,17 @@ class BreakoutAVAAIFull:
 
     def rank(self, t: Any, md_map: Mapping[str, Mapping[str, Any]], universe_syms: List[str]) -> List[str]:
         """Sort by directional momentum score; return already cut to top_n (keeps stability)."""
-        agg_rows: List[Mapping[str, Any]] = []
-        for sym in universe_syms:
-            row = md_map.get(sym)
-            if row:
-                agg_rows.append(row)
-        if not agg_rows and md_map:
-            agg_rows = list(md_map.values())
-        if agg_rows:
-            dp6h = sum((_f(r.get("dp6h", 0.0)) or 0.0) for r in agg_rows) / max(len(agg_rows), 1)
-            dp12h = sum((_f(r.get("dp12h", 0.0)) or 0.0) for r in agg_rows) / max(len(agg_rows), 1)
-            agg_row = {"dp6h": dp6h, "dp12h": dp12h}
-        else:
-            agg_row = {"dp6h": 0.0, "dp12h": 0.0}
-
-        self._update_htf_bias(t, agg_row)
-
-        bias = self._htf_bias
-        cooldown = 0
-        if self._htf_bias_ts is not None:
-            cooldown = max(0, int(self.htf_cooldown_bars) - self._bars_since(self._htf_bias_ts, t))
-        self._htf_cooldown_left = int(max(0, cooldown))
-
-        scored: List[Tuple[float, int, str]] = []
         invert = (self.side == "SHORT")
-        apply_bias = (self.side == "BOTH")
-
+        scored: List[Tuple[float,int,str]] = []
         for idx, sym in enumerate(universe_syms):
-            row = md_map.get(sym, {}) or {}
-            m = self._mom_sum(row)
-
-            if apply_bias and bias in ("LONG", "SHORT"):
-                is_long = m >= 0
-                opposite = (bias == "SHORT" and is_long) or (bias == "LONG" and not is_long)
-                if self.bias_mode == "enforce" and opposite:
-                    allow = True
-                    if cooldown > 0:
-                        allow = False
-                    elif not self.allow_counter_if_strong or abs(m) < self.counter_m_min:
-                        allow = False
-                    if not allow:
-                        continue
+            m = self._mom_sum(md_map.get(sym, {}))
+            if self.side == "BOTH":
                 score = abs(m)
-                if self.bias_mode == "tilt" and opposite:
-                    score -= self.bias_tilt_penalty * abs(m)
             else:
-                if self.side == "BOTH":
-                    score = abs(m)
-                else:
-                    score = (-m) if invert else m
+                score = (-m) if invert else (m)
             scored.append((score, idx, sym))
-
         scored.sort(key=lambda x: x[0], reverse=True)  # stable via index
+        # CUT to top_n here (moved from backtester); top_n<=0 disables the limit
         take = int(self.top_n)
         if take <= 0:
             return [sym for _, __, sym in scored]
@@ -600,16 +343,15 @@ class BreakoutAVAAIFull:
     def entry_signal(self, t: Any, symbol: str, row: Mapping[str, Any], ctx: Optional[Mapping[str, Any]] = None) -> Optional[Sig]:
         """Return full Sig with TP/SL and enforce per-bar entry caps."""
         # Track bar transition
-        self._advance_bar(t)
         if self._first_bar_ts is None:
             self._first_bar_ts = t
-            self._first_bar_dt = self._normalize_ts(t)
+        if t != self._last_bar_ts:
+            self._last_bar_ts = t
+            self._opens_this_bar = 0
         # Determine limit for this bar
         limit = self.max_new_positions_per_bar
-        if self.first_bar_max_positions > 0:
-            dt = self._normalize_ts(t)
-            if dt is not None and self._first_bar_dt is not None and dt == self._first_bar_dt:
-                limit = self.first_bar_max_positions
+        if t == self._first_bar_ts and self.first_bar_max_positions > 0:
+            limit = self.first_bar_max_positions
         if limit > 0 and self._opens_this_bar >= limit:
             return None
 
@@ -620,19 +362,6 @@ class BreakoutAVAAIFull:
             side = "SHORT"
         else:  # BOTH follows momentum sign
             side = "LONG" if m >= 0.0 else "SHORT"
-
-        cooldown_left = 0
-        if self._htf_bias_ts is not None:
-            cooldown_left = max(0, int(self.htf_cooldown_bars) - self._bars_since(self._htf_bias_ts, t))
-        self._htf_cooldown_left = int(max(0, cooldown_left))
-
-        if self.side == "BOTH":
-            if self._htf_bias == "SHORT" and side == "LONG":
-                if self._is_in_cooldown(t) or not self._allow_counter(row, side, symbol=symbol, t=t):
-                    return None
-            if self._htf_bias == "LONG" and side == "SHORT":
-                if self._is_in_cooldown(t) or not self._allow_counter(row, side, symbol=symbol, t=t):
-                    return None
 
         close = _f(row.get("close", None), None)
         atrr  = _f(row.get("atr_ratio", None), None)
@@ -649,18 +378,8 @@ class BreakoutAVAAIFull:
 
         self._opens_this_bar += 1
         entry_heat = self.heat(t, symbol, row)
-        self._last_heat_map[symbol] = float(entry_heat)
-
-        sig = Sig(side=side, take_profit=float(tp), stop_price=float(sl),
+        return Sig(side=side, take_profit=float(tp), stop_price=float(sl),
                    reason="rule/atr-multipliers", heat=float(entry_heat))
-        tags = dict(sig.tags or {})
-        tags.update({
-            "htf_bias": self._htf_bias,
-            "htf_cooldown_left": int(self._htf_cooldown_left),
-            "htf_m_now": float(self._htf_m_now),
-        })
-        sig.tags = tags
-        return sig
 
     def manage_position(self, symbol, row, pos, ctx=None):
         close = _f(row.get("close", 0.0))

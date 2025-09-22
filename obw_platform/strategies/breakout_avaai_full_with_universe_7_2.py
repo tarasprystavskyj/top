@@ -1,0 +1,854 @@
+
+# strategies/breakout_avaai_full_with_universe_4.py
+# Refactored strategy: ALL entry/exit & TP/SL decisions live here.
+# Backtester must only:
+#   - apply allow/deny universe for OPENING,
+#   - call universe()/rank() to get candidates,
+#   - call entry_signal() to open (TP/SL must be provided here),
+#   - call manage_position() to close,
+#   - optionally print "heat" (purely reporting; not used for decisions).
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional, Literal, Mapping, Any, List, Dict, Tuple
+
+Side = Literal["LONG","SHORT"]
+ExitAction = Literal["HOLD","TP","SL","EXIT","TP_PARTIAL"]
+
+@dataclass
+class Sig:
+    side: Side
+    take_profit: float
+    stop_price: float
+    confidence: float = 0.0
+    size: Optional[float] = None
+    reason: Optional[str] = None
+    tags: Optional[Dict[str, Any]] = None
+    heat: Optional[float] = None
+
+    # --- aliases for compatibility ---
+    @property
+    def tp(self): return self.take_profit
+    @property
+    def tp_price(self): return self.take_profit
+    @property
+    def sl(self): return self.stop_price
+    @property
+    def sl_price(self): return self.stop_price
+
+    def get(self, key: str, default=None):
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            return default
+
+    def __getitem__(self, key: str):
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(key)
+
+@dataclass
+class ExitSig:
+    action: ExitAction
+    exit_price: Optional[float] = None
+    reason: Optional[str] = None
+    qty_frac: Optional[float] = None
+
+def _f(x, default=0.0) -> float | None:
+    try:
+        return float(x)
+    except Exception:
+        return None if default is None else float(default)
+
+class BreakoutAVAAIFull:
+    """
+    A deterministic, self-contained strategy that encodes BOTH the candidate selection
+    and the trading rules. This mirrors the profitable behaviour discovered in your runs:
+      - Universe/Rank: score = dp6h + dp12h (SHORT inverts sign).  No momentum threshold by default.
+      - Entry: side from params; BOTH follows sign(mom_sum).
+      - TP/SL: ALWAYS from ATR multiples at entry.
+      - Exit: CLOSE-based TP/SL checks (match old backtester).
+    Non-zero defaults that used to live in the backtester (e.g., top-n=8) are moved here.
+    Top-level YAML keys override strategy_params to preserve your prior “lucky” overrides.
+    """
+    def __init__(self, cfg: Mapping[str, Any]) -> None:
+        self.cfg = dict(cfg or {})
+        sp = (self.cfg.get("strategy_params") or {})
+
+        # --- read knobs (top-level overrides SP to preserve historical behaviour) ---
+        def _read(key, default):
+            return self.cfg.get(key, sp.get(key, default))
+
+        self.side: str = str(_read("side", "BOTH")).upper()
+        self.top_n: int = int(_read("top_n", _read("top-n", 8)))  # accept both spellings
+        self.min_atr_ratio: float = float(_read("min_atr_ratio", 0.02))
+        # Important: default to 0.0 to reproduce the wide-entry behaviour unless overridden
+        self.min_momentum_sum: float = float(_read("min_momentum_sum", 0.0))
+        self.tp_mult: float = float(_read("tp_atr_mult", 3.8))
+        self.sl_mult: float = float(_read("sl_atr_mult", 1.04))
+
+        # trading costs / buffers
+        self.fee_rate: float = float(_read("fee_rate", 0.001))
+        self.slip_per_side: float = float(_read("slippage_per_side", 0.0016))
+
+        # HEAT-based exit
+        self.exit_on_heat: bool = bool(_read("exit_on_heat", True))
+        self.heat_exit_threshold: float = float(_read("heat_exit_threshold", 0.40))
+        self.heat_exit_min_rr: float = float(_read("heat_exit_min_rr", 1.05))
+
+        # Partial take-profit
+        self.partial_tp_enable: bool = bool(_read("partial_tp_enable", True))
+        self.partial_tp_frac: float = float(_read("partial_tp_frac", 0.50))
+        self.partial_trigger_frac_of_tp: float = float(_read("partial_trigger_frac_of_tp", 0.50))
+        self.exchange_min_notional: float = float(_read("exchange_min_notional", 2.2))
+        self.min_qty: float = float(_read("min_qty", 0.0))
+
+        # allocation knobs (shared-budget position sizing)
+        self.alloc_enabled = bool(_read("alloc_enabled", True))
+        self.alloc_scheme = str(_read("alloc_scheme", "risk_parity")).lower()
+        self.per_bar_notional = _f(_read("per_bar_notional", None), None)
+        self.alloc_min_clip = float(_read("alloc_min_clip", 0.0))
+        self.alloc_max_per_name = float(_read("alloc_max_per_name", 1.0))
+
+        # HTF bias controls
+        self.htf_break_min = float(_read("htf_break_min", 0.0025))
+        self.htf_break_confirm_bars = int(_read("htf_break_confirm_bars", 2))
+        self.htf_hysteresis_mult = float(_read("htf_hysteresis_mult", 1.5))
+        self.htf_cooldown_bars = int(_read("htf_cooldown_bars", 6))
+        self.bias_mode = str(_read("bias_mode", "enforce")).strip().lower()
+        self.bias_tilt_penalty = float(_read("bias_tilt_penalty", 0.5))
+        self.allow_counter_if_strong = bool(_read("allow_counter_if_strong", True))
+        self.counter_m_min = float(_read("counter_m_min", 0.004))
+        self.counter_heat_improving = bool(_read("counter_heat_improving", True))
+
+        # liquidity floors (kept but set lenient defaults; can be overridden in YAML)
+        self.min_qv_24h: float = float(_read("min_qv_24h", 0.0))
+        self.min_qv_1h: float  = float(_read("min_qv_1h", 0.0))
+
+        # optional limits to control entry bursts
+        self.max_new_positions_per_bar: int = int(_read("max_new_positions_per_bar", 0))
+        self.first_bar_max_positions: int = int(
+            _read("first_bar_max_positions", self.max_new_positions_per_bar)
+        )
+        # internal counters
+        self._first_bar_ts: Optional[Any] = None
+        self._first_bar_dt: Optional[datetime] = None
+        self._last_bar_ts: Optional[Any] = None
+        self._current_bar_ts: Optional[Any] = None
+        self._current_bar_dt: Optional[datetime] = None
+        self._bar_index: int = 0
+        self._bar_ts_map: Dict[Any, int] = {}
+        self._opens_this_bar: int = 0
+        self._bar_minutes: float = self._parse_timeframe_minutes(
+            self.cfg.get("tf") or self.cfg.get("timeframe") or _read("tf", _read("timeframe", ""))
+        )
+        if not self._bar_minutes:
+            self._bar_minutes = float(_read("bar_minutes", 0.0) or 0.0)
+        if not self._bar_minutes:
+            self._bar_minutes = 1.0
+
+        # HTF bias state
+        self._htf_bias: str = "NEUTRAL"
+        self._htf_bias_ts: Optional[Any] = None
+        self._htf_bias_dt: Optional[datetime] = None
+        self._htf_confirm_left: int = 0
+        self._htf_pending_bias: Optional[str] = None
+        self._htf_m_prev: float = 0.0
+        self._htf_m_now: float = 0.0
+        self._htf_cooldown_left: int = 0
+        self._last_heat_map: Dict[str, float] = {}
+    # ---------- helpers ----------
+    def _mom_sum(self, row: Mapping[str, Any]) -> float:
+        return _f(row.get("dp6h", 0.0)) + _f(row.get("dp12h", 0.0))
+
+    def _liq_ok(self, row: Mapping[str, Any]) -> bool:
+        qv24 = _f(row.get("qv_24h", 0.0))
+        qv1  = _f(row.get("quote_volume", 0.0))
+        if qv1 <= 0.0:
+            # allow derived 1h volume if provided
+            qv1 = _f(row.get("volume", 0.0)) * _f(row.get("close", 0.0))
+        return (qv24 >= self.min_qv_24h) and (qv1 >= self.min_qv_1h)
+
+    def _round_trip_buffer_rr(self) -> float:
+        """Approximate round-trip cost in R units (relative to entry price)."""
+        return 2 * self.fee_rate + 2 * self.slip_per_side
+
+    def _unrealized_rr(self, side: str, entry: float, px: float) -> float:
+        if entry <= 0:
+            return 0.0
+        pnl = (px - entry) / entry if side == "LONG" else (entry - px) / entry
+        return float(pnl)
+
+    @staticmethod
+    def _pct_gap(actual: float, thresh: float) -> float:
+        """Percentage gap for checks of the form ``actual >= thresh``."""
+        try:
+            a = float(actual); t = float(thresh)
+        except Exception:
+            return 1.0
+        if t <= 0:
+            return 0.0
+        if a >= t:
+            return 0.0
+        return max(0.0, min(1.0, (t - a) / t))
+
+    @staticmethod
+    def _pct_gap_rev(actual: float, thresh: float) -> float:
+        """Reverse variant used for directional momentum thresholds."""
+        try:
+            a = float(actual); t = float(thresh)
+        except Exception:
+            return 1.0
+        if t <= 0:
+            return 0.0
+        if a >= t:
+            return 0.0
+        return max(0.0, min(1.0, (t - a) / t))
+
+    def _parse_timeframe_minutes(self, tf: Any) -> float:
+        if tf is None:
+            return 0.0
+        if isinstance(tf, (int, float)):
+            try:
+                return float(tf)
+            except Exception:
+                return 0.0
+        txt = str(tf).strip().lower()
+        if not txt:
+            return 0.0
+        units = (
+            ("min", 1.0),
+            ("m", 1.0),
+            ("h", 60.0),
+            ("d", 1440.0),
+        )
+        for suf, mult in units:
+            if txt.endswith(suf):
+                num = txt[:-len(suf)]
+                try:
+                    return float(num) * mult
+                except Exception:
+                    return 0.0
+        try:
+            return float(txt)
+        except Exception:
+            return 0.0
+
+    def _normalize_ts(self, ts: Any) -> Optional[datetime]:
+        if ts is None:
+            return None
+        if isinstance(ts, datetime):
+            return ts
+        if hasattr(ts, "to_pydatetime"):
+            try:
+                return ts.to_pydatetime()
+            except Exception:
+                pass
+        try:
+            import pandas as _pd  # type: ignore
+
+            return _pd.Timestamp(ts).to_pydatetime()
+        except Exception:
+            pass
+        try:
+            return datetime.fromtimestamp(float(ts))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _diff_minutes(a: Optional[datetime], b: Optional[datetime]) -> Optional[float]:
+        if a is None or b is None:
+            return None
+        delta = a - b
+        try:
+            return float(delta.total_seconds()) / 60.0
+        except Exception:
+            return None
+
+    def _advance_bar(self, t: Any) -> bool:
+        dt = self._normalize_ts(t)
+        if dt is None:
+            return False
+        if self._current_bar_dt is None or dt != self._current_bar_dt:
+            self._current_bar_dt = dt
+            self._current_bar_ts = t
+            self._last_bar_ts = t
+            self._bar_index += 1
+            self._opens_this_bar = 0
+            self._bar_ts_map[dt] = self._bar_index
+            return True
+        self._bar_ts_map.setdefault(dt, self._bar_index)
+        return False
+
+    def _bars_since(self, ref_ts: Any, now_ts: Any = None) -> int:
+        if ref_ts is None:
+            return int(1e9)
+        ref_dt = self._normalize_ts(ref_ts if now_ts is not ref_ts else ref_ts)
+        now_dt = self._normalize_ts(now_ts) if now_ts is not None else self._current_bar_dt
+        if ref_dt is None or now_dt is None:
+            return 0
+        now_idx = self._bar_ts_map.get(now_dt)
+        ref_idx = self._bar_ts_map.get(ref_dt)
+        if now_idx is not None and ref_idx is not None:
+            return max(0, now_idx - ref_idx)
+        mins = self._diff_minutes(now_dt, ref_dt)
+        if mins is None or self._bar_minutes <= 0:
+            return 0
+        return max(0, int(mins / self._bar_minutes + 1e-9))
+
+    def _apply_htf_bias(self, new_bias: Optional[str], t: Any) -> None:
+        if new_bias not in ("LONG", "SHORT"):
+            return
+        self._htf_bias = str(new_bias)
+        self._htf_bias_ts = t
+        dt = self._normalize_ts(t)
+        self._htf_bias_dt = dt
+        if dt is not None:
+            self._bar_ts_map[dt] = self._bar_index
+        self._htf_confirm_left = 0
+        self._htf_pending_bias = None
+
+    def _update_htf_bias(self, t: Any, row: Optional[Mapping[str, Any]]) -> None:
+        self._advance_bar(t)
+        r = row or {}
+        m = (_f(r.get("dp6h", 0.0)) or 0.0) + (_f(r.get("dp12h", 0.0)) or 0.0)
+        self._htf_m_now = float(m)
+        prev = float(getattr(self, "_htf_m_prev", 0.0))
+        bias = self._htf_bias
+
+        crossed = (m * prev) < 0 and abs(m) >= self.htf_break_min
+        if bias == "NEUTRAL" and abs(m) >= self.htf_break_min:
+            crossed = True
+        if crossed:
+            self._htf_pending_bias = "LONG" if m > 0 else "SHORT"
+            self._htf_confirm_left = max(0, int(self.htf_break_confirm_bars))
+            if self._htf_confirm_left == 0:
+                self._apply_htf_bias(self._htf_pending_bias, t)
+
+        if self._htf_confirm_left > 0 and self._htf_pending_bias:
+            if (m > 0 and self._htf_pending_bias == "LONG") or (m < 0 and self._htf_pending_bias == "SHORT"):
+                self._htf_confirm_left -= 1
+                if self._htf_confirm_left <= 0:
+                    self._apply_htf_bias(self._htf_pending_bias, t)
+            else:
+                self._htf_confirm_left = 0
+                self._htf_pending_bias = None
+
+        bias = self._htf_bias
+        if bias == "LONG" and m < 0 and abs(m) >= self.htf_hysteresis_mult * self.htf_break_min:
+            self._htf_pending_bias = "SHORT"
+            self._htf_confirm_left = max(0, int(self.htf_break_confirm_bars))
+            if self._htf_confirm_left == 0:
+                self._apply_htf_bias("SHORT", t)
+        elif bias == "SHORT" and m > 0 and abs(m) >= self.htf_hysteresis_mult * self.htf_break_min:
+            self._htf_pending_bias = "LONG"
+            self._htf_confirm_left = max(0, int(self.htf_break_confirm_bars))
+            if self._htf_confirm_left == 0:
+                self._apply_htf_bias("LONG", t)
+
+        self._htf_m_prev = float(m)
+
+    def _is_in_cooldown(self, now_ts: Any = None) -> bool:
+        if self._htf_bias_ts is None:
+            return False
+        return self._bars_since(self._htf_bias_ts, now_ts) < int(self.htf_cooldown_bars)
+
+    def _allow_counter(self, row: Mapping[str, Any], side: Side, symbol: Optional[str] = None, t: Any = None) -> bool:
+        if not self.allow_counter_if_strong:
+            return False
+        row = row or {}
+        m = self._mom_sum(row)
+        if abs(m) < self.counter_m_min:
+            return False
+        if not self.counter_heat_improving:
+            return True
+        h = self.heat(t, symbol, row)
+        key = symbol or "__global__"
+        try:
+            prev = float(self._last_heat_map.get(key, 1.0))
+        except Exception:
+            prev = 1.0
+        try:
+            h_val = float(h)
+        except Exception:
+            h_val = 0.0
+        self._last_heat_map[key] = h_val
+        return h_val >= prev
+
+    # ---------- universe & ranking ----------
+    def universe(self, t: Any, md_map: Mapping[str, Mapping[str, Any]]) -> List[str]:
+        """Filter symbols by minimal ATR and liquidity. Momentum threshold is optional and
+        defaults to 0.0 (disabled) to match the profitable setting discovered earlier."""
+        out: List[str] = []
+        for sym, row in md_map.items():
+            atr = _f(row.get("atr_ratio", 0.0))
+            if self.min_atr_ratio > 0 and atr < self.min_atr_ratio:
+                continue
+            if not self._liq_ok(row):
+                continue
+            # Optional momentum threshold (mm<=0 disables)
+            m = self._mom_sum(row)
+            mm = self.min_momentum_sum
+            if mm > 0:
+                if self.side == "LONG" and m < +mm:
+                    continue
+                if self.side == "SHORT" and m > -mm:
+                    continue
+                if self.side == "BOTH" and abs(m) < mm:
+                    continue
+            out.append(sym)
+        return out
+
+    def rank(self, t: Any, md_map: Mapping[str, Mapping[str, Any]], universe_syms: List[str]) -> List[str]:
+        """Sort by directional momentum score; return already cut to top_n (keeps stability)."""
+        agg_rows: List[Mapping[str, Any]] = []
+        for sym in universe_syms:
+            row = md_map.get(sym)
+            if row:
+                agg_rows.append(row)
+        if not agg_rows and md_map:
+            agg_rows = list(md_map.values())
+        if agg_rows:
+            dp6h = sum((_f(r.get("dp6h", 0.0)) or 0.0) for r in agg_rows) / max(len(agg_rows), 1)
+            dp12h = sum((_f(r.get("dp12h", 0.0)) or 0.0) for r in agg_rows) / max(len(agg_rows), 1)
+            agg_row = {"dp6h": dp6h, "dp12h": dp12h}
+        else:
+            agg_row = {"dp6h": 0.0, "dp12h": 0.0}
+
+        self._update_htf_bias(t, agg_row)
+
+        bias = self._htf_bias
+        cooldown = 0
+        if self._htf_bias_ts is not None:
+            cooldown = max(0, int(self.htf_cooldown_bars) - self._bars_since(self._htf_bias_ts, t))
+        self._htf_cooldown_left = int(max(0, cooldown))
+
+        scored: List[Tuple[float, int, str]] = []
+        invert = (self.side == "SHORT")
+        apply_bias = (self.side == "BOTH")
+
+        for idx, sym in enumerate(universe_syms):
+            row = md_map.get(sym, {}) or {}
+            m = self._mom_sum(row)
+
+            if apply_bias and bias in ("LONG", "SHORT"):
+                is_long = m >= 0
+                opposite = (bias == "SHORT" and is_long) or (bias == "LONG" and not is_long)
+                if self.bias_mode == "enforce" and opposite:
+                    allow = True
+                    if cooldown > 0:
+                        allow = False
+                    elif not self.allow_counter_if_strong or abs(m) < self.counter_m_min:
+                        allow = False
+                    if not allow:
+                        continue
+                score = abs(m)
+                if self.bias_mode == "tilt" and opposite:
+                    score -= self.bias_tilt_penalty * abs(m)
+            else:
+                if self.side == "BOTH":
+                    score = abs(m)
+                else:
+                    score = (-m) if invert else m
+            scored.append((score, idx, sym))
+
+        scored.sort(key=lambda x: x[0], reverse=True)  # stable via index
+        take = int(self.top_n)
+        if take <= 0:
+            return [sym for _, __, sym in scored]
+        return [sym for _, __, sym in scored[:take]]
+
+    # ---------- entry / exit ----------
+    def plan_bar_entries(self, t, md_map, candidates, ctx=None):
+        """
+        Return list[(symbol, Sig)] with sizes computed from a shared notional budget.
+        Uses entry_signal() to compute TP/SL and sl_dist_pct per candidate, then assigns
+        notional by scheme and converts to qty.
+        """
+        if not self.alloc_enabled or not candidates:
+            return []
+
+        def _revert(count: int) -> None:
+            if not count:
+                return
+            try:
+                self._opens_this_bar = max(0, self._opens_this_bar - int(count))
+            except Exception:
+                pass
+
+        budget = _f(self.per_bar_notional, None)
+        if budget is None and isinstance(ctx, dict):
+            budget = _f(ctx.get("position_notional"), None)
+            if budget is None:
+                pf = ctx.get("portfolio") if isinstance(ctx, dict) else None
+                if pf is not None:
+                    for k in ("position_notional", "default_notional", "notional"):
+                        v = getattr(pf, k, None)
+                        if isinstance(v, (int, float)) and v > 0:
+                            budget = float(v)
+                            break
+        if budget is None or budget <= 0:
+            return []
+
+        rows = []
+        for sym in candidates:
+            row = md_map.get(sym) or {}
+            sig = self.entry_signal(t, sym, row, ctx)
+            if not sig:
+                continue
+            close = _f(row.get("close"), None)
+            if close is None or close <= 0:
+                continue
+            sl = _f(getattr(sig, "stop_price", getattr(sig, "sl", None)), None)
+            if sl is None:
+                continue
+            entry = close
+            sl_dist = abs((entry - sl) / entry) if entry else 0.0
+            atrr = _f(row.get("atr_ratio"), None)
+            edge = abs(self._mom_sum(row))
+            rows.append((sym, sig, float(close), float(sl_dist), _f(atrr, None), float(edge)))
+
+        if not rows:
+            return []
+
+        rows_count = len(rows)
+
+        vals = []
+        for sym, sig, close, sl_dist, atrr, edge in rows:
+            if self.alloc_scheme == "vol_parity":
+                key = 1.0 / max(atrr or 0.0, 1e-9)
+            elif self.alloc_scheme == "edge_risk":
+                key = (edge or 0.0) / max(sl_dist, 1e-9)
+            else:
+                key = 1.0 / max(sl_dist, 1e-9)
+            vals.append(max(0.0, float(key)))
+
+        total = sum(vals)
+        if total <= 0:
+            _revert(rows_count)
+            return []
+
+        weights = [v / total for v in vals]
+        weights = [0.0 if w < self.alloc_min_clip else w for w in weights]
+        s = sum(weights)
+        if s <= 0:
+            _revert(rows_count)
+            return []
+        weights = [w / s for w in weights]
+
+        if self.alloc_max_per_name < 1.0:
+            weights = [min(w, self.alloc_max_per_name) for w in weights]
+            s = sum(weights)
+            if s <= 0:
+                _revert(rows_count)
+                return []
+            weights = [w / s for w in weights]
+
+        n = len(rows)
+        active = [w > 0 for w in weights]
+        if not any(active):
+            _revert(rows_count)
+            return []
+
+        while True:
+            total_active = sum(weights[i] for i in range(n) if active[i])
+            if total_active <= 0:
+                _revert(rows_count)
+                return []
+            changed = False
+            for idx in range(n):
+                if not active[idx]:
+                    continue
+                w_eff = weights[idx] / total_active
+                sym, sig, close, sl_dist, atrr, edge = rows[idx]
+                notional_i = budget * w_eff
+                qty_i = notional_i / close if close > 0 else 0.0
+                if (self.min_qty and qty_i < self.min_qty) or (
+                    self.exchange_min_notional and notional_i < self.exchange_min_notional
+                ):
+                    active[idx] = False
+                    changed = True
+            if not any(active):
+                _revert(rows_count)
+                return []
+            if not changed:
+                break
+
+        total_active = sum(weights[i] for i in range(n) if active[i])
+        if total_active <= 0:
+            _revert(rows_count)
+            return []
+
+        out = []
+        for idx in range(n):
+            if not active[idx]:
+                continue
+            sym, sig, close, sl_dist, atrr, edge = rows[idx]
+            w_eff = weights[idx] / total_active
+            notional_i = budget * w_eff
+            qty_i = notional_i / close
+            sig.size = float(qty_i)
+            out.append((sym, sig))
+
+        dropped = rows_count - len(out)
+        if dropped > 0:
+            _revert(dropped)
+
+        return out
+
+    def entry_signal(self, t: Any, symbol: str, row: Mapping[str, Any], ctx: Optional[Mapping[str, Any]] = None) -> Optional[Sig]:
+        """Return full Sig with TP/SL and enforce per-bar entry caps."""
+        # Track bar transition
+        self._advance_bar(t)
+        if self._first_bar_ts is None:
+            self._first_bar_ts = t
+            self._first_bar_dt = self._normalize_ts(t)
+        # Determine limit for this bar
+        limit = self.max_new_positions_per_bar
+        if self.first_bar_max_positions > 0:
+            dt = self._normalize_ts(t)
+            if dt is not None and self._first_bar_dt is not None and dt == self._first_bar_dt:
+                limit = self.first_bar_max_positions
+        if limit > 0 and self._opens_this_bar >= limit:
+            return None
+
+        m = self._mom_sum(row)
+        if self.side == "LONG":
+            side: Side = "LONG"
+        elif self.side == "SHORT":
+            side = "SHORT"
+        else:  # BOTH follows momentum sign
+            side = "LONG" if m >= 0.0 else "SHORT"
+
+        cooldown_left = 0
+        if self._htf_bias_ts is not None:
+            cooldown_left = max(0, int(self.htf_cooldown_bars) - self._bars_since(self._htf_bias_ts, t))
+        self._htf_cooldown_left = int(max(0, cooldown_left))
+
+        if self.side == "BOTH":
+            if self._htf_bias == "SHORT" and side == "LONG":
+                if self._is_in_cooldown(t) or not self._allow_counter(row, side, symbol=symbol, t=t):
+                    return None
+            if self._htf_bias == "LONG" and side == "SHORT":
+                if self._is_in_cooldown(t) or not self._allow_counter(row, side, symbol=symbol, t=t):
+                    return None
+
+        close = _f(row.get("close", None), None)
+        atrr  = _f(row.get("atr_ratio", None), None)
+        if close is None or atrr is None or close <= 0 or atrr <= 0:
+            return None
+
+        atr_abs = max(1e-12, close * atrr)
+        if side == "LONG":
+            tp = close + self.tp_mult * atr_abs
+            sl = close - self.sl_mult * atr_abs
+        else:
+            tp = close - self.tp_mult * atr_abs
+            sl = close + self.sl_mult * atr_abs
+
+        self._opens_this_bar += 1
+        entry_heat = self.heat(t, symbol, row)
+        self._last_heat_map[symbol] = float(entry_heat)
+
+        sig = Sig(side=side, take_profit=float(tp), stop_price=float(sl),
+                   reason="rule/atr-multipliers", heat=float(entry_heat))
+        tags = dict(sig.tags or {})
+        tags.update({
+            "htf_bias": self._htf_bias,
+            "htf_cooldown_left": int(self._htf_cooldown_left),
+            "htf_m_now": float(self._htf_m_now),
+        })
+        sig.tags = tags
+        return sig
+
+    def manage_position(self, symbol, row, pos, ctx=None):
+        close = _f(row.get("close", 0.0))
+        side  = str(getattr(pos, "side", "LONG")).upper()
+        tp    = _f(getattr(pos, "tp", getattr(pos, "take_profit", getattr(pos, "tp_price", None))), None)
+        sl    = _f(getattr(pos, "sl", getattr(pos, "stop_price", getattr(pos, "sl_price", None))), None)
+        entry = _f(getattr(pos, "entry", getattr(pos, "entry_price", None)), None)
+        qty   = _f(getattr(pos, "qty", getattr(pos, "size", None)), None)
+        if (qty is None or qty <= 0) and entry and entry > 0:
+            try:
+                notional = _f(getattr(pos, "notional", None), None)
+                if notional and notional > 0:
+                    qty = notional / entry
+            except Exception:
+                qty = None
+
+        # 1) Стандартні TP/SL по close (як було)
+        if side == "LONG":
+            if sl and close <= sl: return ExitSig("SL", exit_price=sl, reason="SL")
+            if tp and close >= tp: return ExitSig("TP", exit_price=tp, reason="TP")
+        else:
+            if sl and close >= sl: return ExitSig("SL", exit_price=sl, reason="SL")
+            if tp and close <= tp: return ExitSig("TP", exit_price=tp, reason="TP")
+
+        if entry is None or entry <= 0:
+            return ExitSig("HOLD")
+
+        trigger_frac = max(0.0, float(self.partial_trigger_frac_of_tp))
+        path = prog = None
+        trigger_reached = False
+        if tp is not None:
+            if side == "LONG":
+                path = tp - entry
+                prog = close - entry
+            else:
+                path = entry - tp
+                prog = entry - close
+            if path is not None and path > 0 and trigger_frac > 0:
+                trigger_reached = prog >= trigger_frac * path
+
+        if trigger_reached:
+            be_price = float(entry)
+            tol = max(abs(be_price) * 1e-6, 1e-8)
+
+            def _set_stop(px: float) -> None:
+                try:
+                    if hasattr(pos, "stop_price"):
+                        pos.stop_price = float(px)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(pos, "sl"):
+                        pos.sl = float(px)
+                except Exception:
+                    pass
+
+            if side == "LONG":
+                if sl is None or sl < be_price - tol:
+                    _set_stop(be_price)
+                    sl = be_price
+            else:
+                if sl is None or sl > be_price + tol:
+                    _set_stop(be_price)
+                    sl = be_price
+
+        if qty is None or qty <= 0:
+            return ExitSig("HOLD")
+
+        if self.partial_tp_enable and tp and path and path > 0 and trigger_reached:
+            part_qty = qty * self.partial_tp_frac
+            notional = part_qty * close
+            if (self.min_qty and part_qty < self.min_qty) or (notional < self.exchange_min_notional):
+                pass
+            else:
+                return ExitSig("TP_PARTIAL", exit_price=close, reason="TP50", qty_frac=self.partial_tp_frac)
+
+        # 3) Heat-exit / Reverse-momentum exit за умови, що PnL >= буферу
+        rr = self._unrealized_rr(side, entry, close)
+        need = self._round_trip_buffer_rr() * self.heat_exit_min_rr
+
+        if rr >= need:
+            h_now = self.heat(None, symbol, row)
+            if self.exit_on_heat and h_now < self.heat_exit_threshold:
+                return ExitSig("EXIT", exit_price=close, reason=f"heat<{self.heat_exit_threshold:.2f}")
+
+            m = self._mom_sum(row)
+            if (side == "LONG" and m < 0) or (side == "SHORT" and m > 0):
+                return ExitSig("EXIT", exit_price=close, reason="mom_reverse")
+
+        return ExitSig("HOLD")
+
+    # ---------- optional: heat reporting only (no decisions here) ----------
+    def entry_distance(self, t: Any, sym: str, row: Mapping[str, Any]) -> Dict[str, Any]:
+        """Compute gaps against the strategy's filters for a single symbol."""
+        m = self._mom_sum(row)
+        atrr = _f(row.get("atr_ratio", 0.0))
+        qv24 = _f(row.get("qv_24h", 0.0))
+        qv1  = _f(row.get("quote_volume", 0.0))
+        if qv1 <= 0.0:
+            qv1 = _f(row.get("volume", 0.0)) * _f(row.get("close", 0.0))
+
+        min_atr = float(self.min_atr_ratio)
+        min_qv24 = float(self.min_qv_24h)
+        min_qv1h = float(self.min_qv_1h)
+        min_mom = float(self.min_momentum_sum)
+
+        if self.side == "LONG":
+            gap_mom = self._pct_gap_rev(m, +min_mom)
+        elif self.side == "SHORT":
+            gap_mom = self._pct_gap_rev(-m, +min_mom)
+        else:
+            gap_mom = self._pct_gap_rev(abs(m), +min_mom)
+
+        gap_atr = self._pct_gap(atrr, min_atr)
+        gap_qv24 = self._pct_gap(qv24, min_qv24)
+        gap_qv1 = self._pct_gap(qv1, min_qv1h)
+
+        combined_gap = max(gap_atr, gap_qv24, gap_qv1, gap_mom)
+
+        gaps_map = {
+            "atr": gap_atr,
+            "qv24": gap_qv24,
+            "qv1h": gap_qv1,
+            "momentum": gap_mom,
+        }
+        worst_key = max(gaps_map, key=lambda k: gaps_map[k])
+        reason = ""
+        if worst_key == "atr":
+            reason = f"atr low: {atrr:.4f} < {min_atr:.4f}"
+        elif worst_key == "qv24":
+            reason = f"qv24 low: {qv24:.0f} < {min_qv24:.0f}"
+        elif worst_key == "qv1h":
+            reason = f"qv1h low: {qv1:.0f} < {min_qv1h:.0f}"
+        elif worst_key == "momentum":
+            reason = f"momentum low: {m:.4f} < {min_mom:.4f}"
+
+        return {
+            "symbol": sym,
+            "combined_gap": float(combined_gap),
+            "gaps": {
+                "atr": float(gap_atr),
+                "qv24": float(gap_qv24),
+                "qv1h": float(gap_qv1),
+                "momentum": float(gap_mom),
+            },
+            "actuals": {
+                "atr_ratio": float(atrr),
+                "qv_24h": float(qv24),
+                "qv_1h": float(qv1),
+                "mom_sum": float(m),
+            },
+            "thresholds": {
+                "min_atr_ratio": float(min_atr),
+                "min_qv_24h": float(min_qv24),
+                "min_qv_1h": float(min_qv1h),
+                "min_momentum_sum": float(min_mom),
+            },
+            "reason": reason,
+        }
+
+    def best_entry_distance(self, t: Any, md_slice: dict, symbols=None) -> Optional[Dict[str, Any]]:
+        """Evaluate distances for many symbols and return the nearest-to-entry one."""
+        if not md_slice:
+            return None
+        if symbols is None:
+            symbols = list(md_slice.keys())
+
+        best = None
+        best_gap = 1.0
+        for sym in symbols:
+            row = md_slice.get(sym)
+            if not row:
+                continue
+            dist = self.entry_distance(t, sym, row)
+            gap = float(dist.get("combined_gap", 1.0))
+            if gap < best_gap:
+                best_gap = gap
+                best = dist
+        return best
+
+    def heat(self, t: Any, symbol: str, row: Mapping[str, Any]) -> float:
+        """Return heat in [0..1] computed as ``1 - max(gaps)``."""
+        try:
+            dist = self.entry_distance(t, symbol, row)
+            gaps = (dist or {}).get("gaps") or {}
+            if not gaps:
+                return 0.0
+            worst = max(float(v) for v in gaps.values() if v is not None)
+            return max(0.0, min(1.0, 1.0 - worst))
+        except Exception:
+            return 0.0
