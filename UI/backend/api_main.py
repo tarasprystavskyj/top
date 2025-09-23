@@ -1,5 +1,5 @@
 # FastAPI MVP backend
-import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy
+import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re
 from typing import Any, Dict, Optional, List
 from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.responses import FileResponse
@@ -79,6 +79,71 @@ BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
     "backtester_core_speed3.py": {"plots": True},
     "backtester_core_speed3_veto.py": {"plots": True},
 }
+
+
+def _timeframe_to_minutes(value: Any) -> Optional[int]:
+    """Best-effort conversion of timeframe representations to minutes."""
+
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if value <= 0:
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return None
+        match = re.fullmatch(r"(?i)(\d+(?:\.\d+)?)([a-z]*)", text)
+        if not match:
+            return None
+        amount = float(match.group(1))
+        unit = match.group(2).lower()
+        unit_map = {
+            "": 1,
+            "m": 1,
+            "min": 1,
+            "mins": 1,
+            "minute": 1,
+            "minutes": 1,
+            "h": 60,
+            "hr": 60,
+            "hrs": 60,
+            "hour": 60,
+            "hours": 60,
+            "d": 1440,
+            "day": 1440,
+            "days": 1440,
+            "w": 10080,
+            "week": 10080,
+            "weeks": 10080,
+        }
+        factor = unit_map.get(unit)
+        if factor is None or amount <= 0:
+            return None
+        minutes = int(amount * factor)
+        return minutes if minutes > 0 else None
+    return None
+
+
+def _extract_timeframe_minutes(data: Any) -> Optional[int]:
+    """Walk a mapping/list to discover a timeframe definition."""
+
+    if isinstance(data, dict):
+        for key in ("timeframe", "tf", "bar_tf", "bar_timeframe", "bar_interval", "interval"):
+            minutes = _timeframe_to_minutes(data.get(key))
+            if minutes:
+                return minutes
+        for key in ("session", "strategy", "strategy_params", "engine", "runner", "data", "params"):
+            minutes = _extract_timeframe_minutes(data.get(key))
+            if minutes:
+                return minutes
+    elif isinstance(data, (list, tuple)):
+        for item in data:
+            minutes = _extract_timeframe_minutes(item)
+            if minutes:
+                return minutes
+    return None
 
 # --- helpers: cache DB discovery -------------------------------------------
 def _list_cache_db_files() -> List[Dict[str, str]]:
@@ -1443,6 +1508,9 @@ def live_result(name: str, debug: int = Query(0)):
     kyiv_tz = ZoneInfo("Europe/Kyiv") if ZoneInfo else None
     live_range = None
     live_trades: List[Dict[str, Any]] = []
+    tf_minutes: Optional[int] = None
+    bt_time_from: Optional[str] = None
+    bt_time_to: Optional[str] = None
     if os.path.exists(session_db):
         try:
             import sqlite3, json
@@ -1453,6 +1521,8 @@ def live_result(name: str, debug: int = Query(0)):
             ).fetchone()
             if row and row[0]:
                 snap = json.loads(row[0])
+                if tf_minutes is None:
+                    tf_minutes = _extract_timeframe_minutes(snap)
                 allow_syms = snap.get("symbols_whitelist") or snap.get("universe", {}).get("allow")
                 sym_file = snap.get("universe", {}).get("file")
                 if sym_file and sym_file != "<cli>":
@@ -1487,7 +1557,16 @@ def live_result(name: str, debug: int = Query(0)):
         except Exception:
             log.exception("live_result %s: failed to parse trades.csv", name)
 
-    if live_trades and kyiv_tz is not None:
+    if tf_minutes is None and cfg_path and os.path.isfile(cfg_path):
+        try:
+            with open(cfg_path, "r") as fh:
+                cfg_payload = yaml.safe_load(fh) or {}
+            if isinstance(cfg_payload, dict):
+                tf_minutes = _extract_timeframe_minutes(cfg_payload)
+        except Exception:
+            pass
+
+    if live_trades:
         try:
             import pandas as pd
 
@@ -1495,17 +1574,24 @@ def live_result(name: str, debug: int = Query(0)):
                 [t.get("exit_fill_ts") for t in live_trades], errors="coerce", utc=True
             ).dropna()
             if not ts_series.empty:
-                start = ts_series.min().astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
-                end = ts_series.max().astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
-                live_range = {"start": start, "end": end}
-            for trade in live_trades:
-                ts_val = pd.to_datetime(trade.get("exit_fill_ts"), errors="coerce", utc=True)
-                if pd.notna(ts_val):
-                    trade["exit_fill_ts"] = ts_val.astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
+                tmin = ts_series.min()
+                tmax = ts_series.max()
+                bt_time_from = tmin.strftime("%Y-%m-%dT%H:%M:%SZ")
+                tmax_for_bt = tmax
+                if tf_minutes and tf_minutes > 0:
+                    tmax_for_bt = tmax_for_bt + pd.Timedelta(minutes=tf_minutes)
+                bt_time_to = tmax_for_bt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if kyiv_tz is not None:
+                    start = tmin.astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
+                    end = tmax.astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
+                    live_range = {"start": start, "end": end}
+            if kyiv_tz is not None:
+                for trade in live_trades:
+                    ts_val = pd.to_datetime(trade.get("exit_fill_ts"), errors="coerce", utc=True)
+                    if pd.notna(ts_val):
+                        trade["exit_fill_ts"] = ts_val.astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
         except Exception:
             log.exception("live_result %s: failed to normalise live trade timestamps", name)
-    elif live_trades:
-        live_range = None
 
     bt_cmd = None
     bt_stdout = None
@@ -1522,8 +1608,8 @@ def live_result(name: str, debug: int = Query(0)):
             plots_dir=bt_plots,
             symbols_file=symbols_file,
             allow_symbols=allow_syms,
-            time_from=live_range["start"] if live_range else None,
-            time_to=live_range["end"] if live_range else None,
+            time_from=bt_time_from,
+            time_to=bt_time_to,
             export_csv=True,
             debug=bool(debug),
         )
