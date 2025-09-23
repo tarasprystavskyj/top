@@ -15,6 +15,7 @@ export default function LiveResult() {
   const [error, setError] = useState<string | null>(null);
   const [liveRange, setLiveRange] = useState<{ start: string; end: string } | null>(null);
   const [debug, setDebug] = useState(false);
+  const [useFrontendCharts, setUseFrontendCharts] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
   const [btRangeText, setBtRangeText] = useState<string>('');
   const liveEquitySeries = useMemo(() => buildLiveEquitySeries(liveTrades), [liveTrades]);
@@ -33,7 +34,11 @@ export default function LiveResult() {
   const currentPair = pairs.length > 0 ? pairs[slideIndex] : null;
   const currentPairName = currentPair?.name.toLowerCase() || '';
   const liveChartMode: 'trade' | 'time' = currentPairName.includes('time') ? 'time' : 'trade';
-  const showLiveEquityChart = Boolean(currentPair && liveEquitySeries && currentPairName.includes('equity'));
+  const canShowFrontendEquityChart = Boolean(
+    currentPair &&
+    liveEquitySeries &&
+    currentPairName.includes('equity')
+  );
 
   useEffect(() => {
     const q = router.query.cfg;
@@ -167,6 +172,14 @@ export default function LiveResult() {
         />
         Debug
       </label>
+      <label style={{ marginLeft: 12 }}>
+        <input
+          type="checkbox"
+          checked={useFrontendCharts}
+          onChange={e => setUseFrontendCharts(e.target.checked)}
+        />
+        Show frontend charts
+      </label>
       {error && <p>{error}</p>}
       {summary && (
         <pre style={{ maxWidth: '800px', overflowX: 'auto' }}>
@@ -189,7 +202,7 @@ export default function LiveResult() {
                 <h3>
                   Live {liveRange ? `(${liveRange.start} — ${liveRange.end})` : ''}
                 </h3>
-                {showLiveEquityChart ? (
+                {useFrontendCharts && canShowFrontendEquityChart ? (
                   <LiveEquityChart series={liveEquitySeries!} mode={liveChartMode} />
                 ) : currentPair?.live ? (
                   <img src={currentPair.live!} style={{ width: '100%', maxWidth: '420px' }} />
