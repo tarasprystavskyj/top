@@ -1,10 +1,20 @@
 # FastAPI MVP backend
-import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy
+import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re
 from typing import Any, Dict, Optional, List
 from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import logging
+try:  # Python 3.9+
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - fallback for Python < 3.9
+    ZoneInfo = None
+    try:
+        from backports.zoneinfo import ZoneInfo as _ZoneInfo
+
+        ZoneInfo = _ZoneInfo
+    except Exception:  # pragma: no cover - timezone support unavailable
+        pass
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +79,71 @@ BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
     "backtester_core_speed3.py": {"plots": True},
     "backtester_core_speed3_veto.py": {"plots": True},
 }
+
+
+def _timeframe_to_minutes(value: Any) -> Optional[int]:
+    """Best-effort conversion of timeframe representations to minutes."""
+
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if value <= 0:
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return None
+        match = re.fullmatch(r"(?i)(\d+(?:\.\d+)?)([a-z]*)", text)
+        if not match:
+            return None
+        amount = float(match.group(1))
+        unit = match.group(2).lower()
+        unit_map = {
+            "": 1,
+            "m": 1,
+            "min": 1,
+            "mins": 1,
+            "minute": 1,
+            "minutes": 1,
+            "h": 60,
+            "hr": 60,
+            "hrs": 60,
+            "hour": 60,
+            "hours": 60,
+            "d": 1440,
+            "day": 1440,
+            "days": 1440,
+            "w": 10080,
+            "week": 10080,
+            "weeks": 10080,
+        }
+        factor = unit_map.get(unit)
+        if factor is None or amount <= 0:
+            return None
+        minutes = int(amount * factor)
+        return minutes if minutes > 0 else None
+    return None
+
+
+def _extract_timeframe_minutes(data: Any) -> Optional[int]:
+    """Walk a mapping/list to discover a timeframe definition."""
+
+    if isinstance(data, dict):
+        for key in ("timeframe", "tf", "bar_tf", "bar_timeframe", "bar_interval", "interval"):
+            minutes = _timeframe_to_minutes(data.get(key))
+            if minutes:
+                return minutes
+        for key in ("session", "strategy", "strategy_params", "engine", "runner", "data", "params"):
+            minutes = _extract_timeframe_minutes(data.get(key))
+            if minutes:
+                return minutes
+    elif isinstance(data, (list, tuple)):
+        for item in data:
+            minutes = _extract_timeframe_minutes(item)
+            if minutes:
+                return minutes
+    return None
 
 # --- helpers: cache DB discovery -------------------------------------------
 def _list_cache_db_files() -> List[Dict[str, str]]:
@@ -290,48 +365,11 @@ def _session_equity_df(session_db):
     import sqlite3, json, pandas as pd, numpy as np
     if not os.path.exists(session_db):
         return None
+
     con = sqlite3.connect(session_db)
     cur = con.cursor()
 
-    # 1) try snapshots from equity table
-    try:
-        cols = [r[1] for r in cur.execute("PRAGMA table_info(equity);").fetchall()]
-    except Exception:
-        cols = []
-    if cols:
-        try:
-            df = pd.read_sql("SELECT * FROM equity ORDER BY 1;", con)
-            if not df.empty:
-                tcol = next((c for c in df.columns if c.lower() in ("ts", "ts_utc", "time", "timestamp")), None)
-                vcol = next((c for c in df.columns if c.lower() in ("equity", "equity_usdt", "value")), None)
-                if tcol and vcol:
-                    df = df[[tcol, vcol]].rename(columns={tcol: "ts", vcol: "equity"})
-                    df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
-                    df = df.dropna(subset=["ts", "equity"]).sort_values("ts")
-                    if len(df) >= 2:
-                        try:
-                            df.attrs["initial_equity"] = float(df["equity"].iloc[0])
-                        except Exception:
-                            pass
-                        con.close()
-                        return df
-        except Exception:
-            pass
-
-    # 2) reconstruct from closed trades
-    tbl = None
-    for name in ("open_positions", "positions"):
-        try:
-            cur.execute(f"SELECT 1 FROM {name} LIMIT 1;")
-            tbl = name
-            break
-        except Exception:
-            continue
-    if not tbl:
-        con.close()
-        return None
-
-    # initial_equity
+    # 0) read initial_equity from config_snapshots
     init_eq = 100.0
     try:
         row = cur.execute(
@@ -347,43 +385,83 @@ def _session_equity_df(session_db):
     except Exception:
         pass
 
-    # extract closed trades
-    cols = [r[1] for r in cur.execute(f"PRAGMA table_info({tbl});").fetchall()]
-    has_status = "status" in cols
-    has_fees = "fees_paid" in cols
-    sel = "side, qty, entry_fill, exit_fill, exit_fill_ts" + (
-        ", fees_paid" if has_fees else ""
-    )
-    where = "WHERE exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
-    if has_status:
-        where = "WHERE status='CLOSED' AND exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
-    import pandas as pd, numpy as np
-    df = pd.read_sql(
-        f"SELECT {sel} FROM {tbl} {where} ORDER BY exit_fill_ts;", con
-    )
-    con.close()
-    if df.empty:
-        return None
-    df["ts"] = pd.to_datetime(df["exit_fill_ts"], errors="coerce", utc=True)
-    for c in ("qty", "entry_fill", "exit_fill"):
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    if has_fees:
-        df["fees_paid"] = pd.to_numeric(df["fees_paid"], errors="coerce").fillna(0.0)
-    df["pnl"] = np.where(
-        df["side"].str.upper() == "LONG",
-        (df["exit_fill"] - df["entry_fill"]) * df["qty"],
-        (df["entry_fill"] - df["exit_fill"]) * df["qty"],
-    )
-    if has_fees:
-        df["pnl"] = df["pnl"] - df["fees_paid"]
-    eq = (init_eq + df["pnl"].cumsum()).rename("equity")
-    out = pd.DataFrame({"ts": df["ts"], "equity": eq})
-    out = out.dropna(subset=["ts"]).sort_values("ts")
+    # 1) try reconstructing from closed trades/positions (PREFERRED)
+    tbl = None
+    for name in ("open_positions", "positions"):
+        try:
+            cur.execute(f"SELECT 1 FROM {name} LIMIT 1;")
+            tbl = name
+            break
+        except Exception:
+            continue
+
+    if tbl:
+        has_status = "status" in [r[1] for r in cur.execute(f"PRAGMA table_info({tbl});").fetchall()]
+        has_fees = "fees_paid" in [r[1] for r in cur.execute(f"PRAGMA table_info({tbl});").fetchall()]
+        sel = "side, qty, entry_fill, exit_fill, exit_fill_ts" + (", fees_paid" if has_fees else "")
+        where = "WHERE exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
+        if has_status:
+            where = "WHERE status='CLOSED' AND exit_fill IS NOT NULL AND exit_fill_ts IS NOT NULL"
+
+        df = pd.read_sql(f"SELECT {sel} FROM {tbl} {where} ORDER BY exit_fill_ts;", con)
+        if not df.empty:
+            df["ts"] = pd.to_datetime(df["exit_fill_ts"], errors="coerce", utc=True)
+            for c in ("qty", "entry_fill", "exit_fill"):
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+            if has_fees:
+                df["fees_paid"] = pd.to_numeric(df["fees_paid"], errors="coerce").fillna(0.0)
+
+            pnl = np.where(
+                df["side"].str.upper() == "LONG",
+                (df["exit_fill"] - df["entry_fill"]) * df["qty"],
+                (df["entry_fill"] - df["exit_fill"]) * df["qty"],
+            )
+            if has_fees:
+                pnl = pnl - df["fees_paid"]
+
+            out = pd.DataFrame({"ts": df["ts"], "equity": init_eq + pnl.cumsum()})
+            out = out.dropna(subset=["ts"]).sort_values("ts")
+            try:
+                out.attrs["initial_equity"] = float(init_eq)
+            except Exception:
+                pass
+            con.close()
+            return out
+
+    # 2) Fallback: use snapshots from `equity` table (may actually be PnL)
     try:
-        out.attrs["initial_equity"] = float(init_eq)
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(equity);").fetchall()]
     except Exception:
-        pass
-    return out
+        cols = []
+    if cols:
+        try:
+            df = pd.read_sql("SELECT * FROM equity ORDER BY 1;", con)
+            if not df.empty:
+                tcol = next((c for c in df.columns if c.lower() in ("ts", "ts_utc", "time", "timestamp")), None)
+                vcol = next((c for c in df.columns if c.lower() in ("equity", "equity_usdt", "value", "pnl")), None)
+                if tcol and vcol:
+                    df = df[[tcol, vcol]].rename(columns={tcol: "ts", vcol: "equity"})
+                    df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
+                    df = df.dropna(subset=["ts", "equity"]).sort_values("ts")
+                    # Heuristic: if equity looks like small PnL around zero – convert to equity by adding init_eq
+                    try:
+                        rng = float(df["equity"].max() - df["equity"].min())
+                        looks_like_pnl = (df["equity"].abs().quantile(0.9) < init_eq * 0.2) and (rng < init_eq * 0.5)
+                    except Exception:
+                        looks_like_pnl = False
+                    if looks_like_pnl:
+                        df["equity"] = init_eq + df["equity"]
+                    try:
+                        df.attrs["initial_equity"] = float(init_eq)
+                    except Exception:
+                        pass
+                    con.close()
+                    return df
+        except Exception:
+            pass
+
+    con.close()
+    return None
 
 
 def _session_closed_trades(session_db):
@@ -410,6 +488,7 @@ def _session_closed_trades(session_db):
     cols = [r[1] for r in cur.execute(f"PRAGMA table_info({tbl});").fetchall()]
     has_status = "status" in cols
     has_fees = "fees_paid" in cols
+    has_close_reason = "close_reason" in cols
     sel_cols = [
         "symbol",
         "side",
@@ -418,7 +497,10 @@ def _session_closed_trades(session_db):
         "entry_fill_ts",
         "exit_fill",
         "exit_fill_ts",
+        "ts_close",
     ]
+    if has_close_reason:
+        sel_cols.insert(sel_cols.index("ts_close"), "close_reason")
     if has_fees:
         sel_cols.append("fees_paid")
     extra_cols = [
@@ -442,9 +524,27 @@ def _session_closed_trades(session_db):
     df = pd.read_sql(
         f"SELECT {sel} FROM {tbl} {where} ORDER BY exit_fill_ts;", con
     )
+    try:
+        orders_df = pd.read_sql(
+            "SELECT symbol, ts_utc, reason FROM orders WHERE mode='EXIT';",
+            con,
+        )
+    except Exception:
+        orders_df = None
     con.close()
     if df.empty:
         return None
+
+    def _clean_reason(value):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        text = str(value).strip()
+        return "" if text.lower() in {"", "nan", "none", "null", "nat"} else text
+
+    if has_close_reason and "close_reason" in df.columns:
+        df["close_reason"] = df["close_reason"].apply(_clean_reason)
+    else:
+        df["close_reason"] = pd.Series([""] * len(df), dtype="object")
     for c in (
         "qty",
         "entry_fill",
@@ -464,6 +564,52 @@ def _session_closed_trades(session_db):
     )
     if has_fees and "fees_paid" in df:
         df["realised_pnl"] = df["realised_pnl"] - df["fees_paid"]
+    # map close reasons from recorded exit orders
+    try:
+        missing_mask = df["close_reason"].astype(str).str.strip() == ""
+        if orders_df is not None and not orders_df.empty and missing_mask.any():
+            orders_df = orders_df.dropna(subset=["symbol", "ts_utc"])
+            orders_df["symbol"] = orders_df["symbol"].astype(str)
+            orders_df["ts_utc"] = orders_df["ts_utc"].astype(str)
+            orders_df["_key"] = orders_df["symbol"] + "|" + orders_df["ts_utc"]
+            reason_map = dict(
+                zip(
+                    orders_df["_key"],
+                    orders_df["reason"].where(orders_df["reason"].notna(), None),
+                )
+            )
+
+            def _clean(value):
+                if value is None or pd.isna(value):
+                    return ""
+                text = str(value).strip()
+                return "" if text.lower() in {"", "nan", "none", "nat"} else text
+
+            keys = []
+            for _, row in df.iterrows():
+                sym = _clean(row.get("symbol"))
+                ts_val = _clean(row.get("exit_fill_ts")) or _clean(row.get("ts_close"))
+                keys.append(f"{sym}|{ts_val}" if sym and ts_val else "")
+            if keys:
+                # only fill rows where close_reason is still empty
+                for idx, k in enumerate(keys):
+                    if not k or not missing_mask.iloc[idx]:
+                        continue
+                    r = reason_map.get(k)
+                    txt = _clean_reason(r)
+                    if txt:
+                        df.at[idx, "close_reason"] = txt
+    except Exception:
+        pass
+    # final cleanup: enforce textual reasons
+    df["close_reason"] = df["close_reason"].apply(_clean_reason)
+    df = df.drop(columns=["ts_close"], errors="ignore")
+    if "close_reason" in df.columns:
+        cols = list(df.columns)
+        cols.remove("close_reason")
+        insert_at = cols.index("exit_fill_ts") + 1 if "exit_fill_ts" in cols else len(cols)
+        cols.insert(insert_at, "close_reason")
+        df = df[cols]
     return df.to_dict(orient="records")
 
 
@@ -1101,12 +1247,78 @@ def result(job_id: str):
         with open(os.path.join(out_dir, "summary.csv")) as f:
             rows = list(csv.DictReader(f))
             if rows: summary = rows[0]
-    trades = []
+    trades: List[Dict[str, Any]] = []
     if "trades.csv" in arts:
         import csv
         with open(os.path.join(out_dir, "trades.csv")) as f:
             trades = list(csv.DictReader(f))[:500]
+
+    files_meta: Dict[str, str] = {}
+    logs_path = os.path.join(out_dir, "logs.txt")
+    bt_trades_path = None
+    bt_summary_path = None
+    if os.path.isfile(logs_path):
+        try:
+            with open(logs_path, "r") as lf:
+                for line in lf:
+                    if line.startswith("[files]"):
+                        tokens = line[len("[files]") :].strip().split()
+                        for token in tokens:
+                            if "=" not in token:
+                                continue
+                            key, value = token.split("=", 1)
+                            if key == "bt_trades" and value:
+                                bt_trades_path = value
+                            elif key == "bt_summary" and value:
+                                bt_summary_path = value
+                        # stop after first [files] line
+                        break
+        except Exception:
+            log.exception("result %s: failed to parse logs for file paths", job_id)
+
+    if bt_trades_path and os.path.exists(bt_trades_path):
+        import csv
+
+        files_meta["bt_trades"] = bt_trades_path
+        try:
+            with open(bt_trades_path, "r") as f:
+                trades = list(csv.DictReader(f))[:500]
+        except Exception:
+            log.exception("result %s: failed to parse bt_trades", job_id)
+        else:
+            local_bt_trades = os.path.join(out_dir, "bt_trades.csv")
+            same_file = False
+            try:
+                same_file = os.path.samefile(bt_trades_path, local_bt_trades)
+            except Exception:
+                same_file = False
+            if not same_file:
+                try:
+                    shutil.copy(bt_trades_path, local_bt_trades)
+                except Exception:
+                    log.exception("result %s: failed to copy bt_trades", job_id)
+            if os.path.exists(local_bt_trades):
+                arts["bt_trades.csv"] = f"/api/jobs/{job_id}/artifacts/bt_trades.csv"
+
+    if bt_summary_path and os.path.exists(bt_summary_path):
+        files_meta["bt_summary"] = bt_summary_path
+        local_bt_summary = os.path.join(out_dir, "bt_summary.csv")
+        same_file = False
+        try:
+            same_file = os.path.samefile(bt_summary_path, local_bt_summary)
+        except Exception:
+            same_file = False
+        if not same_file:
+            try:
+                shutil.copy(bt_summary_path, local_bt_summary)
+            except Exception:
+                log.exception("result %s: failed to copy bt_summary", job_id)
+        if os.path.exists(local_bt_summary):
+            arts.setdefault("bt_summary.csv", f"/api/jobs/{job_id}/artifacts/bt_summary.csv")
+
     resp: Dict[str, Any] = {"summary": summary, "trades": trades, "artifacts": arts}
+    if files_meta:
+        resp["files"] = files_meta
     job_info = jobs.get(job_id) or {}
     job_meta = job_info.get("meta") or {}
     meta_path = os.path.join(out_dir, "meta.json")
@@ -1263,21 +1475,23 @@ def live_result(name: str, debug: int = Query(0)):
     try:
         _make_live_plots(base)
     except Exception:
-        pass
+        log.exception("live_result %s: failed to generate live equity plots", name)
     arts: Dict[str, str] = {}
-    plot_files = [
-        "returns_hist.png",
-        "equity_by_trade.png",
-        "equity_by_time.png",
-        "drawdown_by_trade.png",
-        "viz_equity_vs_trade.png",
-        "viz_dd_vs_trade.png",
-        "viz_equity_vs_time.png",
-    ]
-    for fn in plot_files:
-        p = os.path.join(base, fn)
-        if os.path.exists(p):
-            arts[fn] = f"/api/live_results/{name}/files/{fn}"
+    plot_candidates = {
+        "returns_hist.png": ["returns_hist.png"],
+        "equity_by_time.png": ["equity_by_time.png", "viz_equity_vs_time.png"],
+        "equity_by_trade.png": ["equity_by_trade.png", "viz_equity_vs_trade.png"],
+        "drawdown_by_trade.png": ["drawdown_by_trade.png", "viz_dd_vs_trade.png"],
+    }
+    for key, candidates in plot_candidates.items():
+        for candidate in candidates:
+            p = os.path.join(base, candidate)
+            if os.path.exists(p):
+                url = f"/api/live_results/{name}/files/{candidate}"
+                arts[key] = url
+                if candidate != key:
+                    arts[candidate] = url
+                break
 
     # --- Optional backtest using the same cache/config ------------------
     # Default structure returned when we cannot build a matching backtest.
@@ -1291,8 +1505,12 @@ def live_result(name: str, debug: int = Query(0)):
     allow_syms = None
     symbols_file = None
     session_db = os.path.join(base, "session.sqlite")
+    kyiv_tz = ZoneInfo("Europe/Kyiv") if ZoneInfo else None
     live_range = None
     live_trades: List[Dict[str, Any]] = []
+    tf_minutes: Optional[int] = None
+    bt_time_from: Optional[str] = None
+    bt_time_to: Optional[str] = None
     if os.path.exists(session_db):
         try:
             import sqlite3, json
@@ -1303,6 +1521,8 @@ def live_result(name: str, debug: int = Query(0)):
             ).fetchone()
             if row and row[0]:
                 snap = json.loads(row[0])
+                if tf_minutes is None:
+                    tf_minutes = _extract_timeframe_minutes(snap)
                 allow_syms = snap.get("symbols_whitelist") or snap.get("universe", {}).get("allow")
                 sym_file = snap.get("universe", {}).get("file")
                 if sym_file and sym_file != "<cli>":
@@ -1310,15 +1530,6 @@ def live_result(name: str, debug: int = Query(0)):
             con.close()
         except Exception:
             log.exception("live_result %s: failed to read session db", name)
-        try:
-            df = _session_equity_df(session_db)
-            if df is not None and not df.empty:
-                live_range = {
-                    "start": df["ts"].iloc[0].isoformat(),
-                    "end": df["ts"].iloc[-1].isoformat(),
-                }
-        except Exception:
-            pass
         try:
             lt = _session_closed_trades(session_db)
             if lt:
@@ -1346,6 +1557,42 @@ def live_result(name: str, debug: int = Query(0)):
         except Exception:
             log.exception("live_result %s: failed to parse trades.csv", name)
 
+    if tf_minutes is None and cfg_path and os.path.isfile(cfg_path):
+        try:
+            with open(cfg_path, "r") as fh:
+                cfg_payload = yaml.safe_load(fh) or {}
+            if isinstance(cfg_payload, dict):
+                tf_minutes = _extract_timeframe_minutes(cfg_payload)
+        except Exception:
+            pass
+
+    if live_trades:
+        try:
+            import pandas as pd
+
+            ts_series = pd.to_datetime(
+                [t.get("exit_fill_ts") for t in live_trades], errors="coerce", utc=True
+            ).dropna()
+            if not ts_series.empty:
+                tmin = ts_series.min()
+                tmax = ts_series.max()
+                bt_time_from = tmin.strftime("%Y-%m-%dT%H:%M:%SZ")
+                tmax_for_bt = tmax
+                if tf_minutes and tf_minutes > 0:
+                    tmax_for_bt = tmax_for_bt + pd.Timedelta(minutes=tf_minutes)
+                bt_time_to = tmax_for_bt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if kyiv_tz is not None:
+                    start = tmin.astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
+                    end = tmax.astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
+                    live_range = {"start": start, "end": end}
+            if kyiv_tz is not None:
+                for trade in live_trades:
+                    ts_val = pd.to_datetime(trade.get("exit_fill_ts"), errors="coerce", utc=True)
+                    if pd.notna(ts_val):
+                        trade["exit_fill_ts"] = ts_val.astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            log.exception("live_result %s: failed to normalise live trade timestamps", name)
+
     bt_cmd = None
     bt_stdout = None
     if cfg_path and os.path.exists(cache_db):
@@ -1361,8 +1608,8 @@ def live_result(name: str, debug: int = Query(0)):
             plots_dir=bt_plots,
             symbols_file=symbols_file,
             allow_symbols=allow_syms,
-            time_from=live_range["start"] if live_range else None,
-            time_to=live_range["end"] if live_range else None,
+            time_from=bt_time_from,
+            time_to=bt_time_to,
             export_csv=True,
             debug=bool(debug),
         )
