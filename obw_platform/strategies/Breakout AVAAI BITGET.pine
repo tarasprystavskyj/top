@@ -1,0 +1,8 @@
+//@version=5
+//@obw_strategy obw_platform.strategies.breakout_avaai_full_with_universe_4.BreakoutAVAAIFull
+//@obw_strategy_params {"top_n": 12, "min_atr_ratio": 0.02, "side": "BOTH"}
+
+// Placeholder body. Real TradingView logic can live here if needed by the
+// TradingView runtime, but for automated backtests we only rely on the
+// annotations above to map the script onto the Python implementation.
+strategy("Breakout AVAAI BITGET", overlay=true)
