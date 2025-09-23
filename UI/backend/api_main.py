@@ -5,7 +5,6 @@ from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import logging
-from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
 
@@ -1398,23 +1397,21 @@ def live_result(name: str, debug: int = Query(0)):
     try:
         _make_live_plots(base)
     except Exception:
-        log.exception("live_result %s: failed to generate live equity plots", name)
+        pass
     arts: Dict[str, str] = {}
-    plot_candidates = {
-        "returns_hist.png": ["returns_hist.png"],
-        "equity_by_time.png": ["equity_by_time.png", "viz_equity_vs_time.png"],
-        "equity_by_trade.png": ["equity_by_trade.png", "viz_equity_vs_trade.png"],
-        "drawdown_by_trade.png": ["drawdown_by_trade.png", "viz_dd_vs_trade.png"],
-    }
-    for key, candidates in plot_candidates.items():
-        for candidate in candidates:
-            p = os.path.join(base, candidate)
-            if os.path.exists(p):
-                url = f"/api/live_results/{name}/files/{candidate}"
-                arts[key] = url
-                if candidate != key:
-                    arts[candidate] = url
-                break
+    plot_files = [
+        "returns_hist.png",
+        "equity_by_trade.png",
+        "equity_by_time.png",
+        "drawdown_by_trade.png",
+        "viz_equity_vs_trade.png",
+        "viz_dd_vs_trade.png",
+        "viz_equity_vs_time.png",
+    ]
+    for fn in plot_files:
+        p = os.path.join(base, fn)
+        if os.path.exists(p):
+            arts[fn] = f"/api/live_results/{name}/files/{fn}"
 
     # --- Optional backtest using the same cache/config ------------------
     # Default structure returned when we cannot build a matching backtest.
@@ -1428,7 +1425,6 @@ def live_result(name: str, debug: int = Query(0)):
     allow_syms = None
     symbols_file = None
     session_db = os.path.join(base, "session.sqlite")
-    kyiv_tz = ZoneInfo("Europe/Kyiv")
     live_range = None
     live_trades: List[Dict[str, Any]] = []
     if os.path.exists(session_db):
@@ -1448,6 +1444,15 @@ def live_result(name: str, debug: int = Query(0)):
             con.close()
         except Exception:
             log.exception("live_result %s: failed to read session db", name)
+        try:
+            df = _session_equity_df(session_db)
+            if df is not None and not df.empty:
+                live_range = {
+                    "start": df["ts"].iloc[0].isoformat(),
+                    "end": df["ts"].iloc[-1].isoformat(),
+                }
+        except Exception:
+            pass
         try:
             lt = _session_closed_trades(session_db)
             if lt:
@@ -1474,24 +1479,6 @@ def live_result(name: str, debug: int = Query(0)):
                     continue
         except Exception:
             log.exception("live_result %s: failed to parse trades.csv", name)
-
-    if live_trades:
-        try:
-            import pandas as pd
-
-            ts_series = pd.to_datetime(
-                [t.get("exit_fill_ts") for t in live_trades], errors="coerce", utc=True
-            ).dropna()
-            if not ts_series.empty:
-                start = ts_series.min().astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
-                end = ts_series.max().astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
-                live_range = {"start": start, "end": end}
-            for trade in live_trades:
-                ts_val = pd.to_datetime(trade.get("exit_fill_ts"), errors="coerce", utc=True)
-                if pd.notna(ts_val):
-                    trade["exit_fill_ts"] = ts_val.astimezone(kyiv_tz).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            log.exception("live_result %s: failed to normalise live trade timestamps", name)
 
     bt_cmd = None
     bt_stdout = None
