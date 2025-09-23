@@ -15,15 +15,30 @@ export default function LiveResult() {
   const [error, setError] = useState<string | null>(null);
   const [liveRange, setLiveRange] = useState<{ start: string; end: string } | null>(null);
   const [debug, setDebug] = useState(false);
+  const [useFrontendCharts, setUseFrontendCharts] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
   const [btRangeText, setBtRangeText] = useState<string>('');
   const liveEquitySeries = useMemo(() => buildLiveEquitySeries(liveTrades), [liveTrades]);
+  const liveHeaders = useMemo(() => {
+    if (!Array.isArray(liveTrades) || liveTrades.length === 0) return [] as string[];
+    const keys = new Set<string>();
+    for (const trade of liveTrades) {
+      if (trade && typeof trade === 'object') {
+        for (const key of Object.keys(trade)) keys.add(key);
+      }
+    }
+    return Array.from(keys);
+  }, [liveTrades]);
 
   const slideIndex = pairs.length > 0 ? Math.min(slide, pairs.length - 1) : 0;
   const currentPair = pairs.length > 0 ? pairs[slideIndex] : null;
   const currentPairName = currentPair?.name.toLowerCase() || '';
   const liveChartMode: 'trade' | 'time' = currentPairName.includes('time') ? 'time' : 'trade';
-  const showLiveEquityChart = Boolean(currentPair && liveEquitySeries && currentPairName.includes('equity'));
+  const canShowFrontendEquityChart = Boolean(
+    currentPair &&
+    liveEquitySeries &&
+    currentPairName.includes('equity')
+  );
 
   useEffect(() => {
     const q = router.query.cfg;
@@ -157,6 +172,14 @@ export default function LiveResult() {
         />
         Debug
       </label>
+      <label style={{ marginLeft: 12 }}>
+        <input
+          type="checkbox"
+          checked={useFrontendCharts}
+          onChange={e => setUseFrontendCharts(e.target.checked)}
+        />
+        Show frontend charts
+      </label>
       {error && <p>{error}</p>}
       {summary && (
         <pre style={{ maxWidth: '800px', overflowX: 'auto' }}>
@@ -179,7 +202,7 @@ export default function LiveResult() {
                 <h3>
                   Live {liveRange ? `(${liveRange.start} — ${liveRange.end})` : ''}
                 </h3>
-                {showLiveEquityChart ? (
+                {useFrontendCharts && canShowFrontendEquityChart ? (
                   <LiveEquityChart series={liveEquitySeries!} mode={liveChartMode} />
                 ) : currentPair?.live ? (
                   <img src={currentPair.live!} style={{ width: '100%', maxWidth: '420px' }} />
@@ -241,7 +264,7 @@ export default function LiveResult() {
                       <table border={1}>
                         <thead>
                           <tr>
-                            {Object.keys(liveTrades[0]).map(k => (
+                            {liveHeaders.map(k => (
                               <th key={k}>{k}</th>
                             ))}
                           </tr>
@@ -251,7 +274,7 @@ export default function LiveResult() {
                             const pnl = Number((t as any).realised_pnl);
                             return (
                               <tr key={i} style={pnl > 0 ? { backgroundColor: '#d4edda' } : undefined}>
-                                {Object.keys(liveTrades[0]).map(k => (
+                                {liveHeaders.map(k => (
                                   <td key={k}>{formatVal(t[k])}</td>
                                 ))}
                               </tr>
@@ -309,7 +332,7 @@ export default function LiveResult() {
                 <table border={1}>
                   <thead>
                     <tr>
-                      {Object.keys(liveTrades[0]).map(k => (
+                      {liveHeaders.map(k => (
                         <th key={k}>{k}</th>
                       ))}
                     </tr>
@@ -319,7 +342,7 @@ export default function LiveResult() {
                       const pnl = Number((t as any).realised_pnl);
                       return (
                         <tr key={i} style={pnl > 0 ? { backgroundColor: '#d4edda' } : undefined}>
-                          {Object.keys(liveTrades[0]).map(k => (
+                          {liveHeaders.map(k => (
                             <td key={k}>{formatVal(t[k])}</td>
                           ))}
                         </tr>
@@ -505,8 +528,9 @@ function formatTimeLabel(value: number) {
 }
 
 function formatVal(v: any) {
+  if (typeof v === 'string') return v;
   const num = Number(v);
-  return isNaN(num) ? v : num.toFixed(3);
+  return Number.isFinite(num) ? num.toFixed(3) : String(v ?? '');
 }
 
 function formatObj(obj: any) {

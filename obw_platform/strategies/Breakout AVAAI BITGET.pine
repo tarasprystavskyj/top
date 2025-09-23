@@ -6,3 +6,104 @@
 // TradingView runtime, but for automated backtests we only rely on the
 // annotations above to map the script onto the Python implementation.
 strategy("Breakout AVAAI BITGET", overlay=true)
+
+// === Input Parameters ===
+length = input.int(title="Breakout Length", minval=1, maxval=1000, defval=10)
+
+take_profit = input.float(200, title="Take Profit (%)") / 100
+stop_loss_percent = input.float(10, title="Stop-Loss (%)") / 100
+
+// === Trade Direction ===
+trade_direction = input.string("BOTH", title="Trade Direction", options=["LONG", "SHORT", "BOTH"])
+
+// === ATR Filter ===
+atrValue = ta.atr(14)
+atrThreshold = input.float(0.002, title="ATR Threshold")
+isTrending = atrValue > atrThreshold
+
+// === Default Order Size ===
+//order_size = input.float(1, title="Default Order Size", minval=0.1)
+
+devider = input.int(title="________________________", defval=0)
+
+// Filters
+volatility_length = input.int(title="Volatility Length (0 to disable)", defval=0)
+adx_length = input.int(title="ADX Length (0 to disable)", defval=0)
+adx_threshold = input.float(title="ADX Threshold (0 to disable)", defval=1)
+volume_length = input.int(title="Volume Length (0 to disable)", defval=0)
+
+// === Global Variables for TP/SL ===
+var bool exit_long_set = false
+var bool exit_short_set = false
+
+// === MACD Filter ===
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+isBullish = macdLine > signalLine
+isBearish = macdLine < signalLine
+
+// === Breakout Levels ===
+upBound = ta.highest(high, length)
+downBound = ta.lowest(low, length)
+
+// === ATR-Based Volatility Filter ===
+atr_condition = volatility_length == 0 or ta.atr(volatility_length) > ta.sma(ta.atr(volatility_length), volatility_length)
+
+// --- Volume Filter ---
+var float volume_ma = na
+volume_condition = true  // Default to true if disabled
+if volume_length > 0
+    volume_ma := ta.sma(volume, volume_length)
+    volume_condition := volume > volume_ma  // Ensures we're in an active market
+
+var float adx = na
+
+// === ADX Filter (Trend Strength Confirmation) ===
+adx_condition = true
+if adx_length > 0 and adx_threshold > 0
+    upMove = high - high[1]
+    downMove = low[1] - low
+    plusDM = upMove > downMove and upMove > 0 ? upMove : 0
+    minusDM = downMove > upMove and downMove > 0 ? downMove : 0
+    tr = ta.atr(adx_length)
+    plusDI = ta.rma(plusDM, adx_length) / tr * 100
+    minusDI = ta.rma(minusDM, adx_length) / tr * 100
+    dx = math.abs(plusDI - minusDI) / (plusDI + minusDI) * 100
+    adx = ta.rma(dx, adx_length)
+    adx_condition := adx > adx_threshold
+
+// === Combined Trade Condition ===
+trade_condition = atr_condition and volume_condition and adx_condition and isTrending
+
+// === TP and Stop-Loss (Fixed) ===
+stop_loss_price_long = strategy.position_avg_price * (1 - stop_loss_percent)
+stop_loss_price_short = strategy.position_avg_price * (1 + stop_loss_percent)
+take_profit_price_long = strategy.position_avg_price * (1 + take_profit)
+take_profit_price_short = strategy.position_avg_price * (1 - take_profit)
+
+if strategy.position_size > 0 and not exit_long_set
+    strategy.exit("Exit_Long", from_entry="Long", stop=stop_loss_price_long, limit=take_profit_price_long)
+
+if strategy.position_size < 0 and not exit_short_set
+    strategy.exit("Exit_Short", from_entry="Short", stop=stop_loss_price_short, limit=take_profit_price_short)
+    exit_long_set := false 
+
+if strategy.position_size == 0
+    strategy.close('Exit_Long')
+    strategy.close('Exit_Short')
+    exit_long_set := false 
+    exit_short_set := false
+
+// === Entry Logic ===
+if isTrending and trade_condition and not na(close[length]) // Ensure price data exists before placing orders
+    if (trade_direction == "BOTH" or trade_direction == "LONG")
+        strategy.entry("Long", strategy.long, stop=upBound + syminfo.mintick)
+
+    if (trade_direction == "BOTH" or trade_direction == "SHORT")
+        strategy.entry("Short", strategy.short, stop=downBound - syminfo.mintick)
+
+// === TP & SL Plotting ===
+plot(strategy.position_size > 0 ? take_profit_price_long : na, color=color.green, title="Take Profit Long")
+plot(strategy.position_size < 0 ? take_profit_price_short : na, color=color.red, title="Take Profit Short")
+plot(strategy.position_size > 0 ? stop_loss_price_long : na, color=color.orange, title="Stop Loss Long")
+plot(strategy.position_size < 0 ? stop_loss_price_short : na, color=color.orange, title="Stop Loss Short")
+plot(strategy.position_avg_price, color=color.blue, title="Average Position Price")

@@ -634,15 +634,7 @@ python3 backtester_core_speed3_veto_universe.py \
   --symbols-file universe_prof_v3.txt \
   
 
-python3 auto_universe_and_tune.py \
-  --cfg configs/cfg_avaai_t5m5000_3.yaml \
-  --limit-bars 5000 \
-  --prefix t5k_auto \
-  --trades trades_all.csv \
-  --universe-out universe_prof_v2.txt \
-  --plots plots_auto \
-  --grid \
-  --driver backtester_core_speed3_veto_universe_2.py
+
   
  find ./ -name "gen_universe_from_trades.py" 
   
@@ -691,11 +683,12 @@ python3 backtester_core_speed3_veto_universe_2.py \
 BT_IGNORE_VOLSURGE=1 python3 bt_live_paper_runner_separated_universe.py \
   --mode live --paper-source api \
   --env-file .env \
-  --cfg configs/cfg_avaai_t3m14400_4.yaml \
+  --cfg configs/cfg_t3m_30d_newbest_full_test.yaml \
   --exchange bingx --symbol-format usdtm \
   --poll-sec 2 --bar-delay-sec 1 --limit_klines 200 \
   --hour-cache load \
-  --universe-file universe_5m_7400_1.03.txt
+  --universe-file universe_5m_7400_1.03.txt --heat-report \
+  2>&1 | tee -a _reports/_live/livecfg_cfg_t3m_30d_newbest_full_test_3m/runner.log
   
   #uuniverse_v5_avaai_5m_5000.txt
   
@@ -721,12 +714,12 @@ git push --force-with-lease origin main
 find obw_platform -path "*/_reports/_backtest/*" -type f -print0 | xargs -0 rm -f
 
 python3 auto_tuner_rays2grid_v3_fix.py \
---cfg configs/cfg_avaai_t3m14400.yaml \
-  --limit-bars 36 \
+--cfg configs/cfg_t3m_30d_s10_grid_best_full.yaml \
+  --limit-bars 3600 \
   --plan tuner_plan_avaai_3m_wide_night.py \
   --prefix t3m_30d  \
-  --min-trades 4 \
-  --target-trades 22 \
+  --min-trades 40 \
+  --target-trades 220 \
   --w-equity 1.0 --w-pf 12.0 --w-dd 220.0 --w-mono 5.0 --dd-target 0.12 \
   --sleep-sec 1 \
   
@@ -759,9 +752,19 @@ time python backtester_core_speed3_veto_universe_2.py --limit-bars 14400 \
    --cache_db DB/combined_cache_5m_25920_30u.db \
    
 
-     python backtester_core_speed3_veto_universe_2.py --limit-bars 3600 \
-   --cfg configs/cfg_avaai_t3m14400.yaml  \
-	  --plots plots_3m \
-   --cache_db combined_cache_3m_14400_30u.db \
-        --symbols-file universe_5m_7400_1.03.txt  \
-#	--cache_db combined_cache_3m_7200_500u.db \
+python backtester_core_speed3_veto_universe_2.py --limit-bars 7200 \
+--cfg configs/cfg_t3m_30d_newbest_full.yaml  \
+--plots plots_3m \
+--cache_db combined_cache_3m_7200_500u.db \
+#--symbols-file universe_5m_7400_1.03.txt  \
+#--cache_db combined_cache_3m_14400_30u.db \
+
+python3 auto_universe_and_tune.py \
+  --cfg configs/cfg_t3m_30d_newbest_full.yaml \
+  --limit-bars 7200 \
+  --prefix t5k_auto \
+  --trades trades_3m_6000.csv \
+  --universe-out universe_prof_v2_3m.txt \
+  --plots plots_auto \
+  --grid \
+  --driver backtester_core_speed3_veto_universe_2.py
