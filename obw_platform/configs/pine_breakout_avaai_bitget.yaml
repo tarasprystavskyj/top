@@ -4,7 +4,7 @@
 # below (or override it via ``--cache_db`` when invoking the backtester).  A
 # sample database is no longer bundled with the repository to avoid committing
 # binary fixtures.
-cache_db: "./DB/REPLACE_WITH_YOUR_CACHE.sqlite"
+cache_db: "combined_cache_3m_14400_24u.db"
 strategy_class: strategies.pine_bridge.PineBridgeStrategy
 limit_bars: 2880
 
@@ -16,7 +16,7 @@ portfolio:
   max_notional_frac: 0.6
 
 strategy_params:
-  pine_script_path: "./obw_platform/strategies/Breakout AVAAI BITGET.pine"
+  pine_script_path: "strategies/Breakout AVAAI BITGET.pine"
   auto_compile: true
   compiler:
     name: dummy
