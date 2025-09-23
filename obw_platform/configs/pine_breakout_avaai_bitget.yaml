@@ -1,0 +1,26 @@
+# Pine bridge configuration for the Breakout AVAAI strategy compiled from TradingView Pine.
+cache_db: "../combined_cache_5m_500b.db"
+strategy_class: strategies.pine_bridge.PineBridgeStrategy
+limit_bars: 2880
+
+portfolio:
+  initial_equity: 100.0
+  position_notional: 80.0
+  fee_rate: 0.0007
+  slippage_per_side: 0.0003
+  max_notional_frac: 0.6
+
+strategy_params:
+  pine_script_path: "../strategies/Breakout AVAAI BITGET.pine"
+  auto_compile: true
+  compiler:
+    name: dummy
+    cache_dir: "../_pine_cache"
+  base_strategy_params:
+    min_atr_ratio: 0.02
+    min_momentum_sum: 0.0
+    min_qv_24h: 0.0
+    min_qv_1h: 0.0
+    top_n: 12
+    side: "BOTH"
+
