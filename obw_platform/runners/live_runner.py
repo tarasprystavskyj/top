@@ -367,11 +367,15 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
     prev_sl_price = old_sl if old_sl else None
     ccxt_sym = fetcher.resolve_symbol(sym)
     side_close = 'sell' if side_long else 'buy'
+    pos_mode = str(position_mode or '').lower()
+    pos_oneway = pos_mode.startswith('one')
+    target_pos_side = 'BOTH' if pos_oneway else ('LONG' if side_long else 'SHORT')
+
     available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
         fetcher, sym, side_close, position_mode
     )
     local_qty = qty
-    qty_for_order = min(local_qty, free_qty)
+    qty_for_order = 0.0
     canceled = 0
     canceled_any = False
     if free_qty <= 0:
@@ -383,35 +387,11 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
                 available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
                     fetcher, sym, side_close, position_mode
                 )
-                qty_for_order = min(local_qty, free_qty)
                 if free_qty > 0:
                     break
                 time.sleep(max(BE_CANCEL_POLL_SEC, 0.0))
-    else:
-        qty_for_order = min(local_qty, free_qty)
 
-    mkt = fetcher.markets.get(ccxt_sym, {})
-    step = float(mkt.get('precision', {}).get('amount') or 0.0)
-    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
-    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
-    if step and step > 0:
-        qty_for_order = round_to_step(qty_for_order, step)
-    qty_for_order = float(qty_for_order)
-
-    min_qty_req = max(min_qty, 0.0)
-    price_for_notional = (
-        _safe_float(rec.get('entry_fill'))
-        or _safe_float(rec.get('entry'))
-        or _safe_float(rec.get('mark'))
-        or _safe_float(be)
-        or 0.0
-    )
-    notional_val = price_for_notional * qty_for_order if price_for_notional > 0 else 0.0
-
-    pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
-    base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
-    base['positionSide'] = 'BOTH' if pos_oneway else ('LONG' if side_long else 'SHORT')
-
+    effective_qty_src = local_qty
     pos_cache = None
     pos_cache_loaded = False
 
@@ -434,7 +414,7 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
                     or p.get('side')
                     or ''
                 ).upper()
-                if not pos_oneway and info_side and info_side != base['positionSide']:
+                if not pos_oneway and info_side and info_side != target_pos_side:
                     continue
                 found = p
                 break
@@ -468,6 +448,40 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
         except Exception:
             pass
         return 0.0
+
+    def _refresh_position(force=False):
+        nonlocal effective_qty_src
+        pos = _get_position(force=force)
+        pos_qty_inner = _pick_pos_qty(pos)
+        if pos_qty_inner > 0:
+            effective_qty_src = min(local_qty, pos_qty_inner)
+        else:
+            effective_qty_src = local_qty
+        return pos_qty_inner
+
+    pos_qty = _refresh_position(force=canceled_any)
+    qty_for_order = min(effective_qty_src, free_qty)
+
+    mkt = fetcher.markets.get(ccxt_sym, {})
+    step = float(mkt.get('precision', {}).get('amount') or 0.0)
+    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
+    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
+    if step and step > 0:
+        qty_for_order = round_to_step(qty_for_order, step)
+    qty_for_order = float(qty_for_order)
+
+    min_qty_req = max(min_qty, 0.0)
+    price_for_notional = (
+        _safe_float(rec.get('entry_fill'))
+        or _safe_float(rec.get('entry'))
+        or _safe_float(rec.get('mark'))
+        or _safe_float(be)
+        or 0.0
+    )
+    notional_val = price_for_notional * qty_for_order if price_for_notional > 0 else 0.0
+
+    base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
+    base['positionSide'] = target_pos_side
 
     def _resolve_retry_delay_seconds():
         tf_entry = rec.get('timeframe') or rec.get('tf')
@@ -510,14 +524,19 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
 
     failure_reason = None
     if qty_for_order <= 0.0:
-        failure_reason = f"qty<=0 після round (available={available_amt:.6g}, reserved={reserved_qty:.6g}, free={free_qty:.6g})"
+        failure_reason = (
+            f"qty<=0 після round (available={available_amt:.6g}, reserved={reserved_qty:.6g}, free={free_qty:.6g}, "
+            f"pos={pos_qty:.6g})"
+        )
     elif qty_for_order < min_qty_req - 1e-12:
         failure_reason = (
-            f"qty<{min_qty_req:.6g} (qty={qty_for_order:.6g}, available={available_amt:.6g}, reserved={reserved_qty:.6g}, free={free_qty:.6g})"
+            f"qty<{min_qty_req:.6g} (qty={qty_for_order:.6g}, available={available_amt:.6g}, reserved={reserved_qty:.6g}, "
+            f"free={free_qty:.6g}, pos={pos_qty:.6g})"
         )
     elif min_notional > 0 and notional_val > 0 and notional_val < min_notional - 1e-9:
         failure_reason = (
-            f"notional<{min_notional:.6g} (val={notional_val:.6g}, available={available_amt:.6g}, reserved={reserved_qty:.6g}, free={free_qty:.6g})"
+            f"notional<{min_notional:.6g} (val={notional_val:.6g}, available={available_amt:.6g}, reserved={reserved_qty:.6g}, "
+            f"free={free_qty:.6g}, pos={pos_qty:.6g})"
         )
 
     candidates = [
@@ -536,7 +555,7 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
             if BE_DIAG and idx == 0:
                 cprint(
                     f"[sl->BE diag] {sym} posSide={base['positionSide']} local_qty={local_qty:.6g} "
-                    f"available={available_amt:.6g} reserved={reserved_qty:.6g} free={free_qty:.6g} "
+                    f"pos_qty={pos_qty:.6g} available={available_amt:.6g} reserved={reserved_qty:.6g} free={free_qty:.6g} "
                     f"minQty={min_qty_req:.6g} minNotional={min_notional:.6g} payload={otype} qty={qty_for_order:.6g} params={params}",
                     fg="cyan",
                     dim=True,
@@ -581,7 +600,7 @@ def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
         available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
             fetcher, sym, side_close, position_mode
         )
-        pos = _get_position()
+        pos = _get_position(force=True)
         pos_qty = _pick_pos_qty(pos)
         qty_restore = pos_qty if pos_qty > 0 else local_qty
         qty_restore = min(qty_restore, local_qty)
@@ -722,11 +741,14 @@ def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price, now
         return None
     side = str(rec.get('side', 'LONG')).upper()
     sl_side = 'sell' if side == 'LONG' else 'buy'
+    pos_mode = str(position_mode or '').lower()
+    pos_oneway = pos_mode.startswith('one')
+    target_pos_side = 'BOTH' if pos_oneway else ('LONG' if side == 'LONG' else 'SHORT')
     available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
         fetcher, sym, sl_side, position_mode
     )
     local_qty = qty
-    qty = min(local_qty, free_qty)
+    qty_for_order = min(local_qty, free_qty)
     ts = None
     if isinstance(now_utc, datetime):
         try:
@@ -734,163 +756,144 @@ def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price, now
         except Exception:
             ts = None
     canceled = 0
+    canceled_any = False
     if free_qty <= 0:
         canceled = _cancel_existing_stops_same_side(fetcher, sym, sl_side, position_mode)
-        if canceled > 0:
-            available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
-                fetcher, sym, sl_side, position_mode
-            )
-            qty = min(local_qty, free_qty)
-    if free_qty <= 0:
-        msg = (
-            f"[sl->BE extra-fail] {sym} free_qty<=0 (available={available_amt:.6g}, reserved={reserved_qty:.6g}, free={free_qty:.6g}, canceled={canceled})"
-        )
-        if ts:
-            msg += f" ts={ts}"
-        cprint(msg, fg="yellow", dim=True)
-        return None
+        canceled_any = canceled > 0
+        if canceled_any:
+            time.sleep(max(BE_CANCEL_WAIT_SEC, 0.0))
+            for _ in range(max(1, BE_CANCEL_POLL_MAX)):
+                available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
+                    fetcher, sym, sl_side, position_mode
+                )
+                if free_qty > 0:
+                    break
+                time.sleep(max(BE_CANCEL_POLL_SEC, 0.0))
 
     ccxt_sym = fetcher.resolve_symbol(sym) or sym
-    mkt = fetcher.markets.get(ccxt_sym, {})
-    step = float(mkt.get('precision', {}).get('amount') or 0.0)
-    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
-    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
-    if step and step > 0:
-        qty = round_to_step(qty, step)
-    qty = float(qty)
-    if qty <= 0.0:
-        msg = (
-            f"[sl->BE extra-fail] {sym} qty<=0 після round (available={available_amt:.6g}, reserved={reserved_qty:.6g}, free={free_qty:.6g})"
-        )
-        if ts:
-            msg += f" ts={ts}"
-        cprint(msg, fg="yellow", dim=True)
-        return None
 
-    price_for_notional = (
-        _safe_float(rec.get('entry_fill'))
-        or _safe_float(rec.get('entry'))
-        or _safe_float(rec.get('mark'))
-        or _safe_float(be_price)
-        or 0.0
-    )
-    notional_val = price_for_notional * qty if price_for_notional > 0 else 0.0
-    min_qty_req = max(min_qty, 0.0)
-
-    if qty < min_qty_req - 1e-12:
-        msg = (
-            f"[sl->BE extra-fail] {sym} qty<{min_qty_req:.6g} (qty={qty:.6g}, available={available_amt:.6g}, reserved={reserved_qty:.6g}, free={free_qty:.6g})"
-        )
-        if ts:
-            msg += f" ts={ts}"
-        cprint(msg, fg="yellow", dim=True)
-        return None
-    if min_notional > 0 and notional_val > 0 and notional_val < min_notional - 1e-9:
-        msg = (
-            f"[sl->BE extra-fail] {sym} notional<{min_notional:.6g} (val={notional_val:.6g}, available={available_amt:.6g}, reserved={reserved_qty:.6g}, free={free_qty:.6g})"
-        )
-        if ts:
-            msg += f" ts={ts}"
-        cprint(msg, fg="yellow", dim=True)
-        return None
-    pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
-    base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
-    base['positionSide'] = 'BOTH' if pos_oneway else ('LONG' if side == 'LONG' else 'SHORT')
-    candidates = [
-        ('stop_market', sl_side, None, {**base, 'triggerPrice': float(be_price)}),
-        ('stop_market', sl_side, None, {**base, 'stopPrice': float(be_price)}),
-    ]
-    last_err = None
-    diag_verbose = bool(int(os.environ.get('BE_EXTRA_SL_VERBOSE', '0')))
-    for otype, oside, oprice, params in candidates:
+    def _extract_position_qty():
         try:
-            if diag_verbose and hasattr(fetcher.ex, 'verbose'):
-                old_verbose = getattr(fetcher.ex, 'verbose', False)
-                fetcher.ex.verbose = True
-            else:
-                old_verbose = None
-            try:
-                od = fetcher.ex.create_order(ccxt_sym, otype, oside, qty, oprice, params)
-            finally:
-                if old_verbose is not None:
-                    fetcher.ex.verbose = old_verbose
-            sleep_ms(RATE_MS)
-            return od
-        except Exception as e:
-            trig = params.get('triggerPrice') or params.get('stopPrice')
-            emsg = (e.args[0] if getattr(e, 'args', None) else str(e))
-            msg = (
-                f"[sl->BE extra-try-fail] {sym} {otype} {oside} qty={qty:.6g} trig={trig} -> {emsg}"
-            )
-            if ts:
-                msg += f" ts={ts}"
-            cprint(msg, fg="yellow", dim=True)
-            last_err = emsg
-            continue
-    msg = f"[sl->BE extra-fail] {sym} exhausted candidates; last_error={last_err or 'none'}"
-    if ts:
-        msg += f" ts={ts}"
-    cprint(msg, fg="red")
-    return None
-
-
-def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price, now_utc):
-    qty = float(rec.get('qty') or 0.0)
-    if qty <= 0.0 or not be_price:
-        return None
-    side = str(rec.get('side', 'LONG')).upper()
-    ccxt_sym = fetcher.resolve_symbol(sym) or sym
-    mkt = fetcher.markets.get(ccxt_sym, {})
-    step = float(mkt.get('precision', {}).get('amount') or 0.0)
-    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
-    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
-    if step and step > 0:
-        qty = round_to_step(qty, step)
-    qty = float(qty)
-    if qty <= 0.0:
-        return None
-    price_for_notional = (
-        _safe_float(rec.get('entry_fill'))
-        or _safe_float(rec.get('entry'))
-        or _safe_float(rec.get('mark'))
-        or _safe_float(be_price)
-        or 0.0
-    )
-    notional_val = price_for_notional * qty if price_for_notional > 0 else 0.0
-    min_qty_req = max(min_qty, 0.0)
-    ts = None
-    if isinstance(now_utc, datetime):
-        try:
-            ts = now_utc.isoformat()
+            positions = fetcher.fetch_positions()
         except Exception:
-            ts = None
+            positions = []
+        for p in positions or []:
+            if p.get('symbol') != ccxt_sym:
+                continue
+            info = p.get('info', {}) if isinstance(p.get('info'), dict) else {}
+            info_side = str(
+                info.get('positionSide')
+                or p.get('positionSide')
+                or p.get('side')
+                or ''
+            ).upper()
+            if not pos_oneway and info_side and info_side != target_pos_side:
+                continue
+            for val in (
+                info.get('availableAmt'),
+                info.get('contracts'),
+                p.get('contracts'),
+                info.get('positionAmt'),
+                p.get('positionAmt'),
+            ):
+                try:
+                    if val is None:
+                        continue
+                    v = abs(float(val))
+                    if v > 0:
+                        return v
+                except Exception:
+                    continue
+            break
+        return 0.0
 
-    if qty < min_qty_req - 1e-12:
-        cprint(
-            f"[sl->BE extra-fail] {sym} qty<{min_qty_req:.6g} (qty={qty:.6g})"
-            + (f" ts={ts}" if ts else ""),
-            fg="yellow",
-            dim=True,
+    pos_qty = _extract_position_qty()
+    if canceled_any:
+        # refresh after cancellations to avoid stale cache
+        pos_qty = _extract_position_qty()
+
+    if pos_qty > 0:
+        qty_for_order = min(qty_for_order, pos_qty, local_qty)
+    else:
+        qty_for_order = min(qty_for_order, local_qty)
+
+    qty_for_order = min(qty_for_order, free_qty)
+
+    if free_qty <= 0 or qty_for_order <= 0:
+        msg = (
+            f"[sl->BE extra-fail] {sym} free_qty<=0 (available={available_amt:.6g}, reserved={reserved_qty:.6g}, "
+            f"free={free_qty:.6g}, pos={pos_qty:.6g}, canceled={canceled})"
         )
+        if ts:
+            msg += f" ts={ts}"
+        cprint(msg, fg="yellow", dim=True)
+        return None
+
+    mkt = fetcher.markets.get(ccxt_sym, {})
+    step = float(mkt.get('precision', {}).get('amount') or 0.0)
+    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
+    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
+    if step and step > 0:
+        qty_for_order = round_to_step(qty_for_order, step)
+    qty_for_order = float(qty_for_order)
+    if qty_for_order <= 0.0:
+        msg = (
+            f"[sl->BE extra-fail] {sym} qty<=0 після round (available={available_amt:.6g}, reserved={reserved_qty:.6g}, "
+            f"free={free_qty:.6g}, pos={pos_qty:.6g})"
+        )
+        if ts:
+            msg += f" ts={ts}"
+        cprint(msg, fg="yellow", dim=True)
+        return None
+
+    price_for_notional = (
+        _safe_float(rec.get('entry_fill'))
+        or _safe_float(rec.get('entry'))
+        or _safe_float(rec.get('mark'))
+        or _safe_float(be_price)
+        or 0.0
+    )
+    notional_val = price_for_notional * qty_for_order if price_for_notional > 0 else 0.0
+    min_qty_req = max(min_qty, 0.0)
+
+    if qty_for_order < min_qty_req - 1e-12:
+        msg = (
+            f"[sl->BE extra-fail] {sym} qty<{min_qty_req:.6g} (qty={qty_for_order:.6g}, available={available_amt:.6g}, "
+            f"reserved={reserved_qty:.6g}, free={free_qty:.6g}, pos={pos_qty:.6g})"
+        )
+        if ts:
+            msg += f" ts={ts}"
+        cprint(msg, fg="yellow", dim=True)
         return None
     if min_notional > 0 and notional_val > 0 and notional_val < min_notional - 1e-9:
-        cprint(
-            f"[sl->BE extra-fail] {sym} notional<{min_notional:.6g} (val={notional_val:.6g})"
-            + (f" ts={ts}" if ts else ""),
-            fg="yellow",
-            dim=True,
+        msg = (
+            f"[sl->BE extra-fail] {sym} notional<{min_notional:.6g} (val={notional_val:.6g}, available={available_amt:.6g}, "
+            f"reserved={reserved_qty:.6g}, free={free_qty:.6g}, pos={pos_qty:.6g})"
         )
+        if ts:
+            msg += f" ts={ts}"
+        cprint(msg, fg="yellow", dim=True)
         return None
-    pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
     base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
-    base['positionSide'] = 'BOTH' if pos_oneway else ('LONG' if side == 'LONG' else 'SHORT')
-    sl_side = 'sell' if side == 'LONG' else 'buy'
+    base['positionSide'] = target_pos_side
     candidates = [
         ('stop_market', sl_side, None, {**base, 'triggerPrice': float(be_price)}),
         ('stop_market', sl_side, None, {**base, 'stopPrice': float(be_price)}),
     ]
     last_err = None
     diag_verbose = bool(int(os.environ.get('BE_EXTRA_SL_VERBOSE', '0')))
+    if BE_DIAG:
+        try:
+            cprint(
+                f"[sl->BE extra diag] {sym} posSide={base['positionSide']} local_qty={local_qty:.6g} "
+                f"pos_qty={pos_qty:.6g} available={available_amt:.6g} reserved={reserved_qty:.6g} "
+                f"free={free_qty:.6g} canceled={canceled} qty={qty_for_order:.6g} minQty={min_qty_req:.6g} "
+                f"minNotional={min_notional:.6g}",
+                fg='cyan',
+                dim=True,
+            )
+        except Exception:
+            pass
     for otype, oside, oprice, params in candidates:
         try:
             if diag_verbose and hasattr(fetcher.ex, 'verbose'):
@@ -899,7 +902,7 @@ def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price, now
             else:
                 old_verbose = None
             try:
-                od = fetcher.ex.create_order(ccxt_sym, otype, oside, qty, oprice, params)
+                od = fetcher.ex.create_order(ccxt_sym, otype, oside, qty_for_order, oprice, params)
             finally:
                 if old_verbose is not None:
                     fetcher.ex.verbose = old_verbose
@@ -909,7 +912,7 @@ def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price, now
             trig = params.get('triggerPrice') or params.get('stopPrice')
             emsg = (e.args[0] if getattr(e, 'args', None) else str(e))
             msg = (
-                f"[sl->BE extra-try-fail] {sym} {otype} {oside} qty={qty:.6g} trig={trig} -> {emsg}"
+                f"[sl->BE extra-try-fail] {sym} {otype} {oside} qty={qty_for_order:.6g} trig={trig} -> {emsg}"
             )
             if ts:
                 msg += f" ts={ts}"
