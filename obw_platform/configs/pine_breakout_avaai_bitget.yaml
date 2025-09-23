@@ -4,7 +4,7 @@
 # below (or override it via ``--cache_db`` when invoking the backtester).  A
 # sample database is no longer bundled with the repository to avoid committing
 # binary fixtures.
-cache_db: "./DB/REPLACE_WITH_YOUR_CACHE.sqlite"
+cache_db: ".DB/combined_cache_3m_14400_24u.db"
 strategy_class: strategies.pine_bridge.PineBridgeStrategy
 limit_bars: 2880
 
