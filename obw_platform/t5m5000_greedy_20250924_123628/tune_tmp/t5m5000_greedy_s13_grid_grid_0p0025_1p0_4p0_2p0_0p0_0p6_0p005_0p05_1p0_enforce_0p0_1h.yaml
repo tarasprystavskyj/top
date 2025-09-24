@@ -1,0 +1,58 @@
+timeframe: 3m
+cache_db: DB/combined_cache_3m_14400_24u.db
+universe_file: universe/universe_prof_v2_3m.txt
+reports_dir: _reports/_backtest
+strategy_class: strategies.breakout_avaai_full_with_universe_7.BreakoutAVAAIFull
+strategy_params:
+  tp_atr_mult: 4.6
+  sl_atr_mult: 0.36
+  min_atr_ratio: 0.018
+  min_momentum_sum: 0.06
+  length: 10
+  volume_length: 20
+  macd_filter: 1
+  exit_on_heat: true
+  heat_exit_threshold: 0.93
+  heat_exit_min_rr: 1.15
+  htf_bias:
+    enabled: 1.0
+    break_min: 0.0025
+    confirm_bars: 1.0
+    hysteresis_bars: 4.0
+    cooldown_bars: 2.0
+    mode: enforce
+    entry_gate: 0.0
+    rank_boost_short: 0.0
+    rank_boost_long: 0.6
+    mom_confirm_min: 0.005
+    heat_relax_rr: 0.05
+    tf: 1h
+portfolio:
+  position_notional: 4.5
+  position_notional_max: 68
+  initial_equity: 68
+  max_notional_frac: 0.99
+  slippage_per_side: 0.0016
+  fee_rate: 0.0035
+partial_tp:
+  enabled: true
+  levels: 3
+  min_notional_usdt: 1.0
+  working_type: MARK_PRICE
+htf_bias:
+  enabled: true
+  tf: 30m
+  break_min: 0.003
+  confirm_bars: 2
+  hysteresis_bars: 6
+  cooldown_bars: 10
+  mode: tilt
+  entry_gate: false
+  rank_boost_short: 0.6
+  rank_boost_long: 0.6
+  mom_confirm_min: 0.005
+  heat_relax_rr: 0.1
+exec:
+  jitter_bps: 0.0008
+  latency_bars: 0
+  spread_max_bps: 0.001

@@ -4,11 +4,11 @@
 
 timeframe: 3m
 cache_db: DB/combined_cache_3m_14400_24u.db
-universe_file: obw_platform/universe/universe_prof_v2_3m.txt
+universe_file: universe/universe_prof_v2_3m.txt
 
 reports_dir: _reports/_backtest
 
-strategy_class: obw_platform.strategies.breakout_avaai_full_with_universe_7.BreakoutStrategy
+strategy_class: strategies.breakout_avaai_full_with_universe_7.BreakoutAVAAIFull
 
 strategy_params:
   tp_atr_mult: 4.6
