@@ -1,5 +1,5 @@
 timeframe: 3m
-cache_db: _reports/_live/livecfg_cfg_t3m_30d_newbest_full_limit_sl_3m/combined_cache_session.db
+cache_db: ../DB/combined_cache_3m_14400_24u.db
 strategy_class: strategies.breakout_avaai_full_with_universe_7.BreakoutAVAAIFull
 open_on_heat: false
 open_heat_min: 0.01
@@ -7,23 +7,23 @@ position_mode: oneway
 strategy_params:
   side: BOTH
   top_n: 4
-  length: 10.0
+  length: 9
   macd_filter: 1
-  volume_length: 20
+  volume_length: 16
   adx_length: 14
   adx_threshold: 22
   atr_threshold_ratio: 0.0022
-  tp_atr_mult: 4.5
-  sl_atr_mult: 0.3
+  tp_atr_mult: 3.8
+  sl_atr_mult: 0
   min_qv_24h: 0.0
   min_qv_1h: 0.0
-  min_atr_ratio: 0.016
-  min_momentum_sum: 0.1
+  min_atr_ratio: 0.019
+  min_momentum_sum: 0
   fee_rate: 0.001
   slippage_per_side: 0.0016
   exit_on_heat: true
-  heat_exit_threshold: 0.96
-  heat_exit_min_rr: 1.07
+  heat_exit_threshold: 0.93
+  heat_exit_min_rr: 1.13
   partial_tp_enable: true
   partial_tp_frac: 0.5
   partial_trigger_frac_of_tp: 0.5
