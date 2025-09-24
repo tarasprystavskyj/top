@@ -125,16 +125,28 @@ def _calc_free_reduceonly_qty(fetcher, sym, side_close, position_mode):
         positions = []
 
     if pos:
-        # BingX повертає availableAmt у info; fallback на 'contracts'
-        try:
-            available_amt = float(pos.get('info', {}).get('availableAmt') or 0.0)
-        except Exception:
-            available_amt = 0.0
-        if available_amt <= 0 and pos.get('contracts') is not None:
+        # BingX повертає availableAmt у info; fallback на інші кількісні поля позиції
+        info = pos.get('info', {}) if isinstance(pos.get('info'), dict) else {}
+        candidates = (
+            info.get('availableAmt'),
+            info.get('contracts'),
+            pos.get('contracts'),
+            info.get('positionAmt'),
+            pos.get('positionAmt'),
+            info.get('availQty'),
+            info.get('available'),
+        )
+        available_amt = 0.0
+        for raw_val in candidates:
             try:
-                available_amt = float(pos.get('contracts') or 0.0)
+                if raw_val is None:
+                    continue
+                val = abs(float(raw_val))
+                if val > 0:
+                    available_amt = val
+                    break
             except Exception:
-                pass
+                continue
 
     # 2) зарезервовано в reduceOnly
     reserved = 0.0
@@ -224,8 +236,11 @@ def _cancel_existing_stops_same_side(fetcher, sym, side_close, position_mode=Non
         ).upper()
         if target_pos_side and info_side and info_side != target_pos_side:
             continue
+        order_id = od.get('id') or od.get('orderId') or od.get('clientOrderId')
+        if not order_id:
+            continue
         try:
-            fetcher.ex.cancel_order(od.get('id'), ccxt_sym)
+            fetcher.ex.cancel_order(order_id, ccxt_sym)
             sleep_ms(RATE_MS)
             n += 1
         except Exception:
