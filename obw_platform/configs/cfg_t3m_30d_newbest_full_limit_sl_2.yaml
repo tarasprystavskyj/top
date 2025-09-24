@@ -14,10 +14,10 @@ strategy_params:
   adx_threshold: 22
   atr_threshold_ratio: 0.0022
   tp_atr_mult: 3.8
-  sl_atr_mult: 0
+  sl_atr_mult: 0.1
   min_qv_24h: 0.0
   min_qv_1h: 0.0
-  min_atr_ratio: 0.019
+  min_atr_ratio: 0.017
   min_momentum_sum: 0
   fee_rate: 0.001
   slippage_per_side: 0.0016
@@ -73,7 +73,7 @@ portfolio:
   initial_equity: 68
   max_notional_frac: 0.99
   slippage_per_side: 0.0016
-  fee_rate: 0.001
+  fee_rate: 0.0025 # подвоїв щоб врахувати вхід SL у котрому fee чомусь виходить 0.05USDT для позиції 4.5USDT
 session:
   open_every_bar: true
 top-n: 8.0
