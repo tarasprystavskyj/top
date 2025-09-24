@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Optional, Literal, Mapping, Any, List, Dict, Tuple
 
 Side = Literal["LONG","SHORT"]
@@ -89,6 +90,9 @@ class BreakoutAVAAIFull:
         self.partial_tp_enable: bool = bool(_read("partial_tp_enable", True))
         self.partial_tp_frac: float = float(_read("partial_tp_frac", 0.50))
         self.partial_trigger_frac_of_tp: float = float(_read("partial_trigger_frac_of_tp", 0.50))
+        self.partial_tp_levels: int = int(_read("partial_tp_levels", 4))
+        self.partial_tp_scheme: str = str(_read("partial_tp_scheme", "halving")).lower()
+        self.partial_tp_min_notional_usdt: float = float(_read("partial_tp_min_notional_usdt", 1.0))
         self.exchange_min_notional: float = float(_read("exchange_min_notional", 2.2))
         self.min_qty: float = float(_read("min_qty", 0.0))
 
@@ -378,8 +382,143 @@ class BreakoutAVAAIFull:
 
         self._opens_this_bar += 1
         entry_heat = self.heat(t, symbol, row)
-        return Sig(side=side, take_profit=float(tp), stop_price=float(sl),
-                   reason="rule/atr-multipliers", heat=float(entry_heat))
+        tags = {
+            "exit_plan_meta": {
+                "atr_abs": float(atr_abs),
+                "entry_basis": float(close),
+            }
+        }
+        return Sig(
+            side=side,
+            take_profit=float(tp),
+            stop_price=float(sl),
+            reason="rule/atr-multipliers",
+            heat=float(entry_heat),
+            tags=tags,
+        )
+
+    @staticmethod
+    def _round_to_step(value: float, step: float) -> float:
+        if not step or step <= 0:
+            return float(value)
+        try:
+            return math.floor(float(value) / float(step)) * float(step)
+        except Exception:
+            return float(value)
+
+    def build_exit_plan(
+        self,
+        symbol: str,
+        sig: Sig,
+        *,
+        entry_price: float,
+        fill_price: Optional[float] = None,
+        qty: Optional[float] = None,
+        market_info: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        side = str(getattr(sig, "side", "LONG")).upper()
+        entry_ref = _f(fill_price, None)
+        if entry_ref is None or entry_ref <= 0:
+            entry_ref = _f(entry_price, 0.0) or 0.0
+
+        tags = getattr(sig, "tags", {}) or {}
+        meta = dict(tags.get("exit_plan_meta") or {}) if isinstance(tags, dict) else {}
+        atr_abs = _f(meta.get("atr_abs"), None)
+        if (atr_abs is None or atr_abs <= 0) and entry_ref > 0:
+            basis = _f(meta.get("entry_basis"), None)
+            if basis is None or basis <= 0:
+                basis = entry_ref
+            tp_est = _f(getattr(sig, "take_profit", None), None)
+            if tp_est is not None and self.tp_mult > 0:
+                diff = tp_est - basis if side == "LONG" else basis - tp_est
+                atr_abs = abs(diff) / max(self.tp_mult, 1e-12)
+            sl_est = _f(getattr(sig, "stop_price", None), None)
+            if (atr_abs is None or atr_abs <= 0) and sl_est is not None and self.sl_mult > 0:
+                diff = basis - sl_est if side == "LONG" else sl_est - basis
+                atr_abs = abs(diff) / max(self.sl_mult, 1e-12)
+
+        tp_price = _f(getattr(sig, "take_profit", None), None)
+        sl_price = _f(getattr(sig, "stop_price", None), None)
+        if atr_abs and atr_abs > 0 and entry_ref > 0:
+            if side == "LONG":
+                tp_price = entry_ref + self.tp_mult * atr_abs
+                sl_price = entry_ref - self.sl_mult * atr_abs
+            else:
+                tp_price = entry_ref - self.tp_mult * atr_abs
+                sl_price = entry_ref + self.sl_mult * atr_abs
+
+        tp_trigger = None
+        if tp_price and entry_ref > 0:
+            trig_ratio = max(0.0, min(1.0, float(self.partial_trigger_frac_of_tp)))
+            if side == "LONG":
+                tp_trigger = entry_ref + (tp_price - entry_ref) * trig_ratio
+            else:
+                tp_trigger = entry_ref - (entry_ref - tp_price) * trig_ratio
+
+        ladder_plan: List[Dict[str, Any]] = []
+        if (
+            self.partial_tp_enable
+            and tp_price
+            and entry_ref > 0
+            and qty
+            and qty > 0
+            and self.partial_tp_levels > 0
+        ):
+            scheme = self.partial_tp_scheme
+            market_info = market_info or {}
+            precision = market_info.get("precision") or {}
+            limits = market_info.get("limits") or {}
+            amount_limits = limits.get("amount") or {}
+            cost_limits = limits.get("cost") or {}
+            step = _f(precision.get("amount"), 0.0) or 0.0
+            min_qty = _f(amount_limits.get("min"), 0.0) or 0.0
+            ex_min_notional = _f(cost_limits.get("min"), 0.0) or 0.0
+            min_notional_req = max(
+                ex_min_notional,
+                float(self.exchange_min_notional or 0.0),
+                float(self.partial_tp_min_notional_usdt or 0.0),
+            )
+
+            if scheme == "halving":
+                total_levels = int(self.partial_tp_levels)
+                for level in range(1, total_levels + 1):
+                    ratio = 1 - (0.5 ** level)
+                    qty_frac = 0.5 ** level
+                    raw_qty = float(qty) * qty_frac
+                    adj_qty = self._round_to_step(raw_qty, step)
+                    if adj_qty <= 0:
+                        continue
+                    if min_qty and adj_qty < min_qty:
+                        continue
+                    if side == "LONG":
+                        price_i = entry_ref + (tp_price - entry_ref) * ratio
+                        side_close = "sell"
+                    else:
+                        price_i = entry_ref - (entry_ref - tp_price) * ratio
+                        side_close = "buy"
+                    notional_i = price_i * adj_qty
+                    if min_notional_req and notional_i < min_notional_req:
+                        continue
+                    ladder_plan.append(
+                        {
+                            "price": float(price_i),
+                            "qty": float(adj_qty),
+                            "qty_frac": float(qty_frac),
+                            "side": side_close,
+                            "filled": False,
+                            "order_id": None,
+                            "min_notional": float(min_notional_req),
+                        }
+                    )
+
+        plan = {
+            "tp_price": float(tp_price) if tp_price else None,
+            "sl_price": float(sl_price) if sl_price else None,
+            "tp50_trigger": float(tp_trigger) if tp_trigger else None,
+            "be_price": float(entry_ref) if entry_ref else None,
+            "tp_ladder_plan": ladder_plan,
+        }
+        return plan
 
     def manage_position(self, symbol, row, pos, ctx=None):
         close = _f(row.get("close", 0.0))

@@ -71,6 +71,13 @@ def _pos_adapter(rec: dict):
 
 def _calc_tp50_and_be(rec):
     try:
+        tp_plan = rec.get('tp50_trigger')
+        be_plan = rec.get('be_price')
+        if tp_plan is not None and be_plan is not None:
+            return float(tp_plan), float(be_plan)
+    except Exception:
+        pass
+    try:
         entry = float(rec.get('entry_fill') or rec.get('entry') or 0.0)
     except Exception:
         entry = 0.0
@@ -92,6 +99,80 @@ def _calc_tp50_and_be(rec):
     return float(tp50), float(be)
 
 
+def _place_partial_tp_ladder(fetcher, sym, rec, position_mode):
+    """Ставит reduceOnly stop_market на драбинку часткових TP."""
+    plan = rec.get('tp_ladder_plan') or []
+    if not plan:
+        return
+
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    mkt = fetcher.markets.get(ccxt_sym, {})
+    step = float(mkt.get('precision', {}).get('amount') or 0.0)
+    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
+    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
+
+    pos_mode = str(position_mode or '').lower()
+    side_long = str(rec.get('side', 'LONG')).upper() == 'LONG'
+    position_side = (
+        'BOTH'
+        if pos_mode.startswith('one')
+        else ('LONG' if side_long else 'SHORT')
+    )
+
+    placed = 0
+    for entry in plan:
+        try:
+            price_i = float(entry.get('price') or 0.0)
+        except Exception:
+            price_i = 0.0
+        try:
+            qty_level = float(entry.get('qty') or 0.0)
+        except Exception:
+            qty_level = 0.0
+        side_close = entry.get('side') or ('sell' if side_long else 'buy')
+        if price_i <= 0 or qty_level <= 0:
+            continue
+        if step and step > 0:
+            qty_level = round_to_step(qty_level, step)
+        if qty_level <= 0 or (min_qty and qty_level < min_qty):
+            continue
+        notional_i = price_i * qty_level
+        min_level_notional = float(entry.get('min_notional') or 0.0)
+        min_req = max(min_notional, min_level_notional)
+        if min_req and notional_i < min_req:
+            continue
+        try:
+            od = fetcher.ex.create_order(
+                ccxt_sym,
+                'stop_market',
+                side_close,
+                qty_level,
+                None,
+                {
+                    'reduceOnly': True,
+                    'positionSide': position_side,
+                    'triggerPrice': float(price_i),
+                    'workingType': 'MARK_PRICE',
+                },
+            )
+            placed += 1
+            entry['qty'] = float(qty_level)
+            entry['side'] = side_close
+            if isinstance(od, dict):
+                entry['order_id'] = od.get('id') or od.get('orderId') or entry.get('order_id')
+            entry['filled'] = bool(entry.get('filled', False))
+        except Exception as e:
+            cprint(
+                f"[tp.ladder fail] {sym} {side_close} qty={qty_level} trig={price_i} -> {e}",
+                fg='yellow',
+                dim=True,
+            )
+
+    if placed:
+        rec['tp_ladder_planned'] = True
+        rec['tp_ladder_levels'] = placed
+    elif plan:
+        rec['tp_ladder_plan'] = plan
 def _calc_free_reduceonly_qty(fetcher, sym, side_close, position_mode):
     """
     Повертає (available_amt, reserved_qty, free_qty).
@@ -958,15 +1039,24 @@ def _ensure_be_fields(rec):
         entry_val = float(rec.get('entry') or rec.get('entry_fill') or 0.0)
     except Exception:
         entry_val = 0.0
+    if rec.get('be_price') is None and entry_val:
+        rec['be_price'] = entry_val
     if rec.get('be_high_price') is None and entry_val:
         rec['be_high_price'] = entry_val
     if rec.get('be_low_price') is None and entry_val:
         rec['be_low_price'] = entry_val
     rec.setdefault('be_high_price', None)
     rec.setdefault('be_low_price', None)
+    rec.setdefault('be_price', entry_val if entry_val else None)
     rec.setdefault('be_extra_sl_done', False)
     rec.setdefault('be_extra_sl_order_id', None)
     rec.setdefault('be_extra_sl_last_attempt_ts', None)
+    rec.setdefault('tp_ladder_planned', False)
+    rec.setdefault('tp_ladder_levels', 0)
+    rec.setdefault('tp_ladder_plan', [])
+    rec.setdefault('tp_ladder_done_qty', 0.0)
+    rec.setdefault('tp_ladder_first_fill_ts', None)
+    rec.setdefault('tp_ladder_last_fill_ts', None)
 
 _last_dot_bar = None
 def _bar_key(now: datetime, bar_sec: int) -> int:
@@ -2172,6 +2262,124 @@ def run_live(cfg: dict, args):
                     pass
         cprint('[resume]', f'bot has {len(positions)} locally recorded open position(s)', fg='yellow')
 
+    def _handle_tp_ladder_fill(sym: str, rec: dict, qty_closed: float, price_hint: Optional[float] = None):
+        if qty_closed is None or qty_closed <= 0:
+            return False
+        now_utc = datetime.now(timezone.utc)
+        try:
+            price = float(price_hint) if price_hint is not None else float(fetcher.fetch_ticker_price(sym) or 0.0)
+        except Exception:
+            price = float(price_hint or 0.0)
+        if not price:
+            try:
+                price = float(rec.get('tp_price') or rec.get('tp') or rec.get('entry_fill') or 0.0)
+            except Exception:
+                price = 0.0
+        try:
+            mark_price = fetcher.fetch_mark_price(sym)
+        except Exception:
+            mark_price = None
+
+        try:
+            entry = float(rec.get('entry') or rec.get('entry_fill') or 0.0)
+        except Exception:
+            entry = 0.0
+        side_long = str(rec.get('side', 'LONG')).upper() == 'LONG'
+
+        qty_closed = float(qty_closed)
+        if qty_closed <= 0:
+            return False
+
+        if entry <= 0:
+            gross = 0.0
+        else:
+            if side_long:
+                gross = (price - entry) / entry
+            else:
+                gross = (entry - price) / entry
+        fee_rate = float(getattr(strat, 'fee_rate', 0.0))
+        fees = (entry * qty_closed + price * qty_closed) * fee_rate if entry and qty_closed else 0.0
+        net = gross - (fees / (entry * qty_closed)) if entry and qty_closed else gross
+        realized = net * entry * qty_closed if entry else 0.0
+
+        side_close = 'sell' if side_long else 'buy'
+        try:
+            insert_order_row(
+                session_db_path,
+                {
+                    'order_id': str(uuid.uuid4()),
+                    'ts_utc': now_utc.isoformat(),
+                    'bar_time_utc': now_utc.isoformat(),
+                    'mode': 'TP_PARTIAL',
+                    'symbol': sym,
+                    'side': side_close,
+                    'type': 'market',
+                    'price': float(price),
+                    'qty': float(qty_closed),
+                    'status': 'filled',
+                    'reason': 'TP_LADDER',
+                    'run_id': run_id,
+                    'extra': json.dumps({
+                        'gross_return': gross,
+                        'net_return': net,
+                        'fees_paid': fees,
+                        'realized_pnl': realized,
+                        'mark_price': mark_price,
+                    }),
+                },
+            )
+        except Exception:
+            pass
+
+        try:
+            cur_qty = float(rec.get('qty', 0.0))
+        except Exception:
+            cur_qty = 0.0
+        rec['qty'] = max(0.0, cur_qty - qty_closed)
+        rec['tp_ladder_done_qty'] = float(rec.get('tp_ladder_done_qty') or 0.0) + qty_closed
+        rec['tp_ladder_last_fill_ts'] = now_utc.isoformat()
+        plan = rec.get('tp_ladder_plan') or []
+        try:
+            for lvl in plan:
+                if not isinstance(lvl, dict):
+                    continue
+                if lvl.get('filled'):
+                    continue
+                lvl['filled'] = True
+                lvl['filled_qty'] = float(qty_closed)
+                lvl['fill_ts'] = now_utc.isoformat()
+                if price:
+                    lvl['fill_price'] = float(price)
+                break
+        except Exception:
+            pass
+        rec['tp_ladder_plan'] = plan
+
+        first_fill = not rec.get('tp_ladder_first_fill_ts')
+        if first_fill:
+            rec['tp_ladder_first_fill_ts'] = now_utc.isoformat()
+        rec.setdefault('tp_ladder_planned', bool(plan) or rec.get('tp_ladder_planned'))
+
+        if first_fill and not rec.get('be_plan_active'):
+            rec['be_plan_active'] = True
+            rec['be_plan_activated_ts'] = now_utc.isoformat()
+        placed_be_stop = False
+        if first_fill and not rec.get('sl_be_done'):
+            try:
+                placed_be_stop = _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode)
+                if placed_be_stop:
+                    rec['be_plan_last_fallback_ts'] = now_utc.isoformat()
+                    cprint(f'[sl->BE] {sym} after partial TP new_sl={float(rec.get("sl_price") or 0.0):.6g}', fg='cyan')
+            except Exception as e:
+                cprint(f'[sl->BE ERR] {sym} {e}', fg='red')
+
+        save_positions(args.results_dir, positions)
+        try:
+            db_upsert_open_position(session_db_path, bot_id, rec)
+        except Exception:
+            pass
+        return True
+
     try:
         ex_positions = fetcher.ex.fetch_positions()
     except Exception as e:
@@ -2297,7 +2505,15 @@ def run_live(cfg: dict, args):
                 cur_qty = float(rec.get('qty', 0.0))
             except Exception:
                 cur_qty = 0.0
-            if abs(ex_qty - cur_qty) > max(1e-8, 0.01 * max(1.0, ex_qty)):
+            tolerance = max(1e-8, 0.01 * max(1.0, ex_qty))
+            if cur_qty - ex_qty > tolerance:
+                if _handle_tp_ladder_fill(sym, rec, cur_qty - ex_qty):
+                    sync_changed = True
+                    try:
+                        cur_qty = float(rec.get('qty', 0.0))
+                    except Exception:
+                        cur_qty = ex_qty
+            if abs(ex_qty - cur_qty) > tolerance:
                 rec['qty'] = ex_qty
                 sync_changed = True
             ex_entry = _safe_float(ex_rec.get('entry'))
@@ -2934,20 +3150,46 @@ def run_live(cfg: dict, args):
                             entry_mark_price = _safe_float(mark)
                             cprint('[open OK]', f'{sym} {side_str} qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
                             rec = {'symbol': sym,'side': side_str,'qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec,'entry_mark_price': entry_mark_price}
+                            plan = None
+                            ccxt_sym = fetcher.resolve_symbol(sym)
+                            mkt_info = fetcher.markets.get(ccxt_sym, {})
+                            plan_builder = getattr(strat, 'build_exit_plan', None)
+                            if callable(plan_builder):
+                                try:
+                                    plan = plan_builder(
+                                        symbol=sym,
+                                        sig=sig,
+                                        entry_price=float(entry_px),
+                                        fill_price=float(entry_fill),
+                                        qty=float(qty),
+                                        market_info=mkt_info,
+                                    )
+                                except Exception as e:
+                                    cprint('[plan error]', sym, e, fg='yellow', dim=True)
+                            if isinstance(plan, dict):
+                                new_tp = plan.get('tp_price')
+                                if new_tp is not None:
+                                    tp_price = float(new_tp)
+                                    rec['tp_price'] = float(new_tp)
+                                new_sl = plan.get('sl_price')
+                                if new_sl is not None:
+                                    sl_price = float(new_sl)
+                                    rec['sl_price'] = float(new_sl)
+                                ladder_plan = plan.get('tp_ladder_plan') or plan.get('tp_ladder')
+                                if ladder_plan is not None:
+                                    rec['tp_ladder_plan'] = list(ladder_plan)
+                                    try:
+                                        rec['tp_ladder_levels'] = len(ladder_plan)
+                                    except Exception:
+                                        pass
+                                tp_trigger = plan.get('tp50_trigger')
+                                if tp_trigger is not None:
+                                    rec['tp50_trigger'] = float(tp_trigger)
+                                be_plan = plan.get('be_price')
+                                if be_plan is not None:
+                                    rec['be_price'] = float(be_plan)
                             _ensure_be_fields(rec)
                             position_notional += qty * entry_fill
-                            # Fallback TP/SL placement as separate orders (reduce-only)
-                            part_tp_price = part_tp_qty = None
-                            if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
-                                trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
-                                frac = float(getattr(strat, 'partial_tp_frac', 0.5))
-                                if side_str == 'SHORT':
-                                    path = entry_px - tp_price
-                                    part_tp_price = entry_px - trig * path
-                                else:
-                                    path = tp_price - entry_px
-                                    part_tp_price = entry_px + trig * path
-                                part_tp_qty = qty * frac
                             try:
                                 _place_tp_sl_after_open(
                                     fetcher,
@@ -2957,11 +3199,15 @@ def run_live(cfg: dict, args):
                                     tp_price,
                                     sl_price,
                                     position_mode,
-                                    part_tp_price,
-                                    part_tp_qty,
+                                    None,
+                                    None,
                                     pos_rec=rec,
                                 )
                             except Exception as e: _dbg('post_open_error', str(e))
+                            try:
+                                _place_partial_tp_ladder(fetcher, sym, rec, position_mode)
+                            except Exception as e:
+                                cprint('[tp.ladder error]', sym, e, fg='yellow')
                             tp50, be_price = _calc_tp50_and_be(rec)
                             rec['tp50_trigger'] = tp50
                             od = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
@@ -3030,16 +3276,46 @@ def run_live(cfg: dict, args):
                     entry_mark_price = _safe_float(mark)
                     cprint('[open OK]', f'{sym} SHORT qty={qty:.6g} px={entry_px}'+(f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
                     rec = {'symbol': sym,'side': 'SHORT','qty': qty,'entry': float(entry_px),'tp_price': float(tp_price) if tp_price is not None else None,'sl_price': float(sl_price) if sl_price is not None else None,'ts_open': bar_close.isoformat(),'run_id': run_id,'order_id': str(uuid.uuid4()),'exchange_order_id': ex_order_id,'entry_fill': entry_fill,'entry_fill_ts': fdt.isoformat() if fdt else None,'entry_slip_bp': slip_bp,'entry_lag_sec': lag_sec,'entry_mark_price': entry_mark_price}
+                    plan = None
+                    ccxt_sym = fetcher.resolve_symbol(sym)
+                    mkt_info = fetcher.markets.get(ccxt_sym, {})
+                    plan_builder = getattr(strat, 'build_exit_plan', None)
+                    if callable(plan_builder):
+                        try:
+                            plan = plan_builder(
+                                symbol=sym,
+                                sig=sig,
+                                entry_price=float(entry_px),
+                                fill_price=float(entry_fill),
+                                qty=float(qty),
+                                market_info=mkt_info,
+                            )
+                        except Exception as e:
+                            cprint('[plan error]', sym, e, fg='yellow', dim=True)
+                    if isinstance(plan, dict):
+                        new_tp = plan.get('tp_price')
+                        if new_tp is not None:
+                            tp_price = float(new_tp)
+                            rec['tp_price'] = float(new_tp)
+                        new_sl = plan.get('sl_price')
+                        if new_sl is not None:
+                            sl_price = float(new_sl)
+                            rec['sl_price'] = float(new_sl)
+                        ladder_plan = plan.get('tp_ladder_plan') or plan.get('tp_ladder')
+                        if ladder_plan is not None:
+                            rec['tp_ladder_plan'] = list(ladder_plan)
+                            try:
+                                rec['tp_ladder_levels'] = len(ladder_plan)
+                            except Exception:
+                                pass
+                        tp_trigger = plan.get('tp50_trigger')
+                        if tp_trigger is not None:
+                            rec['tp50_trigger'] = float(tp_trigger)
+                        be_plan = plan.get('be_price')
+                        if be_plan is not None:
+                            rec['be_price'] = float(be_plan)
                     _ensure_be_fields(rec)
                     position_notional += qty * entry_fill
-                    # Fallback TP/SL placement as separate orders (reduce-only)
-                    part_tp_price = part_tp_qty = None
-                    if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
-                        trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
-                        frac = float(getattr(strat, 'partial_tp_frac', 0.5))
-                        path = entry_px - tp_price
-                        part_tp_price = entry_px - trig * path
-                        part_tp_qty = qty * frac
                     try:
                         _place_tp_sl_after_open(
                             fetcher,
@@ -3049,12 +3325,16 @@ def run_live(cfg: dict, args):
                             tp_price,
                             sl_price,
                             position_mode,
-                            part_tp_price,
-                            part_tp_qty,
+                            None,
+                            None,
                             pos_rec=rec,
                         )
                     except Exception as e:
                         _dbg('post_open_error', str(e))
+                    try:
+                        _place_partial_tp_ladder(fetcher, sym, rec, position_mode)
+                    except Exception as e:
+                        cprint('[tp.ladder error]', sym, e, fg='yellow')
                     tp50, be_price = _calc_tp50_and_be(rec)
                     rec['tp50_trigger'] = tp50
                     od = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
@@ -3149,16 +3429,46 @@ def run_live(cfg: dict, args):
                     'entry_lag_sec': lag_sec,
                     'entry_mark_price': entry_mark_price,
                 }
+                plan = None
+                ccxt_sym = fetcher.resolve_symbol(sym)
+                mkt_info = fetcher.markets.get(ccxt_sym, {})
+                plan_builder = getattr(strat, 'build_exit_plan', None)
+                if callable(plan_builder):
+                    try:
+                        plan = plan_builder(
+                            symbol=sym,
+                            sig=sig,
+                            entry_price=float(entry_px),
+                            fill_price=float(entry_fill),
+                            qty=float(qty),
+                            market_info=mkt_info,
+                        )
+                    except Exception as e:
+                        cprint('[plan error]', sym, e, fg='yellow', dim=True)
+                if isinstance(plan, dict):
+                    new_tp = plan.get('tp_price')
+                    if new_tp is not None:
+                        tp_price = float(new_tp)
+                        rec['tp_price'] = float(new_tp)
+                    new_sl = plan.get('sl_price')
+                    if new_sl is not None:
+                        sl_price = float(new_sl)
+                        rec['sl_price'] = float(new_sl)
+                    ladder_plan = plan.get('tp_ladder_plan') or plan.get('tp_ladder')
+                    if ladder_plan is not None:
+                        rec['tp_ladder_plan'] = list(ladder_plan)
+                        try:
+                            rec['tp_ladder_levels'] = len(ladder_plan)
+                        except Exception:
+                            pass
+                    tp_trigger = plan.get('tp50_trigger')
+                    if tp_trigger is not None:
+                        rec['tp50_trigger'] = float(tp_trigger)
+                    be_plan = plan.get('be_price')
+                    if be_plan is not None:
+                        rec['be_price'] = float(be_plan)
                 _ensure_be_fields(rec)
                 position_notional += qty * entry_fill
-                # Fallback TP/SL placement as separate orders (reduce-only)
-                part_tp_price = part_tp_qty = None
-                if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
-                    trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
-                    frac = float(getattr(strat, 'partial_tp_frac', 0.5))
-                    path = tp_price - entry_px
-                    part_tp_price = entry_px + trig * path
-                    part_tp_qty = qty * frac
                 try:
                     _place_tp_sl_after_open(
                         fetcher,
@@ -3168,12 +3478,16 @@ def run_live(cfg: dict, args):
                         tp_price,
                         sl_price,
                         position_mode,
-                        part_tp_price,
-                        part_tp_qty,
+                        None,
+                        None,
                         pos_rec=rec,
                     )
                 except Exception as e:
                     _dbg('post_open_error', str(e))
+                try:
+                    _place_partial_tp_ladder(fetcher, sym, rec, position_mode)
+                except Exception as e:
+                    cprint('[tp.ladder error]', sym, e, fg='yellow')
                 tp50, be_price = _calc_tp50_and_be(rec)
                 rec['tp50_trigger'] = tp50
                 od = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
