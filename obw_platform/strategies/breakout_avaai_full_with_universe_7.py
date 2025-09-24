@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Optional, Literal, Mapping, Any, List, Dict, Tuple
 
 Side = Literal["LONG","SHORT"]
@@ -89,6 +90,9 @@ class BreakoutAVAAIFull:
         self.partial_tp_enable: bool = bool(_read("partial_tp_enable", True))
         self.partial_tp_frac: float = float(_read("partial_tp_frac", 0.50))
         self.partial_trigger_frac_of_tp: float = float(_read("partial_trigger_frac_of_tp", 0.50))
+        self.partial_tp_levels: int = int(_read("partial_tp_levels", 4))
+        self.partial_tp_scheme: str = str(_read("partial_tp_scheme", "halving")).lower()
+        self.partial_tp_min_notional_usdt: float = float(_read("partial_tp_min_notional_usdt", 1.0))
         self.exchange_min_notional: float = float(_read("exchange_min_notional", 2.2))
         self.min_qty: float = float(_read("min_qty", 0.0))
 
@@ -112,6 +116,9 @@ class BreakoutAVAAIFull:
         self._first_bar_ts: Optional[Any] = None
         self._last_bar_ts: Optional[Any] = None
         self._opens_this_bar: int = 0
+
+        # remember last entry signal per symbol so exit-plan builder can infer side/meta
+        self._last_signals: Dict[str, Sig] = {}
     # ---------- helpers ----------
     def _mom_sum(self, row: Mapping[str, Any]) -> float:
         return _f(row.get("dp6h", 0.0)) + _f(row.get("dp12h", 0.0))
@@ -378,8 +385,220 @@ class BreakoutAVAAIFull:
 
         self._opens_this_bar += 1
         entry_heat = self.heat(t, symbol, row)
-        return Sig(side=side, take_profit=float(tp), stop_price=float(sl),
-                   reason="rule/atr-multipliers", heat=float(entry_heat))
+        tags = {
+            "exit_plan_meta": {
+                "atr_abs": float(atr_abs),
+                "entry_basis": float(close),
+            }
+        }
+        sig = Sig(
+            side=side,
+            take_profit=float(tp),
+            stop_price=float(sl),
+            reason="rule/atr-multipliers",
+            heat=float(entry_heat),
+            tags=tags,
+        )
+        self._last_signals[symbol] = sig
+        return sig
+
+    @staticmethod
+    def _round_to_step(value: float, step: float) -> float:
+        if not step or step <= 0:
+            return float(value)
+        try:
+            return math.floor(float(value) / float(step)) * float(step)
+        except Exception:
+            return float(value)
+
+    def build_exit_plan(self, symbol: str, *args, **kwargs) -> Dict[str, Any]:
+        """Return exit plan metadata (TP/SL, break-even, ladder) for live runner."""
+
+        sig_hint: Optional[Sig] = None
+        row: Optional[Mapping[str, Any]] = None
+        entry_price = None
+        tp_price = None
+        sl_price = None
+        qty = None
+        cfg = None
+        market_info = kwargs.pop("market_info", None)
+
+        if args and isinstance(args[0], Sig):
+            # backwards compatibility (legacy signature)
+            sig_hint = args[0]
+            row = kwargs.get("row")
+            entry_price = kwargs.get("fill_price") or kwargs.get("entry_price")
+            tp_price = kwargs.get("tp_price") or getattr(sig_hint, "take_profit", None)
+            sl_price = kwargs.get("sl_price") or getattr(sig_hint, "stop_price", None)
+            qty = kwargs.get("qty")
+            cfg = kwargs.get("cfg")
+            market_info = market_info or kwargs.get("market_info")
+        else:
+            if len(args) >= 1:
+                row = args[0]
+            else:
+                row = kwargs.get("row")
+            if len(args) >= 2:
+                entry_price = args[1]
+            else:
+                entry_price = kwargs.get("entry_price")
+            if len(args) >= 3:
+                tp_price = args[2]
+            else:
+                tp_price = kwargs.get("tp_price")
+            if len(args) >= 4:
+                sl_price = args[3]
+            else:
+                sl_price = kwargs.get("sl_price")
+            if len(args) >= 5:
+                qty = args[4]
+            else:
+                qty = kwargs.get("qty")
+            if len(args) >= 6:
+                cfg = args[5]
+            else:
+                cfg = kwargs.get("cfg")
+            market_info = market_info or kwargs.get("market_info")
+            sig_hint = self._last_signals.get(symbol)
+
+        return self._build_exit_plan_core(
+            symbol,
+            row=row,
+            sig_hint=sig_hint,
+            entry_price=entry_price,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            qty=qty,
+            cfg=cfg,
+            market_info=market_info,
+        )
+
+    def _build_exit_plan_core(
+        self,
+        symbol: str,
+        *,
+        row: Optional[Mapping[str, Any]],
+        sig_hint: Optional[Sig],
+        entry_price,
+        tp_price,
+        sl_price,
+        qty,
+        cfg: Optional[Mapping[str, Any]],
+        market_info: Optional[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        del symbol  # unused but kept for signature symmetry / future hooks
+        entry_ref = _f(entry_price, None)
+        tp_ref = _f(tp_price, None)
+        sl_ref = _f(sl_price, None)
+        qty_val = _f(qty, None)
+
+        side = "LONG"
+        if isinstance(sig_hint, Sig):
+            side = str(getattr(sig_hint, "side", side)).upper()
+        elif isinstance(sig_hint, str):
+            side = "LONG" if str(sig_hint).upper().startswith("LONG") else "SHORT"
+        elif tp_ref is not None and entry_ref is not None:
+            side = "LONG" if tp_ref >= entry_ref else "SHORT"
+        elif str(self.side).upper() == "SHORT":
+            side = "SHORT"
+
+        if tp_ref is None and isinstance(sig_hint, Sig):
+            tp_ref = _f(getattr(sig_hint, "take_profit", None), None)
+        if sl_ref is None and isinstance(sig_hint, Sig):
+            sl_ref = _f(getattr(sig_hint, "stop_price", None), None)
+
+        if entry_ref is None or entry_ref <= 0:
+            # fall back to row close if available
+            close = _f((row or {}).get("close"), None)
+            entry_ref = close
+
+        trig_ratio = max(0.0, min(1.0, float(self.partial_trigger_frac_of_tp)))
+        tp_trigger = None
+        if entry_ref and tp_ref:
+            if side == "LONG":
+                tp_trigger = entry_ref + (tp_ref - entry_ref) * trig_ratio
+            else:
+                tp_trigger = entry_ref - (entry_ref - tp_ref) * trig_ratio
+
+        be_price = entry_ref if entry_ref else None
+
+        plan: Dict[str, Any] = {
+            "tp_price": float(tp_ref) if tp_ref else None,
+            "sl_price": float(sl_ref) if sl_ref else None,
+            "tp50_trigger": float(tp_trigger) if tp_trigger else None,
+            "be_price": float(be_price) if be_price else None,
+            "tp_ladder_plan": [],
+        }
+
+        partial_cfg = {}
+        if isinstance(cfg, Mapping):
+            partial_cfg = dict((cfg.get("partial_tp") or {}))
+        enabled_cfg = partial_cfg.get("enabled")
+        enabled = self.partial_tp_enable if enabled_cfg is None else bool(enabled_cfg)
+        levels_cfg = partial_cfg.get("levels")
+        levels = int(levels_cfg) if levels_cfg is not None else int(self.partial_tp_levels)
+        scheme = str(partial_cfg.get("scheme", self.partial_tp_scheme)).lower() or "halving"
+        min_notional_cfg = _f(partial_cfg.get("min_notional_usdt"), None)
+        if min_notional_cfg is None:
+            min_notional_cfg = float(self.partial_tp_min_notional_usdt or 0.0)
+
+        precision = (market_info or {}).get("precision") or {}
+        limits = (market_info or {}).get("limits") or {}
+        amount_limits = limits.get("amount") or {}
+        cost_limits = limits.get("cost") or {}
+        step = _f(precision.get("amount"), 0.0) or 0.0
+        min_qty = _f(amount_limits.get("min"), 0.0) or 0.0
+        ex_min_notional = _f(cost_limits.get("min"), 0.0) or 0.0
+        min_notional_req = max(
+            float(ex_min_notional or 0.0),
+            float(self.exchange_min_notional or 0.0),
+            float(min_notional_cfg or 0.0),
+        )
+        plan["tp_ladder_min_notional"] = float(min_notional_req) if min_notional_req else None
+
+        ladder: List[Dict[str, Any]] = []
+        if (
+            enabled
+            and scheme == "halving"
+            and levels > 0
+            and entry_ref
+            and tp_ref
+            and qty_val
+            and qty_val > 0
+        ):
+            for level in range(1, levels + 1):
+                ratio = 1.0 - (0.5 ** level)
+                qty_frac = 0.5 ** level
+                raw_qty = float(qty_val) * qty_frac
+                adj_qty = self._round_to_step(raw_qty, step) if step else float(raw_qty)
+                if adj_qty <= 0:
+                    continue
+                if min_qty and adj_qty < min_qty:
+                    continue
+                if side == "LONG":
+                    price_i = entry_ref + (tp_ref - entry_ref) * ratio
+                    side_close = "sell"
+                else:
+                    price_i = entry_ref - (entry_ref - tp_ref) * ratio
+                    side_close = "buy"
+                notional_i = float(price_i) * float(adj_qty)
+                if min_notional_req and notional_i < min_notional_req:
+                    continue
+                ladder.append(
+                    {
+                        "price": float(price_i),
+                        "qty": float(adj_qty),
+                        "qty_frac": float(qty_frac),
+                        "side": side_close,
+                        "filled": False,
+                        "order_id": None,
+                        "min_notional": float(min_notional_req),
+                    }
+                )
+
+        if ladder:
+            plan["tp_ladder_plan"] = ladder
+        return plan
 
     def manage_position(self, symbol, row, pos, ctx=None):
         close = _f(row.get("close", 0.0))
