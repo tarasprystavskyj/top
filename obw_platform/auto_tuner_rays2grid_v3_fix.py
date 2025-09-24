@@ -19,6 +19,32 @@ BT_CACHE = {}
 SESSION_DIR = None
 
 
+DELTA_MODE_DEFAULT = True  # interpret grid lists as deltas around current by default
+TUNE_ROOT = Path("_reports") / "tune"
+TUNE_TMP_ROOT = TUNE_ROOT / "tmp"
+PARAM_CLAMPS = {
+    "strategy_params.tp_atr_mult": (0.1, 10.0),
+    "strategy_params.sl_atr_mult": (0.01, 2.0),
+    "strategy_params.min_atr_ratio": (0.0, 0.1),
+    "strategy_params.min_momentum_sum": (0.0, 0.2),
+    "strategy_params.heat_exit_threshold": (0.5, 1.5),
+    "strategy_params.heat_exit_min_rr": (0.5, 3.0),
+    "strategy_params.length": (3, 100),
+    "strategy_params.volume_length": (4, 200),
+    "strategy_params.macd_filter": (0, 1),
+}
+
+
+def _clamp_param(pname, val):
+    lo, hi = PARAM_CLAMPS.get(pname, (-1e18, 1e18))
+    try:
+        v = float(val)
+        v = int(v) if v.is_integer() else v
+    except Exception:
+        return val
+    return max(lo, min(hi, v))
+
+
 KV_RE = re.compile(
     r'(?:\x1b\[[0-9;]*m)?(equity_end|pf|profit_factor|max_dd|mono|monotonicity|trades|apr|daily_ret|monthly_ret|yearly_ret)\s*=\s*([-+]?[0-9]*\.?[0-9]+)',
     re.IGNORECASE,
@@ -138,6 +164,15 @@ def write_yaml(obj, p: Path):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(yaml.safe_dump(obj, sort_keys=False), encoding="utf-8")
 
+
+def _tmp_dir_for_session(session_dir):
+    session_path = Path(session_dir)
+    try:
+        rel = session_path.relative_to(TUNE_ROOT)
+    except ValueError:
+        rel = session_path.name
+    return TUNE_TMP_ROOT / rel
+
 def deep_get(d, key):
     cur = d
     for k in key.split("."):
@@ -255,12 +290,68 @@ def around(val, step, n=1):
     return sorted(set([x for x in xs if isinstance(x,(int,float)) and x>0]))
 
 def realize_around(spec, current):
+    # keep existing 'around:x' behavior
     if isinstance(spec, str) and spec.startswith("around:"):
         step = float(spec.split(":")[1])
-        try: c = float(current)
-        except: return [current]
+        try:
+            c = float(current)
+        except Exception:
+            return [current]
         return around(c, step, n=1)
     return spec
+
+
+def _as_list(x):
+    if isinstance(x, (list, tuple, set)):
+        return list(x)
+    return [x]
+
+
+def _make_grid_candidates(pname, spec, current, delta_mode=DELTA_MODE_DEFAULT):
+    vals = realize_around(spec, current)
+    if isinstance(vals, (list, tuple, set)):
+        vals = _as_list(vals)
+        # If delta_mode: interpret as deltas around 'current'
+        out = []
+        for v in vals:
+            if delta_mode and isinstance(v, (int, float)):
+                try:
+                    curf = float(current)
+                except Exception:
+                    curf = 0.0
+                out.append(_clamp_param(pname, curf + float(v)))
+            else:
+                out.append(_clamp_param(pname, v))
+        # always include current (seed) for safety
+        try:
+            curf = _clamp_param(pname, float(current))
+            if curf not in out:
+                out.append(curf)
+        except Exception:
+            if current not in out:
+                out.append(current)
+        # dedup & sort (numeric if possible)
+        try:
+            out = sorted(set(float(x) for x in out))
+        except Exception:
+            out = list(dict.fromkeys(out))
+        return out
+    else:
+        # Single scalar spec: treat as absolute **if not delta_mode**, otherwise use [current]
+        if delta_mode:
+            # we consider single scalar as delta; add current+delta and current
+            try:
+                curf = float(current)
+                vf = float(vals)
+                cand = [
+                    _clamp_param(pname, curf + vf),
+                    _clamp_param(pname, curf),
+                ]
+            except Exception:
+                cand = [current]
+            return list(dict.fromkeys(cand))
+        else:
+            return include_seed_values([vals], pname, current)
 
 
 def include_seed_values(values, pname, current_value):
@@ -270,10 +361,15 @@ def include_seed_values(values, pname, current_value):
     except Exception:
         init_val = None
     vals = list(values) if isinstance(values,(list,tuple,set)) else ([values] if values is not None else [])
-    if current_value is not None and current_value not in vals:
-        vals.append(current_value)
-    if init_val is not None and init_val not in vals:
-        vals.append(init_val)
+    vals = [_clamp_param(pname, v) for v in vals]
+    if current_value is not None:
+        cur_clamped = _clamp_param(pname, current_value)
+        if cur_clamped not in vals:
+            vals.append(cur_clamped)
+    if init_val is not None:
+        init_clamped = _clamp_param(pname, init_val)
+        if init_clamped not in vals:
+            vals.append(init_clamped)
     # try numeric sort, fallback to str
     try:
         vals = sorted(set(float(x) for x in vals))
@@ -294,10 +390,14 @@ def do_rays(base_cfg, limit_bars, pname, cand, prefix, session_dir, log_csv, wei
     recs = []
     tasks = []
 
+    session_path = Path(session_dir)
+    tmp_base = _tmp_dir_for_session(session_path)
+    tmp_base.mkdir(parents=True, exist_ok=True)
+
     for v in cand:
         cfg = copy.deepcopy(base_cfg)
         set_param(cfg, pname, v)
-        tmp = "tune_tmp" / Path(session_dir) / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
+        tmp = tmp_base / f"{prefix}_{pname}_{str(v).replace('.','p')}.yaml"
         write_yaml(cfg, tmp)
         tasks.append((tmp, v, cfg))
 
@@ -339,11 +439,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, session_dir, log_csv, weights,
     cand_lists = {}
     for p, spec in params.items():
         cur, _ = get_current(base_cfg, p)
-        vals = realize_around(spec, cur)
-        if isinstance(vals, (list, tuple)):
-            vals = ensure_included(vals, cur)
-        else:
-            vals = [cur] if cur is not None else []
+        vals = _make_grid_candidates(p, spec, cur, delta_mode=DELTA_MODE_DEFAULT)
         vals = include_seed_values(vals, p, cur)
         cand_lists[p] = vals
 
@@ -351,6 +447,11 @@ def do_grid(base_cfg, limit_bars, params, prefix, session_dir, log_csv, weights,
     if not keys:
         print("[grid] no parameters provided; skipping")
         return base_cfg, []
+
+    center_str = ", ".join(f"{k}={get_current(base_cfg, k)[0]}" for k in keys)
+    print(f"[grid] center (from RAYS/baseline): {center_str}")
+    for k in keys:
+        print(f"[grid] {k} -> candidates: {cand_lists[k]}")
 
     import itertools, copy, csv
     from datetime import datetime
@@ -400,6 +501,11 @@ def do_grid(base_cfg, limit_bars, params, prefix, session_dir, log_csv, weights,
 
     def _process_result(vec, res):
         nonlocal local_best_s
+        try:
+            if int(res.get("trades", 0)) == 0:
+                print(f"[grid][skip] zero-trade candidate -> {vec}")
+        except Exception:
+            pass
         score = risk_averse_score(
             res,
             *weights,
@@ -509,7 +615,7 @@ def do_grid(base_cfg, limit_bars, params, prefix, session_dir, log_csv, weights,
         if cur_rec is not None and cur_rec.get('score', -1e18) >= GLOBAL_BEST_S:
             chosen = cur_rec
         else:
-            chosen = cur_rec if cur_rec is not None else best
+            chosen = max([best, cur_rec or best], key=lambda r: r.get('score', -1e18))
 
     for k, v in zip(keys, chosen["value"].split("|")):
         try:
@@ -606,13 +712,17 @@ def main():
     BT_SLEEP_SEC = args.sleep_sec
 
     prefix_path = Path(args.prefix)
+    if prefix_path.is_absolute():
+        prefix_path = Path(*prefix_path.parts[1:])
     file_prefix = prefix_path.name or "tuner"
     session_ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    base_session_dir = prefix_path.parent / f"{file_prefix}_{session_ts}"
+    base_parent = TUNE_ROOT / prefix_path.parent
+    base_parent.mkdir(parents=True, exist_ok=True)
+    base_session_dir = base_parent / f"{file_prefix}_{session_ts}"
     session_dir = base_session_dir
     counter = 1
     while session_dir.exists():
-        session_dir = prefix_path.parent / f"{file_prefix}_{session_ts}_{counter}"
+        session_dir = base_parent / f"{file_prefix}_{session_ts}_{counter}"
         counter += 1
     session_dir.mkdir(parents=True, exist_ok=False)
     global SESSION_DIR
@@ -659,6 +769,9 @@ def main():
         spec.loader.exec_module(_mod)
         if not hasattr(_mod, "default_plan"):
             raise AttributeError(f"Plan module {_pp} has no default_plan(limit_bars)")
+        if hasattr(_mod, "GRID_VALUES_ARE_DELTAS"):
+            global DELTA_MODE_DEFAULT
+            DELTA_MODE_DEFAULT = bool(getattr(_mod, "GRID_VALUES_ARE_DELTAS"))
         plan = _mod.default_plan(args.limit_bars)
     else:
         plan = default_plan(args.limit_bars)
@@ -740,9 +853,10 @@ def main():
             label=f"{file_prefix}_grid_final",
         )
     prune_reports(args.prefix)
-    tmp_dir = "tune_tmp" / session_dir
-    for p in tmp_dir.glob("*.yaml"):
-        p.unlink(missing_ok=True)
+    tmp_dir = _tmp_dir_for_session(session_dir)
+    if tmp_dir.exists():
+        for p in tmp_dir.glob("*.yaml"):
+            p.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
