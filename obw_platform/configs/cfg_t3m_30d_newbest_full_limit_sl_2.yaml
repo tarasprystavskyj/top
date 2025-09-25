@@ -17,7 +17,7 @@ strategy_params:
   sl_atr_mult: 0.3
   min_qv_24h: 0.0
   min_qv_1h: 0.0
-  min_atr_ratio: 0.014 #0.021
+  min_atr_ratio: 0.021 #0.021
   min_momentum_sum: 0.0
   fee_rate: 0.001
   slippage_per_side: 0.0016
