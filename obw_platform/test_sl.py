@@ -25,6 +25,30 @@ def ensure_pos_mode_and_lev(ex, symbol):
     try: ex.set_leverage(LEVERAGE, symbol, params={"side":"BOTH"})
     except Exception as e: print("[warn] set_leverage:", e)
 
+def resolve_symbol(ex, symbol):
+    """Ensure requested symbol exists and fallback to common alternatives."""
+    symbols = getattr(ex, "symbols", []) or []
+    if symbol in symbols:
+        return symbol
+
+    candidates = []
+    if ":" in symbol:
+        candidates.append(symbol.split(":")[0])
+    if symbol.endswith(":USDT"):
+        candidates.append(symbol[:-6])
+
+    for alt in dict.fromkeys(candidates):
+        if alt in symbols:
+            print(f"[warn] symbol '{symbol}' not found, using '{alt}' instead")
+            return alt
+
+    preview = ", ".join(sorted(symbols)[:10])
+    raise ValueError(
+        f"Exchange does not list symbol '{symbol}'. "
+        "Adjust the SYMBOL env var or choose one of the available markets (first 10 shown): "
+        f"{preview}"
+    )
+
 def amount_for_notional(ex, symbol, last, notional):
     ex.load_markets()
     m = ex.markets[symbol]
@@ -70,11 +94,13 @@ def main():
         "options": {"defaultType":"swap"},
         "enableRateLimit": True,
     })
-    ensure_pos_mode_and_lev(ex, SYMBOL)
+    ex.load_markets()
+    trading_symbol = resolve_symbol(ex, SYMBOL)
+    ensure_pos_mode_and_lev(ex, trading_symbol)
 
-    last = float(ex.fetch_ticker(SYMBOL)["last"])
-    qty  = amount_for_notional(ex, SYMBOL, last, NOTIONAL)
-    entry, mark, pos_qty = open_pos(ex, SYMBOL, qty, SIDE)
+    last = float(ex.fetch_ticker(trading_symbol)["last"])
+    qty  = amount_for_notional(ex, trading_symbol, last, NOTIONAL)
+    entry, mark, pos_qty = open_pos(ex, trading_symbol, qty, SIDE)
 
     # робимо «вилку» по обидва боки mark
     above = mark * (1 + OFFSET_PCT)
@@ -93,11 +119,24 @@ def main():
     qty_each = min(pos_qty, max(0.0, pos_qty * 0.6))
     print(f"[{utcnow()}] placing conditionals: {sl_type}@{sl_trig:.8f} & {tp_type}@{tp_trig:.8f}, qty_each={qty_each}")
 
-    ok1, id1 = place_conditional(ex, SYMBOL, sl_type, sl_side, qty_each, sl_trig, "COND_SL")
-    ok2, id2 = place_conditional(ex, SYMBOL, tp_type, tp_side, qty_each, tp_trig, "COND_TP")
+    ok1, id1 = place_conditional(ex, trading_symbol, sl_type, sl_side, qty_each, sl_trig, "COND_SL")
+    ok2, id2 = place_conditional(ex, trading_symbol, tp_type, tp_side, qty_each, tp_trig, "COND_TP")
+
+    if ok1 and id1:
+        print(f"[{utcnow()}] waiting 5s before extending SL distance")
+        time.sleep(5)
+        # переносимо SL на удвічі більшу відстань
+        extended_sl_trig = mark * (1 - 2 * OFFSET_PCT) if SIDE == "long" else mark * (1 + 2 * OFFSET_PCT)
+        print(f"[{utcnow()}] extending SL to trigger={extended_sl_trig:.8f}")
+        try:
+            ex.cancel_order(id1, trading_symbol, params={"positionSide": "BOTH"})
+            print(f"[{utcnow()}] cancelled original SL order {id1}")
+        except Exception as e:
+            print(f"[{utcnow()}] failed to cancel original SL order {id1}: {e}")
+        place_conditional(ex, trading_symbol, sl_type, sl_side, qty_each, extended_sl_trig, "COND_SL_EXT")
 
     time.sleep(0.7)
-    oo = ex.fetch_open_orders(SYMBOL) or []
+    oo = ex.fetch_open_orders(trading_symbol) or []
     print(f"[{utcnow()}] open_orders({len(oo)}):")
     for o in oo:
         info = o.get("info") or {}
