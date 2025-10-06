@@ -96,19 +96,6 @@ def main():
     ok1, id1 = place_conditional(ex, SYMBOL, sl_type, sl_side, qty_each, sl_trig, "COND_SL")
     ok2, id2 = place_conditional(ex, SYMBOL, tp_type, tp_side, qty_each, tp_trig, "COND_TP")
 
-    if ok1 and id1:
-        print(f"[{utcnow()}] waiting 5s before extending SL distance")
-        time.sleep(5)
-        # переносимо SL на удвічі більшу відстань
-        extended_sl_trig = mark * (1 - 2 * OFFSET_PCT) if SIDE == "long" else mark * (1 + 2 * OFFSET_PCT)
-        print(f"[{utcnow()}] extending SL to trigger={extended_sl_trig:.8f}")
-        try:
-            ex.cancel_order(id1, SYMBOL, params={"positionSide": "BOTH"})
-            print(f"[{utcnow()}] cancelled original SL order {id1}")
-        except Exception as e:
-            print(f"[{utcnow()}] failed to cancel original SL order {id1}: {e}")
-        place_conditional(ex, SYMBOL, sl_type, sl_side, qty_each, extended_sl_trig, "COND_SL_EXT")
-
     time.sleep(0.7)
     oo = ex.fetch_open_orders(SYMBOL) or []
     print(f"[{utcnow()}] open_orders({len(oo)}):")
