@@ -39,27 +39,20 @@ def _normalize_close_reason(value, fallback: str = "") -> str:
 
 
 import importlib
-import inspect
 import os, sys, math, uuid, datetime as _dt
 import json
-import time as _time
-import logging
-import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Optional
 from types import SimpleNamespace
 
 
-log = logging.getLogger(__name__)
-
-
-# SL/BE migration tuning
-BE_CANCEL_WAIT_SEC = 3.0
-BE_POST_TP_DELAY_SEC = 2.0
-BE_MAX_RETRIES = 5
-BE_RETRY_BACKOFF = (0.6, 1.0, 1.5, 2.0, 2.5)
-DUST_CLOSE_THRESHOLD_QTY = 1.05
-EPS_QTY = 1e-12
+BE_CANCEL_WAIT_SEC = float(os.getenv("BE_CANCEL_WAIT_SEC", "1.5"))
+BE_CANCEL_POLL_SEC = float(os.getenv("BE_CANCEL_POLL_SEC", "0.25"))
+BE_CANCEL_POLL_MAX = int(os.getenv("BE_CANCEL_POLL_MAX", "8"))
+BE_MAX_RETRIES = int(os.getenv("BE_MAX_RETRIES", "0"))
+BE_RESTORE_ON_FAIL = os.getenv("BE_RESTORE_ON_FAIL", "1") == "1"
+BE_DIAG = os.getenv("BE_DIAG", "0") == "1"
 
 FORCE_CLOSE_TIF = os.getenv("FORCE_CLOSE_TIF", "IOC")
 FORCE_CLOSE_RETRIES = int(os.getenv("FORCE_CLOSE_RETRIES", "2"))
@@ -99,85 +92,853 @@ def _calc_tp50_and_be(rec):
     return float(tp50), float(be)
 
 
-async def _call_maybe_async(func, *args, **kwargs):
-    """Call a possibly-async CCXT method and await the result when needed."""
-    result = func(*args, **kwargs)
-    if inspect.isawaitable(result):
-        return await result
-    return result
+def _calc_free_reduceonly_qty(fetcher, sym, side_close, position_mode):
+    """
+    Повертає (available_amt, reserved_qty, free_qty).
+    available_amt: з біржі (position.info['availableAmt'] або contracts).
+    reserved_qty: сума qty відкритих reduceOnly-ордерів на цей символ і цей side_close.
+    free_qty = max(0, available_amt - reserved_qty)
+    """
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    pos_mode = str(position_mode or '').lower()
+    pos_oneway = pos_mode.startswith('one')
+    target_pos_side = None if pos_oneway else ('LONG' if side_close.lower() == 'sell' else 'SHORT')
 
+    # 1) позиція
+    available_amt = 0.0
+    pos = None
+    try:
+        positions = fetcher.fetch_positions()
+        for p in positions or []:
+            if p.get('symbol') == ccxt_sym:
+                info_side = str(
+                    p.get('info', {}).get('positionSide')
+                    or p.get('positionSide')
+                    or p.get('side')
+                    or ''
+                ).upper()
+                if target_pos_side and info_side and info_side != target_pos_side:
+                    continue
+                pos = p
+                break
+    except Exception:
+        positions = []
 
-def _floor_step(x, step):
-    if step <= 0:
-        return float(x)
-    return math.floor((float(x) + EPS_QTY) / step) * step
-
-
-def _ceil_step(x, step):
-    if step <= 0:
-        return float(x)
-    return math.ceil((float(x) - EPS_QTY) / step) * step
-
-
-def allocate_tp_ladder(total_qty, fractions, lot_step):
-    if not fractions:
-        return []
-    lot_step = float(lot_step or 0.0)
-    qtys = []
-    acc = 0.0
-    for frac in fractions[:-1]:
-        part = _floor_step(total_qty * float(frac), lot_step)
-        qtys.append(part)
-        acc += part
-    last = _floor_step(max(0.0, total_qty - acc), lot_step)
-    qtys.append(last)
-    return qtys
-
-
-def _market_steps(fetcher, symbol):
-    markets = getattr(fetcher, "markets", {}) or {}
-    mkt = markets.get(symbol, {}) or {}
-    info = mkt.get("info") if isinstance(mkt.get("info"), dict) else {}
-    precision = mkt.get("precision", {}) or {}
-    limits = mkt.get("limits", {}) or {}
-    price_limits = limits.get("price", {}) or {}
-    amount_limits = limits.get("amount", {}) or {}
-
-    tick_size = 0.0
-    price_prec = precision.get("price")
-    if price_prec is not None:
-        try:
-            tick_size = 10 ** (-int(price_prec))
-        except Exception:
+    if pos:
+        # BingX повертає availableAmt у info; fallback на інші кількісні поля позиції
+        info = pos.get('info', {}) if isinstance(pos.get('info'), dict) else {}
+        candidates = (
+            info.get('availableAmt'),
+            info.get('contracts'),
+            pos.get('contracts'),
+            info.get('positionAmt'),
+            pos.get('positionAmt'),
+            info.get('availQty'),
+            info.get('available'),
+        )
+        available_amt = 0.0
+        for raw_val in candidates:
             try:
-                tick_size = float(price_prec)
+                if raw_val is None:
+                    continue
+                val = abs(float(raw_val))
+                if val > 0:
+                    available_amt = val
+                    break
             except Exception:
-                tick_size = 0.0
-    if not tick_size:
-        tick_size = float(price_limits.get("min") or 0.0)
-    if not tick_size:
-        tick_size = float(info.get("tickSize") or info.get("minPrice") or 0.0)
+                continue
 
-    lot_step = 0.0
-    amount_prec = precision.get("amount")
-    if amount_prec is not None:
-        try:
-            lot_step = 10 ** (-int(amount_prec))
-        except Exception:
+    # 2) зарезервовано в reduceOnly
+    reserved = 0.0
+    diag_orders = []
+    try:
+        oo = fetcher.ex.fetch_open_orders(ccxt_sym)
+        for od in oo or []:
+            info = od.get('info', {})
+            ro = bool(info.get('reduceOnly') or od.get('reduceOnly'))
+            if not ro:
+                continue
+            if str(od.get('side')).lower() != side_close.lower():
+                continue
+            info_side = str(
+                info.get('positionSide')
+                or od.get('positionSide')
+                or info.get('posSide')
+                or ''
+            ).upper()
+            if target_pos_side and info_side and info_side != target_pos_side:
+                continue
             try:
-                lot_step = float(amount_prec)
+                qty = float(info.get('origQty') or od.get('amount') or 0.0)
+                reserved += max(0.0, qty)
             except Exception:
-                lot_step = 0.0
-    if not lot_step:
-        lot_step = float(amount_limits.get("step") or 0.0)
-    if not lot_step:
-        lot_step = float(info.get("stepSize") or 0.0)
+                pass
+            if BE_DIAG:
+                diag_orders.append({
+                    'id': od.get('id') or od.get('orderId') or od.get('clientOrderId'),
+                    'type': od.get('type') or info.get('type'),
+                    'side': od.get('side'),
+                    'positionSide': info_side or None,
+                    'amount': info.get('origQty') or od.get('amount'),
+                    'stopPrice': info.get('stopPrice') or od.get('stopPrice'),
+                    'triggerPrice': info.get('triggerPrice') or od.get('triggerPrice'),
+                })
+    except Exception:
+        pass
 
-    min_qty = float(amount_limits.get("min") or 0.0)
-    if not min_qty:
-        min_qty = float(info.get("minQty") or 0.0)
+    free_qty = max(0.0, available_amt - reserved)
 
-    return tick_size, lot_step, min_qty
+    if BE_DIAG:
+        cprint(
+            f"[sl->BE diag] {sym} side_close={side_close} posSide={target_pos_side or 'BOTH'} "
+            f"available={available_amt:.6g} reserved={reserved:.6g} free={free_qty:.6g}",
+            fg="cyan",
+            dim=True,
+        )
+        for od in diag_orders:
+            try:
+                cprint(
+                    f"    ro_stop id={od.get('id')} type={od.get('type')} side={od.get('side')} "
+                    f"posSide={od.get('positionSide')} amount={od.get('amount')} "
+                    f"stopPrice={od.get('stopPrice')} triggerPrice={od.get('triggerPrice')}",
+                    fg="cyan",
+                    dim=True,
+                )
+            except Exception:
+                pass
+
+    return available_amt, reserved, free_qty
+
+
+def _cancel_existing_stops_same_side(fetcher, sym, side_close, position_mode=None):
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    pos_mode = str(position_mode or '').lower()
+    pos_oneway = pos_mode.startswith('one')
+    target_pos_side = None if pos_oneway else ('LONG' if side_close.lower() == 'sell' else 'SHORT')
+    try:
+        oo = fetcher.ex.fetch_open_orders(ccxt_sym)
+    except Exception:
+        return 0
+    n = 0
+    for od in oo or []:
+        info = od.get('info', {})
+        ro = bool(info.get('reduceOnly') or od.get('reduceOnly'))
+        if not ro or str(od.get('side')).lower() != side_close.lower():
+            continue
+        typ = str(info.get('type') or od.get('type') or '').upper()
+        if not typ.startswith('STOP'):
+            continue
+        info_side = str(
+            info.get('positionSide')
+            or od.get('positionSide')
+            or info.get('posSide')
+            or ''
+        ).upper()
+        if target_pos_side and info_side and info_side != target_pos_side:
+            continue
+        order_id = od.get('id') or od.get('orderId') or od.get('clientOrderId')
+        if not order_id:
+            continue
+        try:
+            fetcher.ex.cancel_order(order_id, ccxt_sym)
+            sleep_ms(RATE_MS)
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
+def _place_be_plan_on_exchange(fetcher, sym, rec, position_mode):
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    tp50, be = _calc_tp50_and_be(rec)
+    if tp50 is None:
+        return None
+    qty = float(rec.get('qty') or 0.0)
+    if qty <= 0.0:
+        return None
+    side_long = str(rec['side']).upper() == 'LONG'
+    side_close = 'sell' if side_long else 'buy'
+
+    def _confirm_plan(order):
+        if not isinstance(order, dict):
+            return None
+        order_id = str(order.get('id') or order.get('orderId') or order.get('clientOrderId') or '')
+        if not order_id:
+            return None
+        try:
+            open_orders = fetcher.ex.fetch_open_orders(ccxt_sym)
+        except Exception:
+            open_orders = None
+        if not open_orders:
+            return None
+        for oo in open_orders:
+            try:
+                oo_id = str(oo.get('id') or oo.get('orderId') or oo.get('clientOrderId') or '')
+            except Exception:
+                oo_id = ''
+            if oo_id and oo_id == order_id:
+                return order
+        return None
+
+    try:
+        od = fetcher.ex.create_order(
+            ccxt_sym,
+            'trigger',
+            side_close,
+            qty,
+            be,
+            {
+                'reduceOnly': True,
+                'positionSide': 'BOTH',
+                'triggerPrice': tp50,
+                'stopPrice': be,
+                'workingType': 'MARK_PRICE',
+            },
+        )
+        confirmed = _confirm_plan(od)
+        if confirmed:
+            return confirmed
+    except Exception:
+        pass
+
+    try:
+        od = fetcher.ex.create_order(
+            ccxt_sym,
+            'stop_limit',
+            side_close,
+            qty,
+            be,
+            {
+                'reduceOnly': True,
+                'positionSide': 'BOTH',
+                'triggerPrice': tp50,
+                'workingType': 'MARK_PRICE',
+            },
+        )
+        confirmed = _confirm_plan(od)
+        if confirmed:
+            return confirmed
+    except Exception:
+        pass
+
+    try:
+        od = fetcher.ex.create_order(
+            ccxt_sym,
+            'stop_market',
+            side_close,
+            qty,
+            None,
+            {
+                'reduceOnly': True,
+                'positionSide': 'BOTH',
+                'triggerPrice': float(tp50),
+                'workingType': 'MARK_PRICE',
+                'price': None,
+            },
+        )
+        confirmed = _confirm_plan(od)
+        if confirmed:
+            return confirmed
+    except Exception:
+        pass
+
+    return None
+
+
+def _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode):
+    if rec.get('sl_be_done'):
+        return True
+    if rec.get('forced_close_done') or rec.get('sl_be_abandon'):
+        return False
+
+    qty = float(rec.get('qty') or 0.0)
+    if qty <= 0.0:
+        return False
+
+    _, be = _calc_tp50_and_be(rec)
+    old_sl = float(rec.get('sl_price') or rec.get('sl') or 0.0)
+    side_long = str(rec['side']).upper() == 'LONG'
+
+    if side_long and old_sl >= be - 1e-12:
+        rec['sl_be_done'] = True
+        rec['sl_be_done_at'] = time.time()
+        return True
+    if (not side_long) and old_sl <= be + 1e-12:
+        rec['sl_be_done'] = True
+        rec['sl_be_done_at'] = time.time()
+        return True
+
+    now_ts = time.time()
+    tries = int(rec.get('sl_be_tries') or 0)
+    retry_at = float(rec.get('sl_be_retry_at') or 0.0)
+    if retry_at and now_ts < retry_at:
+        return False
+    if BE_MAX_RETRIES > 0 and tries >= BE_MAX_RETRIES:
+        rec['sl_be_abandon'] = True
+        return False
+    rec['sl_be_tries'] = tries + 1
+    current_try = tries + 1
+
+    prev_sl_price = old_sl if old_sl else None
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    side_close = 'sell' if side_long else 'buy'
+    pos_mode = str(position_mode or '').lower()
+    pos_oneway = pos_mode.startswith('one')
+    target_pos_side = 'BOTH' if pos_oneway else ('LONG' if side_long else 'SHORT')
+
+    available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
+        fetcher, sym, side_close, position_mode
+    )
+    local_qty = qty
+    qty_for_order = 0.0
+    canceled = 0
+    canceled_any = False
+    if free_qty <= 0:
+        canceled = _cancel_existing_stops_same_side(fetcher, sym, side_close, position_mode)
+        canceled_any = canceled > 0
+        if canceled_any:
+            time.sleep(max(BE_CANCEL_WAIT_SEC, 0.0))
+            for _ in range(max(1, BE_CANCEL_POLL_MAX)):
+                available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
+                    fetcher, sym, side_close, position_mode
+                )
+                if free_qty > 0:
+                    break
+                time.sleep(max(BE_CANCEL_POLL_SEC, 0.0))
+
+    effective_qty_src = local_qty
+    pos_cache = None
+    pos_cache_loaded = False
+
+    def _get_position(force=False):
+        nonlocal pos_cache, pos_cache_loaded
+        if force:
+            pos_cache_loaded = False
+        if not pos_cache_loaded:
+            try:
+                positions = fetcher.fetch_positions()
+            except Exception:
+                positions = []
+            found = None
+            for p in positions or []:
+                if p.get('symbol') != ccxt_sym:
+                    continue
+                info_side = str(
+                    p.get('info', {}).get('positionSide')
+                    or p.get('positionSide')
+                    or p.get('side')
+                    or ''
+                ).upper()
+                if not pos_oneway and info_side and info_side != target_pos_side:
+                    continue
+                found = p
+                break
+            pos_cache = found
+            pos_cache_loaded = True
+        return pos_cache
+
+    def _pick_pos_qty(p):
+        if not p:
+            return 0.0
+        info = p.get('info', {}) if isinstance(p.get('info'), dict) else {}
+        for val in (
+            info.get('availableAmt'),
+            info.get('contracts'),
+            p.get('contracts'),
+            info.get('positionAmt'),
+            p.get('positionAmt'),
+        ):
+            try:
+                if val is None:
+                    continue
+                v = abs(float(val))
+                if v > 0:
+                    return v
+            except Exception:
+                continue
+        try:
+            v = abs(float(rec.get('qty') or 0.0))
+            if v > 0:
+                return v
+        except Exception:
+            pass
+        return 0.0
+
+    def _refresh_position(force=False):
+        nonlocal effective_qty_src
+        pos = _get_position(force=force)
+        pos_qty_inner = _pick_pos_qty(pos)
+        if pos_qty_inner > 0:
+            effective_qty_src = min(local_qty, pos_qty_inner)
+        else:
+            effective_qty_src = local_qty
+        return pos_qty_inner
+
+    pos_qty = _refresh_position(force=canceled_any)
+    qty_for_order = min(effective_qty_src, free_qty)
+
+    mkt = fetcher.markets.get(ccxt_sym, {})
+    step = float(mkt.get('precision', {}).get('amount') or 0.0)
+    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
+    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
+    if step and step > 0:
+        qty_for_order = round_to_step(qty_for_order, step)
+    qty_for_order = float(qty_for_order)
+
+    min_qty_req = max(min_qty, 0.0)
+    price_for_notional = (
+        _safe_float(rec.get('entry_fill'))
+        or _safe_float(rec.get('entry'))
+        or _safe_float(rec.get('mark'))
+        or _safe_float(be)
+        or 0.0
+    )
+    notional_val = price_for_notional * qty_for_order if price_for_notional > 0 else 0.0
+
+    base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
+    base['positionSide'] = target_pos_side
+
+    def _resolve_retry_delay_seconds():
+        tf_entry = rec.get('timeframe') or rec.get('tf')
+        tf_value = None
+        if isinstance(tf_entry, (list, tuple)) and tf_entry:
+            tf_value = tf_entry[0]
+        elif isinstance(tf_entry, dict):
+            tf_value = tf_entry.get('value') or tf_entry.get('timeframe')
+        else:
+            tf_value = tf_entry
+        delay = None
+        if isinstance(tf_value, (int, float)):
+            try:
+                delay = float(tf_value)
+            except Exception:
+                delay = None
+        elif tf_value:
+            try:
+                delay = float(_tf_to_seconds(str(tf_value)))
+            except Exception:
+                delay = None
+        if not delay or delay <= 0:
+            try:
+                delay = float(globals().get('BAR_SECONDS') or 0.0)
+            except Exception:
+                delay = None
+        if not delay or delay <= 0:
+            delay = 60.0
+        return max(delay, 1.0)
+
+    def _schedule_retry_if_applicable(current_count):
+        if BE_MAX_RETRIES <= 0:
+            rec['sl_be_retry_at'] = 0
+            return
+        if current_count >= BE_MAX_RETRIES:
+            rec['sl_be_retry_at'] = 0
+            return
+        delay = _resolve_retry_delay_seconds()
+        rec['sl_be_retry_at'] = now_ts + delay if delay else 0
+
+    failure_reason = None
+    if qty_for_order <= 0.0:
+        failure_reason = (
+            f"qty<=0 після round (available={available_amt:.6g}, reserved={reserved_qty:.6g}, free={free_qty:.6g}, "
+            f"pos={pos_qty:.6g})"
+        )
+    elif qty_for_order < min_qty_req - 1e-12:
+        failure_reason = (
+            f"qty<{min_qty_req:.6g} (qty={qty_for_order:.6g}, available={available_amt:.6g}, reserved={reserved_qty:.6g}, "
+            f"free={free_qty:.6g}, pos={pos_qty:.6g})"
+        )
+    elif min_notional > 0 and notional_val > 0 and notional_val < min_notional - 1e-9:
+        failure_reason = (
+            f"notional<{min_notional:.6g} (val={notional_val:.6g}, available={available_amt:.6g}, reserved={reserved_qty:.6g}, "
+            f"free={free_qty:.6g}, pos={pos_qty:.6g})"
+        )
+
+    candidates = [
+        ('stop_market', side_close, None, {**base, 'triggerPrice': float(be)}),
+        ('stop_market', side_close, None, {**base, 'stopPrice': float(be)}),
+    ]
+
+    if failure_reason is not None:
+        cprint(
+            f"[sl->BE fail] {sym} {failure_reason}",
+            fg="yellow",
+            dim=True,
+        )
+    if failure_reason is None:
+        for idx, (otype, oside, oprice, params) in enumerate(candidates):
+            if BE_DIAG and idx == 0:
+                cprint(
+                    f"[sl->BE diag] {sym} posSide={base['positionSide']} local_qty={local_qty:.6g} "
+                    f"pos_qty={pos_qty:.6g} available={available_amt:.6g} reserved={reserved_qty:.6g} free={free_qty:.6g} "
+                    f"minQty={min_qty_req:.6g} minNotional={min_notional:.6g} payload={otype} qty={qty_for_order:.6g} params={params}",
+                    fg="cyan",
+                    dim=True,
+                )
+            try:
+                fetcher.ex.create_order(ccxt_sym, otype, oside, qty_for_order, oprice, params)
+                rec['sl_price'] = be
+                rec['sl_be_done'] = True
+                rec['sl_be_done_at'] = now_ts
+                rec['sl_be_retry_at'] = 0
+                return True
+            except Exception as e:
+                trig = params.get('triggerPrice') or params.get('stopPrice')
+                emsg = (e.args[0] if getattr(e, 'args', None) else str(e))
+                cprint(
+                    f"[sl->BE fail] {sym} {otype} qty={qty_for_order:.6g} trig={trig} params={params} -> {emsg}",
+                    fg="yellow",
+                    dim=True,
+                )
+        failure_reason = 'unable to place BE order'
+
+    if failure_reason is None:
+        failure_reason = 'unknown failure placing BE'
+
+    if not canceled_any:
+        # Old SL is still active; no restore required.
+        if BE_DIAG:
+            cprint(
+                f"[sl->BE diag] {sym} failure without cancel: {failure_reason}",
+                fg="cyan",
+                dim=True,
+            )
+        _schedule_retry_if_applicable(current_try)
+        return False
+
+    restore_success = False
+    restore_attempted = False
+
+    if BE_RESTORE_ON_FAIL and prev_sl_price and prev_sl_price > 0:
+        restore_attempted = True
+        # recalc free qty before restore to use latest numbers
+        available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
+            fetcher, sym, side_close, position_mode
+        )
+        pos = _get_position(force=True)
+        pos_qty = _pick_pos_qty(pos)
+        qty_restore = pos_qty if pos_qty > 0 else local_qty
+        qty_restore = min(qty_restore, local_qty)
+        if qty_restore <= 0:
+            qty_restore = local_qty
+        if step and step > 0:
+            qty_restore = round_to_step(qty_restore, step)
+        qty_restore = float(qty_restore)
+        if qty_restore <= 0:
+            qty_restore = max(local_qty, min_qty_req or 0.0)
+        if min_qty_req > 0 and qty_restore < min_qty_req:
+            if pos_qty and pos_qty > 0:
+                qty_restore = min(max(qty_restore, min_qty_req), pos_qty)
+            else:
+                qty_restore = max(qty_restore, min_qty_req)
+        restore_candidates = [
+            ('stop_market', side_close, None, {**base, 'triggerPrice': float(prev_sl_price)}),
+            ('stop_market', side_close, None, {**base, 'stopPrice': float(prev_sl_price)}),
+        ]
+        for otype, oside, oprice, params in restore_candidates:
+            try:
+                fetcher.ex.create_order(ccxt_sym, otype, oside, qty_restore, oprice, params)
+                rec['sl_price'] = prev_sl_price
+                restore_success = True
+                break
+            except Exception as e:
+                trig = params.get('triggerPrice') or params.get('stopPrice')
+                emsg = (e.args[0] if getattr(e, 'args', None) else str(e))
+                cprint(
+                    f"[sl->BE restore-fail] {sym} {otype} qty={qty_restore:.6g} trig={trig} params={params} -> {emsg}",
+                    fg="yellow",
+                    dim=True,
+                )
+
+    if restore_success:
+        if BE_MAX_RETRIES > 0 and tries + 1 >= BE_MAX_RETRIES:
+            rec['sl_be_abandon'] = True
+        if BE_DIAG:
+            cprint(
+                f"[sl->BE diag] {sym} restored previous SL at {prev_sl_price}",
+                fg="cyan",
+                dim=True,
+            )
+        _schedule_retry_if_applicable(current_try)
+        return False
+
+    if restore_attempted:
+        cprint(
+            f"[sl->BE FATAL] {sym} no SL after BE attempt and restore; closing position to avoid liquidation",
+            fg="red",
+            bold=True,
+        )
+    else:
+        cprint(
+            f"[sl->BE FATAL] {sym} no SL after BE attempt; closing position to avoid liquidation",
+            fg="red",
+            bold=True,
+        )
+
+    # Fatal fallback: force-close position reduceOnly
+    pos_side = base['positionSide']
+    pos = _get_position(force=True)
+    qty_close = _pick_pos_qty(pos)
+    if qty_close <= 0:
+        qty_close = abs(local_qty)
+    if step and step > 0:
+        qty_close = round_to_step(qty_close, step)
+    qty_close = float(qty_close)
+    if qty_close < min_qty_req and min_qty_req > 0:
+        qty_close = float(min_qty_req)
+    if qty_close <= 0:
+        cprint(
+            f"[sl->BE fatal-fail] {sym} qty_close<=0, unable to send force-close order",
+            fg="red",
+            bold=True,
+        )
+        rec['forced_close_done'] = True
+        rec['sl_be_abandon'] = True
+        return False
+
+    params_common = {'reduceOnly': True, 'positionSide': pos_side}
+    tif = FORCE_CLOSE_TIF.strip() if isinstance(FORCE_CLOSE_TIF, str) else ''
+    tif = tif.upper() if tif else ''
+    params_market = dict(params_common)
+    params_limit = dict(params_common)
+    if tif:
+        params_limit['timeInForce'] = tif
+
+    try:
+        fetcher.ex.create_order(ccxt_sym, 'market', side_close, qty_close, None, dict(params_market))
+    except Exception as e:
+        emsg = (e.args[0] if getattr(e, 'args', None) else str(e))
+        cprint(
+            f"[sl->BE force-close market fail] {sym} qty={qty_close:.6g} params={params_market} -> {emsg}",
+            fg="red",
+            dim=True,
+        )
+        slip = abs(FORCE_CLOSE_SLIPPAGE_BPS) / 10000.0
+        for attempt in range(max(0, FORCE_CLOSE_RETRIES)):
+            try:
+                px = fetcher.fetch_ticker_price(sym)
+            except Exception:
+                px = None
+            if not px or px <= 0:
+                px = price_for_notional or be or old_sl or 0.0
+            if not px or px <= 0:
+                continue
+            if side_close.lower() == 'sell':
+                price = px * (1 - slip)
+            else:
+                price = px * (1 + slip)
+            if price <= 0:
+                continue
+            try:
+                if hasattr(fetcher.ex, 'price_to_precision'):
+                    price = float(fetcher.ex.price_to_precision(ccxt_sym, price))
+            except Exception:
+                pass
+            try:
+                fetcher.ex.create_order(ccxt_sym, 'limit', side_close, qty_close, price, dict(params_limit))
+                break
+            except Exception as e2:
+                emsg2 = (e2.args[0] if getattr(e2, 'args', None) else str(e2))
+                cprint(
+                    f"[sl->BE force-close limit fail] {sym} attempt={attempt+1} qty={qty_close:.6g} price={price} params={params_limit} -> {emsg2}",
+                    fg="red",
+                    dim=True,
+                )
+    rec['forced_close_done'] = True
+    rec['sl_be_abandon'] = True
+    rec['sl_be_retry_at'] = 0
+    return False
+
+
+def _place_additional_stop_at_BE(fetcher, sym, rec, position_mode, be_price, now_utc):
+    qty = float(rec.get('qty') or 0.0)
+    if qty <= 0.0 or not be_price:
+        return None
+    side = str(rec.get('side', 'LONG')).upper()
+    sl_side = 'sell' if side == 'LONG' else 'buy'
+    pos_mode = str(position_mode or '').lower()
+    pos_oneway = pos_mode.startswith('one')
+    target_pos_side = 'BOTH' if pos_oneway else ('LONG' if side == 'LONG' else 'SHORT')
+    available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
+        fetcher, sym, sl_side, position_mode
+    )
+    local_qty = qty
+    qty_for_order = min(local_qty, free_qty)
+    ts = None
+    if isinstance(now_utc, datetime):
+        try:
+            ts = now_utc.isoformat()
+        except Exception:
+            ts = None
+    canceled = 0
+    canceled_any = False
+    if free_qty <= 0:
+        canceled = _cancel_existing_stops_same_side(fetcher, sym, sl_side, position_mode)
+        canceled_any = canceled > 0
+        if canceled_any:
+            time.sleep(max(BE_CANCEL_WAIT_SEC, 0.0))
+            for _ in range(max(1, BE_CANCEL_POLL_MAX)):
+                available_amt, reserved_qty, free_qty = _calc_free_reduceonly_qty(
+                    fetcher, sym, sl_side, position_mode
+                )
+                if free_qty > 0:
+                    break
+                time.sleep(max(BE_CANCEL_POLL_SEC, 0.0))
+
+    ccxt_sym = fetcher.resolve_symbol(sym) or sym
+
+    def _extract_position_qty():
+        try:
+            positions = fetcher.fetch_positions()
+        except Exception:
+            positions = []
+        for p in positions or []:
+            if p.get('symbol') != ccxt_sym:
+                continue
+            info = p.get('info', {}) if isinstance(p.get('info'), dict) else {}
+            info_side = str(
+                info.get('positionSide')
+                or p.get('positionSide')
+                or p.get('side')
+                or ''
+            ).upper()
+            if not pos_oneway and info_side and info_side != target_pos_side:
+                continue
+            for val in (
+                info.get('availableAmt'),
+                info.get('contracts'),
+                p.get('contracts'),
+                info.get('positionAmt'),
+                p.get('positionAmt'),
+            ):
+                try:
+                    if val is None:
+                        continue
+                    v = abs(float(val))
+                    if v > 0:
+                        return v
+                except Exception:
+                    continue
+            break
+        return 0.0
+
+    pos_qty = _extract_position_qty()
+    if canceled_any:
+        # refresh after cancellations to avoid stale cache
+        pos_qty = _extract_position_qty()
+
+    if pos_qty > 0:
+        qty_for_order = min(qty_for_order, pos_qty, local_qty)
+    else:
+        qty_for_order = min(qty_for_order, local_qty)
+
+    qty_for_order = min(qty_for_order, free_qty)
+
+    if free_qty <= 0 or qty_for_order <= 0:
+        msg = (
+            f"[sl->BE extra-fail] {sym} free_qty<=0 (available={available_amt:.6g}, reserved={reserved_qty:.6g}, "
+            f"free={free_qty:.6g}, pos={pos_qty:.6g}, canceled={canceled})"
+        )
+        if ts:
+            msg += f" ts={ts}"
+        cprint(msg, fg="yellow", dim=True)
+        return None
+
+    mkt = fetcher.markets.get(ccxt_sym, {})
+    step = float(mkt.get('precision', {}).get('amount') or 0.0)
+    min_qty = float(mkt.get('limits', {}).get('amount', {}).get('min') or 0.0)
+    min_notional = float(mkt.get('limits', {}).get('cost', {}).get('min') or 0.0)
+    if step and step > 0:
+        qty_for_order = round_to_step(qty_for_order, step)
+    qty_for_order = float(qty_for_order)
+    if qty_for_order <= 0.0:
+        msg = (
+            f"[sl->BE extra-fail] {sym} qty<=0 після round (available={available_amt:.6g}, reserved={reserved_qty:.6g}, "
+            f"free={free_qty:.6g}, pos={pos_qty:.6g})"
+        )
+        if ts:
+            msg += f" ts={ts}"
+        cprint(msg, fg="yellow", dim=True)
+        return None
+
+    price_for_notional = (
+        _safe_float(rec.get('entry_fill'))
+        or _safe_float(rec.get('entry'))
+        or _safe_float(rec.get('mark'))
+        or _safe_float(be_price)
+        or 0.0
+    )
+    notional_val = price_for_notional * qty_for_order if price_for_notional > 0 else 0.0
+    min_qty_req = max(min_qty, 0.0)
+
+    if qty_for_order < min_qty_req - 1e-12:
+        msg = (
+            f"[sl->BE extra-fail] {sym} qty<{min_qty_req:.6g} (qty={qty_for_order:.6g}, available={available_amt:.6g}, "
+            f"reserved={reserved_qty:.6g}, free={free_qty:.6g}, pos={pos_qty:.6g})"
+        )
+        if ts:
+            msg += f" ts={ts}"
+        cprint(msg, fg="yellow", dim=True)
+        return None
+    if min_notional > 0 and notional_val > 0 and notional_val < min_notional - 1e-9:
+        msg = (
+            f"[sl->BE extra-fail] {sym} notional<{min_notional:.6g} (val={notional_val:.6g}, available={available_amt:.6g}, "
+            f"reserved={reserved_qty:.6g}, free={free_qty:.6g}, pos={pos_qty:.6g})"
+        )
+        if ts:
+            msg += f" ts={ts}"
+        cprint(msg, fg="yellow", dim=True)
+        return None
+    base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
+    base['positionSide'] = target_pos_side
+    candidates = [
+        ('stop_market', sl_side, None, {**base, 'triggerPrice': float(be_price)}),
+        ('stop_market', sl_side, None, {**base, 'stopPrice': float(be_price)}),
+    ]
+    last_err = None
+    diag_verbose = bool(int(os.environ.get('BE_EXTRA_SL_VERBOSE', '0')))
+    if BE_DIAG:
+        try:
+            cprint(
+                f"[sl->BE extra diag] {sym} posSide={base['positionSide']} local_qty={local_qty:.6g} "
+                f"pos_qty={pos_qty:.6g} available={available_amt:.6g} reserved={reserved_qty:.6g} "
+                f"free={free_qty:.6g} canceled={canceled} qty={qty_for_order:.6g} minQty={min_qty_req:.6g} "
+                f"minNotional={min_notional:.6g}",
+                fg='cyan',
+                dim=True,
+            )
+        except Exception:
+            pass
+    for otype, oside, oprice, params in candidates:
+        try:
+            if diag_verbose and hasattr(fetcher.ex, 'verbose'):
+                old_verbose = getattr(fetcher.ex, 'verbose', False)
+                fetcher.ex.verbose = True
+            else:
+                old_verbose = None
+            try:
+                od = fetcher.ex.create_order(ccxt_sym, otype, oside, qty_for_order, oprice, params)
+            finally:
+                if old_verbose is not None:
+                    fetcher.ex.verbose = old_verbose
+            sleep_ms(RATE_MS)
+            return od
+        except Exception as e:
+            trig = params.get('triggerPrice') or params.get('stopPrice')
+            emsg = (e.args[0] if getattr(e, 'args', None) else str(e))
+            msg = (
+                f"[sl->BE extra-try-fail] {sym} {otype} {oside} qty={qty_for_order:.6g} trig={trig} -> {emsg}"
+            )
+            if ts:
+                msg += f" ts={ts}"
+            cprint(msg, fg="yellow", dim=True)
+            last_err = emsg
+            continue
+    msg = f"[sl->BE extra-fail] {sym} exhausted candidates; last_error={last_err or 'none'}"
+    if ts:
+        msg += f" ts={ts}"
+    cprint(msg, fg="red")
+    return None
 
 
 def _ensure_be_fields(rec):
@@ -191,10 +952,6 @@ def _ensure_be_fields(rec):
     rec.setdefault('sl_be_done', False)
     rec.setdefault('be_plan_activated_ts', None)
     rec.setdefault('be_plan_last_fallback_ts', None)
-    rec.setdefault('be_plan', None)
-    rec.setdefault('be_moved_once', False)
-    rec.setdefault('be_last_error', None)
-    rec.setdefault('tp_hits', 0)
     tp50, _ = _calc_tp50_and_be(rec)
     rec['tp50_trigger'] = tp50
     try:
@@ -648,333 +1405,6 @@ def round_to_step(value: float, step: float) -> float:
     return math.floor(float(value) / step) * step
 
 
-def _round_to_step(value: float, step: float) -> float:
-    if not step or step <= 0:
-        return float(value)
-    return math.floor((float(value) + EPS_QTY) / float(step)) * float(step)
-
-
-def _position_qty(pos: Optional[dict], side: str) -> float:
-    if not isinstance(pos, dict):
-        return 0.0
-    raw = pos.get('contracts')
-    if raw in (None, ''):
-        for key in (
-            'positionAmt',
-            'positionAmount',
-            'position',
-            'size',
-            'available',
-            'holding',
-            'amount',
-        ):
-            val = pos.get(key)
-            if val not in (None, ''):
-                raw = val
-                break
-    if raw in (None, '') and isinstance(pos.get('info'), dict):
-        info = pos['info']
-        for key in (
-            'positionAmt',
-            'positionAmount',
-            'position',
-            'size',
-            'contracts',
-            'available',
-            'holding',
-            'amount',
-        ):
-            val = info.get(key)
-            if val not in (None, ''):
-                raw = val
-                break
-    try:
-        qty = abs(float(raw)) if raw not in (None, '') else 0.0
-    except Exception:
-        qty = 0.0
-    return qty
-
-
-def _cancel_position_stops(fetcher, sym, rec) -> list:
-    canceled = []
-    ccxt_sym = fetcher.resolve_symbol(sym) or sym
-    try:
-        open_orders = fetcher.ex.fetch_open_orders(ccxt_sym)
-    except Exception as exc:
-        log.warning(f"[sl->BE] fetch_open_orders before cancel failed: {exc}")
-        open_orders = []
-    for od in open_orders or []:
-        info = od.get('info') or {}
-        reduce_only = bool(info.get('reduceOnly') or od.get('reduceOnly'))
-        if not reduce_only:
-            continue
-        otype = str(od.get('type') or info.get('type') or '').lower()
-        if 'stop' not in otype:
-            continue
-        oid = str(od.get('id') or od.get('orderId') or od.get('clientOrderId') or '')
-        if not oid:
-            continue
-        try:
-            fetcher.ex.cancel_order(oid, ccxt_sym, params={'positionSide': 'BOTH'})
-            canceled.append(oid)
-        except Exception as exc:
-            log.warning(f"[sl->BE] cancel stop {oid} failed: {exc}")
-    if canceled:
-        log.info(f"[sl->BE wait] {sym} canceled={len(canceled)}")
-    return canceled
-
-
-def _extract_order_amount(order: dict) -> float:
-    if not isinstance(order, dict):
-        return 0.0
-    info = order.get('info') if isinstance(order.get('info'), dict) else {}
-    for key in ('amount', 'origQty', 'qty', 'quantity', 'volume', 'size'):
-        val = order.get(key)
-        if val in (None, '') and info:
-            val = info.get(key)
-        if val not in (None, ''):
-            try:
-                return max(0.0, float(val))
-            except Exception:
-                return 0.0
-    return 0.0
-
-
-def _filter_reduce_only_orders(open_orders, side_close: Optional[str] = None):
-    result = []
-    for order in open_orders or []:
-        info = order.get('info') if isinstance(order.get('info'), dict) else {}
-        if not bool(info.get('reduceOnly') or order.get('reduceOnly')):
-            continue
-        otype = str(order.get('type') or info.get('type') or '').lower()
-        if 'stop' not in otype and 'take_profit' not in otype:
-            continue
-        oside = (order.get('side') or info.get('side') or '').lower()
-        if side_close and oside and oside != side_close.lower():
-            continue
-        result.append(order)
-    return result
-
-
-def _sum_reserved_reduce_only(open_orders, side_close: Optional[str] = None) -> float:
-    total = 0.0
-    for order in _filter_reduce_only_orders(open_orders, side_close=side_close):
-        total += _extract_order_amount(order)
-    return max(0.0, float(total))
-
-
-def _cancel_reduce_only_take_profits(ex, symbol, open_orders, side_close: Optional[str] = None) -> int:
-    canceled = 0
-    for order in _filter_reduce_only_orders(open_orders, side_close=side_close):
-        info = order.get('info') if isinstance(order.get('info'), dict) else {}
-        otype = str(order.get('type') or info.get('type') or '').lower()
-        if 'take_profit' not in otype:
-            continue
-        oid = str(order.get('id') or order.get('orderId') or order.get('clientOrderId') or info.get('orderId') or '')
-        if not oid:
-            continue
-        try:
-            ex.cancel_order(oid, symbol, params={'positionSide': 'BOTH'})
-            canceled += 1
-        except Exception as exc:
-            log.warning(f"[sl->BE] cancel TP {oid} failed: {exc}")
-    if canceled:
-        log.info(f"[sl->BE wait] {symbol} canceled_tp={canceled}")
-    return canceled
-
-
-def _place_be_plan_on_exchange(fetcher, sym, rec, position_mode, be_plan,
-                               max_retries=6, retry_sleep=1.0, post_cancel_wait=0.8):
-    """
-    Place (or re-place) the BE stop for a position after TP1 hit.
-    - Cancels previous SL(s)
-    - Waits a bit so reserved qty frees up on exchange
-    - Places a new stop market with trigger=be_plan['trigger']
-    - Quantity logic:
-        * use current position qty (side-aware) minus any still-reserved qty
-        * round with exchange stepSize/lot restrictions
-    - Robust fallbacks for:
-        * 'The order size must be less than the available amount of 0 USDT'
-        * 'Stop Loss price should be greater/less than the current price'
-    Returns True on success, False on permanent failure.
-    """
-    if not be_plan or 'trigger' not in be_plan:
-        rec['be_last_error'] = 'missing be_plan trigger'
-        return False
-
-    side = rec.get('side', 'LONG')
-    ex = fetcher.ex
-    market = ex.market(sym) if hasattr(ex, 'market') else (fetcher.markets or {}).get(sym, {})
-
-    _cancel_position_stops(fetcher, sym, rec)
-
-    if post_cancel_wait and post_cancel_wait > 0:
-        _time.sleep(post_cancel_wait)
-
-    trigger = float(be_plan['trigger'])
-    params = {"reduceOnly": True, "positionSide": "BOTH", "workingType": "MARK_PRICE"}
-    tick_size, lot_step, min_qty = _market_steps(fetcher, sym)
-    lot_step = float(lot_step or 0.0)
-    min_qty = float(min_qty or 0.0)
-    tick_size = float(tick_size or 0.0)
-    side_close = 'sell' if str(side).upper() == 'LONG' else 'buy'
-
-    last_error = None
-    canceled_tp_once = False
-    for attempt in range(int(max_retries)):
-        try:
-            pos = fetcher.fetch_position(sym, position_mode=position_mode)
-        except Exception:
-            pos = None
-        pos_qty = _position_qty(pos, side)
-        if pos_qty <= 0:
-            rec['be_last_error'] = 'no position qty'
-            return False
-
-        try:
-            open_orders = ex.fetch_open_orders(sym)
-        except Exception:
-            open_orders = []
-        reduce_orders = _filter_reduce_only_orders(open_orders, side_close=side_close)
-        reserved_qty = _sum_reserved_reduce_only(open_orders, side_close=side_close)
-        available_qty = max(0.0, pos_qty - reserved_qty)
-
-        if available_qty <= 0 and not canceled_tp_once:
-            canceled = _cancel_reduce_only_take_profits(ex, sym, open_orders, side_close=side_close)
-            if canceled:
-                canceled_tp_once = True
-                if post_cancel_wait and post_cancel_wait > 0:
-                    _time.sleep(post_cancel_wait)
-                continue
-
-        qty_main = _round_to_step(available_qty, lot_step) if lot_step else float(available_qty)
-        if lot_step and qty_main < lot_step and available_qty >= lot_step - EPS_QTY:
-            qty_main = lot_step
-
-        min_qty_eff = max(min_qty, EPS_QTY)
-        if qty_main < min_qty_eff:
-            last_error = f"qty {qty_main} < min {min_qty_eff}"
-            if post_cancel_wait and post_cancel_wait > 0:
-                _time.sleep(post_cancel_wait)
-            continue
-
-        try:
-            ticker = ex.fetch_ticker(sym)
-        except Exception:
-            ticker = None
-        mark_price = _extract_mark_price_from_dict(ticker) if isinstance(ticker, dict) else None
-        if mark_price is None and isinstance(ticker, dict):
-            for key in ('last', 'close', 'info'):
-                val = ticker.get(key) if isinstance(ticker, dict) else None
-                if key == 'info' and isinstance(val, dict):
-                    mark_price = _extract_mark_price_from_dict(val)
-                elif val not in (None, ''):
-                    try:
-                        mark_price = float(val)
-                        break
-                    except Exception:
-                        continue
-        trigger_eff = float(trigger)
-        if mark_price is not None:
-            eps_price = max(abs(mark_price) * 1e-5, tick_size or 0.0)
-            if str(side).upper() == 'LONG':
-                if trigger_eff >= mark_price:
-                    trigger_eff = max(0.0, mark_price - eps_price)
-            else:
-                if trigger_eff <= mark_price:
-                    trigger_eff = mark_price + eps_price
-
-        reduce_snapshot = [
-            {
-                'type': str((od.get('type') or (od.get('info') or {}).get('type') or '')).lower(),
-                'side': str(od.get('side') or (od.get('info') or {}).get('side') or '').lower(),
-                'qty': _extract_order_amount(od),
-            }
-            for od in reduce_orders
-        ]
-
-        log.info(
-            f"[sl->BE diag] {sym} attempt={attempt+1}/{max_retries} pos={pos_qty:.6g} reserved={reserved_qty:.6g} available={available_qty:.6g}"
-            f" qty_main={qty_main:.6g} min_qty={min_qty_eff:.6g} mark={mark_price} trigger={trigger_eff} reduce_only={reduce_snapshot}"
-        )
-
-        qty_candidates = [qty_main]
-        shrink = qty_main
-        for _ in range(2):
-            shrink *= 0.5
-            shrink = _round_to_step(shrink, lot_step) if lot_step else float(shrink)
-            if shrink >= min_qty_eff and shrink not in qty_candidates:
-                qty_candidates.append(shrink)
-
-        for qty in qty_candidates:
-            if qty < min_qty_eff:
-                continue
-            log.info(
-                f"[sl->BE place] {sym} qty={qty:.6g} trig={trigger_eff} candidate={qty_candidates.index(qty)+1}/{len(qty_candidates)}"
-            )
-            try:
-                ex.create_order(
-                    sym,
-                    type='stop_market',
-                    side=side_close,
-                    amount=qty,
-                    price=None,
-                    params={**params, 'triggerPrice': trigger_eff, 'stopPrice': trigger_eff},
-                )
-                rec['be_moved_once'] = True
-                rec['be_last_error'] = None
-                return True
-            except Exception as exc:
-                msg = str(exc)
-                rec['be_last_error'] = msg
-                last_error = msg
-                log.warning(f"[sl->BE retry] {sym} qty={qty:.6g} err={msg}")
-                if 'available amount of 0' in msg or 'must be less than the available amount of 0' in msg:
-                    continue
-                if 'Stop Loss price should be greater' in msg or 'Stop Loss price should be less' in msg:
-                    if mark_price is not None:
-                        eps_price = max(abs(mark_price) * 1e-5, tick_size or 0.0)
-                        if str(side).upper() == 'LONG':
-                            trigger_eff = max(0.0, mark_price - eps_price)
-                        else:
-                            trigger_eff = mark_price + eps_price
-                        continue
-                    precision = 5
-                    if isinstance(market, dict):
-                        prec_val = market.get('precision', {}).get('price') if isinstance(market.get('precision'), dict) else None
-                        if prec_val is not None:
-                            try:
-                                precision = int(prec_val)
-                            except Exception:
-                                pass
-                    eps = 10 ** (-precision)
-                    trigger_eff = trigger_eff + eps if str(side).upper() == 'LONG' else trigger_eff - eps
-                    continue
-                if 'triggerPrice' in msg and 'required' in msg.lower():
-                    try:
-                        ex.create_order(
-                            sym,
-                            type='stop_market',
-                            side=side_close,
-                            amount=qty,
-                            price=None,
-                            params={**params, 'stopPrice': trigger_eff},
-                        )
-                        rec['be_moved_once'] = True
-                        rec['be_last_error'] = None
-                        return True
-                    except Exception as exc2:
-                        rec['be_last_error'] = str(exc2)
-                        last_error = str(exc2)
-                        log.warning(f"[sl->BE retry] {sym} stopPrice-only err={exc2}")
-                        continue
-        if retry_sleep and retry_sleep > 0:
-            _time.sleep(retry_sleep)
-
-    log.error(f"[sl->BE fail] {sym} unable to place BE stop: {last_error}")
-    return False
-
-
 def opp_side(side: str) -> str:
     return 'SHORT' if str(side).upper().startswith('LONG') else 'LONG'
 
@@ -1028,7 +1458,7 @@ def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str, max_wait_ms
     if not order_id:
         return None, None, None
     ccxt_sym = fetcher.resolve_symbol(sym)
-    deadline = _time.time() + max_wait_ms / 1000.0
+    deadline = time.time() + max_wait_ms / 1000.0
     last_od = None
     while True:
         try:
@@ -1064,7 +1494,7 @@ def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str, max_wait_ms
         except Exception:
             ts = None
         status = str(od.get('status') or '').lower()
-        if price is not None or status in ('closed', 'canceled') or _time.time() >= deadline:
+        if price is not None or status in ('closed', 'canceled') or time.time() >= deadline:
             fill_dt = None
             if ts is not None:
                 try:
@@ -1497,27 +1927,10 @@ def _place_tp_sl_after_open(
     try:
         ccxt_sym = fetcher.resolve_symbol(sym)
         pos_oneway = True if str(position_mode or '').lower().startswith('one') else False
-        base = {'reduceOnly': True, 'workingType': 'MARK_PRICE'}
+        base = {'reduceOnly': True}
         base['positionSide'] = 'BOTH' if pos_oneway else ('LONG' if side=='LONG' else 'SHORT')
 
-        tick_size, lot_step, min_qty = _market_steps(fetcher, ccxt_sym)
-        lot_step = float(lot_step or 0.0)
-        min_qty = float(min_qty or 0.0)
-        qty = _round_to_step(qty, lot_step) if lot_step else float(qty)
-        min_qty_eff = max(min_qty, EPS_QTY)
-        if qty < min_qty_eff:
-            _dbg('tp_sl_skip', sym, f'qty={qty:.6g} < min={min_qty_eff:.6g}')
-            return
-
-        def _tp_params(price_val):
-            if price_val is None:
-                return dict(base)
-            p = float(price_val)
-            return {**base, 'triggerPrice': p, 'stopPrice': p}
-
         def _try(order_type, order_side, amount, price, params):
-            if amount is not None and amount < min_qty_eff:
-                return {'ok': False, 'error': f'qty<{min_qty_eff}', 'params': params}
             try:
                 od = fetcher.ex.create_order(ccxt_sym, order_type, order_side, amount, price, params)
                 sleep_ms(RATE_MS)
@@ -1527,66 +1940,55 @@ def _place_tp_sl_after_open(
 
         # ---- Partial TP (50% or as configured) ----
         ptp_ok = False
-        part_qty_eff = 0.0
         if (
             part_tp_price is not None
             and part_tp_price > 0
             and part_tp_qty is not None
             and part_tp_qty > 0
         ):
-            part_qty_eff = _round_to_step(part_tp_qty, lot_step) if lot_step else float(part_tp_qty)
-            if part_qty_eff < min_qty_eff:
-                _dbg('ptp_skip', sym, f'qty={part_qty_eff:.6g} < min={min_qty_eff:.6g}')
-                part_qty_eff = 0.0
-            else:
-                ptp_side = "sell" if side == "LONG" else "buy"
-                tp_params = _tp_params(part_tp_price)
-                ptp_candidates = [
-                    ("take_profit", ptp_side, float(part_tp_price), tp_params),
-                    ("take_profit_market", ptp_side, None, tp_params),
-                    ("take_profit_limit", ptp_side, float(part_tp_price), tp_params),
-                    ("limit", ptp_side, float(part_tp_price), {**base, "takeProfit": True}),
-                    ("market", ptp_side, None, {**base, "takeProfitPrice": float(part_tp_price)}),
-                ]
+            ptp_side = "sell" if side == "LONG" else "buy"
+            ptp_candidates = [
+                ("take_profit", ptp_side, float(part_tp_price), dict(base)),
+                ("take_profit_market", ptp_side, None, {**base, "triggerPrice": float(part_tp_price)}),
+                ("limit", ptp_side, float(part_tp_price), {**base, "takeProfit": True}),
+                ("market", ptp_side, None, {**base, "takeProfitPrice": float(part_tp_price)}),
+            ]
+            _dbg(
+                "ptp_fallback",
+                sym,
+                f"side={side}",
+                f"qty={part_tp_qty:.6g}",
+                f"price={part_tp_price}",
+                f"pos_mode={position_mode}",
+                f"candidates={len(ptp_candidates)}",
+            )
+            for otype, oside, oprice, pms in ptp_candidates:
+                r = _try(otype, oside, part_tp_qty, oprice, pms)
+                _dbg("ptp_try", {"type": otype, "side": oside, "price": oprice, "params": pms})
                 _dbg(
-                    "ptp_fallback",
-                    sym,
-                    f"side={side}",
-                    f"qty={part_qty_eff:.6g}",
-                    f"price={part_tp_price}",
-                    f"pos_mode={position_mode}",
-                    f"candidates={len(ptp_candidates)}",
-                )
-                for otype, oside, oprice, pms in ptp_candidates:
-                    r = _try(otype, oside, part_qty_eff, oprice, pms)
-                    _dbg("ptp_try", {"type": otype, "side": oside, "price": oprice, "params": pms})
-                    _dbg(
-                        "ptp_res",
-                        ("ok" if r.get("ok") else "ERR"),
-                        r.get("error", ""),
-                        (
-                            "order_id="
-                            + str((r.get("order") or {}).get("id") or (r.get("order") or {}).get("orderId"))
-                        )
-                        if r.get("ok")
-                        else "",
+                    "ptp_res",
+                    ("ok" if r.get("ok") else "ERR"),
+                    r.get("error", ""),
+                    (
+                        "order_id="
+                        + str((r.get("order") or {}).get("id") or (r.get("order") or {}).get("orderId"))
                     )
-                    if r.get("ok"):
-                        ptp_ok = True
-                        break
+                    if r.get("ok")
+                    else "",
+                )
+                if r.get("ok"):
+                    ptp_ok = True
+                    break
 
         # adjust remaining qty for full TP if partial TP succeeded
-        tp_qty = max(0.0, qty - (part_qty_eff if ptp_ok else 0.0))
-        tp_qty = _round_to_step(tp_qty, lot_step) if lot_step else float(tp_qty)
+        tp_qty = qty - (part_tp_qty if ptp_ok else 0.0)
 
         # ---- TP ----
-        if tp_price is not None and tp_price > 0 and tp_qty >= min_qty_eff:
+        if tp_price is not None and tp_price > 0 and tp_qty > 0:
             tp_side = 'sell' if side=='LONG' else 'buy'
-            tp_params = _tp_params(tp_price)
             tp_candidates = [
-                ('take_profit', tp_side, float(tp_price), tp_params),
-                ('take_profit_market', tp_side, None, tp_params),
-                ('take_profit_limit', tp_side, float(tp_price), tp_params),
+                ('take_profit', tp_side, float(tp_price), dict(base)),
+                ('take_profit_market', tp_side, None, {**base, 'triggerPrice': float(tp_price)}),
                 ('limit', tp_side, float(tp_price), {**base, 'takeProfit': True}),
                 ('market', tp_side, None, {**base, 'takeProfitPrice': float(tp_price)}),
             ]
@@ -1606,7 +2008,7 @@ def _place_tp_sl_after_open(
         if sl_price is not None and sl_price > 0:
             sl_side = 'sell' if side=='LONG' else 'buy'
             sl_candidates = [  # prefer stop_market with triggerPrice only to avoid "SL Price must be lower than Trigger Price"
-                ('stop_market', sl_side, None, {**base, 'triggerPrice': float(sl_price), 'stopPrice': float(sl_price)}),
+                ('stop_market', sl_side, None, {**base, 'triggerPrice': float(sl_price)}),
                 ('stop_market', sl_side, None, {**base, 'stopPrice': float(sl_price)}),
                 ('market', sl_side, None, {**base, 'stopLossPrice': float(sl_price)}),
                 ('stop', sl_side, float(sl_price), dict(base)),
@@ -1965,6 +2367,124 @@ def run_live(cfg: dict, args):
                             rec['sl_be_done'] = True
                             rec_changed = True
 
+                now_utc = datetime.now(timezone.utc)
+                fallback_delay = float(getattr(strat, 'be_plan_fallback_delay_sec', 20.0))
+                plan_id = rec.get('be_plan_id')
+                trigger_hit = False
+                if tp50_trigger is not None:
+                    if side_long and px >= tp50_trigger - 1e-9:
+                        trigger_hit = True
+                    elif (not side_long) and px <= tp50_trigger + 1e-9:
+                        trigger_hit = True
+                    if not trigger_hit:
+                        if side_long:
+                            high_val = _safe_float(rec.get('be_high_price'))
+                            if high_val is not None and high_val >= tp50_trigger - 1e-9:
+                                trigger_hit = True
+                        else:
+                            low_val = _safe_float(rec.get('be_low_price'))
+                            if low_val is not None and low_val <= tp50_trigger + 1e-9:
+                                trigger_hit = True
+
+                if plan_id and trigger_hit and not rec.get('be_plan_active'):
+                    rec['be_plan_active'] = True
+                    rec['be_plan_activated_ts'] = now_utc.isoformat()
+                    rec_changed = True
+
+                if plan_id and rec.get('be_plan_active') and not rec.get('be_plan_activated_ts'):
+                    rec['be_plan_activated_ts'] = now_utc.isoformat()
+                    rec_changed = True
+
+                def _parse_iso(ts_val):
+                    if not ts_val:
+                        return None
+                    try:
+                        return datetime.fromisoformat(ts_val)
+                    except Exception:
+                        return None
+
+                placed_be = False
+                if be_price and not rec.get('sl_be_done'):
+                    if plan_id:
+                        act_dt = _parse_iso(rec.get('be_plan_activated_ts'))
+                        last_fb_dt = _parse_iso(rec.get('be_plan_last_fallback_ts'))
+                        allow_fallback = False
+                        if act_dt and (now_utc - act_dt).total_seconds() >= fallback_delay:
+                            allow_fallback = True
+                        if allow_fallback:
+                            if not last_fb_dt or (now_utc - last_fb_dt).total_seconds() >= fallback_delay:
+                                placed_be = _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode)
+                                rec['be_plan_last_fallback_ts'] = now_utc.isoformat()
+                                rec_changed = True
+                    elif trigger_hit:
+                        last_fb_dt = _parse_iso(rec.get('be_plan_last_fallback_ts'))
+                        allow_fb = not last_fb_dt or (now_utc - last_fb_dt).total_seconds() >= fallback_delay
+                        if allow_fb:
+                            placed_be = _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode)
+                            rec['be_plan_last_fallback_ts'] = now_utc.isoformat()
+                            rec_changed = True
+
+                if placed_be and float(rec.get('qty', 0.0)) > 0:
+                    try:
+                        _place_tp_sl_after_open(
+                            fetcher,
+                            sym,
+                            rec.get('side', 'LONG'),
+                            float(rec.get('qty', 0.0)),
+                            rec.get('tp_price'),
+                            rec.get('sl_price'),
+                            position_mode,
+                            pos_rec=rec,
+                        )
+                    except Exception:
+                        pass
+                    rec_changed = True
+
+                extra_sl_done = bool(rec.get('be_extra_sl_done'))
+                extra_qty = float(rec.get('qty') or 0.0)
+                high_hit = False
+                if tp50_trigger is not None and be_price and extra_qty > 0.0 and not extra_sl_done:
+                    if side_long:
+                        high_val = _safe_float(rec.get('be_high_price'))
+                        if high_val is not None and high_val >= tp50_trigger - 1e-9:
+                            high_hit = True
+                    else:
+                        low_val = _safe_float(rec.get('be_low_price'))
+                        if low_val is not None and low_val <= tp50_trigger + 1e-9:
+                            high_hit = True
+                if high_hit and not extra_sl_done:
+                    extra_delay = max(float(fallback_delay), 5.0)
+                    last_extra_dt = _parse_iso(rec.get('be_extra_sl_last_attempt_ts'))
+                    allow_extra = True
+                    if last_extra_dt and (now_utc - last_extra_dt).total_seconds() < extra_delay:
+                        allow_extra = False
+                    if allow_extra:
+                        od = _place_additional_stop_at_BE(
+                            fetcher,
+                            sym,
+                            rec,
+                            position_mode,
+                            be_price,
+                            now_utc,
+                        )
+                        rec['be_extra_sl_last_attempt_ts'] = now_utc.isoformat()
+                        if od:
+                            rec['be_extra_sl_done'] = True
+                            rec['be_extra_sl_order_id'] = str(
+                                od.get('id')
+                                or od.get('orderId')
+                                or od.get('clientOrderId')
+                                or ''
+                            )
+                            cprint(
+                                f'[sl->BE extra] {sym} qty={extra_qty:.6g} price={float(be_price):.6g}',
+                                fg='cyan',
+                                dim=True,
+                            )
+                        else:
+                            cprint(f'[sl->BE extra-fail] {sym}', fg='yellow', dim=True)
+                        rec_changed = True
+
                 if rec_changed:
                     save_positions(args.results_dir, positions)
                     try:
@@ -2108,7 +2628,9 @@ def run_live(cfg: dict, args):
 
                                 rec['qty'] = max(0.0, qty_total - qty_close)
                                 _ensure_be_fields(rec)
-                                rec['tp_hits'] = int(rec.get('tp_hits', 0)) + 1
+                                if not rec.get('be_plan_active'):
+                                    rec['be_plan_active'] = True
+                                    rec['be_plan_activated_ts'] = now_utc.isoformat()
                                 try:
                                     db_upsert_open_position(session_db_path, bot_id, rec)
                                 except Exception:
@@ -2116,43 +2638,22 @@ def run_live(cfg: dict, args):
 
                                 remaining_qty = float(rec.get('qty', 0.0))
                                 if remaining_qty > 0:
-                                    side_dir = str(rec.get('side', 'LONG')).upper()
-                                    ccxt_sym = fetcher.resolve_symbol(sym) or sym
-                                    be_plan = rec.get('be_plan') if isinstance(rec.get('be_plan'), dict) else None
-                                    should_move_be = (
-                                        be_plan
-                                        and not rec.get('be_moved_once')
-                                        and int(rec.get('tp_hits', 0)) == 1
-                                    )
-                                    if should_move_be:
-                                        retry_sleep = BE_RETRY_BACKOFF[0] if BE_RETRY_BACKOFF else 1.0
-                                        if BE_POST_TP_DELAY_SEC > 0:
-                                            _time.sleep(BE_POST_TP_DELAY_SEC)
-                                        ok_be = _place_be_plan_on_exchange(
-                                            fetcher,
-                                            ccxt_sym,
-                                            rec,
-                                            position_mode,
-                                            be_plan,
-                                            max_retries=BE_MAX_RETRIES,
-                                            retry_sleep=retry_sleep,
-                                            post_cancel_wait=BE_CANCEL_WAIT_SEC,
-                                        )
-                                        if ok_be:
-                                            new_sl = float(be_plan.get('trigger'))
-                                            rec['sl_price'] = new_sl
-                                            rec['sl'] = new_sl
-                                            rec['sl_be_done'] = True
-                                            rec['sl_be_done_at'] = _time.time()
-                                            rec['sl_be_retry_at'] = 0
-                                            log.info(f"[sl->BE ok] {sym} moved to {new_sl}")
+                                    placed_be_stop = False
+                                    try:
+                                        placed_be_stop = _place_or_replace_stop_to_BE(fetcher, sym, rec, position_mode)
+                                        if placed_be_stop:
+                                            rec['be_plan_last_fallback_ts'] = now_utc.isoformat()
+                                            # зберігаємо стан позиції локально та в БД
                                             save_positions(args.results_dir, positions)
                                             try:
                                                 db_upsert_open_position(session_db_path, bot_id, rec)
                                             except Exception:
                                                 pass
+                                            cprint(f'[sl->BE] {sym} new_sl={float(rec.get("sl_price") or 0.0):.6g}', fg='cyan')
                                         else:
-                                            log.error(f"[sl->BE extra-fail] {sym} {rec.get('be_last_error')}")
+                                            cprint(f'[sl->BE skip] {sym} (no change / qty=0)', fg='yellow', dim=True)
+                                    except Exception as e:
+                                        cprint(f'[sl->BE ERR] {sym} {e}', fg='red')
                                     try:
                                         _place_tp_sl_after_open(
                                             fetcher,
@@ -2440,17 +2941,13 @@ def run_live(cfg: dict, args):
                             if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
                                 trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
                                 frac = float(getattr(strat, 'partial_tp_frac', 0.5))
-                                frac = max(0.0, min(1.0, frac))
-                                ccxt_sym = fetcher.resolve_symbol(sym) or sym
-                                _, lot_step, _ = _market_steps(fetcher, ccxt_sym)
                                 if side_str == 'SHORT':
                                     path = entry_px - tp_price
                                     part_tp_price = entry_px - trig * path
                                 else:
                                     path = tp_price - entry_px
                                     part_tp_price = entry_px + trig * path
-                                qty_parts = allocate_tp_ladder(qty, [frac, max(0.0, 1.0 - frac)], lot_step)
-                                part_tp_qty = qty_parts[0] if qty_parts else 0.0
+                                part_tp_qty = qty * frac
                             try:
                                 _place_tp_sl_after_open(
                                     fetcher,
@@ -2467,11 +2964,32 @@ def run_live(cfg: dict, args):
                             except Exception as e: _dbg('post_open_error', str(e))
                             tp50, be_price = _calc_tp50_and_be(rec)
                             rec['tp50_trigger'] = tp50
-                            rec['be_plan'] = {'trigger': float(be_price)} if be_price else None
-                            rec['be_moved_once'] = False
-                            rec['be_last_error'] = None
-                            rec['tp_hits'] = 0
-                            rec['be_plan_id'] = None
+                            od = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
+                            if isinstance(od, dict) and (od.get('id') or od.get('orderId')):
+                                rec['be_plan_id'] = str(od.get('id') or od.get('orderId'))
+                                rec['be_plan_active'] = False
+                                rec['be_plan_activated_ts'] = None
+                                rec['be_plan_last_fallback_ts'] = None
+                                try:
+                                    insert_order_row(session_db_path, {
+                                        'order_id': str(uuid.uuid4()),
+                                        'ts_utc': datetime.now(timezone.utc).isoformat(),
+                                        'bar_time_utc': bar_close.isoformat(),
+                                        'mode': 'PLAN',
+                                        'symbol': sym,
+                                        'side': 'sell' if side_str == 'LONG' else 'buy',
+                                        'type': 'conditional',
+                                        'price': float(be_price or 0.0),
+                                        'qty': float(qty),
+                                        'status': 'open',
+                                        'reason': 'BE_AFTER_TP50',
+                                        'run_id': run_id,
+                                        'extra': json.dumps({'tp50_trigger': tp50, 'be_price': be_price}),
+                                    })
+                                except Exception:
+                                    pass
+                            else:
+                                rec['be_plan_id'] = None
                             positions[sym] = rec; save_positions(args.results_dir, positions)
                             try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                             except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
@@ -2519,13 +3037,9 @@ def run_live(cfg: dict, args):
                     if getattr(strat, 'partial_tp_enable', False) and tp_price is not None:
                         trig = float(getattr(strat, 'partial_trigger_frac_of_tp', 0.5))
                         frac = float(getattr(strat, 'partial_tp_frac', 0.5))
-                        frac = max(0.0, min(1.0, frac))
                         path = entry_px - tp_price
                         part_tp_price = entry_px - trig * path
-                        ccxt_sym = fetcher.resolve_symbol(sym) or sym
-                        _, lot_step, _ = _market_steps(fetcher, ccxt_sym)
-                        qty_parts = allocate_tp_ladder(qty, [frac, max(0.0, 1.0 - frac)], lot_step)
-                        part_tp_qty = qty_parts[0] if qty_parts else 0.0
+                        part_tp_qty = qty * frac
                     try:
                         _place_tp_sl_after_open(
                             fetcher,
@@ -2543,11 +3057,32 @@ def run_live(cfg: dict, args):
                         _dbg('post_open_error', str(e))
                     tp50, be_price = _calc_tp50_and_be(rec)
                     rec['tp50_trigger'] = tp50
-                    rec['be_plan'] = {'trigger': float(be_price)} if be_price else None
-                    rec['be_moved_once'] = False
-                    rec['be_last_error'] = None
-                    rec['tp_hits'] = 0
-                    rec['be_plan_id'] = None
+                    od = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
+                    if isinstance(od, dict) and (od.get('id') or od.get('orderId')):
+                        rec['be_plan_id'] = str(od.get('id') or od.get('orderId'))
+                        rec['be_plan_active'] = False
+                        rec['be_plan_activated_ts'] = None
+                        rec['be_plan_last_fallback_ts'] = None
+                        try:
+                            insert_order_row(session_db_path, {
+                                'order_id': str(uuid.uuid4()),
+                                'ts_utc': datetime.now(timezone.utc).isoformat(),
+                                'bar_time_utc': bar_close.isoformat(),
+                                'mode': 'PLAN',
+                                'symbol': sym,
+                                'side': 'buy',
+                                'type': 'conditional',
+                                'price': float(be_price or 0.0),
+                                'qty': float(qty),
+                                'status': 'open',
+                                'reason': 'BE_AFTER_TP50',
+                                'run_id': run_id,
+                                'extra': json.dumps({'tp50_trigger': tp50, 'be_price': be_price}),
+                            })
+                        except Exception:
+                            pass
+                    else:
+                        rec['be_plan_id'] = None
                     positions[sym] = rec; save_positions(args.results_dir, positions)
                     try: db_upsert_open_position(session_db_path, bot_id, {**rec, 'status':'OPEN', 'exchange': args.exchange, 'timeframe': tf})
                     except Exception as e: cprint('[db upsert OPEN]', e, fg='red')
@@ -2641,11 +3176,32 @@ def run_live(cfg: dict, args):
                     _dbg('post_open_error', str(e))
                 tp50, be_price = _calc_tp50_and_be(rec)
                 rec['tp50_trigger'] = tp50
-                rec['be_plan'] = {'trigger': float(be_price)} if be_price else None
-                rec['be_moved_once'] = False
-                rec['be_last_error'] = None
-                rec['tp_hits'] = 0
-                rec['be_plan_id'] = None
+                od = _place_be_plan_on_exchange(fetcher, sym, rec, position_mode)
+                if isinstance(od, dict) and (od.get('id') or od.get('orderId')):
+                    rec['be_plan_id'] = str(od.get('id') or od.get('orderId'))
+                    rec['be_plan_active'] = False
+                    rec['be_plan_activated_ts'] = None
+                    rec['be_plan_last_fallback_ts'] = None
+                    try:
+                        insert_order_row(session_db_path, {
+                            'order_id': str(uuid.uuid4()),
+                            'ts_utc': datetime.now(timezone.utc).isoformat(),
+                            'bar_time_utc': bar_close.isoformat(),
+                            'mode': 'PLAN',
+                            'symbol': sym,
+                            'side': 'sell',
+                            'type': 'conditional',
+                            'price': float(be_price or 0.0),
+                            'qty': float(qty),
+                            'status': 'open',
+                            'reason': 'BE_AFTER_TP50',
+                            'run_id': run_id,
+                            'extra': json.dumps({'tp50_trigger': tp50, 'be_price': be_price}),
+                        })
+                    except Exception:
+                        pass
+                else:
+                    rec['be_plan_id'] = None
                 positions[sym] = rec
                 save_positions(args.results_dir, positions)
                 try:
@@ -2669,4 +3225,4 @@ def run_live(cfg: dict, args):
             write_equity(session_db_path, bot_id, now, {'equity': float(equity)})
         except Exception as e:
             _dbg('write_equity_failed', str(e))
-        _time.sleep(args.poll_sec)
+        time.sleep(args.poll_sec)
