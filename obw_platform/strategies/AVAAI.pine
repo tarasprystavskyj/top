@@ -1,0 +1,146 @@
+// @version=5
+strategy("Breakout AVAAI (TV mirror)",
+     overlay=true, pyramiding=0, calc_on_every_tick=true, initial_capital=1000, commission_type=strategy.commission.percent, commission_value=0.1)
+
+// ====== ПАРАМЕТРИ (відповідають Python-стратегії) ======
+sideOpt          = input.string("BOTH", "Side", options=["LONG","SHORT","BOTH"])
+minAtrRatio      = input.float(0.02, "min_atr_ratio", step=0.001)
+minMomSum        = input.float(0.0,  "min_momentum_sum", step=0.001)   // 0.0 = вимкнено (як у Python)
+tpATR            = input.float(3.8,  "tp_atr_mult", step=0.1)
+slATR            = input.float(1.04, "sl_atr_mult", step=0.01)
+atrLen           = input.int(14, "ATR length")
+
+// Частковий TP + BE
+partialEnable    = input.bool(true,  "partial_tp_enable")
+partialFrac      = input.float(0.50, "partial_tp_frac", step=0.01, minval=0.05, maxval=0.95)
+partialTrigger   = input.float(0.50, "partial_trigger_frac_of_tp", step=0.01)   // частка від шляху до TP для спрацьовування
+
+// «Heat»-виходи (як у Python, опційно)
+exitOnHeat       = input.bool(true,  "exit_on_heat")
+heatExitThresh   = input.float(0.40, "heat_exit_threshold", step=0.01)          // 0..1
+heatExitMinRR    = input.float(1.05, "heat_exit_min_rr", step=0.01)             // множник буфера комісії/ковзання
+
+// Інфраструктурні константи (для буфера рентабельності, наближено як у коді)
+feeRate          = input.float(0.001, "fee_rate (per side)", step=0.0001)
+slipPerSide      = input.float(0.0016,"slippage_per_side", step=0.0001)
+
+// ====== СЕРВІСНІ РОЗРАХУНКИ ======
+// atr_ratio ~ ATR/Close
+atr    = ta.atr(atrLen)
+atrR   = atr / close
+
+// dp6h, dp12h як %-зміна за 6 год та 12 год.
+// На поточному ТФ перераховуємо «у барах».
+tfMinutes  = switch
+    timeframe.isseconds   => timeframe.multiplier / 60.0
+    timeframe.isminutes   => timeframe.multiplier * 1.0
+    timeframe.isdaily     => 24.0 * 60.0
+    timeframe.isweekly    => 7.0  * 24.0 * 60.0
+    => 60.0
+bars6h  = math.max(1, int(math.round(360.0 / tfMinutes)))   // 6h = 360 хв
+bars12h = math.max(1, int(math.round(720.0 / tfMinutes)))   // 12h = 720 хв
+
+dp(src, len) =>
+    nz((src - src[len]) / src[len], 0.0)
+
+dp6h  = dp(close,  bars6h)
+dp12h = dp(close, bars12h)
+momSum = dp6h + dp12h
+
+// ====== УМОВИ УНІВЕРСУ/ВХОДУ (для одного символу) ======
+liqOK = true  // у TV немає готових qv_24h/1h — пропускаємо ліміти ліквідності
+atrOK = atrR >= minAtrRatio
+momOK =
+     (minMomSum <= 0) or
+     (sideOpt=="LONG"  and momSum >= +minMomSum) or
+     (sideOpt=="SHORT" and momSum <= -minMomSum) or
+     (sideOpt=="BOTH"  and math.abs(momSum) >= minMomSum)
+
+canEnter = liqOK and atrOK and momOK
+
+// Напрямок за правилами Python: для BOTH слідуємо знаку momSum.
+sideLong  = (sideOpt=="LONG")  or (sideOpt=="BOTH"  and momSum >= 0)
+sideShort = (sideOpt=="SHORT") or (sideOpt=="BOTH"  and momSum <  0)
+
+// Вхід — коли нема позиції і «сигнал» активний.
+// Щоб не «стріляло» кожен бар — вимагаємо свіжої зміни знаку momSum навколо порога.
+flipLong  = ta.cross(momSum, +math.max(minMomSum, 0))
+flipShort = ta.cross(-momSum, +math.max(minMomSum, 0))
+
+wantLong  = canEnter and sideLong  and (strategy.position_size==0 ? flipLong  : false)
+wantShort = canEnter and sideShort and (strategy.position_size==0 ? flipShort : false)
+
+// ====== РОЗРАХУНОК TP/SL (точно як у Python: мультиплікатори ATR) ======
+tpPrice(entry, sideLong) =>
+    sideLong ? entry + tpATR * (atrR * entry) : entry - tpATR * (atrR * entry)
+
+slPrice(entry, sideLong) =>
+    sideLong ? entry - slATR * (atrR * entry) : entry + slATR * (atrR * entry)
+
+// ====== СТАН УГОДИ (змінні) ======
+var float ent    = na
+var float tp     = na
+var float sl     = na
+var bool  didPart = false
+var bool  movedBE = false
+
+// ====== ВХІД ======
+if wantLong
+    ent := close
+    tp  := tpPrice(ent, true)
+    sl  := slPrice(ent, true)
+    didPart := false
+    movedBE := false
+    strategy.entry("L", strategy.long)
+else if wantShort
+    ent := close
+    tp  := tpPrice(ent, false)
+    sl  := slPrice(ent, false)
+    didPart := false
+    movedBE := false
+    strategy.entry("S", strategy.short)
+
+// ====== КЕРУВАННЯ ПОЗИЦІЄЮ ======
+// 1) Жорсткі TP/SL (по close, щоб було консистентно з Python)
+inLong  = strategy.position_size > 0
+inShort = strategy.position_size < 0
+
+hitSL = (inLong  and not na(sl) and close <= sl) or       (inShort and not na(sl) and close >= sl)
+
+hitTP = (inLong  and not na(tp) and close >= tp) or        (inShort and not na(tp) and close <= tp)
+
+if hitSL
+    strategy.close(id=inLong ? "L" : "S", comment="SL")
+
+if hitTP
+    strategy.close(id=inLong ? "L" : "S", comment="TP")
+
+// 2) Частковий TP + перенос SL у BE після тригера
+//    (тригер — частка від «шляху до TP», як у Python).
+path = na(ent) or na(tp) ? na : math.abs(tp - ent)
+prog = inLong  ? (close - ent) : inShort ? (ent - close) : na
+triggerOn = partialEnable and not na(path) and path>0 and not movedBE and prog >= partialTrigger * path
+
+// перенос SL у BE
+if triggerOn and not na(ent)
+    sl := ent
+    movedBE := true
+
+// часткове закриття
+if triggerOn and partialEnable and not didPart
+    // закриваємо частку позиції
+    strategy.close(id=inLong ? "L" : "S", qty_percent=partialFrac*100, comment="TP_PARTIAL")
+    didPart := true
+
+// 3) Додатковий «heat»-вихід (опційно), якщо плаваюча дохідність >= буфера
+//    Буфер ~ round-trip cost в частках від ціни (2*fee + 2*slip) * heatExitMinRR
+rr = na(ent) ? 0.0 : (inLong ? (close-ent)/ent : inShort ? (ent-close)/ent : 0.0)
+need = (2*feeRate + 2*slipPerSide) * heatExitMinRR
+heat = 1.0 - 0.0  // TV не має тих самих «gaps», тож залишаємо heat=1 як no-op
+if exitOnHeat and rr >= need and heat < heatExitThresh
+    strategy.close(id=inLong ? "L" : "S", comment="heat-exit")
+
+// Візуалізація
+plot(ent, "Entry", color=color.new(color.blue, 60), style=plot.style_circles, linewidth=2)
+plot(tp,  "TP",    color=color.new(color.green, 0), linewidth=2)
+plot(sl,  "SL",    color=color.new(color.red,   0), linewidth=2)
