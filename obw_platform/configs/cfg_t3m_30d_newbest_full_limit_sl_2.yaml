@@ -13,7 +13,7 @@ strategy_params:
   adx_length: 14
   adx_threshold: 22
   atr_threshold_ratio: 0.0022
-  tp_atr_mult: 0.8 #4.8
+  tp_atr_mult: 4.8 #4.8
   sl_atr_mult: 0.3
   min_qv_24h: 0.0
   min_qv_1h: 0.0
@@ -69,8 +69,8 @@ side_filter:
       block_short_on_htf_uptrend: true
 portfolio:
   position_notional: 4.5
-  position_notional_max: 68
-  initial_equity: 68
+  position_notional_max: 100 #59
+  initial_equity: 100 #59
   max_notional_frac: 0.99
   slippage_per_side: 0.0016
   fee_rate: 0.0035
