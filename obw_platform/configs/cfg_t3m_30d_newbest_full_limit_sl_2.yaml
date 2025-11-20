@@ -17,7 +17,7 @@ strategy_params:
   sl_atr_mult: 0.3
   min_qv_24h: 0.0
   min_qv_1h: 0.0
-  min_atr_ratio: 0.010 #0.021
+  min_atr_ratio: 0.021 #0.021
   min_momentum_sum: 0.03
   fee_rate: 0.001
   slippage_per_side: 0.0016
@@ -47,7 +47,7 @@ trace_calls:
   - api_key
   - secret
   - password
-  - auth
+  - auth 
   include: []
   exclude: []
 side_filter:
@@ -69,8 +69,8 @@ side_filter:
       block_short_on_htf_uptrend: true
 portfolio:
   position_notional: 4.5
-  position_notional_max: 100 #59
-  initial_equity: 100 #59
+  position_notional_max: 100
+  initial_equity: 100
   max_notional_frac: 0.99
   slippage_per_side: 0.0016
   fee_rate: 0.0035

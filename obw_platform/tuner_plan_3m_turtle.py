@@ -100,3 +100,4 @@ def default_plan(limit_bars=None):
     })
 
     return rays + [grid_coarse, grid_polish]
+
