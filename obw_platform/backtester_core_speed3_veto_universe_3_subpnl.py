@@ -1,0 +1,712 @@
+
+#!/usr/bin/env python3
+# backtester_core_speed3_veto_universe_refactored.py
+# Thin backtester:
+#   - Universe allow/deny (OPENINGS only)
+#   - Calls strat.universe()/rank() -> candidates (strategy owns top_n, filters)
+#   - Calls strat.entry_signal() -> must return TP/SL; we just attach to Position
+#   - Calls strat.manage_position() for exits
+#   - Heat is reporting-only (printed if provided), not used for decisions.
+import argparse, sqlite3, importlib, time, sys, os, pathlib as _p, shutil, json
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, List
+
+import yaml
+import pandas as pd
+import datetime as _dt
+
+def import_by_path(path: str):
+    mod_name, cls_name = path.rsplit(".", 1)
+    root = str((_p.Path(__file__).parent).resolve())
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    mod = importlib.import_module(mod_name)
+    return getattr(mod, cls_name)
+
+def _db_connect(path: str):
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+
+@dataclass
+class Lot:
+    lot_id: int
+    qty: float
+    entry_price: float
+
+@dataclass
+class Position:
+    side: str
+    entry: float          # VWAP / average entry price of remaining lots
+    sl: float
+    tp: float
+    qty: float            # total qty open
+    cost: float           # cost basis of remaining position (in quote currency)
+    lots: List[Lot]       # LIFO lots for sub-sells
+    subsell_bank: float = 0.0  # realized sub-sell PnL accumulated (positive expected)
+    meta: Optional[Dict[str, Any]] = None
+
+
+def _split_csv_list(s):
+    if not s: return []
+    return [x.strip() for x in str(s).split(",") if x.strip()]
+    
+
+def find_db_file(filename: str):
+    """Locate a SQLite cache DB file.
+
+    The original implementation only searched a handful of hard coded
+    locations.  Allow callers to provide an absolute path (or a relative path
+    with directories) which is returned as-is if it exists.  This enables
+    running backtests against databases stored outside of the repository, such
+    as live session caches.
+    """
+
+    filename = filename.strip()
+    if os.path.isabs(filename) and os.path.exists(filename):
+        return os.path.abspath(filename)
+
+    # If caller supplies a relative path with directories, honor it directly
+    # instead of blindly prepending ".." which may lead to invalid paths.
+    if os.path.dirname(filename) and os.path.exists(filename):
+        return os.path.abspath(filename)
+
+    # Otherwise search in common locations for a bare filename
+    search_paths = [
+        os.path.join(".", filename),           # ./filename
+        os.path.join("..", filename),          # ../filename
+        os.path.join("..", "DB", filename),    # ../DB/filename
+    ]
+
+    for path in search_paths:
+        if os.path.exists(path):
+            return os.path.abspath(path)  # повертаємо повний шлях
+
+    raise FileNotFoundError(f"DB file '{filename}' not found in {search_paths}")
+
+
+def _timeframe_to_minutes(tf: str) -> float:
+    s = str(tf).strip().lower()
+    if s.endswith("m"):
+        try:
+            return float(s[:-1])
+        except Exception:
+            return 0.0
+    if s.endswith("h"):
+        try:
+            return float(s[:-1]) * 60.0
+        except Exception:
+            return 0.0
+    if s.endswith("d"):
+        try:
+            return float(s[:-1]) * 1440.0
+        except Exception:
+            return 0.0
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+def _norm_iso(ts: str):
+    if not ts:
+        return ts
+    try:
+        return _dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).isoformat()
+    except Exception:
+        return ts
+
+def main():
+    ap = argparse.ArgumentParser(description="Thin backtester (universe + strategy-owned logic)")
+    ap.add_argument("--cfg", required=True)
+    ap.add_argument("--limit-bars", type=int, default=500)
+    ap.add_argument("--time-from", dest="time_from", type=str, default=None)
+    ap.add_argument("--time-to", dest="time_to", type=str, default=None)
+    ap.add_argument("--allow-symbols", type=str, default="")
+    ap.add_argument("--plots", dest="plots_dir", type=str, default=None)
+    ap.add_argument("--export-csv", action="store_true")
+    ap.add_argument("--debug", action="store_true")
+    # Universe controls (OPENINGS)
+    ap.add_argument("--symbols-file", dest="symbols_file")
+    ap.add_argument("--deny-symbols", dest="deny_symbols")
+    ap.add_argument("--cache_db", dest="cache_db")
+    args = ap.parse_args()
+
+    t0 = time.time()
+    cfg = yaml.safe_load(open(args.cfg, "r"))
+    cache_db = args.cache_db or cfg["cache_db"]
+    db_file = find_db_file(cache_db)
+    con = _db_connect(db_file)
+
+    # Allow/Deny sets
+    allow_syms, deny_syms = set(), set()
+    allow_syms |= set(_split_csv_list(args.allow_symbols))
+    deny_syms  |= set(_split_csv_list(args.deny_symbols))
+
+    sym_file = args.symbols_file or cfg.get("symbols_file") or cfg.get("universe_file")
+    if sym_file:
+        if not os.path.isabs(sym_file):
+            # Users sometimes provide paths like "universe/foo.txt".  Previously we
+            # blindly prefixed our own "universe" directory which resulted in
+            # paths such as "universe/universe/foo.txt".  Normalise the supplied
+            # path by keeping only the filename and joining it with the local
+            # "universe" directory.
+            udir = os.path.join(os.path.dirname(__file__), "universe")
+            sym_file = os.path.join(udir, os.path.basename(sym_file))
+        with open(sym_file, "r", encoding="utf-8") as f:
+            for ln in f:
+                s = ln.strip()
+                if s and not s.startswith("#"):
+                    allow_syms.add(s)
+
+    allow_syms |= set(cfg.get("universe_include", []) or [])
+    deny_syms  |= set(cfg.get("universe_exclude", []) or [])
+    if allow_syms: print(f"[universe] allow list size = {len(allow_syms)}")
+    if deny_syms:  print(f"[universe] deny  list size = {len(deny_syms)}")
+
+    # Time window
+    t_from = _norm_iso(getattr(args, 'time_from', None))
+    t_to   = _norm_iso(getattr(args, 'time_to', None))
+    allow = [s.strip() for s in (args.allow_symbols or "").split(",") if s.strip()]
+
+    rows = []
+    if t_from or t_to:
+        q = [
+            "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h",
+            "FROM price_indicators WHERE 1=1",
+        ]
+        params = []
+        if t_from:
+            q.append("AND datetime_utc >= ?"); params.append(t_from)
+        if t_to:
+            q.append("AND datetime_utc <= ?"); params.append(t_to)
+        if allow:
+            q.append(f"AND symbol IN ({','.join('?'*len(allow))})"); params.extend(allow)
+        q.append("ORDER BY datetime_utc ASC, symbol ASC")
+        rows = con.execute(" ".join(q), params).fetchall()
+        if not rows or not t_from or not t_to:
+            print(f"No bars in interval {t_from} .. {t_to} for DB={db_file}"); return
+        rr = con.execute(
+            """
+            SELECT MIN(datetime_utc), MAX(datetime_utc), COUNT(*)
+            FROM price_indicators WHERE datetime_utc BETWEEN ? AND ?
+            """,
+            (
+                t_from,
+                t_to,
+            ),
+        ).fetchone()
+        time_start, time_end, rows_count = rr[0], rr[1], rr[2]
+        if args.debug:
+            print(f"[dbg] rows_in_range={rows_count} db_min={time_start} db_max={time_end}")
+    else:
+        # Determine the earliest timestamp for the requested number of bars.
+        #
+        # Previously we simply grabbed the last ``limit_bars`` rows from the
+        # ``price_indicators`` table.  Because the table stores one row per
+        # symbol per timestamp, limiting by rows resulted in an extremely
+        # narrow time window when many symbols were present (e.g. 500 rows over
+        # 100 symbols yields only five minutes of data).  This caused the
+        # backtester to always operate on a very small, fixed interval.
+        #
+        # To honour ``--limit-bars`` we instead select the latest *distinct*
+        # timestamps and compute the minimum among them.  When an allow-list is
+        # provided, we restrict the search to those symbols so extraneous rows
+        # do not skew the range.
+        if allow:
+            placeholders = ",".join("?" * len(allow))
+            th_row = con.execute(
+                f"""
+                SELECT MIN(datetime_utc) FROM (
+                    SELECT DISTINCT datetime_utc FROM price_indicators
+                    WHERE symbol IN ({placeholders})
+                    ORDER BY datetime_utc DESC LIMIT ?
+                )
+                """,
+                (*allow, int(args.limit_bars)),
+            ).fetchone()
+        else:
+            th_row = con.execute(
+                """
+                SELECT MIN(datetime_utc) FROM (
+                    SELECT DISTINCT datetime_utc FROM price_indicators
+                    ORDER BY datetime_utc DESC LIMIT ?
+                )
+                """,
+                (int(args.limit_bars),),
+            ).fetchone()
+        if not th_row or not th_row[0]:
+            print("No bars."); return
+        min_time = th_row[0]
+        q = [
+            "SELECT symbol, datetime_utc, close, atr_ratio, dp6h, dp12h, quote_volume, qv_24h",
+            "FROM price_indicators WHERE datetime_utc >= ?",
+        ]
+        params = [min_time]
+        if allow:
+            q.append(f"AND symbol IN ({','.join('?'*len(allow))})"); params.extend(allow)
+        q.append("ORDER BY datetime_utc ASC, symbol ASC")
+        rows = con.execute(" ".join(q), params).fetchall()
+        if not rows:
+            print("No bars."); return
+        time_start = rows[0]["datetime_utc"]
+        time_end = rows[-1]["datetime_utc"]
+    print(f"[time range] {time_start} -> {time_end}")
+
+    # Bucket by time
+    slices = []
+    cur_t, bucket = None, []
+    for r in rows:
+        t = r["datetime_utc"]
+        if cur_t is None: cur_t = t
+        if t != cur_t:
+            slices.append((cur_t, bucket)); bucket = []; cur_t = t
+        bucket.append((
+            r["symbol"],
+            float(r["close"] or 0.0),
+            float(r["atr_ratio"] or 0.0),
+            float(r["dp6h"] or 0.0),
+            float(r["dp12h"] or 0.0),
+            float(r["quote_volume"] or 0.0),
+            float(r["qv_24h"] or 0.0),
+        ))
+    if bucket: slices.append((cur_t, bucket))
+    bars_count = len(slices)
+
+    Strat = import_by_path(cfg["strategy_class"])
+    strat = Strat(cfg)
+
+    portfolio = cfg.get("portfolio", {})
+    initial_equity = float(portfolio.get("initial_equity", 100.0))
+    pos_notional   = float(portfolio.get("position_notional", 20.0))
+    fee      = float(portfolio.get("fee_rate", 0.001))
+    slippage = float(portfolio.get("slippage_per_side", 0.0003))
+    max_notional_frac = float(portfolio.get("max_notional_frac", 0.5))
+
+    equity = initial_equity
+    positions: Dict[str, Position] = {}
+    lot_counter = 0
+    subsell_bank_total = 0.0
+    subsell_bank_curve = []  # aligned with snapshots
+
+    pos_time: Dict[str, str] = {}
+    wins=losses=trades=0; pnl_pos=0.0; pnl_neg=0.0; fees_cum=0.0
+    tr_rows: list[Dict[str, Any]] = []
+    eq_curve_vals = [initial_equity]
+
+    for t, bucket_all in slices:
+        # Price map for exits
+        px_map = {sym: close for (sym, close, *_rest) in bucket_all}
+
+        # Exits (strategy-owned)
+        if positions:
+            for sym, pos in list(positions.items()):
+                row = None
+                for tup in bucket_all:
+                    if tup[0] == sym:
+                        sym2, close, atr, dp6, dp12, qv1h, qv24 = tup
+                        row = {
+                            "close": close,
+                            "atr_ratio": atr,
+                            "dp6h": dp6,
+                            "dp12h": dp12,
+                            "quote_volume": qv1h,
+                            "qv_24h": qv24,
+                        }
+                        break
+                if row is None:
+                    continue
+                ex = strat.manage_position(sym, row, pos, ctx=None)
+                if ex and ex.action in ("TP", "SL", "EXIT"):
+                    px = float(ex.exit_price if ex.exit_price is not None else row["close"])
+                    notional = pos.entry * pos.qty
+                    gross_ret = (px - pos.entry) / pos.entry if pos.side == "LONG" else (pos.entry - px) / pos.entry
+                    net_ret = gross_ret - 2 * slippage - 2 * fee
+                    pnl_amt = net_ret * notional
+                    trades += 1
+                    fees_cum += fee * 2 * notional
+                    if pnl_amt > 0:
+                        wins += 1
+                        pnl_pos += pnl_amt
+                    else:
+                        losses += 1
+                        pnl_neg += pnl_amt
+                    equity += pnl_amt
+                    tr_rows.append(
+                        {
+                            "symbol": sym,
+                            "side": pos.side,
+                            "entry_time": pos_time.get(sym, t),
+                            "exit_time": t,
+                            "entry": pos.entry,
+                            "exit": px,
+                            "tp": pos.tp,
+                            "sl": pos.sl,
+                            "action": ex.action,
+                            "reason": ex.reason or ex.action,
+                            "gross_return": gross_ret,
+                            "net_return": net_ret,
+                            "notional": notional,
+                            "fees_paid": fee * 2 * notional,
+                            "realized_pnl": pnl_amt,
+                            "sub_trade_pnl": 0.0,
+                        }
+                    )
+                    del positions[sym]
+                    pos_time.pop(sym, None)
+                elif ex and ex.action == "TP_PARTIAL":
+                    px = float(ex.exit_price if ex.exit_price is not None else row["close"])
+                    part = max(0.0, min(1.0, float(getattr(ex, "qty_frac", 0.5))))
+                    qty_close = pos.qty * part
+                    notional_now = qty_close * px
+                    min_notional = getattr(strat, "exchange_min_notional", 0.0)
+                    min_qty = getattr(strat, "min_qty", 0.0)
+                    if notional_now >= min_notional and (min_qty <= 0 or qty_close >= min_qty):
+                        notional_entry = qty_close * pos.entry
+                        gross_ret = (px - pos.entry) / pos.entry if pos.side == "LONG" else (pos.entry - px) / pos.entry
+                        net_ret = gross_ret - 2 * slippage - 2 * fee
+                        pnl_amt = net_ret * notional_entry
+                        sub_entry_px = getattr(ex, "sub_entry_price", None)
+                        if sub_entry_px is None:
+                            sub_entry_px = getattr(ex, "lot_entry_price", None)
+                        if sub_entry_px is None:
+                            # Fallback: treat sub-trade PnL as PnL vs avg entry
+                            sub_trade_pnl = float(pnl_amt)
+                        else:
+                            sub_entry_px = float(sub_entry_px)
+                            sub_trade_pnl = qty_close * ((exit_px - sub_entry_px) if pos.side == "LONG" else (sub_entry_px - exit_px))
+                        sub_trade_pnl = max(0.0, float(sub_trade_pnl))
+                        subsell_bank_total += sub_trade_pnl
+                        pos.subsell_bank += sub_trade_pnl
+                        trades += 1
+                        fees_cum += fee * 2 * notional_entry
+                        if pnl_amt > 0:
+                            wins += 1
+                            pnl_pos += pnl_amt
+                        else:
+                            losses += 1
+                            pnl_neg += pnl_amt
+                        equity += pnl_amt
+                        tr_rows.append(
+                            {
+                                "symbol": sym,
+                                "side": pos.side,
+                                "entry_time": pos_time.get(sym, t),
+                                "exit_time": t,
+                                "entry": pos.entry,
+                                "exit": px,
+                                "tp": pos.tp,
+                                "sl": pos.sl,
+                                "action": "TP_PARTIAL",
+                                "reason": getattr(ex, "reason", "TP_PARTIAL"),
+                                "gross_return": gross_ret,
+                                "net_return": net_ret,
+                                "notional": notional_entry,
+                                "fees_paid": fee * 2 * notional_entry,
+                                "realized_pnl": pnl_amt,
+                                "sub_trade_pnl": sub_trade_pnl,
+                            }
+                        )
+                        pos.qty -= qty_close
+
+        # compute current equity including unrealized PnL
+        unrealized = 0.0
+        for sym, pos in positions.items():
+            px = px_map.get(sym)
+            if px is None:
+                continue
+            if pos.side == "LONG":
+                gross_ret = (px - pos.entry) / pos.entry
+            else:
+                gross_ret = (pos.entry - px) / pos.entry
+            net_ret = gross_ret - 2 * slippage - 2 * fee
+            unrealized += net_ret * pos.entry * pos.qty
+        equity_mtm = equity + unrealized
+
+        # --- Universe filtering for OPENINGS only (allow/deny) ---
+        # Build md_map for all symbols in this bucket
+        md_map_all = {
+            sym: {"close":close,"atr_ratio":atr,"dp6h":dp6,"dp12h":dp12,"quote_volume":qv1h,"qv_24h":qv24}
+            for (sym, close, atr, dp6, dp12, qv1h, qv24) in bucket_all
+        }
+        if allow_syms or deny_syms:
+            md_map_open = {s:row for s,row in md_map_all.items()
+                           if ((not allow_syms) or (s in allow_syms)) and (s not in deny_syms)}
+            if not md_map_open:
+                eq_curve_vals.append(equity_mtm)
+                continue
+        else:
+            md_map_open = md_map_all
+
+        # --- Strategy-owned candidate selection ---
+        universe_syms = strat.universe(t, md_map_open)
+        ranked_syms   = strat.rank(t, md_map_open, universe_syms)
+
+        # --- OPEN entries via strategy ---
+        for sym in ranked_syms:
+            if sym in positions:
+                continue
+            # Budget check
+            current_open = sum(p.entry * p.qty for p in positions.values())
+            if (current_open + pos_notional) > max_notional_frac * equity_mtm:
+                break
+            row = md_map_open.get(sym)
+            if not row:
+                continue
+            sig = strat.entry_signal(True, sym, row, ctx=None)
+            if sig is None:
+                continue
+            # Validate Sig (no backtester fallbacks)
+            if sig.side not in ("LONG","SHORT"):
+                raise RuntimeError(f"Strategy must supply side LONG/SHORT for {sym}")
+            tp = getattr(sig, "take_profit", getattr(sig, "tp_price", getattr(sig, "tp", None)))
+            sl = getattr(sig, "stop_price", getattr(sig, "sl_price", getattr(sig, "sl", None)))
+            if not isinstance(tp, (int,float)) or not isinstance(sl, (int,float)):
+                raise RuntimeError(f"Strategy must supply numeric take_profit/stop_price for {sym}")
+            entry_px = float(row["close"])
+            qty = pos_notional / max(entry_px, 1e-12)
+            lot_counter += 1
+            lots = [Lot(lot_id=lot_counter, qty=qty, entry_price=entry_px)]
+            cost = qty * entry_px
+            positions[sym] = Position(sig.side, entry_px, float(sl), float(tp), qty, cost, lots, 0.0, meta={"last_lot_id": lot_counter})
+            pos_time[sym] = t
+            # Heat reporting (if strategy exposes it) — optional, for logs only
+            heat = None
+            try:
+                if hasattr(strat, "heat"):
+                    heat = strat.heat(t, sym, row)
+            except Exception:
+                heat = None
+            #if heat is not None:
+            #    print(f"[open] {t} {sym} {sig.side} heat={heat:.3f} tp={tp:.4f} sl={sl:.4f}")
+
+        # snapshot equity after this bar
+        eq_curve_vals.append(equity_mtm)
+
+    # Mark-to-market finalization
+    if slices:
+        last_t = slices[-1][0]
+        last_px = {sym: close for (sym, close, *_rest) in slices[-1][1]}
+        for sym, pos in list(positions.items()):
+            px = last_px.get(sym)
+            if px is None:
+                continue
+            notional = pos.entry * pos.qty
+            gross_ret = (px - pos.entry) / pos.entry if pos.side == "LONG" else (pos.entry - px) / pos.entry
+            net_ret = gross_ret - 2 * slippage - 2 * fee
+            pnl_amt = net_ret * notional
+            trades += 1
+            fees_cum += fee * 2 * notional
+            if pnl_amt > 0:
+                wins += 1
+                pnl_pos += pnl_amt
+            else:
+                losses += 1
+                pnl_neg += pnl_amt
+            equity += pnl_amt
+            eq_curve_vals.append(equity)
+            tr_rows.append(
+                {
+                    "symbol": sym,
+                    "side": pos.side,
+                    "entry_time": pos_time.get(sym, last_t),
+                    "exit_time": last_t,
+                    "entry": pos.entry,
+                    "exit": px,
+                    "tp": pos.tp,
+                    "sl": pos.sl,
+                    "action": "EOD",
+                    "reason": "EOD",
+                    "gross_return": gross_ret,
+                    "net_return": net_ret,
+                    "notional": notional,
+                    "fees_paid": fee * 2 * notional,
+                    "realized_pnl": pnl_amt,
+                }
+            )
+            del positions[sym]
+            pos_time.pop(sym, None)
+
+    elapsed = time.time() - t0
+    pf = (pnl_pos / max(1e-12, -pnl_neg)) if (pnl_pos>0 and pnl_neg<0) else 0.0
+    win_rate_pct = (wins * 100.0 / max(1, trades)) if trades else 0.0
+
+    tf_minutes = _timeframe_to_minutes(cfg.get("timeframe", 0))
+    if t_from or t_to:
+        try:
+            t0_dt = pd.to_datetime(time_start)
+            t1_dt = pd.to_datetime(time_end)
+            total_minutes = (t1_dt - t0_dt).total_seconds() / 60.0
+        except Exception:
+            total_minutes = tf_minutes * float(args.limit_bars or 0)
+    else:
+        total_minutes = tf_minutes * float(args.limit_bars or 0)
+    total_days = total_minutes / (60.0 * 24.0) if total_minutes else 0.0
+    total_return = (equity / initial_equity) if initial_equity else 0.0
+    if total_days > 0 and total_return > 0:
+        daily_ret = total_return ** (1.0 / total_days) - 1.0
+        monthly_ret = total_return ** (1.0 / (total_days / 30.0)) - 1.0 if total_days >= 1 else 0.0
+        yearly_ret = total_return ** (1.0 / (total_days / 365.0)) - 1.0 if total_days >= 1 else 0.0
+        apr = ((equity - initial_equity) / initial_equity) * (365.0 / total_days)
+    else:
+        daily_ret = monthly_ret = yearly_ret = apr = 0.0
+    apr_pct = apr * 100.0
+    daily_ret_pct = daily_ret * 100.0
+    monthly_ret_pct = monthly_ret * 100.0
+    yearly_ret_pct = yearly_ret * 100.0
+
+    # Metrics
+    import numpy as _np
+    eq_arr = _np.array(eq_curve_vals, dtype=float)
+    if eq_arr.size >= 2:
+        peaks = _np.maximum.accumulate(eq_arr)
+        dd_arr = (eq_arr - peaks) / peaks
+        max_dd_frac = float(dd_arr.min())
+        deltas = _np.diff(eq_arr)
+        up = int((deltas > 0).sum()); down = int((deltas < 0).sum()); steps = max(1, deltas.size)
+        mono_sign = float((up - down) / steps)
+        total_mov = float(_np.abs(deltas).sum()) + 1e-12
+        mono_mag = float((deltas.sum()) / total_mov)
+    else:
+        max_dd_frac = 0.0; mono_sign = 0.0; mono_mag = 0.0
+
+    summary_dict = {
+        "equity_start": initial_equity,
+        "equity_end": equity,
+        "trades": trades,
+        "profit_factor": pf,
+        "win_rate_%": win_rate_pct,
+        "elapsed_sec": elapsed,
+        "max_dd_frac": max_dd_frac,
+        "max_dd_%": (max_dd_frac * 100.0),
+        "monotonicity_sign": mono_sign,
+        "monotonicity_mag": mono_mag,
+        "total_fees": fees_cum,
+        "sub_trade_pnl_total": float(subsell_bank_total),
+        "apr_%": apr_pct,
+        "daily_return_%": daily_ret_pct,
+        "monthly_return_%": monthly_ret_pct,
+        "yearly_return_%": yearly_ret_pct,
+    }
+
+    cfg_name = os.path.splitext(os.path.basename(args.cfg))[0] if hasattr(args, 'cfg') else 'cfg'
+    time_id = time.strftime("%Y%m%d_%H%M%S")
+    report_dir = os.path.join("_reports", "_backtest", f"backtest_{cfg_name}_{time_id}")
+    report_dir = os.path.abspath(report_dir)
+
+    # CSV exports (always write per-run artifacts into the report dir)
+    os.makedirs(report_dir, exist_ok=True)
+    trades_df = pd.DataFrame(tr_rows)
+    # "human" names
+    trades_csv  = os.path.join(report_dir, "trades.csv")
+    summary_csv = os.path.join(report_dir, "summary.csv")
+    trades_df.to_csv(trades_csv, index=False)
+    pd.DataFrame([summary_dict]).to_csv(summary_csv, index=False)
+    # compatibility with tuner scripts
+    trades_csv_bt  = os.path.join(report_dir, "bt_trades.csv")
+    summary_csv_bt = os.path.join(report_dir, "bt_summary.csv")
+    trades_df.to_csv(trades_csv_bt, index=False)
+    with open(summary_csv_bt, "w", encoding="utf-8") as f:
+        json.dump(summary_dict, f, indent=2, default=str)
+    # Machine-readable line for auto_tuner (allows tuners to locate CSVs)
+    print(f"[files] bt_trades={trades_csv_bt} bt_summary={summary_csv_bt}")
+
+    # Plots (same as before)
+    if args.plots_dir:
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.dates as mdates
+            cfg_name = os.path.basename(args.cfg) if hasattr(args, 'cfg') else 'cfg:n/a'
+            _dbn = os.path.basename(cfg.get('cache_db','')) if isinstance(cfg, dict) else ''
+            _tf = '5m' if '5m' in _dbn else ('1440' if '1440' in _dbn else ('60m' if '60m' in _dbn else ('1h' if '1h' in _dbn else '?')))
+            legend_label = f"{cfg_name} | TF: {_tf} | bars: {bars_count}"
+            run_plots_dir = args.plots_dir
+            os.makedirs(run_plots_dir, exist_ok=True)
+
+            import numpy as np
+            eq_curve = np.array(eq_arr, dtype=float)
+            plt.figure(); plt.plot(range(len(eq_curve)), eq_curve, label=legend_label); plt.legend()
+            plt.title("Equity vs Trade #"); plt.xlabel("Trade #"); plt.ylabel("Equity")
+            plt.tight_layout(); plt.savefig(os.path.join(run_plots_dir, "equity_by_trade.png"), dpi=140); plt.close()
+
+            if len(eq_curve)>1:
+                peaks = np.maximum.accumulate(eq_curve)
+                dd = (eq_curve - peaks) / peaks
+                plt.figure(); plt.plot(range(len(dd)), dd, label=legend_label); plt.legend()
+                plt.title("Drawdown vs Trade #"); plt.xlabel("Trade #"); plt.ylabel("Drawdown (fraction)")
+                plt.tight_layout(); plt.savefig(os.path.join(run_plots_dir, "drawdown_by_trade.png"), dpi=140); plt.close()
+
+            if tr_rows and tr_rows[0].get("exit_time", None) is not None:
+                dft = pd.DataFrame(tr_rows).sort_values("exit_time")
+                eq_time = (float(initial_equity) + dft["realized_pnl"].cumsum())
+                sub_time = dft["sub_trade_pnl"].fillna(0.0).cumsum() if ("sub_trade_pnl" in dft.columns) else pd.Series(0.0, index=dft.index)
+                plt.figure()
+                ts_raw = dft['exit_time'].astype(str).str.strip()
+                ts = pd.Series(pd.NaT, index=dft.index)
+                for _fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                    parsed = pd.to_datetime(ts_raw, format=_fmt, errors='coerce')
+                    ts = ts.fillna(parsed)
+                try:
+                    mask = ts.isna()
+                    if mask.any():
+                        ts.loc[mask] = pd.to_datetime(ts_raw[mask], format='mixed', errors='coerce')
+                except Exception:
+                    pass
+                mask = ts.isna()
+                if mask.any():
+                    ts.loc[mask] = ts_raw[mask].map(lambda x: pd.to_datetime(x, errors='coerce'))
+                plt.plot(ts, eq_time.values, label=legend_label)
+                plt.plot(ts, sub_time.values, label='Sub-sell PnL (lot-based)')
+                ax = plt.gca()
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H'))
+                plt.xticks(rotation=45)
+                plt.legend()
+
+                plt.title("Equity vs Time"); plt.xlabel("Time"); plt.ylabel("Equity")
+                plt.tight_layout(); plt.savefig(os.path.join(run_plots_dir, "equity_by_time.png"), dpi=160); plt.close()
+
+            if tr_rows:
+                dfr = pd.DataFrame(tr_rows)
+                series = None
+                if "net_return" in dfr:
+                    series = pd.to_numeric(dfr["net_return"], errors="coerce").dropna()
+                elif "gross_return" in dfr:
+                    series = pd.to_numeric(dfr["gross_return"], errors="coerce").dropna()
+                if series is not None and len(series)>0:
+                    plt.figure(); plt.hist(series.values, bins=30)
+                    plt.title("Distribution of Returns per Trade"); plt.xlabel("Return per trade"); plt.ylabel("Count")
+                    plt.tight_layout(); plt.savefig(os.path.join(run_plots_dir, "returns_hist.png"), dpi=140); plt.close()
+        except Exception as e:
+            print(f"[plots] failed: {e}")
+
+    # Consolidate reports
+    try:
+        os.makedirs(report_dir, exist_ok=True)
+        if args.plots_dir:
+            run_plots_dir = args.plots_dir
+            if os.path.isdir(run_plots_dir):
+                dst_plots = os.path.join(report_dir, "plots")
+                os.makedirs(dst_plots, exist_ok=True)
+                for item in os.listdir(run_plots_dir):
+                    s = os.path.join(run_plots_dir, item)
+                    d = os.path.join(dst_plots, item)
+                    if os.path.isdir(s):
+                        shutil.copytree(s, d, dirs_exist_ok=True)
+                    elif os.path.isfile(s):
+                        shutil.copy2(s, d)
+        print(f"[reports] saved to {report_dir}")
+    except Exception as e:
+        print(f"[reports] failed: {e}")
+
+    max_dd_pct = max_dd_frac * 100.0
+    mono_pct = mono_mag * 100.0
+    print(
+        f"equity_end={equity:.6f} trades={trades} pf={pf:.6f} fees={fees_cum:.6f} "
+        f"win_rate={win_rate_pct:.3f}% max_dd={max_dd_pct:.3f}% mono={mono_pct:.3f}% elapsed_sec={elapsed:.6f} "
+        f"apr={apr_pct:.3f}% daily_ret={daily_ret_pct:.3f}% monthly_ret={monthly_ret_pct:.3f}% yearly_ret={yearly_ret_pct:.3f}%"
+    )
+
+if __name__ == "__main__":
+    main()
