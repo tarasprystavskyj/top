@@ -16,7 +16,7 @@ end:   "2025-12-08"
 timeframe: "1m"
 
 # ----- Data cache (підстав свій файл/шлях) -----
-cache_db: "combined_cache_1m_14400_1u.db"
+cache_db: "combined_cache_1m_14400_1u.db" 
 
 # ----- Universe -----
 # Підстав тикер так, як він названий у твоєму кеші.
