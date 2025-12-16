@@ -7,8 +7,8 @@ ccxt_exchange: bybit
 ccxt_symbol_format: spot
 
 # ----- Backtest window -----
-start: "2024-12-08"
-end:   "2025-12-08"
+#start: "2024-12-08"
+#end:   "2025-12-08"
 
 # ----- Timeframe -----
 # Для 1 хв: "1m".
@@ -28,12 +28,11 @@ max_universe: 1
 initial_capital: 100.0
 pos_notional: 5.0            # стартова порція (firstBuyUSDT). DCA додається всередині стратегії.
 max_notional_frac: 0.95      # ліміт по загальному notional (для всіх позицій)
-fee_rate: 0.0000
+fee_rate: 0.0050
 slippage_per_side: 0.0000
 
 # ----- Strategy binding -----
-strategy_module: cryptomine_c_limit14_robust
-strategy_class:  CryptomineCLimit14Robust
+strategy_class:  strategies.cryptomine_c_limit14_robust.CryptomineCLimit14Robust
 
 # ----- Strategy parameters -----
 strategy_params:
