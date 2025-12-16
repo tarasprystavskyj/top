@@ -1,0 +1,72 @@
+# cfg_cryptomine_c_limit14_robust_1m.yaml
+# Pine: "C - limit 14 (robust)" -> Python strategy for backtester_core_speed3_veto_universe_2.py
+
+live: false
+source: ccxt
+ccxt_exchange: bybit
+ccxt_symbol_format: spot
+
+# ----- Backtest window -----
+start: "2024-12-08"
+end:   "2025-12-08"
+
+# ----- Timeframe -----
+# Для 1 хв: "1m".
+# Для 30 секунд: "0.5m" (якщо у тебе є кеш саме на 30s).
+timeframe: "1m"
+
+# ----- Data cache (підстав свій файл/шлях) -----
+cache_db: "combined_cache_1m_14400_1u.db"
+
+# ----- Universe -----
+# Підстав тикер так, як він названий у твоєму кеші.
+# (Напр. ENAUSDT, ENA/USDT, ENAUSDT.P тощо)
+allow_symbols: ["ENAUSDT"]
+max_universe: 1
+
+# ----- Risk / sizing -----
+initial_capital: 100.0
+pos_notional: 5.0            # стартова порція (firstBuyUSDT). DCA додається всередині стратегії.
+max_notional_frac: 0.95      # ліміт по загальному notional (для всіх позицій)
+fee_rate: 0.0000
+slippage_per_side: 0.0000
+
+# ----- Strategy binding -----
+strategy_module: cryptomine_c_limit14_robust
+strategy_class:  CryptomineCLimit14Robust
+
+# ----- Strategy parameters -----
+strategy_params:
+  # TOR базові
+  firstBuyUSDT: 5.0
+  tpPercent: 1.1
+  callbackPercent: 0.2
+  marginCallLimit: 244
+  linearDropPercent: 0.5
+
+  autoMerge: true
+  subSellTPPercent: 1.3
+
+  # Nonlinear drops (lvl2..lvl6)
+  drop1: 0.3
+  drop2: 0.4
+  drop3: 0.6
+  drop4: 0.8
+  drop5: 0.8
+
+  # Multipliers (lvl2..lvl5), after lvl5 -> 1x
+  mult2: 1.5
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+
+  maxFillsPerBar: 6
+  maxSubSellsPerBar: 10
+
+  # Alert throttle (TradingView-style): 14 сигналів / 6 барів на 30s (~3 хв)
+  # Якщо TF = 1m, тоді 3 хв = 3 бари. Можеш поставити windowBars: 3.
+  maxSignalsWindow: 14
+  windowBars: 6
+
+  # Budget cap for internal DCA (fraction of initial_capital)
+  maxBudgetFrac: 0.60
