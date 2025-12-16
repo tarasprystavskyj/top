@@ -114,6 +114,7 @@ class CryptomineCLimit14Robust:
         self._sig_window = deque([0] * self.window_bars, maxlen=self.window_bars)
         self._sig_sum = 0
         self._last_t = None
+        self._bar_seq = 0
 
     # ---------------------
     # Universe / ranking
@@ -129,6 +130,11 @@ class CryptomineCLimit14Robust:
     # ---------------------
     # Helpers
     # ---------------------
+    def _next_bar_time(self):
+        t = self._bar_seq
+        self._bar_seq += 1
+        return t
+
     def _bar_roll(self, t):
         if self._last_t is None or t != self._last_t:
             # new bar
@@ -181,12 +187,46 @@ class CryptomineCLimit14Robust:
     def _next_level(self, last_fill_price: float, num_buys: int) -> float:
         d = self._get_drop_for_next_level(num_buys)
         return last_fill_price * (1.0 - d / 100.0)
+        
+    def _get_bar_time(self, row):
+        candidates = ("t", "ts", "time", "timestamp", "open_time", "open_ts", "datetime", "date")
+
+        # dict-like / pandas.Series
+        for k in candidates:
+            try:
+                if hasattr(row, "get"):
+                    v = row.get(k, None)
+                    if v is not None:
+                        return v
+            except Exception:
+                pass
+            try:
+                if hasattr(row, "index") and k in row.index:
+                    return row[k]
+            except Exception:
+                pass
+            try:
+                if isinstance(row, dict) and k in row:
+                    return row[k]
+            except Exception:
+                pass
+
+        # інколи timestamp лежить в name (якщо це pandas.Series з індексом-часом)
+        try:
+            if hasattr(row, "name") and row.name is not None:
+                return row.name
+        except Exception:
+            pass
+
+        # ФОЛБЕК: часу нема в row — використовуємо синтетичний “час”
+        return self._next_bar_time() 
+
 
     # ---------------------
     # Entry
     # ---------------------
     def entry_signal(self, is_opening: bool, sym: str, row: Dict[str, Any], ctx=None):
-        self._bar_roll(row["t"])
+        self._bar_roll(self._get_bar_time(row))
         if not is_opening:
             return None
 
