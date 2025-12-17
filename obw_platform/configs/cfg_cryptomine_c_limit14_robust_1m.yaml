@@ -26,7 +26,7 @@ max_universe: 1
 
 # ----- Risk / sizing -----
 initial_equity: 100.0
-position_notional: 5.0 # стартова порція (firstBuyUSDT). DCA додається всередині стратегії.
+#position_notional: 5.0 # стартова порція (firstBuyUSDT). DCA додається всередині стратегії.
 fee_rate: 0.0005        # або 0.005 якщо так реально
 slippage_per_side: 0.000 # або 0.0005..0.001 для 1m
 max_notional_frac: 0.95 # ліміт по загальному notional (для всіх позицій)
@@ -44,7 +44,7 @@ strategy_params:
   linearDropPercent: 0.5
 
   autoMerge: true
-  subSellTPPercent: 1.3
+  subSellTPPercent: 0.5
 
   # Nonlinear drops (lvl2..lvl6)
   drop1: 0.3
