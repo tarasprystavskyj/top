@@ -343,7 +343,7 @@ def main():
                         equity_realized += pnl_amt
 
                         # sub-trade pnl classification
-                        is_sub = ("Sub-sell" in str(getattr(ex, "reason", ""))) or True  # TP_PARTIAL is treated as sub-sell
+                        is_sub = (getattr(ex, "action", "") == "TP_PARTIAL") or ("Sub-sell" in str(getattr(ex, "reason", "")))  # TP_PARTIAL is treated as sub-sell
                         sub_trade_pnl = pnl_amt if is_sub else 0.0
                         if is_sub:
                             sub_pnl_cum += sub_trade_pnl
@@ -368,7 +368,8 @@ def main():
         unrealized = _compute_unrealized(positions, px_map, fee, slippage)
         equity_mtm = equity_realized + unrealized
         open_notional = _open_notional(positions)
-        allowed_notional = max_notional_frac * equity_mtm
+        equity_cap = max(0.0, equity_mtm)
+        allowed_notional = max_notional_frac * equity_cap
         margin_call_excess = max(0.0, open_notional - allowed_notional)
 
         ts_list.append(str(t))

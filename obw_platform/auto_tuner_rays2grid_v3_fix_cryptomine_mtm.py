@@ -18,11 +18,169 @@
 #     --w-equity 1.0 --w-pf 12.0 --w-dd 220.0 --w-mono 5.0 --dd-target 0.12 \
 #     --sleep-sec 0.0 --jobs 1
 #
-import argparse, itertools, re, subprocess, sys, time, csv, os
+import argparse, itertools, re, subprocess, sys, time, csv, os, json
 from pathlib import Path
 from datetime import datetime
 import yaml, copy
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+
+BT_HELP_CACHE = {}
+
+def backtester_supports_arg(backtester: Path, arg: str) -> bool:
+    key = (str(backtester), arg)
+    if key in BT_HELP_CACHE:
+        return BT_HELP_CACHE[key]
+    try:
+        p = subprocess.run([sys.executable, str(backtester), "--help"], capture_output=True, text=True)
+        txt = (p.stdout or "") + "\n" + (p.stderr or "")
+        ok = (arg in txt)
+    except Exception:
+        ok = False
+    BT_HELP_CACHE[key] = ok
+    return ok
+
+SUMMARY_MAP_CANDIDATES = [
+    ("equity_end", "equity_end", float),
+    ("equity_realized_end", "equity_end", float),
+    ("equity_mtm_end", "equity_end", float),
+    ("equity_final", "equity_end", float),
+    ("pf", "profit_factor", float),
+    ("profit_factor", "profit_factor", float),
+    ("max_dd", "max_dd", float),
+    ("max_dd_mtm", "max_dd", float),
+    ("max_drawdown", "max_dd", float),
+    ("mono", "monotonicity", float),
+    ("monotonicity", "monotonicity", float),
+    ("trades", "trades", int),
+    ("fees", "fees", float),
+]
+
+def _read_bt_summary_csv(path_str: str):
+    """
+    Read bt_summary produced by backtester.
+    Some versions write CSV with a header row, others write a JSON object (often saved as bt_summary.csv).
+    We support both.
+    """
+    p = Path(path_str)
+    if not p.exists():
+        return None
+
+    # 1) JSON mode (common in mtm_unrealized backtester)
+    try:
+        txt = p.read_text(encoding="utf-8").strip()
+        if txt.startswith("{") and txt.endswith("}"):
+            obj = json.loads(txt)
+            out = {}
+            # Map known keys
+            if "equity_end" in obj: out["equity_end"] = float(obj["equity_end"])
+            elif "equity_end_mtm" in obj: out["equity_end"] = float(obj["equity_end_mtm"])
+            elif "equity_end_realized" in obj: out["equity_end"] = float(obj["equity_end_realized"])
+
+            if "profit_factor" in obj: out["profit_factor"] = float(obj["profit_factor"])
+            elif "pf" in obj: out["profit_factor"] = float(obj["pf"])
+
+            if "max_dd_frac" in obj: out["max_dd"] = float(obj["max_dd_frac"])
+            elif "max_dd" in obj: out["max_dd"] = float(obj["max_dd"])
+
+            if "monotonicity_frac" in obj: out["monotonicity"] = float(obj["monotonicity_frac"])
+            elif "mono" in obj: out["monotonicity"] = float(obj["mono"])
+            elif "monotonicity" in obj: out["monotonicity"] = float(obj["monotonicity"])
+
+            if "trades" in obj: out["trades"] = int(float(obj["trades"]))
+            if "fees" in obj: out["fees"] = float(obj["fees"])
+
+            return out if out else None
+    except Exception:
+        pass
+
+    # 2) CSV mode
+    try:
+        import csv as _csv
+        with p.open("r", newline="") as f:
+            rdr = _csv.DictReader(f)
+            row = next(rdr, None)
+            if not row:
+                return None
+    except Exception:
+        return None
+
+    cols = {(k.strip() if isinstance(k,str) else str(k)): v for k, v in row.items() if k is not None}
+    out = {}
+    for col, key, fn in SUMMARY_MAP_CANDIDATES:
+        if key in out:
+            continue
+        if col in cols and cols[col] not in (None, ""):
+            try:
+                out[key] = fn(float(cols[col])) if fn is int else fn(cols[col])
+            except Exception:
+                try:
+                    out[key] = fn(cols[col])
+                except Exception:
+                    pass
+    return out if out else None
+
+
+
+def _relocate_backtest_dir(path_str: str, session_dir: Path) -> str:
+    """
+    Move backtest report directory under session_dir/_backtest to keep tuner outputs together.
+    Returns updated path string (new location) if moved; otherwise returns original.
+    """
+    if not path_str:
+        return path_str
+    try:
+        p = Path(path_str)
+        # If it's already under session_dir, do nothing
+        try:
+            p.relative_to(session_dir)
+            return str(p)
+        except Exception:
+            pass
+
+        # Detect standard layout: .../_reports/_auto_tuner/DCA/<run_dir>/file
+        parts = p.parts
+        if "_reports" in parts and "_auto_tuner" in parts:
+            i = parts.index("_auto_tuner")
+            run_dir = Path(*parts[:i+2])  # .../_reports/_backtest
+            # parent run folder is next part
+            if len(parts) > i+2:
+                run_name = parts[i+2]
+                src_run = Path(*parts[:i+3])  # .../_reports/_backtest/<run_name>
+                if src_run.exists() and src_run.is_dir():
+                    dst_root = session_dir / "_auto_tuner/DCA"
+                    dst_root.mkdir(parents=True, exist_ok=True)
+                    dst_run = dst_root / run_name
+                    # avoid collision
+                    if dst_run.exists():
+                        k = 1
+                        while (dst_root / f"{run_name}_{k}").exists():
+                            k += 1
+                        dst_run = dst_root / f"{run_name}_{k}"
+                    shutil.move(str(src_run), str(dst_run))
+                    # return relocated file path
+                    rel = Path(*parts[i+3:])  # file path under run dir
+                    return str(dst_run / rel)
+    except Exception:
+        return path_str
+    return path_str
+
+
+def _find_latest_bt_summary():
+    root = Path("_reports/_auto_tuner/DCA")
+    if not root.exists():
+        return None
+    best = None
+    best_m = -1
+    for p in root.glob("backtest_*/bt_summary.csv"):
+        try:
+            m = p.stat().st_mtime
+        except Exception:
+            continue
+        if m > best_m:
+            best_m = m
+            best = p
+    return str(best) if best else None
 
 DEFAULT_BACKTESTER = Path("backtester_core_speed3_veto_universe_4_mtm_unrealized.py")
 
@@ -50,8 +208,10 @@ def backtester_supports_arg(backtester: Path, arg: str) -> bool:
 SESSION_DIR = None
 
 DELTA_MODE_DEFAULT = True  # interpret grid lists as deltas around current by default
-TUNE_ROOT = Path("_reports") / "tune"
+AUTO_TUNER_ROOT = Path("_reports") / "_auto_tuner"
+TUNE_ROOT = AUTO_TUNER_ROOT
 TUNE_TMP_ROOT = TUNE_ROOT / "tmp"
+safe_prefix = ""
 
 # Clamp only what we touch (safe); everything else passes through.
 PARAM_CLAMPS = {
@@ -127,21 +287,50 @@ def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, with_plots: 
         "--cfg", str(cfg_path),
         "--limit-bars", str(limit_bars),
     ]
-    # Some backtesters accept --export-csv, others always export.
+    
+    global safe_prefix
+    plan_name = safe_prefix
+    # All outputs must go to the auto-tuner session directory
+    session_dir = Path("_reports") / "_auto_tuner" / plan_name
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    # CSV export (force into session_dir)
     if backtester_supports_arg(backtester, "--export-csv"):
         cmd.append("--export-csv")
+
+    # Plots (if enabled) → same session_dir
     if with_plots:
-        if plots_dir is None:
-            plots_dir = Path("_reports") / "_bt_plots"
+        plots_dir = session_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
         cmd += ["--plots", str(plots_dir)]
-
+        
     t0 = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = time.time() - t0
     out = (p.stdout or "") + "\n" + (p.stderr or "")
     stats = parse_metrics(out) or {}
-    if not stats:
+    # Fallback: read bt_summary.csv produced by the backtester (more reliable across versions).
+    bt_summary = None
+    for line in out.splitlines():
+        if "bt_summary=" in line:
+            m = re.search(r"bt_summary=([^\s]+)", line)
+            if m:
+                bt_summary = m.group(1)
+            break
+    if bt_summary is None:
+        bt_summary = _find_latest_bt_summary()
+    # Move backtest reports under the tuner session dir (keeps _reports/_backtest clean)
+    if bt_summary:
+        bt_summary = _relocate_backtest_dir(bt_summary, Path(SESSION_DIR))
+    if bt_summary:
+        s2 = _read_bt_summary_csv(bt_summary)
+        if s2:
+            stats.update(s2)
+            stats["bt_summary_csv"] = bt_summary
+    # Relocate bt_trades path too (if present)
+    if "trades_csv" in stats and stats["trades_csv"]:
+        stats["trades_csv"] = _relocate_backtest_dir(stats["trades_csv"], Path(SESSION_DIR))
+    if not stats or ("equity_end" not in stats and "profit_factor" not in stats and "max_dd" not in stats and "trades" not in stats):
         raise RuntimeError(f"Could not parse metrics from backtester output. Tail: {out[-900:]}")
 
     trades_csv = None
@@ -217,7 +406,7 @@ def deep_set(d, key, val):
 
 def prune_reports(prefix: str, keep: int = 60):
     import shutil
-    root = Path("_reports/_backtest")
+    root = Path("_reports/_auto_tuner/DCA")
     pats = sorted([p for p in root.glob(f"backtest{prefix}*") if p.is_dir()],
                   key=lambda p: p.stat().st_mtime, reverse=True)
     for p in pats[keep:]:
@@ -362,12 +551,13 @@ def include_seed_values(values, pname, current_value):
     return list(vals)
 
 def _make_grid_candidates(pname, spec, current, delta_mode=DELTA_MODE_DEFAULT):
+    is_around = isinstance(spec, str) and spec.startswith('around:')
     vals = realize_around(spec, current)
     if isinstance(vals, (list, tuple, set)):
         vals = _as_list(vals)
         out = []
         for v in vals:
-            if delta_mode and isinstance(v, (int, float)):
+            if (delta_mode and (not is_around)) and isinstance(v, (int, float)):
                 try:
                     curf = float(current)
                 except Exception:
@@ -407,6 +597,13 @@ def _make_grid_candidates(pname, spec, current, delta_mode=DELTA_MODE_DEFAULT):
 def do_rays(backtester, base_cfg, limit_bars, pname, cand, prefix, session_dir, log_csv, weights, min_trades, target_trades, jobs):
     global GLOBAL_BEST_S, GLOBAL_BEST_REC
     cur, _ = get_current(base_cfg, pname)
+    # Expand 'around:STEP' convenience in rays into absolute candidates around current
+    if isinstance(cand, (list, tuple)) and len(cand) == 1 and isinstance(cand[0], str) and cand[0].startswith('around:'):
+        try:
+            step = float(cand[0].split(':', 1)[1])
+            cand = around(float(cur), step, n=1)
+        except Exception:
+            cand = [cur]
     cand = ensure_included(cand, cur) if isinstance(cand, (list,tuple)) else ([cur] if cur is not None else [])
     cand = include_seed_values(cand, pname, cur)
 
@@ -581,28 +778,35 @@ def main():
 
     backtester = Path(args.backtester)
 
-    global INIT_CFG, BT_SLEEP_SEC
+    global INIT_CFG, BT_SLEEP_SEC, safe_prefix
     INIT_CFG = read_yaml(Path(args.cfg))
     BT_SLEEP_SEC = args.sleep_sec
     weights = (args.w_equity, args.w_pf, args.w_dd, args.w_mono, args.dd_target)
 
-    prefix_path = Path(args.prefix)
-    if prefix_path.is_absolute():
-        prefix_path = Path(*prefix_path.parts[1:])
-    file_prefix = prefix_path.name or "tuner"
+        # --- Session directory ---
+    # Group sessions under _reports/_auto_tuner/<plan_stem>/...
+    plan_path = Path(args.plan) if getattr(args, "plan", None) else None
+    plan_stem = (plan_path.stem if plan_path else "default_plan")
     session_ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    base_parent = TUNE_ROOT / prefix_path.parent
+
+    base_parent = TUNE_ROOT / plan_stem
     base_parent.mkdir(parents=True, exist_ok=True)
-    session_dir = base_parent / f"{file_prefix}_{session_ts}"
+
+    # Keep prefix inside session folder name for readability
+    safe_prefix = Path(args.prefix).name if args.prefix else "tuner"
+    session_dir = base_parent / f"{safe_prefix}_{session_ts}"
     counter = 1
     while session_dir.exists():
-        session_dir = base_parent / f"{file_prefix}_{session_ts}_{counter}"
+        session_dir = base_parent / f"{safe_prefix}_{session_ts}_{counter}"
         counter += 1
     session_dir.mkdir(parents=True, exist_ok=False)
+
     global SESSION_DIR
     SESSION_DIR = session_dir
 
+
     base = read_yaml(Path(args.cfg))
+    file_prefix = "DCA_temp"
 
     # Baseline
     baseline_yaml = session_dir / f"{file_prefix}_baseline.yaml"
