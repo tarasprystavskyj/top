@@ -34,6 +34,8 @@ class ExitSig:
     action: str  # 'TP' | 'SL' | 'EXIT' | 'TP_PARTIAL'
     exit_price: float
     qty_frac: float = 1.0
+    sub_entry_price: Optional[float] = None
+    sub_entry_id: Optional[str] = None
     reason: str = ""
 
 
@@ -114,13 +116,11 @@ class CryptomineCLimit14Robust:
         self._sig_window = deque([0] * self.window_bars, maxlen=self.window_bars)
         self._sig_sum = 0
         self._last_t = None
-        self._bar_seq = 0
 
     # ---------------------
     # Universe / ranking
     # ---------------------
     def universe(self, t, md_map):
-        self._bar_roll(t)  # throttle window roll once per bar
         # this strategy is typically single-symbol; keep universe as provided
         return list(md_map.keys())
 
@@ -131,11 +131,6 @@ class CryptomineCLimit14Robust:
     # ---------------------
     # Helpers
     # ---------------------
-    def _next_bar_time(self):
-        t = self._bar_seq
-        self._bar_seq += 1
-        return t
-
     def _bar_roll(self, t):
         if self._last_t is None or t != self._last_t:
             # new bar
@@ -188,45 +183,12 @@ class CryptomineCLimit14Robust:
     def _next_level(self, last_fill_price: float, num_buys: int) -> float:
         d = self._get_drop_for_next_level(num_buys)
         return last_fill_price * (1.0 - d / 100.0)
-        
-    def _get_bar_time(self, row):
-        candidates = ("t", "ts", "time", "timestamp", "open_time", "open_ts", "datetime", "date")
-
-        # dict-like / pandas.Series
-        for k in candidates:
-            try:
-                if hasattr(row, "get"):
-                    v = row.get(k, None)
-                    if v is not None:
-                        return v
-            except Exception:
-                pass
-            try:
-                if hasattr(row, "index") and k in row.index:
-                    return row[k]
-            except Exception:
-                pass
-            try:
-                if isinstance(row, dict) and k in row:
-                    return row[k]
-            except Exception:
-                pass
-
-        # інколи timestamp лежить в name (якщо це pandas.Series з індексом-часом)
-        try:
-            if hasattr(row, "name") and row.name is not None:
-                return row.name
-        except Exception:
-            pass
-
-        # ФОЛБЕК: часу нема в row — використовуємо синтетичний “час”
-        return self._next_bar_time() 
-
 
     # ---------------------
     # Entry
     # ---------------------
     def entry_signal(self, is_opening: bool, sym: str, row: Dict[str, Any], ctx=None):
+        self._bar_roll(row["t"])
         if not is_opening:
             return None
 
@@ -253,9 +215,8 @@ class CryptomineCLimit14Robust:
             st.next_level_price = self._next_level(st.last_fill_price, st.num_buys)
             st.lots = [(qty0, close)]
 
-            tp0 = close * (1.0 + self.tp_percent/100.0)
             self._register_signal(1)
-            return Sig(side="LONG", tp=float(tp0), sl=0.0, reason="First Buy_0")
+            return Sig(side="LONG", tp=None, sl=None, reason="First Buy_0")
 
         return None
 
@@ -263,6 +224,7 @@ class CryptomineCLimit14Robust:
     # Position management
     # ---------------------
     def manage_position(self, sym: str, row: Dict[str, Any], pos, ctx=None):
+        self._bar_roll(row["t"])
         st = self._get_state(sym)
         close = float(row["close"])
 
@@ -403,6 +365,6 @@ class CryptomineCLimit14Robust:
                         st.next_level_price = None
 
                     self._register_signal(1)
-                    return ExitSig(action="TP_PARTIAL", exit_price=close, qty_frac=qty_frac, reason="Sub-sell last lot")
+                    return ExitSig(action="TP_PARTIAL", exit_price=close, qty_frac=qty_frac, reason="Sub-sell last lot", sub_entry_price=entry_last)
 
         return None

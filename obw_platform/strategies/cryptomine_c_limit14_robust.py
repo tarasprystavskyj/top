@@ -10,9 +10,14 @@ NOTE (важливо): backtester_core_speed3_veto_universe_2.py підтрим�
 
 Також додано "alert-safe" throttle: максимум N сигналів за M барів (за замовчуванням 14 за 6 барів).
 
-PATCH (важливо):
-- backtester вимагає numeric TP/SL при вході -> Sig.tp та Sig.sl мають бути float (не None)
-- row може НЕ мати 't' -> у manage_position використовуємо _get_bar_time(row)
+PATCH (17 Dec 2025):
+1) bt2 інколи передає row без timestamp-поля -> manage_position має використовувати _get_bar_time(row).
+2) bt2 вимагає numeric take_profit/stop_price на вході -> entry_signal завжди повертає Sig(tp=..., sl=...).
+3) ВАЖЛИВЕ: realized PnL від TP_PARTIAL у bt2 рахується від pos.entry.
+   Якщо pos.entry = VWAP (середня), то LIFO sub-sell може давати "дивний" PnL (аж до від’ємного),
+   хоча останній лот продаємо в плюс.
+   ФІКС: перед поверненням ExitSig(TP_PARTIAL) тимчасово ставимо pos.entry = entry_last (ціна входу останнього лота),
+         а на наступному барі відновлюємо pos.entry до нового середнього (pending_new_entry).
 """
 
 from __future__ import annotations
@@ -85,6 +90,9 @@ class CryptomineCLimit14Robust:
         self.auto_merge          = bool(sp.get("autoMerge", True))
         self.sub_sell_tp_percent = float(sp.get("subSellTPPercent", 1.3))
 
+        # bt2 requires numeric stop price on entry; default is very wide "almost never hit"
+        self.stop_percent        = float(sp.get("stopPercent", 99.0))
+
         # Nonlinear initial drops (lvl2..lvl6)
         self.drop1 = float(sp.get("drop1", 0.3))
         self.drop2 = float(sp.get("drop2", 0.4))
@@ -110,11 +118,6 @@ class CryptomineCLimit14Robust:
         # Optional budget cap (to avoid "infinite" DCA in backtest)
         self.max_budget_frac = float(sp.get("maxBudgetFrac", 1.0))  # 1.0 = no cap
         self.initial_capital = float(cfg.get("initial_capital", 10000.0))
-
-        # --- NEW: required TP/SL for backtester ---
-        # backtester вимагає numeric stop_price/take_profit -> ставимо SL "дуже широкий", щоб не заважав DCA
-        # stopPercent = 99 означає SL на -99% від ціни (price * 0.01)
-        self.stop_percent = float(sp.get("stopPercent", 99.0))
 
         # --- runtime state ---
         self._states: Dict[str, _SymState] = {}
@@ -198,7 +201,12 @@ class CryptomineCLimit14Robust:
         return last_fill_price * (1.0 - d / 100.0)
 
     def _get_bar_time(self, row):
-        candidates = ("t", "ts", "time", "timestamp", "open_time", "open_ts", "datetime", "date")
+        candidates = (
+            "t", "ts", "time", "timestamp",
+            "open_time", "open_ts",
+            "datetime", "date",
+            "datetime_utc",
+        )
 
         # dict-like / pandas.Series
         for k in candidates:
@@ -230,19 +238,14 @@ class CryptomineCLimit14Robust:
         # ФОЛБЕК: часу нема в row — використовуємо синтетичний “час”
         return self._next_bar_time()
 
-    def _make_entry_tp_sl(self, entry_price: float) -> Tuple[float, float]:
-        """Backtester requires numeric TP/SL on entry."""
+    def _entry_tp_sl(self, entry_price: float) -> Tuple[float, float]:
         entry_price = float(entry_price)
         tp = entry_price * (1.0 + self.tp_percent / 100.0)
 
-        # широкий SL, щоб не ламати DCA-логіку
         sp = max(0.0, min(99.9, float(self.stop_percent)))
         sl = entry_price * (1.0 - sp / 100.0)
-
-        # safety: sl must be positive numeric
         if not (sl > 0.0):
             sl = entry_price * 0.0001
-
         return float(tp), float(sl)
 
     # ---------------------
@@ -276,7 +279,7 @@ class CryptomineCLimit14Robust:
             st.next_level_price = self._next_level(st.last_fill_price, st.num_buys)
             st.lots = [(qty0, close)]
 
-            tp, sl = self._make_entry_tp_sl(close)
+            tp, sl = self._entry_tp_sl(close)
 
             self._register_signal(1)
             return Sig(side="LONG", tp=tp, sl=sl, reason="First Buy_0")
@@ -287,17 +290,16 @@ class CryptomineCLimit14Robust:
     # Position management
     # ---------------------
     def manage_position(self, sym: str, row: Dict[str, Any], pos, ctx=None):
-        # IMPORTANT: row може НЕ мати 't' у вашому бектестері.
+        # FIX: row може не мати 't'
         self._bar_roll(self._get_bar_time(row))
-
         st = self._get_state(sym)
         close = float(row["close"])
 
-        # Sync: after partial closes the backtester изменит pos.qty, so rescale lots.
+        # Sync: after partial closes the backtester changes pos.qty, so rescale lots.
         if st.pos_size > 0 and pos.qty is not None and pos.qty > 0 and abs(pos.qty - st.pos_size) / st.pos_size > 1e-6:
             ratio = pos.qty / st.pos_size
             st.lots = [(q * ratio, p) for (q, p) in st.lots]
-            st.pos_size = pos.qty
+            st.pos_size = float(pos.qty)
             # st.pos_cost_usdt isn't tracked perfectly after partials in this approximation.
 
         # Apply pending entry shift (autoMerge approximation) AFTER the partial close has been processed by backtester.
@@ -405,21 +407,35 @@ class CryptomineCLimit14Robust:
             last_lot_tp = entry_last * (1.0 + self.sub_sell_tp_percent / 100.0)
 
             if close >= last_lot_tp:
-                # qty frac relative to current position
                 qty_total = float(pos.qty)
-                qty_close = min(qty_last, qty_total)
+                qty_close = min(float(qty_last), qty_total)
+
                 if qty_total > 0 and qty_close > 0:
                     qty_frac = max(0.0, min(1.0, qty_close / qty_total))
 
-                    # autoMerge approximation: shift remaining cost basis by realized profit of that lot
-                    if self.auto_merge and (qty_total - qty_close) > 0:
-                        profit = qty_close * (close - entry_last)
-                        remaining_cost = float(pos.entry) * qty_total - profit
-                        st.pending_new_entry = remaining_cost / (qty_total - qty_close)
+                    # ---- compute new avg from LIFO lots (NOT from pos.entry) ----
+                    total_cost = sum(q * p for (q, p) in st.lots)
+                    profit = qty_close * (close - float(entry_last))
 
-                    # Update internal warehouse
+                    remaining_qty = qty_total - qty_close
+                    remaining_cost = total_cost - qty_close * float(entry_last)
+
+                    if self.auto_merge and remaining_qty > 0:
+                        remaining_cost -= profit
+
+                    if remaining_qty > 0:
+                        st.pending_new_entry = remaining_cost / remaining_qty
+                        # keep internal avg in sync with what we will apply next bar
+                        st.avg_price = st.pending_new_entry
+
+                    # ---- KEY FIX: make realized PnL of TP_PARTIAL correct in bt2 ----
+                    # bt2 uses pos.entry as cost basis. For a LIFO lot sale, cost basis must be entry_last.
+                    pos.entry = float(entry_last)
+
+                    # Update internal warehouse (bt will reduce pos.qty after this returns)
                     st.lots.pop()
                     st.num_buys = max(st.num_buys - 1, 0)
+                    st.pos_size = max(0.0, qty_total - qty_close)
 
                     # Re-anchor grid to new last lot (if any)
                     if len(st.lots) > 0:

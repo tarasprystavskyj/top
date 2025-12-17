@@ -357,59 +357,63 @@ def main():
                     del positions[sym]
                     pos_time.pop(sym, None)
                 elif ex and ex.action == "TP_PARTIAL":
-                    px = float(ex.exit_price if ex.exit_price is not None else row["close"])
-                    part = max(0.0, min(1.0, float(getattr(ex, "qty_frac", 0.5))))
-                    qty_close = pos.qty * part
-                    notional_now = qty_close * px
-                    min_notional = getattr(strat, "exchange_min_notional", 0.0)
-                    min_qty = getattr(strat, "min_qty", 0.0)
-                    if notional_now >= min_notional and (min_qty <= 0 or qty_close >= min_qty):
-                        notional_entry = qty_close * pos.entry
-                        gross_ret = (px - pos.entry) / pos.entry if pos.side == "LONG" else (pos.entry - px) / pos.entry
-                        net_ret = gross_ret - 2 * slippage - 2 * fee
-                        pnl_amt = net_ret * notional_entry
-                        sub_entry_px = getattr(ex, "sub_entry_price", None)
-                        if sub_entry_px is None:
-                            sub_entry_px = getattr(ex, "lot_entry_price", None)
-                        if sub_entry_px is None:
-                            # Fallback: treat sub-trade PnL as PnL vs avg entry
-                            sub_trade_pnl = float(pnl_amt)
-                        else:
-                            sub_entry_px = float(sub_entry_px)
-                            sub_trade_pnl = qty_close * ((exit_px - sub_entry_px) if pos.side == "LONG" else (sub_entry_px - exit_px))
-                        sub_trade_pnl = max(0.0, float(sub_trade_pnl))
-                        subsell_bank_total += sub_trade_pnl
-                        pos.subsell_bank += sub_trade_pnl
-                        trades += 1
-                        fees_cum += fee * 2 * notional_entry
-                        if pnl_amt > 0:
-                            wins += 1
-                            pnl_pos += pnl_amt
-                        else:
-                            losses += 1
-                            pnl_neg += pnl_amt
-                        equity += pnl_amt
-                        tr_rows.append(
-                            {
-                                "symbol": sym,
-                                "side": pos.side,
-                                "entry_time": pos_time.get(sym, t),
-                                "exit_time": t,
-                                "entry": pos.entry,
-                                "exit": px,
-                                "tp": pos.tp,
-                                "sl": pos.sl,
-                                "action": "TP_PARTIAL",
-                                "reason": getattr(ex, "reason", "TP_PARTIAL"),
-                                "gross_return": gross_ret,
-                                "net_return": net_ret,
-                                "notional": notional_entry,
-                                "fees_paid": fee * 2 * notional_entry,
-                                "realized_pnl": pnl_amt,
-                                "sub_trade_pnl": sub_trade_pnl,
-                            }
-                        )
-                        pos.qty -= qty_close
+                    qty_close = pos.qty * float(ex.qty_frac)
+                    qty_close = max(0.0, min(pos.qty, qty_close))
+                    if qty_close <= 0:
+                        continue
+
+                    # Exchange-like realized PnL vs avg_entry (can be negative if position is in drawdown)
+                    pnl_amt = qty_close * ((exit_px - pos.avg_entry) if pos.side == "LONG" else (pos.avg_entry - exit_px))
+
+                    # Lot-based PnL for the sub-sell: must be paired to a specific sub-lot entry price provided by strategy
+                    sub_entry_px = None
+                    if hasattr(ex, "sub_entry_price") and ex.sub_entry_price is not None:
+                        sub_entry_px = float(ex.sub_entry_price)
+                    elif hasattr(ex, "lot_entry_price") and ex.lot_entry_price is not None:
+                        sub_entry_px = float(ex.lot_entry_price)
+
+                    sub_trade_pnl_raw = 0.0
+                    if sub_entry_px is not None:
+                        sub_trade_pnl_raw = qty_close * ((exit_px - sub_entry_px) if pos.side == "LONG" else (sub_entry_px - exit_px))
+                    sub_trade_pnl = max(0.0, float(sub_trade_pnl_raw))
+
+                    fee_exit = qty_close * exit_px * fee_rate
+                    realized = pnl_amt - fee_exit
+                    equity += realized
+                    fees_total += fee_exit
+
+                    # Update position qty + cost basis; optional auto-merge reduces cost by sub-sell profit
+                    avg_entry_before = pos.avg_entry
+                    cost_before = pos.qty * avg_entry_before
+                    cost_closed = cost_before * (qty_close / pos.qty) if pos.qty > 0 else 0.0
+                    pos.qty -= qty_close
+                    cost_after = max(0.0, cost_before - cost_closed)
+                    subsell_bank_total += sub_trade_pnl
+                    pos.subsell_bank += sub_trade_pnl
+                    if getattr(strat, "auto_merge", False) and sub_trade_pnl > 0:
+                        cost_after = max(0.0, cost_after - sub_trade_pnl)
+                    pos.avg_entry = (cost_after / pos.qty) if pos.qty > 0 else None
+
+                    tr_rows.append({
+                        "symbol": sym,
+                        "side": pos.side,
+                        "entry_time": pos.entry_time,
+                        "exit_time": row["time"],
+                        "entry_px": avg_entry_before,
+                        "exit_px": exit_px,
+                        "qty": qty_close,
+                        "reason": "TP_PARTIAL",
+                        "pnl": pnl_amt,
+                        "fees": fee_exit,
+                        "realized_pnl": realized,
+                        "sub_trade_pnl": sub_trade_pnl,
+                        "sub_trade_pnl_raw": sub_trade_pnl_raw,
+                        "subsell_bank_total": subsell_bank_total,
+                    })
+
+                    if pos.qty <= 1e-12:
+                        pos = None
+                        continue
 
         # compute current equity including unrealized PnL
         unrealized = 0.0
@@ -641,7 +645,7 @@ def main():
             if tr_rows and tr_rows[0].get("exit_time", None) is not None:
                 dft = pd.DataFrame(tr_rows).sort_values("exit_time")
                 eq_time = (float(initial_equity) + dft["realized_pnl"].cumsum())
-                sub_time = dft["sub_trade_pnl"].fillna(0.0).cumsum() if ("sub_trade_pnl" in dft.columns) else pd.Series(0.0, index=dft.index)
+                sub_time = (dft["sub_trade_pnl"].fillna(0.0).cumsum() if ("sub_trade_pnl" in dft.columns) else pd.Series(0.0, index=dft.index))
                 plt.figure()
                 ts_raw = dft['exit_time'].astype(str).str.strip()
                 ts = pd.Series(pd.NaT, index=dft.index)
@@ -666,6 +670,20 @@ def main():
 
                 plt.title("Equity vs Time"); plt.xlabel("Time"); plt.ylabel("Equity")
                 plt.tight_layout(); plt.savefig(os.path.join(run_plots_dir, "equity_by_time.png"), dpi=160); plt.close()
+
+                # --- Sub-sell PnL (lot-based) as a separate chart ---
+                try:
+                    plt.figure(figsize=(10, 4))
+                    plt.plot(ts, sub_time.values)
+                    plt.title("Sub-sell PnL (lot-based, cumulative) vs Time")
+                    plt.xlabel("Time")
+                    plt.ylabel("Sub-sell PnL (cumulative)")
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(run_plots_dir, "subsell_pnl_by_time.png"), dpi=160)
+                    plt.close()
+                except Exception as _e:
+                    pass
 
             if tr_rows:
                 dfr = pd.DataFrame(tr_rows)
