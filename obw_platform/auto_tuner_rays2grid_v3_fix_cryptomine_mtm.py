@@ -121,8 +121,53 @@ def _read_bt_summary_csv(path_str: str):
     return out if out else None
 
 
+
+def _relocate_backtest_dir(path_str: str, session_dir: Path) -> str:
+    """
+    Move backtest report directory under session_dir/_backtest to keep tuner outputs together.
+    Returns updated path string (new location) if moved; otherwise returns original.
+    """
+    if not path_str:
+        return path_str
+    try:
+        p = Path(path_str)
+        # If it's already under session_dir, do nothing
+        try:
+            p.relative_to(session_dir)
+            return str(p)
+        except Exception:
+            pass
+
+        # Detect standard layout: .../_reports/_auto_tuner/DCA/<run_dir>/file
+        parts = p.parts
+        if "_reports" in parts and "_auto_tuner" in parts:
+            i = parts.index("_auto_tuner")
+            run_dir = Path(*parts[:i+2])  # .../_reports/_backtest
+            # parent run folder is next part
+            if len(parts) > i+2:
+                run_name = parts[i+2]
+                src_run = Path(*parts[:i+3])  # .../_reports/_backtest/<run_name>
+                if src_run.exists() and src_run.is_dir():
+                    dst_root = session_dir / "_auto_tuner/DCA"
+                    dst_root.mkdir(parents=True, exist_ok=True)
+                    dst_run = dst_root / run_name
+                    # avoid collision
+                    if dst_run.exists():
+                        k = 1
+                        while (dst_root / f"{run_name}_{k}").exists():
+                            k += 1
+                        dst_run = dst_root / f"{run_name}_{k}"
+                    shutil.move(str(src_run), str(dst_run))
+                    # return relocated file path
+                    rel = Path(*parts[i+3:])  # file path under run dir
+                    return str(dst_run / rel)
+    except Exception:
+        return path_str
+    return path_str
+
+
 def _find_latest_bt_summary():
-    root = Path("_reports/_backtest")
+    root = Path("_reports/_auto_tuner/DCA")
     if not root.exists():
         return None
     best = None
@@ -163,8 +208,10 @@ def backtester_supports_arg(backtester: Path, arg: str) -> bool:
 SESSION_DIR = None
 
 DELTA_MODE_DEFAULT = True  # interpret grid lists as deltas around current by default
-TUNE_ROOT = Path("_reports") / "tune"
+AUTO_TUNER_ROOT = Path("_reports") / "_auto_tuner"
+TUNE_ROOT = AUTO_TUNER_ROOT
 TUNE_TMP_ROOT = TUNE_ROOT / "tmp"
+safe_prefix = "" 
 
 # Clamp only what we touch (safe); everything else passes through.
 PARAM_CLAMPS = {
@@ -228,7 +275,7 @@ def parse_metrics(text: str):
                 out[k] = int(v)
     return out if out else None
 
-def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, session_dir: Path, with_plots: bool = False, plots_dir: Optional[Path] = None):
+def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, with_plots: bool = False, plots_dir=None):
     yaml_text = Path(cfg_path).read_text()
     key = (str(backtester), limit_bars, yaml_text)
     if not with_plots and key in BT_CACHE:
@@ -240,15 +287,23 @@ def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, session_dir:
         "--cfg", str(cfg_path),
         "--limit-bars", str(limit_bars),
     ]
-    # Some backtesters accept --export-csv, others always export.
+    
+    global safe_prefix
+    plan_name = safe_prefix
+    # All outputs must go to the auto-tuner session directory
+    session_dir = Path("_reports") / "_auto_tuner" / plan_name
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    # CSV export (force into session_dir)
     if backtester_supports_arg(backtester, "--export-csv"):
         cmd.append("--export-csv")
+
+    # Plots (if enabled) → same session_dir
     if with_plots:
-        if plots_dir is None:
-            plots_dir = session_dir / "plots"
+        plots_dir = session_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
         cmd += ["--plots", str(plots_dir)]
-
+        
     t0 = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = time.time() - t0
@@ -264,11 +319,17 @@ def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, session_dir:
             break
     if bt_summary is None:
         bt_summary = _find_latest_bt_summary()
+    # Move backtest reports under the tuner session dir (keeps _reports/_backtest clean)
+    if bt_summary:
+        bt_summary = _relocate_backtest_dir(bt_summary, Path(SESSION_DIR))
     if bt_summary:
         s2 = _read_bt_summary_csv(bt_summary)
         if s2:
             stats.update(s2)
             stats["bt_summary_csv"] = bt_summary
+    # Relocate bt_trades path too (if present)
+    if "trades_csv" in stats and stats["trades_csv"]:
+        stats["trades_csv"] = _relocate_backtest_dir(stats["trades_csv"], Path(SESSION_DIR))
     if not stats or ("equity_end" not in stats and "profit_factor" not in stats and "max_dd" not in stats and "trades" not in stats):
         raise RuntimeError(f"Could not parse metrics from backtester output. Tail: {out[-900:]}")
 
@@ -292,7 +353,7 @@ def _eval_one(args_tuple):
     backtester, cfg_yaml_path, limit_bars = args_tuple
     start_ts = time.time()
     try:
-        res = run_backtest(backtester, cfg_yaml_path, limit_bars, session_dir=session_dir, with_plots=False)
+        res = run_backtest(backtester, cfg_yaml_path, limit_bars, with_plots=False)
     except Exception as e:
         elapsed = time.time() - start_ts
         return {
@@ -345,7 +406,7 @@ def deep_set(d, key, val):
 
 def prune_reports(prefix: str, keep: int = 60):
     import shutil
-    root = Path("_reports/_backtest")
+    root = Path("_reports/_auto_tuner/DCA")
     pats = sorted([p for p in root.glob(f"backtest{prefix}*") if p.is_dir()],
                   key=lambda p: p.stat().st_mtime, reverse=True)
     for p in pats[keep:]:
@@ -715,51 +776,42 @@ def main():
     ap.add_argument("--final-plots", action="store_true", help="Generate plots for top candidates at the end (OFF by default).")
     args = ap.parse_args()
 
-    # --- Session directory ---
-    # Store ALL tuner outputs under: _reports/_auto_tuner/<plan_name>/<prefix>[_N]
-    plan_name = Path(args.plan).stem if getattr(args, "plan", None) else "default_plan"
-    base_parent = Path("_reports") / "_auto_tuner" / plan_name
-    base_parent.mkdir(parents=True, exist_ok=True)
-
-    safe_prefix = Path(args.prefix).name if args.prefix else "tuner"
-    session_dir = base_parent / safe_prefix
-    k = 1
-    while session_dir.exists():
-        session_dir = base_parent / f"{safe_prefix}_{k}"
-        k += 1
-    session_dir.mkdir(parents=True, exist_ok=False)
-
-    file_prefix = safe_prefix
-
-
     backtester = Path(args.backtester)
 
-    global INIT_CFG, BT_SLEEP_SEC
+    global INIT_CFG, BT_SLEEP_SEC, safe_prefix
     INIT_CFG = read_yaml(Path(args.cfg))
     BT_SLEEP_SEC = args.sleep_sec
     weights = (args.w_equity, args.w_pf, args.w_dd, args.w_mono, args.dd_target)
 
-    prefix_path = Path(args.prefix)
-    if prefix_path.is_absolute():
-        prefix_path = Path(*prefix_path.parts[1:])
-    file_prefix = prefix_path.name or "tuner"
+        # --- Session directory ---
+    # Group sessions under _reports/_auto_tuner/<plan_stem>/...
+    plan_path = Path(args.plan) if getattr(args, "plan", None) else None
+    plan_stem = (plan_path.stem if plan_path else "default_plan")
     session_ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    base_parent = TUNE_ROOT / prefix_path.parent
+
+    base_parent = TUNE_ROOT / plan_stem
     base_parent.mkdir(parents=True, exist_ok=True)
-    session_dir = base_parent / f"{file_prefix}_{session_ts}"
+
+    # Keep prefix inside session folder name for readability
+    safe_prefix = Path(args.prefix).name if args.prefix else "tuner"
+    session_dir = base_parent / f"{safe_prefix}_{session_ts}"
     counter = 1
     while session_dir.exists():
-        session_dir = base_parent / f"{file_prefix}_{session_ts}_{counter}"
+        session_dir = base_parent / f"{safe_prefix}_{session_ts}_{counter}"
         counter += 1
     session_dir.mkdir(parents=True, exist_ok=False)
-    
+
+    global SESSION_DIR
+    SESSION_DIR = session_dir
+
 
     base = read_yaml(Path(args.cfg))
+    file_prefix = "DCA_temp"
 
     # Baseline
     baseline_yaml = session_dir / f"{file_prefix}_baseline.yaml"
     write_yaml(base, baseline_yaml)
-    base_res = run_backtest(backtester, baseline_yaml, args.limit_bars, session_dir=session_dir, with_plots=False)
+    base_res = run_backtest(backtester, baseline_yaml, args.limit_bars, with_plots=False)
     baseline = {
         "equity_end": float(base_res.get("equity_end", 100.0)),
         "profit_factor": float(base_res.get("profit_factor", 0.0)),
@@ -847,10 +899,10 @@ def main():
         if rays_results_all:
             best = sorted(rays_results_all, key=lambda r: r.get("score", -1e18), reverse=True)[:TOPK]
             for j, r in enumerate(best, 1):
-                run_backtest(backtester, Path(r["cfg_path"]), args.limit_bars, session_dir=session_dir, with_plots=True, plots_dir=plots_dir)
+                run_backtest(backtester, Path(r["cfg_path"]), args.limit_bars, with_plots=True, plots_dir=plots_dir)
         if grid_results_all:
             best_grid = pick_best(grid_results_all, weights, args.min_trades, args.target_trades)
-            run_backtest(backtester, Path(best_grid["cfg_path"]), args.limit_bars, session_dir=session_dir, with_plots=True, plots_dir=plots_dir)
+            run_backtest(backtester, Path(best_grid["cfg_path"]), args.limit_bars, with_plots=True, plots_dir=plots_dir)
 
     prune_reports(args.prefix)
     tmp_dir = _tmp_dir_for_session(session_dir)
