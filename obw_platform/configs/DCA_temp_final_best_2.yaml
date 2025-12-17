@@ -1,0 +1,38 @@
+live: false
+source: ccxt
+ccxt_exchange: bybit
+ccxt_symbol_format: spot
+timeframe: 1m
+cache_db: "combined_cache_BYBIT_1m_1Y_1u.db"
+allow_symbols:
+- ENAUSDT
+max_universe: 1
+initial_equity: 100.0
+position_notional: 5.0
+fee_rate: 0.0005
+slippage_per_side: 0.0
+max_notional_frac: 0.95
+strategy_class: strategies.cryptomine_c_limit14_tv_port.CryptomineCLimit14Robust
+strategy_params:
+  firstBuyUSDT: 5.0
+  tpPercent: 0.25
+  callbackPercent: 0.2
+  marginCallLimit: 244
+  linearDropPercent: 0.15
+  autoMerge: true
+  subSellTPPercent: 1.5
+  drop1: -0.08
+  drop2: 0.4
+  drop3: 0.6
+  drop4: 0.8
+  drop5: 0.8
+  mult2: 1.5
+  mult3: 1.0
+  mult4: 2.0
+  mult5: -1.0
+  maxFillsPerBar: 8
+  maxSubSellsPerBar: 10
+  maxSignalsWindow: 14
+  windowBars: 6
+  maxBudgetFrac: 0.6
+  stopPercent: 99.0
