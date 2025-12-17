@@ -18,11 +18,124 @@
 #     --w-equity 1.0 --w-pf 12.0 --w-dd 220.0 --w-mono 5.0 --dd-target 0.12 \
 #     --sleep-sec 0.0 --jobs 1
 #
-import argparse, itertools, re, subprocess, sys, time, csv, os
+import argparse, itertools, re, subprocess, sys, time, csv, os, json
 from pathlib import Path
 from datetime import datetime
 import yaml, copy
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+
+BT_HELP_CACHE = {}
+
+def backtester_supports_arg(backtester: Path, arg: str) -> bool:
+    key = (str(backtester), arg)
+    if key in BT_HELP_CACHE:
+        return BT_HELP_CACHE[key]
+    try:
+        p = subprocess.run([sys.executable, str(backtester), "--help"], capture_output=True, text=True)
+        txt = (p.stdout or "") + "\n" + (p.stderr or "")
+        ok = (arg in txt)
+    except Exception:
+        ok = False
+    BT_HELP_CACHE[key] = ok
+    return ok
+
+SUMMARY_MAP_CANDIDATES = [
+    ("equity_end", "equity_end", float),
+    ("equity_realized_end", "equity_end", float),
+    ("equity_mtm_end", "equity_end", float),
+    ("equity_final", "equity_end", float),
+    ("pf", "profit_factor", float),
+    ("profit_factor", "profit_factor", float),
+    ("max_dd", "max_dd", float),
+    ("max_dd_mtm", "max_dd", float),
+    ("max_drawdown", "max_dd", float),
+    ("mono", "monotonicity", float),
+    ("monotonicity", "monotonicity", float),
+    ("trades", "trades", int),
+    ("fees", "fees", float),
+]
+
+def _read_bt_summary_csv(path_str: str):
+    """
+    Read bt_summary produced by backtester.
+    Some versions write CSV with a header row, others write a JSON object (often saved as bt_summary.csv).
+    We support both.
+    """
+    p = Path(path_str)
+    if not p.exists():
+        return None
+
+    # 1) JSON mode (common in mtm_unrealized backtester)
+    try:
+        txt = p.read_text(encoding="utf-8").strip()
+        if txt.startswith("{") and txt.endswith("}"):
+            obj = json.loads(txt)
+            out = {}
+            # Map known keys
+            if "equity_end" in obj: out["equity_end"] = float(obj["equity_end"])
+            elif "equity_end_mtm" in obj: out["equity_end"] = float(obj["equity_end_mtm"])
+            elif "equity_end_realized" in obj: out["equity_end"] = float(obj["equity_end_realized"])
+
+            if "profit_factor" in obj: out["profit_factor"] = float(obj["profit_factor"])
+            elif "pf" in obj: out["profit_factor"] = float(obj["pf"])
+
+            if "max_dd_frac" in obj: out["max_dd"] = float(obj["max_dd_frac"])
+            elif "max_dd" in obj: out["max_dd"] = float(obj["max_dd"])
+
+            if "monotonicity_frac" in obj: out["monotonicity"] = float(obj["monotonicity_frac"])
+            elif "mono" in obj: out["monotonicity"] = float(obj["mono"])
+            elif "monotonicity" in obj: out["monotonicity"] = float(obj["monotonicity"])
+
+            if "trades" in obj: out["trades"] = int(float(obj["trades"]))
+            if "fees" in obj: out["fees"] = float(obj["fees"])
+
+            return out if out else None
+    except Exception:
+        pass
+
+    # 2) CSV mode
+    try:
+        import csv as _csv
+        with p.open("r", newline="") as f:
+            rdr = _csv.DictReader(f)
+            row = next(rdr, None)
+            if not row:
+                return None
+    except Exception:
+        return None
+
+    cols = {(k.strip() if isinstance(k,str) else str(k)): v for k, v in row.items() if k is not None}
+    out = {}
+    for col, key, fn in SUMMARY_MAP_CANDIDATES:
+        if key in out:
+            continue
+        if col in cols and cols[col] not in (None, ""):
+            try:
+                out[key] = fn(float(cols[col])) if fn is int else fn(cols[col])
+            except Exception:
+                try:
+                    out[key] = fn(cols[col])
+                except Exception:
+                    pass
+    return out if out else None
+
+
+def _find_latest_bt_summary():
+    root = Path("_reports/_backtest")
+    if not root.exists():
+        return None
+    best = None
+    best_m = -1
+    for p in root.glob("backtest_*/bt_summary.csv"):
+        try:
+            m = p.stat().st_mtime
+        except Exception:
+            continue
+        if m > best_m:
+            best_m = m
+            best = p
+    return str(best) if best else None
 
 DEFAULT_BACKTESTER = Path("backtester_core_speed3_veto_universe_4_mtm_unrealized.py")
 
@@ -31,6 +144,22 @@ GLOBAL_BEST_S = -1e18
 GLOBAL_BEST_REC = None
 BT_SLEEP_SEC = 0
 BT_CACHE = {}
+
+BT_HELP_CACHE = {}
+
+def backtester_supports_arg(backtester: Path, arg: str) -> bool:
+    key = (str(backtester), arg)
+    if key in BT_HELP_CACHE:
+        return BT_HELP_CACHE[key]
+    try:
+        p = subprocess.run([sys.executable, str(backtester), "--help"], capture_output=True, text=True)
+        txt = (p.stdout or "") + "" + (p.stderr or "")
+        ok = (arg in txt)
+    except Exception:
+        ok = False
+    BT_HELP_CACHE[key] = ok
+    return ok
+
 SESSION_DIR = None
 
 DELTA_MODE_DEFAULT = True  # interpret grid lists as deltas around current by default
@@ -99,7 +228,7 @@ def parse_metrics(text: str):
                 out[k] = int(v)
     return out if out else None
 
-def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, with_plots: bool = False, plots_dir: Path | None = None):
+def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, session_dir: Path, with_plots: bool = False, plots_dir: Optional[Path] = None):
     yaml_text = Path(cfg_path).read_text()
     key = (str(backtester), limit_bars, yaml_text)
     if not with_plots and key in BT_CACHE:
@@ -110,11 +239,13 @@ def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, with_plots: 
         str(backtester),
         "--cfg", str(cfg_path),
         "--limit-bars", str(limit_bars),
-        "--export-csv",
     ]
+    # Some backtesters accept --export-csv, others always export.
+    if backtester_supports_arg(backtester, "--export-csv"):
+        cmd.append("--export-csv")
     if with_plots:
         if plots_dir is None:
-            plots_dir = Path("_reports") / "_bt_plots"
+            plots_dir = session_dir / "plots"
         plots_dir.mkdir(parents=True, exist_ok=True)
         cmd += ["--plots", str(plots_dir)]
 
@@ -123,7 +254,22 @@ def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, with_plots: 
     elapsed = time.time() - t0
     out = (p.stdout or "") + "\n" + (p.stderr or "")
     stats = parse_metrics(out) or {}
-    if not stats:
+    # Fallback: read bt_summary.csv produced by the backtester (more reliable across versions).
+    bt_summary = None
+    for line in out.splitlines():
+        if "bt_summary=" in line:
+            m = re.search(r"bt_summary=([^\s]+)", line)
+            if m:
+                bt_summary = m.group(1)
+            break
+    if bt_summary is None:
+        bt_summary = _find_latest_bt_summary()
+    if bt_summary:
+        s2 = _read_bt_summary_csv(bt_summary)
+        if s2:
+            stats.update(s2)
+            stats["bt_summary_csv"] = bt_summary
+    if not stats or ("equity_end" not in stats and "profit_factor" not in stats and "max_dd" not in stats and "trades" not in stats):
         raise RuntimeError(f"Could not parse metrics from backtester output. Tail: {out[-900:]}")
 
     trades_csv = None
@@ -146,7 +292,7 @@ def _eval_one(args_tuple):
     backtester, cfg_yaml_path, limit_bars = args_tuple
     start_ts = time.time()
     try:
-        res = run_backtest(backtester, cfg_yaml_path, limit_bars, with_plots=False)
+        res = run_backtest(backtester, cfg_yaml_path, limit_bars, session_dir=session_dir, with_plots=False)
     except Exception as e:
         elapsed = time.time() - start_ts
         return {
@@ -344,12 +490,13 @@ def include_seed_values(values, pname, current_value):
     return list(vals)
 
 def _make_grid_candidates(pname, spec, current, delta_mode=DELTA_MODE_DEFAULT):
+    is_around = isinstance(spec, str) and spec.startswith('around:')
     vals = realize_around(spec, current)
     if isinstance(vals, (list, tuple, set)):
         vals = _as_list(vals)
         out = []
         for v in vals:
-            if delta_mode and isinstance(v, (int, float)):
+            if (delta_mode and (not is_around)) and isinstance(v, (int, float)):
                 try:
                     curf = float(current)
                 except Exception:
@@ -389,6 +536,13 @@ def _make_grid_candidates(pname, spec, current, delta_mode=DELTA_MODE_DEFAULT):
 def do_rays(backtester, base_cfg, limit_bars, pname, cand, prefix, session_dir, log_csv, weights, min_trades, target_trades, jobs):
     global GLOBAL_BEST_S, GLOBAL_BEST_REC
     cur, _ = get_current(base_cfg, pname)
+    # Expand 'around:STEP' convenience in rays into absolute candidates around current
+    if isinstance(cand, (list, tuple)) and len(cand) == 1 and isinstance(cand[0], str) and cand[0].startswith('around:'):
+        try:
+            step = float(cand[0].split(':', 1)[1])
+            cand = around(float(cur), step, n=1)
+        except Exception:
+            cand = [cur]
     cand = ensure_included(cand, cur) if isinstance(cand, (list,tuple)) else ([cur] if cur is not None else [])
     cand = include_seed_values(cand, pname, cur)
 
@@ -561,6 +715,23 @@ def main():
     ap.add_argument("--final-plots", action="store_true", help="Generate plots for top candidates at the end (OFF by default).")
     args = ap.parse_args()
 
+    # --- Session directory ---
+    # Store ALL tuner outputs under: _reports/_auto_tuner/<plan_name>/<prefix>[_N]
+    plan_name = Path(args.plan).stem if getattr(args, "plan", None) else "default_plan"
+    base_parent = Path("_reports") / "_auto_tuner" / plan_name
+    base_parent.mkdir(parents=True, exist_ok=True)
+
+    safe_prefix = Path(args.prefix).name if args.prefix else "tuner"
+    session_dir = base_parent / safe_prefix
+    k = 1
+    while session_dir.exists():
+        session_dir = base_parent / f"{safe_prefix}_{k}"
+        k += 1
+    session_dir.mkdir(parents=True, exist_ok=False)
+
+    file_prefix = safe_prefix
+
+
     backtester = Path(args.backtester)
 
     global INIT_CFG, BT_SLEEP_SEC
@@ -581,15 +752,14 @@ def main():
         session_dir = base_parent / f"{file_prefix}_{session_ts}_{counter}"
         counter += 1
     session_dir.mkdir(parents=True, exist_ok=False)
-    global SESSION_DIR
-    SESSION_DIR = session_dir
+    
 
     base = read_yaml(Path(args.cfg))
 
     # Baseline
     baseline_yaml = session_dir / f"{file_prefix}_baseline.yaml"
     write_yaml(base, baseline_yaml)
-    base_res = run_backtest(backtester, baseline_yaml, args.limit_bars, with_plots=False)
+    base_res = run_backtest(backtester, baseline_yaml, args.limit_bars, session_dir=session_dir, with_plots=False)
     baseline = {
         "equity_end": float(base_res.get("equity_end", 100.0)),
         "profit_factor": float(base_res.get("profit_factor", 0.0)),
@@ -677,10 +847,10 @@ def main():
         if rays_results_all:
             best = sorted(rays_results_all, key=lambda r: r.get("score", -1e18), reverse=True)[:TOPK]
             for j, r in enumerate(best, 1):
-                run_backtest(backtester, Path(r["cfg_path"]), args.limit_bars, with_plots=True, plots_dir=plots_dir)
+                run_backtest(backtester, Path(r["cfg_path"]), args.limit_bars, session_dir=session_dir, with_plots=True, plots_dir=plots_dir)
         if grid_results_all:
             best_grid = pick_best(grid_results_all, weights, args.min_trades, args.target_trades)
-            run_backtest(backtester, Path(best_grid["cfg_path"]), args.limit_bars, with_plots=True, plots_dir=plots_dir)
+            run_backtest(backtester, Path(best_grid["cfg_path"]), args.limit_bars, session_dir=session_dir, with_plots=True, plots_dir=plots_dir)
 
     prune_reports(args.prefix)
     tmp_dir = _tmp_dir_for_session(session_dir)
