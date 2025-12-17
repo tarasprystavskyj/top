@@ -9,6 +9,10 @@ NOTE (важливо): backtester_core_speed3_veto_universe_2.py підтрим�
 - опційний autoMerge як зсув бази собівартості після часткового продажу (застосовується на наступному барі)
 
 Також додано "alert-safe" throttle: максимум N сигналів за M барів (за замовчуванням 14 за 6 барів).
+
+PATCH (важливо):
+- backtester вимагає numeric TP/SL при вході -> Sig.tp та Sig.sl мають бути float (не None)
+- row може НЕ мати 't' -> у manage_position використовуємо _get_bar_time(row)
 """
 
 from __future__ import annotations
@@ -107,6 +111,11 @@ class CryptomineCLimit14Robust:
         self.max_budget_frac = float(sp.get("maxBudgetFrac", 1.0))  # 1.0 = no cap
         self.initial_capital = float(cfg.get("initial_capital", 10000.0))
 
+        # --- NEW: required TP/SL for backtester ---
+        # backtester вимагає numeric stop_price/take_profit -> ставимо SL "дуже широкий", щоб не заважав DCA
+        # stopPercent = 99 означає SL на -99% від ціни (price * 0.01)
+        self.stop_percent = float(sp.get("stopPercent", 99.0))
+
         # --- runtime state ---
         self._states: Dict[str, _SymState] = {}
 
@@ -187,7 +196,7 @@ class CryptomineCLimit14Robust:
     def _next_level(self, last_fill_price: float, num_buys: int) -> float:
         d = self._get_drop_for_next_level(num_buys)
         return last_fill_price * (1.0 - d / 100.0)
-        
+
     def _get_bar_time(self, row):
         candidates = ("t", "ts", "time", "timestamp", "open_time", "open_ts", "datetime", "date")
 
@@ -219,8 +228,22 @@ class CryptomineCLimit14Robust:
             pass
 
         # ФОЛБЕК: часу нема в row — використовуємо синтетичний “час”
-        return self._next_bar_time() 
+        return self._next_bar_time()
 
+    def _make_entry_tp_sl(self, entry_price: float) -> Tuple[float, float]:
+        """Backtester requires numeric TP/SL on entry."""
+        entry_price = float(entry_price)
+        tp = entry_price * (1.0 + self.tp_percent / 100.0)
+
+        # широкий SL, щоб не ламати DCA-логіку
+        sp = max(0.0, min(99.9, float(self.stop_percent)))
+        sl = entry_price * (1.0 - sp / 100.0)
+
+        # safety: sl must be positive numeric
+        if not (sl > 0.0):
+            sl = entry_price * 0.0001
+
+        return float(tp), float(sl)
 
     # ---------------------
     # Entry
@@ -253,8 +276,10 @@ class CryptomineCLimit14Robust:
             st.next_level_price = self._next_level(st.last_fill_price, st.num_buys)
             st.lots = [(qty0, close)]
 
+            tp, sl = self._make_entry_tp_sl(close)
+
             self._register_signal(1)
-            return Sig(side="LONG", tp=None, sl=None, reason="First Buy_0")
+            return Sig(side="LONG", tp=tp, sl=sl, reason="First Buy_0")
 
         return None
 
@@ -262,7 +287,9 @@ class CryptomineCLimit14Robust:
     # Position management
     # ---------------------
     def manage_position(self, sym: str, row: Dict[str, Any], pos, ctx=None):
-        self._bar_roll(row["t"])
+        # IMPORTANT: row може НЕ мати 't' у вашому бектестері.
+        self._bar_roll(self._get_bar_time(row))
+
         st = self._get_state(sym)
         close = float(row["close"])
 
