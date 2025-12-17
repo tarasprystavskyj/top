@@ -16,7 +16,7 @@ ccxt_symbol_format: spot
 timeframe: "1m"
 
 # ----- Data cache (підстав свій файл/шлях) -----
-cache_db: "combined_cache_BYBIT_1m_1Y_1u.db" #"combined_cache_1m_14400_1u_200d.db" #"combined_cache_1m_14400_1u_3.db"
+cache_db: "combined_cache_1m_14400_1u.db" 
 
 # ----- Universe -----
 # Підстав тикер так, як він названий у твоєму кеші.
@@ -25,11 +25,11 @@ allow_symbols: ["ENAUSDT"]
 max_universe: 1
 
 # ----- Risk / sizing -----
-initial_equity: 100.0
-#position_notional: 5.0 # стартова порція (firstBuyUSDT). DCA додається всередині стратегії.
-fee_rate: 0.001        # або 0.005 якщо так реально
-slippage_per_side: 0.000 # або 0.0005..0.001 для 1m
-max_notional_frac: 0.95 # ліміт по загальному notional (для всіх позицій)
+initial_capital: 100.0
+pos_notional: 5.0            # стартова порція (firstBuyUSDT). DCA додається всередині стратегії.
+max_notional_frac: 0.95      # ліміт по загальному notional (для всіх позицій)
+fee_rate: 0.0050
+slippage_per_side: 0.0000
 
 # ----- Strategy binding -----
 strategy_class:  strategies.cryptomine_c_limit14_robust.CryptomineCLimit14Robust
@@ -38,18 +38,18 @@ strategy_class:  strategies.cryptomine_c_limit14_robust.CryptomineCLimit14Robust
 strategy_params:
   # TOR базові
   firstBuyUSDT: 5.0
-  tpPercent: 0.1
+  tpPercent: 0.15
   callbackPercent: 0.2
   marginCallLimit: 244
   linearDropPercent: 0.15
 
   autoMerge: true
-  subSellTPPercent: 0.3
+  subSellTPPercent: 0.5
 
   # Nonlinear drops (lvl2..lvl6)
-  drop1: 0.3
+  drop1: -0.04
   drop2: 0.4
-  drop3: 0.6
+  drop3: -0.06
   drop4: 0.8
   drop5: 0.8
 
@@ -57,7 +57,7 @@ strategy_params:
   mult2: 1.5
   mult3: 1.0
   mult4: 2.0
-  mult5: 3.5
+  mult5: -1.0
 
   maxFillsPerBar: 6
   maxSubSellsPerBar: 10
@@ -69,7 +69,3 @@ strategy_params:
 
   # Budget cap for internal DCA (fraction of initial_capital)
   maxBudgetFrac: 0.60
-  
-  stopPercent: 99.0   # SL на -99% від ціни входу (щоб не заважав DCA)
-  
-
