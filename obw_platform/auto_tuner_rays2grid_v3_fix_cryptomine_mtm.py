@@ -31,6 +31,22 @@ GLOBAL_BEST_S = -1e18
 GLOBAL_BEST_REC = None
 BT_SLEEP_SEC = 0
 BT_CACHE = {}
+
+BT_HELP_CACHE = {}
+
+def backtester_supports_arg(backtester: Path, arg: str) -> bool:
+    key = (str(backtester), arg)
+    if key in BT_HELP_CACHE:
+        return BT_HELP_CACHE[key]
+    try:
+        p = subprocess.run([sys.executable, str(backtester), "--help"], capture_output=True, text=True)
+        txt = (p.stdout or "") + "" + (p.stderr or "")
+        ok = (arg in txt)
+    except Exception:
+        ok = False
+    BT_HELP_CACHE[key] = ok
+    return ok
+
 SESSION_DIR = None
 
 DELTA_MODE_DEFAULT = True  # interpret grid lists as deltas around current by default
@@ -99,7 +115,7 @@ def parse_metrics(text: str):
                 out[k] = int(v)
     return out if out else None
 
-def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, with_plots: bool = False, plots_dir: Path | None = None):
+def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, with_plots: bool = False, plots_dir=None):
     yaml_text = Path(cfg_path).read_text()
     key = (str(backtester), limit_bars, yaml_text)
     if not with_plots and key in BT_CACHE:
@@ -110,8 +126,10 @@ def run_backtest(backtester: Path, cfg_path: Path, limit_bars: int, with_plots: 
         str(backtester),
         "--cfg", str(cfg_path),
         "--limit-bars", str(limit_bars),
-        "--export-csv",
     ]
+    # Some backtesters accept --export-csv, others always export.
+    if backtester_supports_arg(backtester, "--export-csv"):
+        cmd.append("--export-csv")
     if with_plots:
         if plots_dir is None:
             plots_dir = Path("_reports") / "_bt_plots"
