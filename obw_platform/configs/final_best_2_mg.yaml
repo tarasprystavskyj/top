@@ -1,0 +1,95 @@
+# ============================================================
+# Cryptomine — Martingale grid до Fib 0.618 (90% equity MTM)
+# ============================================================
+
+live: false
+source: ccxt
+
+ccxt_exchange: bingx
+ccxt_symbol_format: usdtm
+
+cache_db: "combined_cache_BYBIT_1m_1Y_1u.db"
+
+# -----------------------
+# Таймфрейм / сесія
+# -----------------------
+timeframe: "1m"
+open_hour_kyiv: 2
+kyiv_offset_hours: 3
+force_start_always: true
+
+# -----------------------
+# Universe
+# -----------------------
+quote: "USDT"
+symbols:
+  - ENA/USDT:USDT
+
+max_universe: 1
+min_qv_24h: 100000
+
+# -----------------------
+# Комісії / сліпедж
+# -----------------------
+commission_type: percent
+commission_value: 0.0
+slippage_bps: 0.0
+
+# -----------------------
+# Капітал
+# -----------------------
+initial_equity: 100.0
+
+# ============================================================
+# STRATEGY
+# ============================================================
+strategy_class: strategies.cryptomine_martingale_fib618.CryptomineMartingaleFib618
+
+strategy_params:
+
+  # ---------- базові ----------
+  firstBuyUSDT: 5.0
+
+  # ---------- TP / exit (як було) ----------
+  tpPercent: 0.25
+  callbackPercent: 0.2
+  stopPercent: 99.0
+
+  subSellTPPercent: 1.5
+  autoMerge: true
+
+  # ---------- обмеження сигналів ----------
+  maxSignalsWindow: 14
+  windowBars: 6
+  maxFillsPerBar: 8
+
+  # ---------- budget / safety ----------
+  maxBudgetFrac: 1.0        # не обмежуємо — контроль через martingale budgetFrac
+  marginCallLimit: 244
+
+  # ==========================================================
+  # MARTINGALE GRID (НОВЕ)
+  # ==========================================================
+
+  gridSteps: 244             # N — кількість закупів від p0 до p618
+  fibLevel: 0.618            # рівень знизу
+  budgetFrac: 0.90           # 90% equity_mtm до p618
+
+  equityRecalcThreshold: 0.05   # 5% зміни equity_mtm → перерахунок km
+
+  # ---- pmin (дно) ----
+  # rolling low ~30 днів на 1m
+  pminLookbackBars: 43200
+
+  # якщо хочеш зафіксувати дно вручну — розкоментуй
+  # pminStatic: 0.20
+
+# ============================================================
+# BACKTEST
+# ============================================================
+plots:
+  enable: true
+  path: plots_1m_v2
+
+save_trades: true
+save_equity_curve: true
