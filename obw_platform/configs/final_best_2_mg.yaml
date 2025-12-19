@@ -43,47 +43,31 @@ initial_equity: 100.0
 # ============================================================
 # STRATEGY
 # ============================================================
-strategy_class: strategies.cryptomine_martingale_fib618.CryptomineMartingaleFib618
+strategy_class: strategies.cryptomine_martingale_fib618.CryptomineMartingaleFib618V2
 
 strategy_params:
-
-  # ---------- базові ----------
   firstBuyUSDT: 5.0
 
-  # ---------- TP / exit (як було) ----------
-  tpPercent: 0.25
-  callbackPercent: 0.2
-  stopPercent: 99.0
+  gridSteps: 244
+  budgetFrac: 0.90
+  hardCapFrac: 0.99
 
-  subSellTPPercent: 1.5
-  autoMerge: true
+  pminLookbackBars: 43200     # ~30d на 1m
 
-  # ---------- обмеження сигналів ----------
-  maxSignalsWindow: 14
-  windowBars: 6
-  maxFillsPerBar: 8
+  fibLevel: 0.618
+  atrHTFBars: 60              # 1h ATR якщо base 1m
+  atrLen: 14
+  atrPctRef: 0.02
+  confMin: 0.35
+  confMax: 1.0
+  fibMin: 0.20
+  fibMax: 0.618
 
-  # ---------- budget / safety ----------
-  maxBudgetFrac: 1.0        # не обмежуємо — контроль через martingale budgetFrac
-  marginCallLimit: 244
+  maxBuyMult: 8.0             # tail-risk control (впливає на km_max)
 
-  # ==========================================================
-  # MARTINGALE GRID (НОВЕ)
-  # ==========================================================
-
-  gridSteps: 244             # N — кількість закупів від p0 до p618
-  fibLevel: 0.618            # рівень знизу
-  budgetFrac: 0.90           # 90% equity_mtm до p618
-
-  equityRecalcThreshold: 0.05   # 5% зміни equity_mtm → перерахунок km
-
-  # ---- pmin (дно) ----
-  # rolling low ~30 днів на 1m
-  pminLookbackBars: 43200
-
-  # якщо хочеш зафіксувати дно вручну — розкоментуй
-  # pminStatic: 0.20
-
+  timeDecayBars: 0            # 0 = OFF; наприклад 100000 для ~69 днів на 1m
+  decaySellFrac: 0.10
+  minProfitForDecay: 0.001
 # ============================================================
 # BACKTEST
 # ============================================================
