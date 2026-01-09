@@ -1,0 +1,67 @@
+# cfg_cryptomine_c_limit14_fib_hybrid_1m.yaml
+# Hybrid: DCA механіка як у cryptomine_c_limit14_robust, але BUY-сума йде по fib-сайзінгу.
+
+live: false
+source: ccxt
+ccxt_exchange: bybit
+ccxt_symbol_format: usdtm
+
+timeframe: "1m"
+
+# cache_db relative to obw_platform/
+cache_db: "DB/combined_cache_1m_1y.db"
+
+allow_symbols: ["ENA/USDT:USDT"]
+max_universe: 1
+
+initial_equity: 100.0
+position_notional: 5.0
+fee_rate: 0.0005
+slippage_per_side: 0.0000
+max_notional_frac: 0.95
+
+strategy_class: strategies.cryptomine_c_limit14_fib_hybrid.CryptomineCLimit14FibHybrid
+
+strategy_params:
+  # --- DCA base ---
+  firstBuyUSDT: 5.0
+  tpPercent: 1.1
+  callbackPercent: 0.2
+  marginCallLimit: 244
+
+  # drop schedule (same as robust)
+  linearDropPercent: 0.5
+  drop1: 0.3
+  drop2: 0.4
+  drop3: 0.6
+  drop4: 0.8
+  drop5: 0.8
+
+  autoMerge: true
+  subSellTPPercent: 1.3
+
+  maxFillsPerBar: 6
+  maxSubSellsPerBar: 10
+
+  # alert throttle
+  maxSignalsWindow: 14
+  windowBars: 6
+
+  # --- Fib sizing ---
+  budgetFrac: 0.90
+  hardCapFrac: 0.99
+
+  pminLookbackBars: 43200
+  fibLevel: 0.618
+  atrHTFBars: 60
+  atrLen: 14
+  atrPctRef: 0.02
+  confMin: 0.35
+  confMax: 1.0
+  fibMin: 0.20
+  fibMax: 0.618
+
+  maxBuyMult: 8.0
+
+  # if true: scales all planned buys (including first) so 0.90*equity is matched exactly
+  scaleToBudget: false
