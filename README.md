@@ -481,3 +481,69 @@ TP/SL ladder: computed by the strategy, applied by the live runner on open. Adju
 That’s it
 With the three pillars—cache → backtest/tune → live—you can iterate quickly and keep live behaviour aligned with what the backtester sees. If you want me to tailor the README to a Docker flow or CI (auto cache refresh + scheduled tuning), say the word.
 
+======================
+Web interface run:
+
+Структура така:
+
+UI/frontend — Next.js (в .nvmrc стоїть Node 16)
+
+UI/backend — FastAPI + Uvicorn (Python бекенд, API)
+
+у UI/frontend/.env.local прописано: API_URL=http://127.0.0.1:8001
+
+Тобто веб-інтерфейс = Next.js, а бекенд API = FastAPI на 8001.
+
+Як запускати (швидкий варіант, dev)
+1) Запусти API (порт 8001)
+cd /var/www/vps2.happyuser.info/top/top_1/UI/backend
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+uvicorn api_main:app --host 0.0.0.0 --port 8001
+
+2) Запусти Next.js (і зроби порт 3001, як ти звик)
+
+У тебе в package.json хардкод на -p 3000, тому найпростіше запускати напряму через npx:
+
+cd /var/www/vps2.happyuser.info/top/top_1/UI/frontend
+
+# Node 16 (бо .nvmrc = 16)
+nvm use 16
+
+npm ci
+
+# DEV на 3001
+npx next dev -p 3001 -H 0.0.0.0
+
+
+І тоді відкриваєш:
+http://vps2.happyuser.info:3001/
+
+Продакшн запуск (якщо ти так робив раніше)
+cd /var/www/vps2.happyuser.info/top/top_1/UI/frontend
+nvm use 16
+npm ci
+npm run build
+
+# PROD на 3001
+npx next start -p 3001 -H 0.0.0.0
+
+Якщо хочеш, щоб npm run dev одразу слухав 3001
+
+Зараз у UI/frontend/package.json:
+
+"dev": "next dev -p 3000 -H 0.0.0.0"
+
+"start": "next start -p 3000 -H 0.0.0.0"
+
+Можеш просто змінити 3000 → 3001 в цих двох рядках — і тоді буде:
+
+npm run dev
+# або
+npm run start
+
+Швидка перевірка “що зараз крутиться”
+sudo ss -ltnp | egrep ':3001|:8001'
