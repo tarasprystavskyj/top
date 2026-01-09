@@ -8,7 +8,7 @@ source: ccxt
 ccxt_exchange: bingx
 ccxt_symbol_format: usdtm
 
-cache_db: "combined_cache_BYBIT_1m_1Y_1u.db"
+cache_db: "../DB/combined_cache_1m_1y.db"
 
 # -----------------------
 # Таймфрейм / сесія
@@ -26,7 +26,7 @@ symbols:
   - ENA/USDT:USDT
 
 max_universe: 1
-min_qv_24h: 100000
+#min_qv_24h: 100000
 
 # -----------------------
 # Комісії / сліпедж
@@ -43,7 +43,7 @@ initial_equity: 100.0
 # ============================================================
 # STRATEGY
 # ============================================================
-strategy_class: strategies.cryptomine_martingale_fib618.CryptomineMartingaleFib618V2
+strategy_class: strategies.cryptomine_martingale_fib618_cached_v4.CryptomineMartingaleFib618V2Cached
 
 strategy_params:
   firstBuyUSDT: 5.0
@@ -54,20 +54,20 @@ strategy_params:
 
   pminLookbackBars: 43200     # ~30d на 1m
 
-  fibLevel: 0.618
-  atrHTFBars: 60              # 1h ATR якщо base 1m
-  atrLen: 14
-  atrPctRef: 0.02
-  confMin: 0.35
-  confMax: 1.0
-  fibMin: 0.20
-  fibMax: 0.618
+  fibLevel: 0.618              # базовий fib-рівень (від "зараз" до pmin); до нього намагаємось розкласти ~90% депо (після масштабування confidence)
+  atrHTFBars: 60               # HTF-агрегація для ATR: скільки base-барів в одному HTF барі (якщо base=1m, то 60 => 1h ATR)
+  atrLen: 14                   # довжина ATR на HTF (кількість HTF-барів для розрахунку ATR)
+  atrPctRef: 0.02              # референс-волатильність (ATR/price) для нормалізації "confidence": 0.02 = 2% (чим більший ATR%, тим нижча впевненість)
+  confMin: 0.35                # нижня межа confidence (скейл для fibLevel): не дає fib впасти занадто низько
+  confMax: 1.0                 # верхня межа confidence: 1.0 = без зменшення fib (коли рух не схожий на HTF-провал)
+  fibMin: 0.20                 # мінімально дозволений fib-рівень після адаптації (обмежує агресивність мартінгейлу)
+  fibMax: 0.618                # максимально дозволений fib-рівень після адаптації (зазвичай = fibLevel)
 
-  maxBuyMult: 8.0             # tail-risk control (впливає на km_max)
+  maxBuyMult: 8.0              # ліміт множника розміру покупки відносно базової b (tail-risk); через нього обмежується km_max
 
-  timeDecayBars: 0            # 0 = OFF; наприклад 100000 для ~69 днів на 1m
-  decaySellFrac: 0.10
-  minProfitForDecay: 0.001
+  timeDecayBars: 0             # 0 = OFF; якщо >0, вмикає "time-decay" розвантаження: після N барів у позиції починаємо частково продавати (1m: 100000 ~ 69 днів)
+  decaySellFrac: 0.10          # частка позиції, яку продаємо на кожному decay-кроці (0.10 = 10% від поточного розміру)
+  minProfitForDecay: 0.001     # мінімальний прибуток (відносний, напр. 0.001 = 0.1%), щоб дозволити decay-продаж (щоб не фіксувати дрібний мінус/шум)
 # ============================================================
 # BACKTEST
 # ============================================================
