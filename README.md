@@ -497,9 +497,10 @@ UI/backend — FastAPI + Uvicorn (Python бекенд, API)
 Як запускати (швидкий варіант, dev)
 1) Запусти API (порт 8001)
 cd /var/www/vps2.happyuser.info/top/top_1/UI/backend
+cd /var/www/vps2.happyuser.info/top/backtest_SK 
 
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv38/bin/activate
 pip install -r requirements.txt
 
 uvicorn api_main:app --host 0.0.0.0 --port 8001

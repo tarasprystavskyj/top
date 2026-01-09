@@ -61,7 +61,7 @@ LIVE_RESULTS_DIR = os.path.abspath(
 )
 BT_VERSION_FILE = os.path.join(DATA_ROOT, "backtester_version.yaml")
 BACKTESTER_SCRIPTS = [
-    "backtester_core_speed3_veto_universe_4_mtm_unrealized.py"
+    "backtester_core_speed3_veto_universe_4_mtm_unrealized.py",
     "backtester_core_speed3_veto_universe_2.py",
     "backtester_core_speed3_veto_universe.py",
     "backtester_core_speed2.py",
