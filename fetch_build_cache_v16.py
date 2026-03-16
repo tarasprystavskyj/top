@@ -555,6 +555,23 @@ def main():
                     "qv_24h": float(r["qv_24h"]),
                     "vol_surge_mult": float(r["vol_surge_mult"]),
                 })
+                
+                import json
+
+                json_rows = []
+
+                for idx, r in feats.iterrows():
+                    ts = int(pd.to_datetime(idx).value // 10**6)
+
+                    json_rows.append({
+                        "price": float(r["close"]),
+                        "timestamp": ts,
+                        "volume": float(r["volume"])
+                    })
+
+                with open("price_cache.json", "w") as f:
+                    json.dump(json_rows, f)
+                
             insert_ignore_rows(args.output, rows)
             msg = "[OK]"
             if expected_rows is not None and len(rows) < expected_rows:
