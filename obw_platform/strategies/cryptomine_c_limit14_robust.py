@@ -115,9 +115,16 @@ class CryptomineCLimit14Robust:
         self.max_signals_window = int(sp.get("maxSignalsWindow", 14))
         self.window_bars        = int(sp.get("windowBars", 6))
 
+        # --- Switches (yaml) ---
+        # Якщо signalsThrottleEnabled=false → ліміт сигналів вимикається повністю.
+        self.signals_throttle_enabled = bool(sp.get("signalsThrottleEnabled", True))
+
+        # Якщо slEnabled=false → стратегія НЕ ставить SL на вході (і відповідно НЕ рухає його в BE).
+        self.sl_enabled = bool(sp.get("slEnabled", True))
+
         # Optional budget cap (to avoid "infinite" DCA in backtest)
         self.max_budget_frac = float(sp.get("maxBudgetFrac", 1.0))  # 1.0 = no cap
-        self.initial_capital = float(cfg.get("initial_capital", 10000.0))
+        self.initial_capital = float(cfg.get("initial_capital", cfg.get("initial_equity", 10000.0)))
 
         # --- runtime state ---
         self._states: Dict[str, _SymState] = {}
@@ -156,10 +163,14 @@ class CryptomineCLimit14Robust:
             self._last_t = t
 
     def _can_signal(self) -> bool:
+        if not self.signals_throttle_enabled:
+            return True
         return self._sig_sum + self._sig_window[-1] < self.max_signals_window
 
     def _register_signal(self, n: int = 1):
         # caller must ensure _can_signal() for each increment (or call with small n)
+        if not self.signals_throttle_enabled:
+            return
         self._sig_window[-1] += n
         self._sig_sum += n
 
@@ -238,9 +249,12 @@ class CryptomineCLimit14Robust:
         # ФОЛБЕК: часу нема в row — використовуємо синтетичний “час”
         return self._next_bar_time()
 
-    def _entry_tp_sl(self, entry_price: float) -> Tuple[float, float]:
+    def _entry_tp_sl(self, entry_price: float) -> Tuple[float, Optional[float]]:
         entry_price = float(entry_price)
         tp = entry_price * (1.0 + self.tp_percent / 100.0)
+
+        if not self.sl_enabled:
+            return float(tp), None
 
         sp = max(0.0, min(99.9, float(self.stop_percent)))
         sl = entry_price * (1.0 - sp / 100.0)

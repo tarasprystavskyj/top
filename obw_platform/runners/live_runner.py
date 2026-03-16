@@ -2480,7 +2480,7 @@ def run_live(cfg: dict, args):
                         return None
 
                 placed_be = False
-                if be_price and not rec.get('sl_be_done'):
+                if be_price and (rec.get('sl') is not None) and not rec.get('sl_be_done'):
                     ccxt_sym = fetcher.resolve_symbol(sym) or sym
                     side_dir = str(rec.get('side', 'LONG')).upper()
                     side_close = 'sell' if side_dir == 'LONG' else 'buy'

@@ -279,7 +279,11 @@ class CCXTFetcher:
         ccxt_sym = self.resolve_symbol(sym) or sym
         fetch_tf, agg = self._choose_fetch_tf(timeframe)
         try:
-            data = self.ex.fetch_ohlcv(ccxt_sym, timeframe=fetch_tf, limit=int(limit)*int(agg)+5)
+            req_lim = int(limit)*int(agg)+5
+            ex_id = getattr(self.ex, 'id', '') or getattr(self.ex, 'name', '')
+            if str(ex_id).lower() == 'bingx' and req_lim > 1440:
+                req_lim = 1440
+            data = self.ex.fetch_ohlcv(ccxt_sym, timeframe=fetch_tf, limit=req_lim)
             sleep_ms(RATE_MS)
         except Exception as e:
             cprint("[fetch_ohlcv]", sym, ":", e, fg="red")

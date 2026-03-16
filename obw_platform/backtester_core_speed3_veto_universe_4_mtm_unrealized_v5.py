@@ -395,8 +395,22 @@ def main():
 
             tp = getattr(sig, "take_profit", getattr(sig, "tp_price", getattr(sig, "tp", None)))
             sl = getattr(sig, "stop_price", getattr(sig, "sl_price", getattr(sig, "sl", None)))
-            if not isinstance(tp, (int, float)) or not isinstance(sl, (int, float)):
-                raise RuntimeError(f"Strategy must supply numeric take_profit/stop_price for {sym}")
+
+            # Allow strategies to omit SL (e.g. live trading with no protective stop order).
+            # In that case we assign an ultra-wide "fallback SL" so the backtester can run.
+            if not isinstance(tp, (int, float)):
+                raise RuntimeError(f"Strategy must supply numeric take_profit for {sym}")
+
+            if not isinstance(sl, (int, float)):
+                allow_no_sl = bool(portfolio.get("allow_no_sl", True))
+                if not allow_no_sl:
+                    raise RuntimeError(f"Strategy must supply numeric stop_price for {sym}")
+                sl_fallback_pct = float(portfolio.get("sl_fallback_pct", 99.99))  # percent distance from entry
+                entry_px_tmp = float(row.get("close") or 0.0)
+                if sig.side == "LONG":
+                    sl = max(1e-12, entry_px_tmp * (1.0 - sl_fallback_pct / 100.0))
+                else:  # SHORT
+                    sl = max(1e-12, entry_px_tmp * (1.0 + sl_fallback_pct / 100.0))
 
             entry_px = float(row.get("close") or 0.0)
             qty = pos_notional / max(entry_px, 1e-12)
