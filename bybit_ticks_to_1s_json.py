@@ -78,9 +78,17 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def daterange_last_n_days(days: int) -> List[str]:
-    today = datetime.now(timezone.utc).date()
-    return [(today - timedelta(days=i)).isoformat() for i in range(days)]
+def daterange_last_n_days(days: int, end_yesterday: bool = True) -> List[str]:
+    """
+    Returns the last N calendar dates in UTC.
+
+    By default, ends on yesterday because Bybit public daily tick files
+    are usually not available yet for the current UTC day.
+    """
+    anchor = datetime.now(timezone.utc).date()
+    if end_yesterday:
+        anchor = anchor - timedelta(days=1)
+    return [(anchor - timedelta(days=i)).isoformat() for i in range(days)]
 
 
 def download_file(url: str, out_path: Path, timeout: int = 60) -> bool:
@@ -286,7 +294,9 @@ def process_one_day(
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", required=True, help="Bybit symbol, e.g. ENAUSDT")
-    ap.add_argument("--days", type=int, required=True, help="How many days back from today to process")
+    ap.add_argument("--days", type=int, required=True, help="How many days back to process")
+    ap.add_argument("--include-today", action="store_true",
+                    help="Include current UTC date as the newest day. By default the script ends on yesterday.")
     ap.add_argument("--output", required=True, help="Output .json or .jsonl")
     ap.add_argument("--format", choices=["close", "ohlcv"], default="close",
                     help="close => {price,timestamp,volume}; ohlcv => 1s OHLCV")
@@ -304,7 +314,7 @@ def main() -> None:
     out_path = Path(args.output)
     output_is_jsonl = out_path.suffix.lower() in {".jsonl", ".ndjson"}
 
-    day_list = daterange_last_n_days(args.days)
+    day_list = daterange_last_n_days(args.days, end_yesterday=not args.include_today)
 
     all_rows: List[dict] = []
     for day_str in reversed(day_list):
