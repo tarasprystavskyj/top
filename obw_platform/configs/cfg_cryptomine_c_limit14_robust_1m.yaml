@@ -16,17 +16,18 @@ ccxt_symbol_format: spot
 timeframe: "1m"
 
 # ----- Data cache (підстав свій файл/шлях) -----
-cache_db: "combined_cache_BYBIT_1m_1Y_1u.db" #"combined_cache_1m_14400_1u_200d.db" #"combined_cache_1m_14400_1u_3.db"
+cache_db: "combined_cache_1m_1y.db"
 
 # ----- Universe -----
 # Підстав тикер так, як він названий у твоєму кеші.
 # (Напр. ENAUSDT, ENA/USDT, ENAUSDT.P тощо)
-allow_symbols: ["ENAUSDT"]
+allow_symbols: ["ENA/USDT:USDT"]
 max_universe: 1
 
 # ----- Risk / sizing -----
 initial_equity: 100.0
-#position_notional: 5.0 # стартова порція (firstBuyUSDT). DCA додається всередині стратегії.
+initial_capital: 100.0
+position_notional: 2.01 # стартова порція (firstBuyUSDT). DCA додається всередині стратегії.
 fee_rate: 0.001        # або 0.005 якщо так реально
 slippage_per_side: 0.000 # або 0.0005..0.001 для 1m
 max_notional_frac: 0.95 # ліміт по загальному notional (для всіх позицій)
@@ -37,11 +38,11 @@ strategy_class:  strategies.cryptomine_c_limit14_robust.CryptomineCLimit14Robust
 # ----- Strategy parameters -----
 strategy_params:
   # TOR базові
-  firstBuyUSDT: 5.0
-  tpPercent: 0.1
+  # firstBuyUSDT: 1.25
+  tpPercent: 0.9
   callbackPercent: 0.2
   marginCallLimit: 244
-  linearDropPercent: 0.15
+  linearDropPercent: 0.3
 
   autoMerge: true
   subSellTPPercent: 0.3
@@ -67,6 +68,12 @@ strategy_params:
   maxSignalsWindow: 14
   windowBars: 6
 
+
+  # Вмикач ліміта сигналів (N сигналів на M барів).
+  # true  = обмежувати (як TradingView/вебхук)
+  # false = без обмеження
+  signalsThrottleEnabled: false
+  slEnabled: false
   # Budget cap for internal DCA (fraction of initial_capital)
   maxBudgetFrac: 0.60
   
