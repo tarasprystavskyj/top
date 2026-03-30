@@ -137,7 +137,8 @@ def place_open(fetcher: CCXTFetcher, sym: str, side: str, notional: float, price
     if min_notional_req > notional + 1e-9:
         return {'ok': False, 'skip_reason': f'min_notional {min_notional_req:.6g} > {notional:.6g}', 'qty': qty}
     order_side = 'buy' if side.upper() == 'LONG' else 'sell'
-    params = {'reduceOnly': False}
+    # Do NOT send reduceOnly on opens. BingX hedge mode rejects even reduceOnly=false.
+    params = {}
     if position_mode == 'hedge':
         params['positionSide'] = side.upper()
     try:
@@ -146,11 +147,19 @@ def place_open(fetcher: CCXTFetcher, sym: str, side: str, notional: float, price
         return {'ok': True, 'order': od, 'qty': qty, 'params': params}
     except Exception as e:
         msg = str(e).lower()
+        if ('reduceonly' in msg) or ('reduce only' in msg):
+            try:
+                p2 = {k: v for k, v in params.items() if k != 'reduceOnly'}
+                od = fetcher.ex.create_order(ccxt_sym, 'market', order_side, qty, None, p2)
+                sleep_ms(RATE_MS)
+                return {'ok': True, 'order': od, 'qty': qty, 'params': p2, 'retry': True, 'note': 'auto: removed reduceOnly on open'}
+            except Exception as e2:
+                return {'ok': False, 'error': str(e2), 'qty': qty}
         if ('one-way mode' in msg) or ('positionside' in msg):
             try:
-                od = fetcher.ex.create_order(ccxt_sym, 'market', order_side, qty, None, {'reduceOnly': False})
+                od = fetcher.ex.create_order(ccxt_sym, 'market', order_side, qty, None, {})
                 sleep_ms(RATE_MS)
-                return {'ok': True, 'order': od, 'qty': qty, 'params': {'reduceOnly': False}, 'retry': True}
+                return {'ok': True, 'order': od, 'qty': qty, 'params': {}, 'retry': True}
             except Exception as e2:
                 return {'ok': False, 'error': str(e2), 'qty': qty}
         return {'ok': False, 'error': str(e), 'qty': qty}
