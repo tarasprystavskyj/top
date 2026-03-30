@@ -643,14 +643,6 @@ python3 fetch_build_cache_v16.py \
   --back-bars 5000 \
   -o DB/combined_cache_5m_5000_04.09.db --exchange bingx --ccxt-symbol-format usdtm
   
-python3 auto_tuner_rays2grid_v3_fix.py \
-  --cfg configs/greedy_breakout_universe.yaml \
-  --limit-bars 5000 \
-  --prefix t5m5000_greedy \
-  --min-trades 80 \
-  --target-trades 300 \
-  --w-dd 300 --dd-target 0.10  --sleep-sec 10\
-  --plan tuner_plan_greedy_breakout_universe.py
 
   
 python3 backtester_core_speed3_veto_universe_2.py \
@@ -683,12 +675,12 @@ python3 backtester_core_speed3_veto_universe_2.py \
 BT_IGNORE_VOLSURGE=1 python3 bt_live_paper_runner_separated_universe.py \
   --mode live --paper-source api \
   --env-file .env \
-  --cfg configs/cfg_t3m_30d_newbest_full_test.yaml \
+  --cfg configs/cfg_t3m_30d_newbest_full.yaml \
   --exchange bingx --symbol-format usdtm \
   --poll-sec 2 --bar-delay-sec 1 --limit_klines 200 \
   --hour-cache load \
-  --universe-file universe_5m_7400_1.03.txt --heat-report \
-  2>&1 | tee -a _reports/_live/livecfg_cfg_t3m_30d_newbest_full_test_3m/runner.log
+  --universe-file universe_prof_v2_3m.txt --heat-report \
+  2>&1 | tee -a _reports/_live/livecfg_cfg_t3m_30d_newbest_full_limit_sl_3m/runner.log
   
   #uuniverse_v5_avaai_5m_5000.txt
   
@@ -713,25 +705,6 @@ git push --force-with-lease origin main
    
 find obw_platform -path "*/_reports/_backtest/*" -type f -print0 | xargs -0 rm -f
 
-python3 auto_tuner_rays2grid_v3_fix.py \
---cfg configs/cfg_t3m_30d_s10_grid_best_full.yaml \
-  --limit-bars 3600 \
-  --plan tuner_plan_avaai_3m_wide_night.py \
-  --prefix t3m_30d  \
-  --min-trades 40 \
-  --target-trades 220 \
-  --w-equity 1.0 --w-pf 12.0 --w-dd 220.0 --w-mono 5.0 --dd-target 0.12 \
-  --sleep-sec 1 \
-  
-  
-  #-i universe_5m_7400_1.03
-  
-python3 fetch_build_cache_v16.py \
-  -i universe_symbols_bingx.csv -t 3m \
-  --back-bars 7200 \
-  -o DB/combined_cache_3m_7200_500u.db --exchange bingx --ccxt-symbol-format usdtm
-  
-  combined_cache_5m_25920_30u.db
   
   #25920
      python backtester_core_speed3_veto_universe_2.py --limit-bars 1440 \
@@ -752,19 +725,135 @@ time python backtester_core_speed3_veto_universe_2.py --limit-bars 14400 \
    --cache_db DB/combined_cache_5m_25920_30u.db \
    
 
-python backtester_core_speed3_veto_universe_2.py --limit-bars 7200 \
---cfg configs/cfg_t3m_30d_newbest_full.yaml  \
+python backtester_core_speed3_veto_universe_2.py --limit-bars 3600 \
+--cfg configs/cfg_t3m_30d_newbest_full_limit_sl_2.yaml \
 --plots plots_3m \
 --cache_db combined_cache_3m_7200_500u.db \
+--symbols-file universe_prof_v2_3m.txt
 #--symbols-file universe_5m_7400_1.03.txt  \
 #--cache_db combined_cache_3m_14400_30u.db \
 
 python3 auto_universe_and_tune.py \
-  --cfg configs/cfg_t3m_30d_newbest_full.yaml \
+  --cfg configs/cfg_t3m_30d_newbest_full_limit_sl_2.yaml \
   --limit-bars 7200 \
-  --prefix t5k_auto \
-  --trades trades_3m_6000.csv \
-  --universe-out universe_prof_v2_3m.txt \
+  --prefix t3m_auto \
+  --trades trades_3m_7200.csv  \
+  --universe-out universe_prof_v3_3m.txt \
   --plots plots_auto \
   --grid \
   --driver backtester_core_speed3_veto_universe_2.py
+  
+python3 fetch_build_cache_v16.py \
+  -o DB/combined_cache_3m_14400_24u.db \
+  -i obw_platform/universe/universe_prof_v2_3m.txt \
+  -t 3m \
+  --back-bars 7200 --exchange bingx --ccxt-symbol-format usdtm \
+  
+	-i obw_platform/universe/universe_symbols_bingx.csv \
+  -o DB/combined_cache_3m_7200_500u.db
+  
+
+
+
+-o obw_platform/_reports/_live/livecfg_cfg_t3m_30d_newbest_full_limit_sl_3m/combined_cache_session.db
+    
+ python obw_platform/backtester_core_speed3_veto_universe_2.py \
+    --cfg obw_platform/configs/pine_breakout_avaai_bitget.yaml \
+    --limit-bars 2880
+	
+
+python3 auto_tuner_rays2grid_v3_fix.py \
+  --cfg configs/cfg_t3m_30d_newbest_full_limit_sl_2.yaml \
+  --limit-bars 3600 \
+  --prefix t3m3600 \
+  --min-trades 80 \
+  --target-trades 300 \
+  --w-dd 300 --dd-target 0.12  --sleep-sec 10\
+  --plan tuner_plan_t3m_30d_limit_sl_8h.py
+
+
+python3 auto_tuner_rays2grid_v3_fix.py \
+--cfg configs/cfg_t3m_30d_s10_grid_best_full.yaml \
+  --limit-bars 3600 \
+  --plan tuner_plan_avaai_3m_wide_night.py \
+  --prefix t3m_30d  \
+  --min-trades 40 \
+  --target-trades 220 \
+  --w-equity 1.0 --w-pf 12.0 --w-dd 220.0 --w-mono 5.0 --dd-target 0.12 \
+  --sleep-sec 1 \
+  
+  
+  #-i universe_5m_7400_1.03
+    
+  combined_cache_5m_25920_30u.db
+  
+  python3 auto_tuner_rays2grid_v3_fix.py \
+  --cfg configs/cfg_t3m_turtle.yaml \
+  --limit-bars 1440 \
+  --prefix turtle_mddfirst \
+  --min-trades 40 --target-trades 160 \
+  --w-equity 1.0 --w-pf 12.0 --w-dd 220.0 --w-mono 5.0  --dd-target 0.10 \
+  --sleep-sec 1 \
+  --plan tuner_plan_3m_turtle.py
+  
+  python3 auto_universe_and_tune.py \
+  --cfg configs/cfg_t3m_turtle.yaml \
+  --limit-bars 1440 \
+  --prefix t3m_auto \
+  --trades trades_turtle.csv  \
+  --universe-out universe_bingX_turtle.txt \
+  --plots plots_auto \
+  --grid \
+  --driver backtester_core_speed3_veto_universe_2.py
+  
+  BT_IGNORE_VOLSURGE=1 python3 bt_live_paper_runner_separated_universe.py \
+  --mode live --paper-source api \
+  --env-file .env \
+  --cfg configs/cfg_t3m_turtle.yaml \
+  --exchange bingx --symbol-format usdtm \
+  --poll-sec 2 --bar-delay-sec 1 --limit_klines 200 \
+  --hour-cache load \
+  --universe-file universe_bingX_turtle.txt --heat-report \
+  2>&1 | tee -a _reports/_live/livecfg_t3m_turtle/runner.log
+  
+#отримання свічок з біржі   
+  python3 fetch_build_cache_v16.py   -o DB/combined_cache_1m_14400_1u_200d.db   -i obw_platform/universe/universe_ENA_1m.txt -t 1m   --back-bars 288000 --exchange bingx --ccxt-symbol-format usdtm
+
+#новий бектестер зроблений спеціально для DCA котрий рахує нереалізований прибуток від sub sell окремим параметром у таблиці угод. І виводить його суму на графік окремий
+python3 backtester_core_speed3_veto_universe_3_subpnl.py   --cfg configs/cfg_cryptomine_c_limit14_robust_1m.yaml     --limit-bars 144000
+
+#видалення всіх зайвих папок 
+ find obw_platform/_reports/_backtest -type d -name "*rays*" -exec rm -r {} \;
+
+
+python3 fetch_build_cache_v17.py   -o DB/combined_cache_1m_368640_1u_1y.db   -i obw_platform/universe/universe_ENA_1m.txt -t 1m   --back-bars 36864 --exchange bybit --ccxt-symbol-format usdtm
+
+python3 backtester_core_speed3_veto_universe_4_mtm_unrealized.py   --cfg configs/final_best_2_mg.yaml     --limit-bars 368640 --plots plots_1m_v2
+
+
+  BT_IGNORE_VOLSURGE=1 python3 bt_live_paper_runner_separated_universe.py \
+  --mode live --paper-source api \
+  --env-file .env \
+  --cfg configs/cfg_cryptomine_c_limit14_robust_1m.yaml \
+  --exchange bingx --symbol-format usdtm \
+  --poll-sec 2 --bar-delay-sec 1 --limit_klines 200 \
+  --hour-cache load \
+  --universe-file universe_ENA_1m.txt \
+  
+python3 fetch_build_cache_v17.py \
+  -o DB/combined_cache_1m_36864_1u_1y.db \
+  -i obw_platform/universe/universe_ENA_1m.txt \
+  -t 1m \
+  --back-bars 36864 \
+  --exchange bybit \
+  --ccxt-symbol-format usdtm \
+  --json-output DB/combined_cache_1m_36864_1u_1y.jsonl \
+  --json-reset
+  
+python3 ticks_to_1s_json_v3.py \
+  --exchange bingx \
+  --symbol ENAUSDT \
+  --start-date 2026-03-07 \
+  --end-date 2026-03-15 \
+  --output-dir DB \
+  --split-by month \

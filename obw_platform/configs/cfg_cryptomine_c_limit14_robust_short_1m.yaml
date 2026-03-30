@@ -1,0 +1,54 @@
+# Mirror SHORT config for pair tests
+live: false
+source: ccxt
+ccxt_exchange: bybit
+ccxt_symbol_format: spot
+
+timeframe: "1m"
+cache_db: "combined_cache_1m_1y.db"
+allow_symbols: ["ENA/USDT:USDT"]
+max_universe: 1
+
+# ----- Risk / sizing -----
+initial_equity: 100.0
+initial_capital: 100.0
+position_notional: 2.01
+fee_rate: 0.001
+slippage_per_side: 0.000
+max_notional_frac: 0.95
+
+# ----- Strategy binding -----
+strategy_class: strategies.cryptomine_c_limit14_robust_short.CryptomineCLimit14RobustShort
+
+# ----- Strategy parameters -----
+strategy_params:
+  tpPercent: 0.9
+  callbackPercent: 0.2
+  marginCallLimit: 244
+  linearRisePercent: 0.3
+
+  autoMerge: true
+  subSellTPPercent: 0.3
+
+  # Nonlinear rises (lvl2..lvl6)
+  rise1: 0.3
+  rise2: 0.4
+  rise3: 0.6
+  rise4: 0.8
+  rise5: 0.8
+
+  # Multipliers (lvl2..lvl5), after lvl5 -> 1x
+  mult2: 1.5
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+
+  maxFillsPerBar: 6
+  maxSubSellsPerBar: 10
+  maxSignalsWindow: 14
+  windowBars: 6
+
+  signalsThrottleEnabled: false
+  slEnabled: false
+  maxBudgetFrac: 0.60
+  stopPercent: 99.0
