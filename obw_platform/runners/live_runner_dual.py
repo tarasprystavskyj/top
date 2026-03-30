@@ -33,6 +33,28 @@ def split_pos_key(key: str):
     return key, 'LONG'
 
 
+
+
+def _dbg(*parts):
+    if DEBUG_OPEN:
+        cprint('[dual dbg]', *parts, fg='yellow', dim=True)
+
+
+def _safe_get_state_snapshot(strat, sym: str):
+    try:
+        st = strat._get_state(sym)
+        return {
+            'avg_price': getattr(st, 'avg_price', None),
+            'num_buys': getattr(st, 'num_buys', None),
+            'pos_size': getattr(st, 'pos_size', None),
+            'next_level_price': getattr(st, 'next_level_price', None),
+            'reset_pending': getattr(st, 'reset_pending', None),
+            'trailing_active': getattr(st, 'trailing_active', None),
+        }
+    except Exception:
+        return None
+
+
 def _cfg_get_nested(cfg: dict, dotted: str, _missing=object()):
     cur = cfg
     for part in dotted.split('.'):
@@ -288,6 +310,8 @@ def run_live(cfg: dict, args):
     position_mode = rcfg['position_mode']
 
     cprint('[cfg]', f"timeframe={tf} top_n={top_n} notional_long={notional_long} notional_short={notional_short} position_mode={position_mode}", fg='magenta')
+    _dbg('long params', cfg.get('strategy_params_long', {}))
+    _dbg('short params', cfg.get('strategy_params_short', {}))
 
     os.makedirs(args.results_dir, exist_ok=True)
     session_db_path, cache_out_path = ensure_session_dbs(args.results_dir, args.session_db, args.cache_out)
@@ -332,18 +356,38 @@ def run_live(cfg: dict, args):
                     feats = read_hour_cache_row(cache_out_path, ccxt_sym, bar_close)
                 if not feats:
                     df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=tf, limit=max(60, args.limit_klines))
-                    if df is None or len(df) < 30:
-                        continue
-                    feats_df = compute_feats(df, tf_seconds=tf_sec)
-                    if args.hour_cache in ('save', 'load'):
+                    if df is not None and len(df) >= 30:
+                        feats_df = compute_feats(df, tf_seconds=tf_sec)
+                        if args.hour_cache in ('save', 'load'):
+                            try:
+                                cache_out_upsert(cache_out_path, ccxt_sym, feats_df)
+                            except Exception:
+                                pass
+                        feats = feats_df.iloc[-1].to_dict()
+                    else:
+                        # Fallback for exchanges/timeframes without OHLCV support (e.g. 30s on some venues).
                         try:
-                            cache_out_upsert(cache_out_path, ccxt_sym, feats_df)
+                            px = fetcher.fetch_ticker_price(ccxt_sym)
                         except Exception:
-                            pass
-                    feats = feats_df.iloc[-1].to_dict()
+                            px = None
+                        if px is not None:
+                            feats = {
+                                'close': float(px),
+                                'atr_ratio': 0.0,
+                                'dp6h': 0.0,
+                                'dp12h': 0.0,
+                                'quote_volume': 0.0,
+                                'qv_24h': 0.0,
+                            }
+                            _dbg('md-fallback', ccxt_sym, 'ticker_close=', px, 'timeframe=', tf)
+                if not feats:
+                    _dbg('md-miss', ccxt_sym, 'timeframe=', tf)
+                    continue
                 feats['datetime_utc'] = bar_close.isoformat()
                 md[ccxt_sym] = feats
                 dot()
+
+            _dbg('bar', bar_close.isoformat(), 'universe=', len(universe), 'md=', len(md), 'symbols=', list(md.keys())[:5])
 
             # manage existing legs
             for key, rec in list(positions.items()):
@@ -352,11 +396,13 @@ def run_live(cfg: dict, args):
                 if row is None:
                     continue
                 strat = strat_long if side == 'LONG' else strat_short
+                _dbg('manage', sym, side, 'qty=', rec.get('qty'), 'entry=', rec.get('entry'), 'close=', row.get('close'))
                 _maybe_apply_manage_result(fetcher, key, rec, row, strat, positions, args.results_dir, position_mode, session_db_path, bot_id)
 
             # new entries, both legs can coexist
             uni = strat_long.universe(bar_close, md)
             ranked = strat_long.rank(bar_close, md, uni)[:top_n]
+            _dbg('ranked', ranked)
             for sym in ranked:
                 row = md.get(sym)
                 if row is None:
@@ -365,7 +411,11 @@ def run_live(cfg: dict, args):
                 key_short = pos_key(sym, 'SHORT')
 
                 if key_long not in positions:
+                    _dbg('entry-check', sym, 'LONG', 'close=', row.get('close'))
                     sig = strat_long.entry_signal(True, sym, row, ctx={})
+                    _dbg('entry-sig', sym, 'LONG', sig)
+                    if sig is None:
+                        _dbg('entry-none', sym, 'LONG', _safe_get_state_snapshot(strat_long, sym))
                     if sig is not None:
                         entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
                         res = place_open(fetcher, sym, 'LONG', notional_long, entry_px, position_mode)
@@ -380,9 +430,15 @@ def run_live(cfg: dict, args):
                             except Exception:
                                 pass
                             cprint('[open OK]', sym, 'LONG', f'qty={qty:.6g} px={entry_px}', fg='green', bold=True)
+                        else:
+                            cprint('[open FAIL]', sym, 'LONG', res, fg='red', bold=True)
 
                 if key_short not in positions:
+                    _dbg('entry-check', sym, 'SHORT', 'close=', row.get('close'))
                     sig = strat_short.entry_signal(True, sym, row, ctx={})
+                    _dbg('entry-sig', sym, 'SHORT', sig)
+                    if sig is None:
+                        _dbg('entry-none', sym, 'SHORT', _safe_get_state_snapshot(strat_short, sym))
                     if sig is not None:
                         entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
                         res = place_open(fetcher, sym, 'SHORT', notional_short, entry_px, position_mode)
@@ -397,6 +453,8 @@ def run_live(cfg: dict, args):
                             except Exception:
                                 pass
                             cprint('[open OK]', sym, 'SHORT', f'qty={qty:.6g} px={entry_px}', fg='green', bold=True)
+                        else:
+                            cprint('[open FAIL]', sym, 'SHORT', res, fg='red', bold=True)
 
             cprint('[live dual]', f'bar={bar_close.isoformat()} open_legs={len(positions)}', fg='cyan', bold=(len(positions) > 0))
         else:
