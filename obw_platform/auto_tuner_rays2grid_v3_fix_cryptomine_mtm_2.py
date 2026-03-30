@@ -184,7 +184,7 @@ def stage_grid(backtester, base_cfg, limit_bars, params, session_dir, file_prefi
         cfg = copy.deepcopy(base_cfg)
         for k, v in zip(keys, vec):
             deep_set(cfg, k, v)
-        y = tmp_dir / f'{file_prefix}_grid_' + '_'.join(str(v).replace('.', 'p') for v in vec) + '.yaml'
+        y = tmp_dir / (f"{file_prefix}_grid_" + '_'.join(str(v).replace('.', 'p') for v in vec) + '.yaml')
         write_yaml(cfg, y)
         tasks.append((str(y), vec))
     recs = []
