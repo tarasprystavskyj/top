@@ -7,26 +7,27 @@ portfolio:
   fee_rate: 0.0005
   slippage_per_side: 0.0
   max_notional_frac: 1.0
-  position_notional_long: 3.5
-  position_notional_short: 17
-strategy_class_long: strategies.cryptomine_c_limit14_even_dual_1.CryptomineCLimit14LongEven
-strategy_class_short: strategies.cryptomine_c_limit14_even_dual_1.CryptomineCLimit14ShortEven
+  position_notional_long: 2.5
+  position_notional_short: 40.0
+strategy_class_long: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14LongEven
+strategy_class_short: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14ShortEven
 strategy_params_long:
-  tpPercent: 0.25999999999999995
+  firstBuyUSDT: 35
+  tpPercent: 0.27
   callbackPercent: 0.28
   marginCallLimit: 244
-  linearDropPercent: 0.14
+  linearDropPercent: 0.07
   autoMerge: false
-  subSellTPPercent: 0.36000000000000004
-  drop1: 0.3
-  drop2: 0.4
-  drop3: 0.6
-  drop4: 0.8
-  drop5: 0.8
-  mult2: 1.5
+  subSellTPPercent: 0.52
+  drop1: 0.38
+  drop2: 0.48000000000000004
+  drop3: 0.69
+  drop4: 0.9
+  drop5: 0.75
+  mult2: 2.1
   mult3: 1.0
-  mult4: 2.0
-  mult5: 3.5
+  mult4: 1.4
+  mult5: 4.5
   maxFillsPerBar: 6
   maxSubSellsPerBar: 10
   signalsThrottleEnabled: false
@@ -35,23 +36,23 @@ strategy_params_long:
   slEnabled: false
   maxBudgetFrac: 0.6
   stopPercent: 99.0
-  firstBuyQty: 3.5
 strategy_params_short:
-  tpPercent: 0.21999999999999997
-  callbackPercent: 0.41000000000000003
+  firstSellUSDT: 0.2
+  tpPercent: 0.22
+  callbackPercent: 0.1
   marginCallLimit: 244
-  linearRisePercent: 0.03
-  autoMerge: false
-  subSellTPPercent: -0.01
-  rise1: 0.3
-  rise2: 0.4
-  rise3: 0.6
-  rise4: 0.8
-  rise5: 0.8
+  linearRisePercent: 0.26
+  autoMerge: true
+  subSellTPPercent: 0.32
+  rise1: 0.25
+  rise2: 0.51
+  rise3: 0.46
+  rise4: 0.7
+  rise5: 0.7
   mult2: 1.5
   mult3: 1.0
-  mult4: 2.0
-  mult5: 3.5
+  mult4: 1.1
+  mult5: 2.5
   maxFillsPerBar: 6
   maxSubSellsPerBar: 10
   signalsThrottleEnabled: false
@@ -60,4 +61,3 @@ strategy_params_short:
   slEnabled: false
   maxBudgetFrac: 0.6
   stopPercent: 99.0
-  firstSellQty: 17.0
