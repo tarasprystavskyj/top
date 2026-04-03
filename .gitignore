@@ -8,6 +8,7 @@ __pycache__/
 .vscode/
 .idea/
 UI/frontend/v/
+DB/
 v12.log
 *.db
 *.zip
