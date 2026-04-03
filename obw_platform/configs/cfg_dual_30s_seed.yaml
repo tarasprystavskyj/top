@@ -14,7 +14,7 @@ strategy_class_short: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit
 strategy_params_long:
   firstBuyUSDT: 2.0
   tpPercent: 0.3
-  callbackPercent: 0.2
+  callbackPercent: 0.25
   marginCallLimit: 244
   linearDropPercent: 0.2
   autoMerge: false

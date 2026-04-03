@@ -5,19 +5,19 @@ cache_db: combined_cache_30s_ENA_2026-02-01_2026-03-01.db
 portfolio:
   initial_equity_per_leg: 100.0
   position_notional: 1.0
-  fee_rate: 0.0
+  fee_rate: 0.0005
   slippage_per_side: 0.0
   max_notional_frac: 1.0
 strategy_class_long: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14LongEven
 strategy_class_short: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14ShortEven
 strategy_params_long:
-  firstBuyUSDT: 1.0
+  firstBuyUSDT: 2.0
   tpPercent: 0.3
   callbackPercent: 0.25
   marginCallLimit: 244
-  linearDropPercent: 0.1
+  linearDropPercent: 0.2
   autoMerge: false
-  subSellTPPercent: 0.3
+  subSellTPPercent: 0.2
   drop1: 0.3
   drop2: 0.4
   drop3: 0.6
@@ -36,13 +36,13 @@ strategy_params_long:
   maxBudgetFrac: 0.6
   stopPercent: 99.0
 strategy_params_short:
-  firstSellUSDT: 1.0
+  firstSellUSDT: 20.0
   tpPercent: 0.3
   callbackPercent: 0.25
   marginCallLimit: 244
-  linearRisePercent: 0.1
+  linearRisePercent: 0.2
   autoMerge: false
-  subSellTPPercent: 0.3
+  subSellTPPercent: 0.2
   rise1: 0.3
   rise2: 0.4
   rise3: 0.6
