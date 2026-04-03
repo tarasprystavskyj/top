@@ -7,8 +7,15 @@ portfolio:
   fee_rate: 0.0005
   slippage_per_side: 0.0
   max_notional_frac: 1.0
+<<<<<<< HEAD
 strategy_class_long: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14LongEven
 strategy_class_short: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14ShortEven
+=======
+  position_notional_long: 2
+  position_notional_short: 2
+strategy_class_long: strategies.cryptomine_c_limit14_even_dual_1.CryptomineCLimit14LongEven
+strategy_class_short: strategies.cryptomine_c_limit14_even_dual_1.CryptomineCLimit14ShortEven
+>>>>>>> a
 strategy_params_long:
   tpPercent: 0.25999999999999995
   callbackPercent: 0.28
