@@ -9,17 +9,6 @@ CACHE = None
 TS = None
 CLOSE = None
 
-
-def parse_iso_to_epoch_s(s: str) -> int:
-    import datetime as _dt
-    dt = _dt.datetime.fromisoformat(str(s).replace('Z', '+00:00'))
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_dt.timezone.utc)
-    else:
-        dt = dt.astimezone(_dt.timezone.utc)
-    return int(dt.timestamp())
-
-
 def worker_init(npz_path):
     global CACHE, TS, CLOSE
     CACHE = np.load(npz_path)
@@ -72,31 +61,33 @@ def realize(spec, current, delta_mode=True):
 
 
 def score(s, min_trades=50, w_pnl=1.0, w_mdd=80.0, mdd_target=0.25):
+    # Priority order:
+    # 1) profitability as % of starting capital
+    # 2) no margin / liquidation events
+    # 3) low MTM (unrealized-aware) MDD
+    # 4) low realized-only MDD
     if int(s.get('margin_call_events_total', 0) or 0) > 0:
         return -1e18
-    if int(s.get('trades_total', 0) or 0) < min_trades:
-        return -1e12 - (min_trades - int(s.get('trades_total', 0))) * 1000.0
+    trades_total = int(s.get('trades_total', 0) or 0)
+    if trades_total < min_trades:
+        return -1e12 - (min_trades - trades_total) * 1000.0
+
+    eq0 = float(s.get('equity_start_total', 0.0) or 0.0)
     pnl = float(s.get('realized_pnl_total', -1e9))
-    mdd = abs(float(s.get('mdd_total_frac', 0.0) or 0.0))
-    monthly = float(s.get('monthly_return_total_%', 0.0) or 0.0)
-    yearly = float(s.get('yearly_return_total_%', 0.0) or 0.0)
-    return (w_pnl * pnl) + (0.10 * monthly) + (0.01 * yearly) - (w_mdd * max(0.0, mdd - mdd_target))
+    return_pct = (pnl / eq0 * 100.0) if eq0 > 0 else -1e9
+
+    mdd_mtm = abs(float(s.get('mdd_mtm_frac', s.get('mdd_total_frac', 0.0)) or 0.0)) * 100.0
+    mdd_realized = abs(float(s.get('mdd_realized_frac', 0.0) or 0.0)) * 100.0
+
+    # Lexicographic-like numeric score: return dominates, then MTM MDD, then realized MDD.
+    return (return_pct * 1000.0 * w_pnl) - (mdd_mtm * 10.0 * w_mdd) - (mdd_realized * 5.0)
 
 
 def eval_cfg(args_tuple):
-    cfg, limit_bars, weights, time_from_s, time_to_s = args_tuple
+    cfg, limit_bars, weights = args_tuple
     t0 = time.time()
-    ts = TS
-    cl = CLOSE
-    if time_from_s is not None:
-        m = ts >= time_from_s
-        ts = ts[m]; cl = cl[m]
-    if time_to_s is not None:
-        m = ts <= time_to_s
-        ts = ts[m]; cl = cl[m]
-    if limit_bars and limit_bars > 0:
-        ts = ts[-limit_bars:]
-        cl = cl[-limit_bars:]
+    ts = TS[-limit_bars:] if limit_bars and limit_bars > 0 else TS
+    cl = CLOSE[-limit_bars:] if limit_bars and limit_bars > 0 else CLOSE
     s = simulate(cfg, ts, cl)
     s['elapsed_sec'] = time.time()-t0
     s['score'] = score(s, **weights)
@@ -110,8 +101,6 @@ def main():
     ap.add_argument('--plan', required=True)
     ap.add_argument('--limit-bars', type=int, default=0)
     ap.add_argument('--prefix', default='dual_fast')
-    ap.add_argument('--time-from', default=None)
-    ap.add_argument('--time-to', default=None)
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2)-1))
     ap.add_argument('--min-trades', type=int, default=50)
     ap.add_argument('--w-pnl', type=float, default=1.0)
@@ -120,8 +109,6 @@ def main():
     args = ap.parse_args()
 
     weights = {'min_trades': args.min_trades, 'w_pnl': args.w_pnl, 'w_mdd': args.w_mdd, 'mdd_target': args.mdd_target}
-    time_from_s = parse_iso_to_epoch_s(args.time_from) if args.time_from else None
-    time_to_s = parse_iso_to_epoch_s(args.time_to) if args.time_to else None
     base_cfg = yaml.safe_load(open(args.cfg, 'r'))
     plan, delta_mode = load_plan(args.plan, args.limit_bars)
 
@@ -130,7 +117,7 @@ def main():
     log_csv = session / 'tuner_log.csv'
 
     worker_init(args.npz)
-    baseline = eval_cfg((base_cfg, args.limit_bars, weights, time_from_s, time_to_s))
+    baseline = eval_cfg((base_cfg, args.limit_bars, weights))
     baseline['param']='baseline'; baseline['value']='baseline'
     best_overall = dict(baseline)
     rows=[baseline]
@@ -152,7 +139,7 @@ def main():
                 for v in vals:
                     cfg = copy.deepcopy(base_cfg); deep_set(cfg, pname, v)
                     payloads.append((v,cfg))
-                    tasks.append(ex.submit(eval_cfg, (cfg, args.limit_bars, weights, time_from_s, time_to_s)))
+                    tasks.append(ex.submit(eval_cfg, (cfg, args.limit_bars, weights)))
                 stage_rows=[]
                 for (v,cfg), fut in zip(payloads, tasks):
                     r=fut.result(); r['param']=pname; r['value']=v; stage_rows.append(r)
@@ -172,7 +159,7 @@ def main():
                 for vec in vecs:
                     cfg=copy.deepcopy(base_cfg)
                     for k,v in zip(keys, vec): deep_set(cfg,k,v)
-                    payloads.append((vec,cfg)); tasks.append(ex.submit(eval_cfg, (cfg, args.limit_bars, weights, time_from_s, time_to_s)))
+                    payloads.append((vec,cfg)); tasks.append(ex.submit(eval_cfg, (cfg, args.limit_bars, weights)))
                 stage_rows=[]
                 for (vec,cfg), fut in zip(payloads,tasks):
                     r=fut.result(); r['param']='|'.join(keys); r['value']='|'.join(map(str,vec)); stage_rows.append(r)

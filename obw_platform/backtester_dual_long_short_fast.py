@@ -266,6 +266,7 @@ def simulate(cfg, ts_s, close):
     margin_call_events_total = bars_in_margin_call = 0
     prev_in_margin = False
     total_equity_mtm = []
+    total_equity_realized = []
     max_gross_long = max_gross_short = max_gross_total = max_effective = 0.0
     margin_call_excess_max = 0.0
 
@@ -295,6 +296,7 @@ def simulate(cfg, ts_s, close):
         max_gross_long = max(max_gross_long, gross_long); max_gross_short = max(max_gross_short, gross_short)
         max_gross_total = max(max_gross_total, gross_total); max_effective = max(max_effective, effective)
         total_equity_mtm.append(equity_mtm_total)
+        total_equity_realized.append(equity_realized_total)
 
         # entries / restarts only when flat for each side and allowed bar and margin permits
         if long.pos_qty <= 0 and long.allow_bar(ts):
@@ -307,11 +309,17 @@ def simulate(cfg, ts_s, close):
                 short.maybe_open_first(px, pos_notional_short)
 
     mdd_frac = 0.0
+    mdd_realized_frac = 0.0
     if len(total_equity_mtm) > 1:
         arr = np.asarray(total_equity_mtm, dtype=np.float64)
         peaks = np.maximum.accumulate(arr)
         dd = (arr - peaks) / peaks
         mdd_frac = float(dd.min())
+    if len(total_equity_realized) > 1:
+        arr_r = np.asarray(total_equity_realized, dtype=np.float64)
+        peaks_r = np.maximum.accumulate(arr_r)
+        dd_r = (arr_r - peaks_r) / peaks_r
+        mdd_realized_frac = float(dd_r.min())
     total_days = len(close) * (long.tf_seconds() / 86400.0)
     equity_end_realized_total = initial_equity_total + realized_long + realized_short
     daily_ret = monthly_ret = yearly_ret = 0.0
@@ -335,6 +343,10 @@ def simulate(cfg, ts_s, close):
         'win_rate_short_%': wins_short * 100.0 / max(1, trades_short) if trades_short else 0.0,
         'mdd_total_frac': mdd_frac,
         'mdd_total_%': mdd_frac * 100.0,
+        'mdd_mtm_frac': mdd_frac,
+        'mdd_mtm_%': mdd_frac * 100.0,
+        'mdd_realized_frac': mdd_realized_frac,
+        'mdd_realized_%': mdd_realized_frac * 100.0,
         'daily_return_total_%': daily_ret * 100.0,
         'monthly_return_total_%': monthly_ret * 100.0,
         'yearly_return_total_%': yearly_ret * 100.0,
