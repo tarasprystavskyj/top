@@ -76,7 +76,7 @@ def _open_notional(positions: Dict[str, Position]) -> float:
     return float(sum(p.entry * p.qty for p in positions.values()))
 
 
-def _run_leg(name: str, strat, slices, initial_equity: float, fallback_pos_notional: float, fee: float, slippage: float, max_notional_frac: float):
+def _run_leg(name: str, strat, slices, initial_equity: float, pos_notional: float, fee: float, slippage: float, max_notional_frac: float):
     equity_realized = initial_equity
     positions: Dict[str, Position] = {}
     pos_time: Dict[str, str] = {}
@@ -162,6 +162,8 @@ def _run_leg(name: str, strat, slices, initial_equity: float, fallback_pos_notio
             if sym in positions:
                 continue
             current_open = _open_notional(positions)
+            if (current_open + pos_notional) > max_notional_frac * equity_mtm:
+                break
             row = md_map_all.get(sym)
             if not row:
                 continue
@@ -183,11 +185,7 @@ def _run_leg(name: str, strat, slices, initial_equity: float, fallback_pos_notio
                 else:
                     sl = max(1e-12, entry_px_tmp * (1.0 + sl_fallback_pct / 100.0))
             entry_px = float(row['close'])
-            first_qty = float(getattr(strat, 'first_qty', 0.0) or 0.0)
-            entry_notional = (first_qty * entry_px) if first_qty > 0 else float(fallback_pos_notional)
-            if (current_open + entry_notional) > max_notional_frac * equity_mtm:
-                break
-            qty = first_qty if first_qty > 0 else (float(fallback_pos_notional) / max(entry_px, 1e-12))
+            qty = pos_notional / max(entry_px, 1e-12)
             positions[sym] = Position(sig.side, entry_px, float(sl), float(tp), qty)
             pos_time[sym] = t
 
@@ -310,14 +308,13 @@ def main():
 
     portfolio = cfg.get('portfolio', {})
     initial_equity_per_leg = float(portfolio.get('initial_equity_per_leg', 100.0))
-    pos_notional_long = float(portfolio.get('position_notional_long', portfolio.get('position_notional', 5.0)))
-    pos_notional_short = float(portfolio.get('position_notional_short', portfolio.get('position_notional', 5.0)))
+    pos_notional = float(portfolio.get('position_notional', 5.0))
     fee = float(portfolio.get('fee_rate', 0.0))
     slippage = float(portfolio.get('slippage_per_side', 0.0))
     max_notional_frac = float(portfolio.get('max_notional_frac', 1.0))
 
-    res_long = _run_leg('LONG', strat_long, slices, initial_equity_per_leg, pos_notional_long, fee, slippage, max_notional_frac)
-    res_short = _run_leg('SHORT', strat_short, slices, initial_equity_per_leg, pos_notional_short, fee, slippage, max_notional_frac)
+    res_long = _run_leg('LONG', strat_long, slices, initial_equity_per_leg, pos_notional, fee, slippage, max_notional_frac)
+    res_short = _run_leg('SHORT', strat_short, slices, initial_equity_per_leg, pos_notional, fee, slippage, max_notional_frac)
 
     ts = pd.to_datetime(pd.Series(res_long['ts_list'], dtype=str), errors='coerce', utc=True)
     long_real_pnl = [x - res_long['equity_start'] for x in res_long['eq_real_list']]

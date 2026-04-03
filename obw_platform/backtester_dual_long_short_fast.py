@@ -8,7 +8,7 @@ from pathlib import Path
 @dataclass
 class SideState:
     side: str
-    first_qty: float
+    first_usdt: float
     tp_percent: float
     callback_percent: float
     margin_call_limit: int
@@ -80,8 +80,8 @@ class SideState:
         self.reset_pending = False
         self.trailing_ref = None
         self.pending_new_entry = None
-        qty0_state = self.first_qty
-        self.pos_cost_usdt = qty0_state * price
+        qty0_state = self.first_usdt / max(price, 1e-12)
+        self.pos_cost_usdt = self.first_usdt
         self.pos_size = qty0_state
         self.avg_price = price
         self.num_fills = 1
@@ -165,16 +165,16 @@ class SideState:
         while self.num_fills < self.margin_call_limit and fills < self.max_fills_per_bar and self.next_level_price is not None:
             hit = price <= self.next_level_price if self.side == 'LONG' else price >= self.next_level_price
             if not hit: break
-            qty_add = self.first_qty * self.get_mult_for_next_level()
-            fill_price = price
-            add_notional = qty_add * fill_price
-            if self.max_budget_frac < 0.999999 and (self.pos_cost_usdt + add_notional) > max_budget:
+            add_usdt = self.first_usdt * self.get_mult_for_next_level()
+            if self.max_budget_frac < 0.999999 and (self.pos_cost_usdt + add_usdt) > max_budget:
                 break
-            new_cost = self.pos_entry * self.pos_qty + add_notional
+            fill_price = price
+            qty_add = add_usdt / max(fill_price, 1e-12)
+            new_cost = self.pos_entry * self.pos_qty + add_usdt
             new_qty = self.pos_qty + qty_add
             self.pos_qty = new_qty
             self.pos_entry = new_cost / max(new_qty, 1e-12)
-            self.pos_cost_usdt += add_notional
+            self.pos_cost_usdt += add_usdt
             self.pos_size = new_qty
             self.avg_price = self.pos_entry
             self.lots_qty.append(qty_add)
@@ -227,7 +227,7 @@ def build_side(cfg, params_key, side):
     sp = cfg.get(params_key, {}) or {}
     return SideState(
         side=side,
-        first_qty=float(sp.get('firstBuyQty' if side=='LONG' else 'firstSellQty', sp.get('firstBuyUSDT' if side=='LONG' else 'firstSellUSDT', 5.0))),
+        first_usdt=float(sp.get('firstBuyUSDT' if side=='LONG' else 'firstSellUSDT', 5.0)),
         tp_percent=float(sp.get('tpPercent', 1.1)),
         callback_percent=float(sp.get('callbackPercent', 0.2)),
         margin_call_limit=int(sp.get('marginCallLimit', 244)),
@@ -298,17 +298,13 @@ def simulate(cfg, ts_s, close):
 
         # entries / restarts only when flat for each side and allowed bar and margin permits
         if long.pos_qty <= 0 and long.allow_bar(ts):
-            first_qty_long = float(long.first_qty or 0.0) if hasattr(long, 'first_qty') else 0.0
-            open_qty_long = first_qty_long if first_qty_long > 0 else (pos_notional_long / max(px, 1e-12))
-            prospective = abs(open_qty_long * px - short.gross_notional())
+            prospective = abs(pos_notional_long - short.gross_notional())
             if prospective <= allowed + 1e-12:
-                long.maybe_open_first(px, open_qty_long)
+                long.maybe_open_first(px, pos_notional_long)
         if short.pos_qty <= 0 and short.allow_bar(ts):
-            first_qty_short = float(short.first_qty or 0.0) if hasattr(short, 'first_qty') else 0.0
-            open_qty_short = first_qty_short if first_qty_short > 0 else (pos_notional_short / max(px, 1e-12))
-            prospective = abs(long.gross_notional() - open_qty_short * px)
+            prospective = abs(long.gross_notional() - pos_notional_short)
             if prospective <= allowed + 1e-12:
-                short.maybe_open_first(px, open_qty_short)
+                short.maybe_open_first(px, pos_notional_short)
 
     mdd_frac = 0.0
     if len(total_equity_mtm) > 1:
@@ -349,10 +345,10 @@ def simulate(cfg, ts_s, close):
         'max_gross_notional_short': max_gross_short,
         'max_gross_notional_total': max_gross_total,
         'max_effective_notional_total': max_effective,
-        'max_invested_long_in_firstBuyQty': (max_gross_long / max(long.first_qty, 1e-12)) if long.first_qty else None,
-        'max_invested_short_in_firstSellQty': (max_gross_short / max(short.first_qty, 1e-12)) if short.first_qty else None,
-        'firstBuyQty': long.first_qty,
-        'firstSellQty': short.first_qty,
+        'max_invested_long_in_firstBuyUSDT': (max_gross_long / max(long.first_usdt, 1e-12)) if long.first_usdt else None,
+        'max_invested_short_in_firstSellUSDT': (max_gross_short / max(short.first_usdt, 1e-12)) if short.first_usdt else None,
+        'firstBuyUSDT': long.first_usdt,
+        'firstSellUSDT': short.first_usdt,
     }
 
 

@@ -165,6 +165,28 @@ def place_open(fetcher: CCXTFetcher, sym: str, side: str, notional: float, price
         return {'ok': False, 'error': str(e), 'qty': qty}
 
 
+def place_open_qty(fetcher: CCXTFetcher, sym: str, side: str, qty: float, position_mode: str):
+    ccxt_sym = fetcher.resolve_symbol(sym)
+    order_side = 'buy' if side.upper() == 'LONG' else 'sell'
+    params = {}
+    if position_mode == 'hedge':
+        params['positionSide'] = side.upper()
+    try:
+        od = fetcher.ex.create_order(ccxt_sym, 'market', order_side, qty, None, params)
+        sleep_ms(RATE_MS)
+        return {'ok': True, 'order': od, 'qty': qty, 'params': params}
+    except Exception as e:
+        msg = str(e).lower()
+        if ('one-way mode' in msg) or ('positionside' in msg):
+            try:
+                od = fetcher.ex.create_order(ccxt_sym, 'market', order_side, qty, None, {})
+                sleep_ms(RATE_MS)
+                return {'ok': True, 'order': od, 'qty': qty, 'params': {}, 'retry': True}
+            except Exception as e2:
+                return {'ok': False, 'error': str(e2), 'qty': qty}
+        return {'ok': False, 'error': str(e), 'qty': qty}
+
+
 def place_reduce_only(fetcher: CCXTFetcher, sym: str, entry_side: str, qty: float, position_mode: str):
     ccxt_sym = fetcher.resolve_symbol(sym)
     close_side = 'sell' if entry_side.upper() == 'LONG' else 'buy'
@@ -264,8 +286,7 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
     if qty_after > qty_before + 1e-12:
         delta_qty = qty_after - qty_before
         px = float(row.get('close') or 0.0)
-        add_notional = delta_qty * px
-        res = place_open(fetcher, sym, side, add_notional, px, position_mode)
+        res = place_open_qty(fetcher, sym, side, delta_qty, position_mode)
         if res.get('ok'):
             rec['qty'] = qty_after
             rec['entry'] = entry_after
@@ -318,7 +339,7 @@ def run_live(cfg: dict, args):
     notional_short = rcfg['notional_short']
     position_mode = rcfg['position_mode']
 
-    cprint('[cfg]', f"timeframe={tf} top_n={top_n} notional_long={notional_long} notional_short={notional_short} position_mode={position_mode}", fg='magenta')
+    cprint('[cfg]', f"timeframe={tf} top_n={top_n} first_usdt_long={getattr(strat_long,'first_usdt',None)} first_usdt_short={getattr(strat_short,'first_usdt',None)} position_mode={position_mode}", fg='magenta')
     _dbg('long params', cfg.get('strategy_params_long', {}))
     _dbg('short params', cfg.get('strategy_params_short', {}))
 
@@ -427,7 +448,9 @@ def run_live(cfg: dict, args):
                         _dbg('entry-none', sym, 'LONG', _safe_get_state_snapshot(strat_long, sym))
                     if sig is not None:
                         entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
-                        res = place_open(fetcher, sym, 'LONG', notional_long, entry_px, position_mode)
+                        first_usdt = float(getattr(strat_long, 'first_usdt', 0.0) or 0.0)
+                        open_qty = (first_usdt / max(entry_px, 1e-12)) if first_usdt > 0 else (notional_long / max(entry_px, 1e-12))
+                        res = place_open_qty(fetcher, sym, 'LONG', open_qty, position_mode)
                         if res.get('ok'):
                             qty = float(res['qty'])
                             rec = {'symbol': sym, 'side': 'LONG', 'qty': qty, 'entry': float(entry_px), 'ts_open': bar_close.isoformat(), 'run_id': run_id, 'order_id': str(uuid.uuid4())}
@@ -450,7 +473,9 @@ def run_live(cfg: dict, args):
                         _dbg('entry-none', sym, 'SHORT', _safe_get_state_snapshot(strat_short, sym))
                     if sig is not None:
                         entry_px = fetcher.fetch_ticker_price(sym) or float(row.get('close') or 0.0)
-                        res = place_open(fetcher, sym, 'SHORT', notional_short, entry_px, position_mode)
+                        first_usdt = float(getattr(strat_short, 'first_usdt', 0.0) or 0.0)
+                        open_qty = (first_usdt / max(entry_px, 1e-12)) if first_usdt > 0 else (notional_short / max(entry_px, 1e-12))
+                        res = place_open_qty(fetcher, sym, 'SHORT', open_qty, position_mode)
                         if res.get('ok'):
                             qty = float(res['qty'])
                             rec = {'symbol': sym, 'side': 'SHORT', 'qty': qty, 'entry': float(entry_px), 'ts_open': bar_close.isoformat(), 'run_id': run_id, 'order_id': str(uuid.uuid4())}
