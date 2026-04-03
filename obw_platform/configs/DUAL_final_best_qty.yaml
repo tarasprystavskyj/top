@@ -7,10 +7,8 @@ portfolio:
   fee_rate: 0.0005
   slippage_per_side: 0.0
   max_notional_frac: 1.0
-  position_notional_long: 3.5
-  position_notional_short: 17
-strategy_class_long: strategies.cryptomine_c_limit14_even_dual_1.CryptomineCLimit14LongEven
-strategy_class_short: strategies.cryptomine_c_limit14_even_dual_1.CryptomineCLimit14ShortEven
+strategy_class_long: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14LongEven
+strategy_class_short: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14ShortEven
 strategy_params_long:
   tpPercent: 0.25999999999999995
   callbackPercent: 0.28
@@ -35,7 +33,13 @@ strategy_params_long:
   slEnabled: false
   maxBudgetFrac: 0.6
   stopPercent: 99.0
-  firstBuyQty: 3.5
+  firstBuyUSDT: 3.5
+  requireCloseAboveFullTP: true
+  subSellCloseConfirmMode: breakeven
+  requireCloseBelowDcaLevel: true
+  blockDcaOnTpTouch: false
+  useHighLowTouch: true
+  maxOrdersPer3Min: 14
 strategy_params_short:
   tpPercent: 0.21999999999999997
   callbackPercent: 0.41000000000000003
@@ -60,4 +64,10 @@ strategy_params_short:
   slEnabled: false
   maxBudgetFrac: 0.6
   stopPercent: 99.0
-  firstSellQty: 17.0
+  firstSellUSDT: 17.0
+  requireCloseBelowFullTP: true
+  subCoverCloseConfirmMode: breakeven
+  requireCloseAboveDcaLevel: true
+  blockDcaOnTpTouch: false
+  useHighLowTouch: true
+  maxOrdersPer3Min: 14
