@@ -1,0 +1,28 @@
+live: false
+source: fast_npz
+timeframe: 2m
+portfolio:
+  initial_equity_per_leg: 100.0
+  fee_rate: 0.0005
+  slippage_per_side: 0.0
+strategy_params_short:
+  firstSellUSDT: 17.0
+  tpPercent: 0.22
+  callbackPercent: 0.10
+  marginCallLimit: 244
+  linearRisePercent: 0.16
+  autoMerge: false
+  subSellTPPercent: 0.36
+  rise1: 0.3
+  rise2: 0.4
+  rise3: 0.6
+  rise4: 0.8
+  rise5: 0.8
+  mult2: 1.5
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+  maxFillsPerBar: 6
+  maxSubSellsPerBar: 10
+  useEvenBars: true
+  maxBudgetFrac: 0.6
