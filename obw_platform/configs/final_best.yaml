@@ -1,0 +1,63 @@
+live: false
+source: sqlite
+timeframe: 0.5m
+cache_db: combined_cache_30s_ENA_2026-02-01_2026-03-01.db
+portfolio:
+  initial_equity_per_leg: 100.0
+  fee_rate: 0.0005
+  slippage_per_side: 0.0
+  max_notional_frac: 1.0
+  position_notional_long: 2.5
+  position_notional_short: 40.0
+strategy_class_long: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14LongEven
+strategy_class_short: strategies.cryptomine_c_limit14_even_dual.CryptomineCLimit14ShortEven
+strategy_params_long:
+  firstBuyUSDT: 35
+  tpPercent: 0.28500000000000003
+  callbackPercent: 0.28
+  marginCallLimit: 244
+  linearDropPercent: 0.04
+  autoMerge: false
+  subSellTPPercent: 0.44
+  drop1: 0.395
+  drop2: 0.45000000000000007
+  drop3: 0.6399999999999999
+  drop4: 0.9
+  drop5: 0.75
+  mult2: 2.3000000000000003
+  mult3: 1.0
+  mult4: 1.0999999999999999
+  mult5: 4.5
+  maxFillsPerBar: 6
+  maxSubSellsPerBar: 10
+  signalsThrottleEnabled: false
+  useEvenBars: true
+  useLiveSyncStart: false
+  slEnabled: false
+  maxBudgetFrac: 0.6
+  stopPercent: 99.0
+strategy_params_short:
+  firstSellUSDT: 1.3
+  tpPercent: 0.26
+  callbackPercent: 0.155
+  marginCallLimit: 244
+  linearRisePercent: 0.27
+  autoMerge: true
+  subSellTPPercent: 0.35
+  rise1: 0.25
+  rise2: 0.51
+  rise3: 0.435
+  rise4: 0.7
+  rise5: 0.7
+  mult2: 1.8
+  mult3: 1.0
+  mult4: 1.4000000000000001
+  mult5: 2.5
+  maxFillsPerBar: 6
+  maxSubSellsPerBar: 10
+  signalsThrottleEnabled: false
+  useEvenBars: true
+  useLiveSyncStart: false
+  slEnabled: false
+  maxBudgetFrac: 0.6
+  stopPercent: 99.0
