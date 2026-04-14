@@ -12,6 +12,8 @@ strategy_class_short: strategies.cryptomine_pack_dual_full.CryptomineShortPackAd
 strategy_params_long:
   firstBuyQtyCoin: 0.09
   minOrderQtyCoin: 0.09
+  minOrderUSDT: 2.0
+  minOrderUSDT: 2.0
   useEquityPctBase: true
   baseOrderPctEq: 1.0
   equityForSizingUSDT: 300.0

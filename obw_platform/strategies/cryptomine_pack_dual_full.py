@@ -52,6 +52,7 @@ class _PackAdaptiveBase:
         # sizing
         self.first_qty_coin = float(sp.get('firstBuyQtyCoin' if self.SIDE=='LONG' else 'firstSellQtyCoin', 0.09))
         self.min_order_qty_coin = float(sp.get('minOrderQtyCoin', 0.09))
+        self.min_order_usdt = float(sp.get('minOrderUSDT', 0.0))
         self.use_equity_pct_base = bool(sp.get('useEquityPctBase', True))
         self.base_order_pct_eq = float(sp.get('baseOrderPctEq', 1.0))
         self.equity_for_sizing = float(sp.get('equityForSizingUSDT', 300.0))
@@ -193,6 +194,8 @@ class _PackAdaptiveBase:
         return max(raw, self.min_order_qty_coin)
     def _entry_tp(self, price):
         return price*(1.0+self.tp_percent/100.0) if self.SIDE=='LONG' else price*(1.0-self.tp_percent/100.0)
+    def _order_value_ok(self, price, qty):
+        return (price * qty) >= self.min_order_usdt - 1e-12
     def entry_signal(self,is_opening,sym,row,ctx=None):
         t=row.get('datetime_utc')
         if not is_opening or not self._can_place_order(t): return None
@@ -203,6 +206,8 @@ class _PackAdaptiveBase:
             st.reset_pending=False; st.trailing_active=False; st.trailing_ref=None; st.pending_new_entry=None
             st.cycle_base_qty_coin=self._calc_base_qty(close,target_pct)
             qty0=st.cycle_base_qty_coin; value=qty0*close
+            if not self._order_value_ok(close, qty0):
+                return None
             st.pos_value_usdt=value; st.pos_size=qty0; st.avg_price=close; st.num_fills=1; st.last_fill_price=close; st.next_level_price=self._next_level(close,1); st.lots=[(qty0,close)]
             self._register_order()
             return Sig(side=self.SIDE, tp=self._entry_tp(close), sl=None, reason='First', qty=qty0)
@@ -241,10 +246,11 @@ class _PackAdaptiveBase:
                     st.reset_pending=True; st.pos_value_usdt=0.0; st.pos_size=0.0; st.avg_price=None; st.num_fills=0; st.last_fill_price=None; st.next_level_price=None; st.lots=[]; st.trailing_active=False; st.trailing_ref=None; self._register_order(); return ExitSig(action='TP', exit_price=close, reason='TP Full')
         if not tp_touch: st.trailing_active=False; st.trailing_ref=None
         fills=0
-        while (not tp_blocks_dca and st.num_fills<self.margin_call_limit and fills<self.max_fills_per_bar and st.next_level_price is not None and ((lo<=st.next_level_price) if self.SIDE=='LONG' else (hi>=st.next_level_price)) and ((close<=st.next_level_price) if self.SIDE=='LONG' else (close>=st.next_level_price) or not self.require_close_beyond_dca) and self._can_place_order(t)):
+        while (not tp_blocks_dca and st.num_fills<self.margin_call_limit and fills<self.max_fills_per_bar and st.next_level_price is not None and ((lo<=st.next_level_price) if self.SIDE=='LONG' else (hi>=st.next_level_price)) and (((not self.require_close_beyond_dca) or (close<=st.next_level_price)) if self.SIDE=='LONG' else ((not self.require_close_beyond_dca) or (close>=st.next_level_price))) and self._can_place_order(t)):
             mult=self._get_mult(st.num_fills)
             if st.cycle_base_qty_coin is None: st.cycle_base_qty_coin=self._calc_base_qty(close,0.0)
             qty_add=st.cycle_base_qty_coin*mult; value=qty_add*close
+            if not self._order_value_ok(close, qty_add): break
             if (st.pos_value_usdt + value) > max_budget: break
             trigger_level=st.next_level_price
             new_value=float(pos.entry)*float(pos.qty) + value
