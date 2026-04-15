@@ -67,9 +67,9 @@ class Config:
     start_ms: int
     end_ms: int
     currency: str = "USDT"
-    trading_unit: str = "COIN"
     recv_window: int = 5000
     orders_limit: int = 1000
+    fill_page_size: int = 1000
     fill_chunk_hours: int = 24
     tz_name: str = "Europe/Kyiv"
     timeout_sec: int = 20
@@ -77,7 +77,6 @@ class Config:
     ca_bundle: Optional[str] = None
     verbose: bool = False
     debug_http: bool = False
-    probe_empty: bool = False
 
 
 class BingXError(RuntimeError):
@@ -85,19 +84,20 @@ class BingXError(RuntimeError):
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Export BingX perpetual futures trade history with verbose console diagnostics")
+    p = argparse.ArgumentParser(description="Export BingX futures trade history with debug")
     p.add_argument("--symbol", required=True, help="Trading pair, e.g. ENA-USDT")
     p.add_argument("--start", required=True, help='Start datetime, e.g. "2026-04-12 00:35:00"')
     p.add_argument("--end", required=True, help='End datetime, e.g. "2026-04-14 20:30:00"')
     p.add_argument("--tz", default="Europe/Kyiv", help="Input/output timezone name")
-    p.add_argument("--out", default="bingx_trade_history.csv", help="Output browser-like CSV")
-    p.add_argument("--raw-json", default=None, help="Optional path to save raw joined JSON")
-    p.add_argument("--fills-csv", default=None, help="Optional path to save normalized fills CSV")
-    p.add_argument("--orders-csv", default=None, help="Optional path to save normalized orders CSV")
+    p.add_argument("--out-dir", default="_reports/bingx_exports", help="Directory for exported files")
+    p.add_argument("--out", default=None, help="Browser-like CSV filename or full path")
+    p.add_argument("--raw-json", default=None, help="Joined raw JSON filename or full path")
+    p.add_argument("--fills-csv", default=None, help="Normalized fills CSV filename or full path")
+    p.add_argument("--orders-csv", default=None, help="Normalized orders CSV filename or full path")
     p.add_argument("--currency", default="USDT", choices=["USDT", "USDC"], help="Settlement currency")
-    p.add_argument("--trading-unit", default="COIN", choices=["COIN", "CONT"], help="Trading unit for allFillOrders")
     p.add_argument("--fill-chunk-hours", type=int, default=24, help="Chunk size for fill queries")
     p.add_argument("--orders-limit", type=int, default=1000, help="Limit for allOrders page size")
+    p.add_argument("--fill-page-size", type=int, default=1000, help="Page size for fillHistory")
     p.add_argument("--recv-window", type=int, default=5000, help="Request recvWindow in ms")
     p.add_argument("--timeout-sec", type=int, default=20, help="HTTP timeout in seconds")
     p.add_argument("--api-key", default=os.getenv("BINGX_API_KEY"), help="BingX API key")
@@ -105,11 +105,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--env-file", default=None, help="Optional .env path")
     p.add_argument("--ca-bundle", default=None, help="Custom CA bundle path")
     p.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification")
-    p.add_argument("--skip-orders", action="store_true", help="Skip /allOrders and rely only on fills")
     p.add_argument("--verbose", action="store_true", help="Verbose logging")
-    p.add_argument("--debug-http", action="store_true", help="Print request/response diagnostics for every API call")
-    p.add_argument("--probe-empty", action="store_true", help="When a query returns empty, also probe nearby read endpoints")
+    p.add_argument("--debug-http", action="store_true", help="Print request/response diagnostics")
     return p.parse_args()
+
+
+def dbg(cfg: Config, *parts: Any, force: bool = False) -> None:
+    if cfg.verbose or cfg.debug_http or force:
+        print("[dbg]", *parts, file=sys.stderr)
 
 
 def mask(s: str, left: int = 6, right: int = 4) -> str:
@@ -118,11 +121,6 @@ def mask(s: str, left: int = 6, right: int = 4) -> str:
     if len(s) <= left + right:
         return "*" * len(s)
     return s[:left] + "*" * (len(s) - left - right) + s[-right:]
-
-
-def dbg(cfg: Config, *parts: Any, force: bool = False) -> None:
-    if cfg.verbose or cfg.debug_http or force:
-        print("[dbg]", *parts, file=sys.stderr)
 
 
 def parse_dotenv_file(path: Path) -> Dict[str, str]:
@@ -228,29 +226,10 @@ def ms_to_local(ms: int, tz_name: str) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def ms_to_utc(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
 def sign_query(secret: str, params: Dict[str, Any]) -> str:
     qs = urlencode(sorted((k, v) for k, v in params.items() if v is not None), doseq=False)
     sig = hmac.new(secret.encode("utf-8"), qs.encode("utf-8"), hashlib.sha256).hexdigest()
     return qs + "&signature=" + sig
-
-
-def describe_data_shape(data: Any) -> str:
-    if data is None:
-        return "None"
-    if isinstance(data, list):
-        if not data:
-            return "list len=0"
-        first = data[0]
-        if isinstance(first, dict):
-            return f"list len={len(data)} first_keys={sorted(first.keys())[:12]}"
-        return f"list len={len(data)} first_type={type(first).__name__}"
-    if isinstance(data, dict):
-        return f"dict keys={sorted(data.keys())[:20]}"
-    return type(data).__name__
 
 
 def build_session(cfg: Config) -> requests.Session:
@@ -270,6 +249,16 @@ def build_session(cfg: Config) -> requests.Session:
     return s
 
 
+def describe_data_shape(data: Any) -> str:
+    if data is None:
+        return "None"
+    if isinstance(data, list):
+        return f"list len={len(data)}"
+    if isinstance(data, dict):
+        return f"dict keys={sorted(data.keys())[:20]}"
+    return type(data).__name__
+
+
 def request_signed_payload(
     session: requests.Session,
     method: str,
@@ -285,11 +274,9 @@ def request_signed_payload(
     last_err: Optional[Exception] = None
     for base in BASE_URLS:
         url = f"{base}{path}"
-        req_start = time.time()
         try:
             if cfg.debug_http:
                 dbg(cfg, "http.request", method.upper(), url, "params=", payload)
-
             if method.upper() == "GET":
                 resp = session.get(
                     f"{url}?{signed_qs}",
@@ -311,39 +298,24 @@ def request_signed_payload(
                     data=signed_qs,
                     timeout=cfg.timeout_sec,
                 )
-
-            elapsed = round((time.time() - req_start) * 1000, 1)
-            text = resp.text
             if cfg.debug_http:
-                dbg(cfg, "http.response", method.upper(), url, "status=", resp.status_code, "elapsed_ms=", elapsed, "text_head=", text[:350])
+                dbg(cfg, "http.response", method.upper(), url, "status=", resp.status_code, "text_head=", resp.text[:320])
 
             resp.raise_for_status()
             raw = resp.json()
-            code = raw.get("code")
-            msg = raw.get("msg")
-            data = raw.get("data")
-
-            dbg(cfg, "api.result", path, "code=", code, "msg=", msg, "shape=", describe_data_shape(data))
-            if isinstance(data, list) and data:
-                first = data[0]
-                if isinstance(first, dict):
-                    dbg(cfg, "api.first_item", path, json.dumps(first, ensure_ascii=False)[:500])
-
-            if code != 0:
-                raise BingXError(f"BingX error {code}: {msg}")
-
+            dbg(cfg, "api.result", path, "code=", raw.get("code"), "msg=", raw.get("msg"), "shape=", describe_data_shape(raw.get("data")))
             return raw
-
         except Exception as exc:
             last_err = exc
             dbg(cfg, "api.error", path, "base=", base, "error=", repr(exc), force=True)
-            continue
-
     raise BingXError(f"All BingX endpoints failed: {last_err}")
 
 
 def request_signed(session: requests.Session, method: str, path: str, params: Dict[str, Any], cfg: Config) -> Any:
-    return request_signed_payload(session, method, path, params, cfg).get("data")
+    raw = request_signed_payload(session, method, path, params, cfg)
+    if raw.get("code") != 0:
+        raise BingXError(f'BingX error {raw.get("code")}: {raw.get("msg")}')
+    return raw.get("data")
 
 
 def iter_time_chunks(start_ms: int, end_ms: int, max_span_ms: int) -> Iterable[Tuple[int, int]]:
@@ -354,53 +326,36 @@ def iter_time_chunks(start_ms: int, end_ms: int, max_span_ms: int) -> Iterable[T
         cur = nxt
 
 
-def print_chunks(cfg: Config, start_ms: int, end_ms: int, chunk_ms: int, label: str) -> None:
-    chunks = list(iter_time_chunks(start_ms, end_ms, chunk_ms))
-    dbg(cfg, f"{label}.chunks", len(chunks))
-    for i, (a, b) in enumerate(chunks, 1):
-        dbg(cfg, f"{label}.chunk[{i}]", a, b, ms_to_local(a, cfg.tz_name), "->", ms_to_local(b, cfg.tz_name))
+def _safe_name(s: str) -> str:
+    out = []
+    for ch in s:
+        if ch.isalnum() or ch in ("-", "_", "."):
+            out.append(ch)
+        else:
+            out.append("_")
+    return "".join(out).strip("_") or "export"
 
 
-def probe_empty(session: requests.Session, cfg: Config, start_ms: int, end_ms: int) -> None:
-    dbg(cfg, "probe_empty.start", force=True)
-    probes = [
-        ("GET", "/openApi/swap/v3/user/balance", {}),
-        ("GET", "/openApi/swap/v2/user/positions", {}),
-        ("GET", "/openApi/swap/v2/trade/allOrders", {
-            "currency": cfg.currency,
-            "startTime": start_ms,
-            "endTime": end_ms,
-            "limit": min(cfg.orders_limit, 50),
-        }),
-        ("GET", "/openApi/swap/v2/trade/fillHistory", {
-            "symbol": cfg.symbol,
-            "currency": cfg.currency,
-            "startTs": start_ms,
-            "endTs": end_ms,
-            "pageIndex": 1,
-            "pageSize": 50,
-        }),
-    ]
-    for method, path, params in probes:
-        try:
-            payload = request_signed_payload(session, method, path, params, cfg)
-            data = payload.get("data")
-            dbg(cfg, "probe_empty.ok", path, "shape=", describe_data_shape(data), force=True)
-        except Exception as e:
-            dbg(cfg, "probe_empty.fail", path, repr(e), force=True)
+def _resolve_output_path(out_dir: Path, value: Optional[str], default_name: str) -> Path:
+    if value:
+        p = Path(value)
+        if p.is_absolute() or p.parent != Path("."):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            return p
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir / p.name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / default_name
 
 
 def fetch_all_orders(session: requests.Session, cfg: Config) -> List[Dict[str, Any]]:
-    all_rows: List[Dict[str, Any]] = []
-    seen_order_ids: set[str] = set()
-    any_nonempty = False
+    rows_all: List[Dict[str, Any]] = []
+    seen: set[str] = set()
 
     seven_days_ms = 7 * 24 * 60 * 60 * 1000
-    print_chunks(cfg, cfg.start_ms, cfg.end_ms, seven_days_ms, "orders")
-
-    for chunk_i, (chunk_start, chunk_end) in enumerate(iter_time_chunks(cfg.start_ms, cfg.end_ms, seven_days_ms), 1):
+    for i, (chunk_start, chunk_end) in enumerate(iter_time_chunks(cfg.start_ms, cfg.end_ms, seven_days_ms), 1):
         cursor: Optional[int] = None
-        dbg(cfg, f"orders.scan.begin[{chunk_i}]", "local=", ms_to_local(chunk_start, cfg.tz_name), "->", ms_to_local(chunk_end, cfg.tz_name))
+        dbg(cfg, f"orders.chunk[{i}]", ms_to_local(chunk_start, cfg.tz_name), "->", ms_to_local(chunk_end, cfg.tz_name))
         while True:
             params: Dict[str, Any] = {
                 "symbol": cfg.symbol,
@@ -413,89 +368,89 @@ def fetch_all_orders(session: requests.Session, cfg: Config) -> List[Dict[str, A
                 params["orderId"] = cursor
 
             data = request_signed(session, "GET", "/openApi/swap/v2/trade/allOrders", params, cfg)
-            rows = data if isinstance(data, list) else []
+            rows = []
+            if isinstance(data, dict) and isinstance(data.get("orders"), list):
+                rows = data["orders"]
+            elif isinstance(data, list):
+                rows = data
+
             if not rows:
-                dbg(cfg, f"orders.empty[{chunk_i}]", "cursor=", cursor, "symbol=", cfg.symbol)
+                dbg(cfg, f"orders.empty[{i}]", "cursor=", cursor)
                 break
 
-            any_nonempty = True
             new_count = 0
-            max_order_id: Optional[int] = cursor
+            max_oid = cursor
             for row in rows:
                 oid = str(row.get("orderId"))
-                if oid not in seen_order_ids:
-                    seen_order_ids.add(oid)
-                    all_rows.append(row)
+                if oid not in seen:
+                    seen.add(oid)
+                    rows_all.append(row)
                     new_count += 1
                 try:
-                    oid_int = int(oid)
-                    if max_order_id is None or oid_int > max_order_id:
-                        max_order_id = oid_int
+                    oi = int(oid)
+                    if max_oid is None or oi > max_oid:
+                        max_oid = oi
                 except Exception:
                     pass
 
-            dbg(cfg, f"orders.page[{chunk_i}]", "got=", len(rows), "new=", new_count, "cursor_in=", cursor, "cursor_out=", max_order_id)
-
-            if len(rows) < cfg.orders_limit or new_count == 0 or max_order_id is None or max_order_id == cursor:
+            dbg(cfg, f"orders.page[{i}]", "got=", len(rows), "new=", new_count, "cursor_in=", cursor, "cursor_out=", max_oid)
+            if len(rows) < cfg.orders_limit or new_count == 0 or max_oid is None or max_oid == cursor:
                 break
-            cursor = max_order_id
+            cursor = max_oid
 
-    if cfg.probe_empty and not any_nonempty:
-        probe_empty(session, cfg, cfg.start_ms, cfg.end_ms)
-
-    return all_rows
+    return rows_all
 
 
-def fetch_all_fills(session: requests.Session, cfg: Config) -> List[Dict[str, Any]]:
-    all_rows: List[Dict[str, Any]] = []
-    seen_trade_ids: set[str] = set()
-    any_nonempty = False
-
+def fetch_fill_history(session: requests.Session, cfg: Config) -> List[Dict[str, Any]]:
+    rows_all: List[Dict[str, Any]] = []
+    seen: set[str] = set()
     chunk_ms = max(1, cfg.fill_chunk_hours) * 60 * 60 * 1000
-    print_chunks(cfg, cfg.start_ms, cfg.end_ms, chunk_ms, "fills")
 
-    for chunk_i, (chunk_start, chunk_end) in enumerate(iter_time_chunks(cfg.start_ms, cfg.end_ms, chunk_ms), 1):
-        params = {
-            "tradingUnit": cfg.trading_unit,
-            "startTs": chunk_start,
-            "endTs": chunk_end,
-            "currency": cfg.currency,
-        }
-        data = request_signed(session, "GET", "/openApi/swap/v2/trade/allFillOrders", params, cfg)
-        rows = data if isinstance(data, list) else []
-        if rows:
-            any_nonempty = True
+    for i, (chunk_start, chunk_end) in enumerate(iter_time_chunks(cfg.start_ms, cfg.end_ms, chunk_ms), 1):
+        page = 1
+        dbg(cfg, f"fills.chunk[{i}]", ms_to_local(chunk_start, cfg.tz_name), "->", ms_to_local(chunk_end, cfg.tz_name))
+        while True:
+            params: Dict[str, Any] = {
+                "symbol": cfg.symbol,
+                "currency": cfg.currency,
+                "startTs": chunk_start,
+                "endTs": chunk_end,
+                "pageIndex": page,
+                "pageSize": cfg.fill_page_size,
+            }
+            data = request_signed(session, "GET", "/openApi/swap/v2/trade/fillHistory", params, cfg)
 
-        added = 0
-        symbols_seen = set()
-        for row in rows:
-            sym = str(row.get("symbol"))
-            symbols_seen.add(sym)
-            if sym != cfg.symbol:
-                continue
-            tid = str(row.get("tradeId"))
-            if tid in seen_trade_ids:
-                continue
-            seen_trade_ids.add(tid)
-            all_rows.append(row)
-            added += 1
+            rows = []
+            total = None
+            if isinstance(data, dict):
+                if isinstance(data.get("fill_history_orders"), list):
+                    rows = data["fill_history_orders"]
+                elif isinstance(data.get("fill_orders"), list):
+                    rows = data["fill_orders"]
+                total = data.get("total")
+            elif isinstance(data, list):
+                rows = data
 
-        dbg(cfg, f"fills.chunk[{chunk_i}]", "raw=", len(rows), "kept=", added, "symbols_seen=", sorted(list(symbols_seen))[:10])
+            if not rows:
+                dbg(cfg, f"fills.empty[{i}]", "page=", page, "total=", total)
+                break
 
-    if cfg.probe_empty and not any_nonempty:
-        probe_empty(session, cfg, cfg.start_ms, cfg.end_ms)
+            new_count = 0
+            for row in rows:
+                tid = str(row.get("tradeId"))
+                if tid in seen:
+                    continue
+                seen.add(tid)
+                rows_all.append(row)
+                new_count += 1
 
-    return all_rows
+            dbg(cfg, f"fills.page[{i}]", "page=", page, "got=", len(rows), "new=", new_count, "total=", total)
 
+            if len(rows) < cfg.fill_page_size or new_count == 0:
+                break
+            page += 1
 
-def normalize_symbol_for_ui(symbol: str) -> str:
-    return symbol.replace("-", "")
-
-
-def format_ts(ms: int, tz_name: str) -> str:
-    tz = ensure_tz(tz_name)
-    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(tz)
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
+    return rows_all
 
 
 def fmt_qty(value: Any, symbol: str) -> str:
@@ -523,125 +478,89 @@ def fmt_usdt(value: Any) -> str:
         return f"{value} USDT"
 
 
-def build_direction_label(side: str, position_side: str) -> str:
-    side = (side or "").upper()
-    position_side = (position_side or "").upper()
+def build_browser_rows(fills: List[Dict[str, Any]], orders: List[Dict[str, Any]], cfg: Config) -> List[Dict[str, Any]]:
+    by_order = {str(o.get("orderId")): o for o in orders}
+    out = []
 
-    if position_side == "SHORT":
-        if side == "SELL":
-            return "Відкрити коротку"
-        if side == "BUY":
-            return "Закрити кор."
-    if position_side == "LONG":
-        if side == "BUY":
-            return "Відкрити лонг"
-        if side == "SELL":
-            return "Закрити лонг"
-    return f"{side} {position_side}".strip() or "Невідомо"
+    for f in fills:
+        oid = str(f.get("orderId"))
+        o = by_order.get(oid, {})
+        side = str(f.get("side") or o.get("side") or "").upper()
+        position_side = str(f.get("positionSide") or o.get("positionSide") or "").upper()
 
+        if position_side == "SHORT":
+            direction = "Відкрити коротку" if side == "SELL" else "Закрити кор."
+        elif position_side == "LONG":
+            direction = "Відкрити лонг" if side == "BUY" else "Закрити лонг"
+        else:
+            direction = f"{side} {position_side}".strip() or "Невідомо"
 
-def join_fills_with_orders(
-    fills: List[Dict[str, Any]],
-    orders: List[Dict[str, Any]],
-    cfg: Config,
-) -> List[Dict[str, Any]]:
-    by_order_id: Dict[str, Dict[str, Any]] = {}
-    for row in orders:
-        by_order_id[str(row.get("orderId"))] = row
+        filled_time = f.get("filledTime")
+        t_ms = None
+        if filled_time:
+            try:
+                t_ms = int(datetime.fromisoformat(str(filled_time).replace("Z", "+00:00")).timestamp() * 1000)
+            except Exception:
+                t_ms = None
+        if t_ms is None:
+            try:
+                t_ms = int(f.get("time"))
+            except Exception:
+                t_ms = cfg.start_ms
 
-    joined: List[Dict[str, Any]] = []
-    missing_order_links = 0
-    for fill in fills:
-        order = by_order_id.get(str(fill.get("orderId")), {})
-        if not order:
-            missing_order_links += 1
-        joined.append(
-            {
-                "tradeId": str(fill.get("tradeId")),
-                "orderId": str(fill.get("orderId")),
-                "symbol": str(fill.get("symbol")),
-                "time": int(fill.get("time")),
-                "price": fill.get("price"),
-                "qty": fill.get("qty"),
-                "realizedPnl": fill.get("realizedPnl", "0"),
-                "fee": fill.get("fee", "0"),
-                "side": str(order.get("side") or fill.get("side") or ""),
-                "positionSide": str(order.get("positionSide") or ""),
-                "orderStatus": str(order.get("status") or ""),
-                "avgPrice": order.get("avgPrice"),
-                "executedQty": order.get("executedQty"),
-            }
-        )
+        out.append({
+            "tradeId": str(f.get("tradeId")),
+            "orderId": oid,
+            "symbol": str(f.get("symbol") or cfg.symbol),
+            "time": t_ms,
+            "side": side,
+            "positionSide": position_side,
+            "price": f.get("price"),
+            "qty": f.get("qty"),
+            "realizedPnl": f.get("realisedPNL") if f.get("realisedPNL") is not None else f.get("realizedPnl", "0"),
+            "fee": f.get("commission") if f.get("commission") is not None else f.get("fee", "0"),
+            "ua_time": ms_to_local(t_ms, cfg.tz_name),
+            "ua_direction": direction,
+        })
 
-    joined.sort(key=lambda x: (x["time"], x["tradeId"]))
-    dbg(cfg, "join.summary", "fills=", len(fills), "orders=", len(orders), "joined=", len(joined), "missing_order_links=", missing_order_links)
-    return joined
+    out.sort(key=lambda r: (r["time"], r["tradeId"]))
+    dbg(cfg, "build_browser_rows", "fills=", len(fills), "orders=", len(orders), "out=", len(out))
+    return out
 
 
-def export_browser_like_csv(rows: List[Dict[str, Any]], out_path: Path, tz_name: str) -> None:
+def export_browser_like_csv(rows: List[Dict[str, Any]], out_path: Path) -> None:
     with out_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=UA_HEADERS)
         writer.writeheader()
         for row in rows:
-            symbol = str(row["symbol"])
-            side = str(row["side"])
-            position_side = str(row["positionSide"])
-            direction = build_direction_label(side, position_side)
-            writer.writerow(
-                {
-                    "Час виконання": format_ts(int(row["time"]), tz_name),
-                    "Ф’ючерси / Напрямок": f"{normalize_symbol_for_ui(symbol)}\n{direction}",
-                    "Виконано": fmt_qty(row["qty"], symbol),
-                    "Ціна виконання": fmt_price(row["price"]),
-                    "Закриті PnL / %": fmt_usdt(row["realizedPnl"]),
-                    "Комісія": fmt_usdt(row["fee"]),
-                    "Ордер №": str(row["orderId"]),
-                    "Операція": "",
-                }
-            )
+            writer.writerow({
+                "Час виконання": row["ua_time"],
+                "Ф’ючерси / Напрямок": f'{row["symbol"].replace("-", "")}\n{row["ua_direction"]}',
+                "Виконано": fmt_qty(row["qty"], row["symbol"]),
+                "Ціна виконання": fmt_price(row["price"]),
+                "Закриті PnL / %": fmt_usdt(row["realizedPnl"]),
+                "Комісія": fmt_usdt(row["fee"]),
+                "Ордер №": row["orderId"],
+                "Операція": "",
+            })
 
 
-def export_normalized_fills_csv(rows: List[Dict[str, Any]], out_path: Path, tz_name: str) -> None:
-    headers = [
-        "tradeId", "orderId", "symbol", "time", "time_local", "side", "positionSide",
-        "price", "qty", "realizedPnl", "fee", "orderStatus",
-    ]
+def export_dict_rows(rows: List[Dict[str, Any]], out_path: Path) -> None:
+    if not rows:
+        out_path.write_text("", encoding="utf-8")
+        return
+    keys: List[str] = []
+    seen = set()
+    for row in rows:
+        for k in row.keys():
+            if k not in seen:
+                seen.add(k)
+                keys.append(k)
     with out_path.open("w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=headers)
+        writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()
         for row in rows:
-            out = dict(row)
-            out["time_local"] = format_ts(int(row["time"]), tz_name)
-            writer.writerow({k: out.get(k, "") for k in headers})
-
-
-def export_orders_csv(rows: List[Dict[str, Any]], out_path: Path, tz_name: str) -> None:
-    headers = [
-        "orderId", "symbol", "side", "positionSide", "type", "status",
-        "price", "avgPrice", "origQty", "executedQty", "time", "updateTime",
-        "time_local", "update_time_local",
-    ]
-    with out_path.open("w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=headers)
-        writer.writeheader()
-        for row in rows:
-            out = {
-                "orderId": row.get("orderId"),
-                "symbol": row.get("symbol"),
-                "side": row.get("side"),
-                "positionSide": row.get("positionSide"),
-                "type": row.get("type"),
-                "status": row.get("status"),
-                "price": row.get("price"),
-                "avgPrice": row.get("avgPrice"),
-                "origQty": row.get("origQty"),
-                "executedQty": row.get("executedQty"),
-                "time": row.get("time"),
-                "updateTime": row.get("updateTime"),
-                "time_local": format_ts(int(row["time"]), tz_name) if row.get("time") else "",
-                "update_time_local": format_ts(int(row["updateTime"]), tz_name) if row.get("updateTime") else "",
-            }
-            writer.writerow(out)
+            writer.writerow(row)
 
 
 def main() -> int:
@@ -649,11 +568,7 @@ def main() -> int:
     args.api_key, args.api_secret, env_path = load_api_credentials(args)
 
     if not args.api_key or not args.api_secret:
-        print(
-            "Set --api-key/--api-secret, export BINGX_API_KEY/BINGX_API_SECRET, "
-            "or place them in a .env file",
-            file=sys.stderr,
-        )
+        print("Missing API credentials", file=sys.stderr)
         return 2
 
     cfg = Config(
@@ -663,9 +578,9 @@ def main() -> int:
         start_ms=parse_dt_to_ms(args.start, args.tz),
         end_ms=parse_dt_to_ms(args.end, args.tz),
         currency=args.currency,
-        trading_unit=args.trading_unit,
         recv_window=args.recv_window,
         orders_limit=args.orders_limit,
+        fill_page_size=args.fill_page_size,
         fill_chunk_hours=args.fill_chunk_hours,
         tz_name=args.tz,
         timeout_sec=args.timeout_sec,
@@ -673,47 +588,37 @@ def main() -> int:
         ca_bundle=args.ca_bundle,
         verbose=bool(args.verbose),
         debug_http=bool(args.debug_http),
-        probe_empty=bool(args.probe_empty),
     )
-
-    if cfg.end_ms <= cfg.start_ms:
-        print("--end must be later than --start", file=sys.stderr)
-        return 2
-
     session = build_session(cfg)
 
     dbg(cfg, "startup.env_file", env_path, force=True)
     dbg(cfg, "startup.api_key", mask(cfg.api_key), "secret=", mask(cfg.api_secret), force=True)
-    dbg(cfg, "startup.session_verify", getattr(session, "verify", None), "insecure=", cfg.insecure, force=True)
-    dbg(cfg, "startup.symbol", cfg.symbol, "currency=", cfg.currency, "trading_unit=", cfg.trading_unit, force=True)
-    dbg(cfg, "startup.time.local", args.start, "->", args.end, force=True)
-    dbg(cfg, "startup.time.ms", cfg.start_ms, cfg.end_ms, force=True)
-    dbg(cfg, "startup.time.utc", ms_to_utc(cfg.start_ms), "->", ms_to_utc(cfg.end_ms), force=True)
-    dbg(cfg, "startup.time.local_resolved", ms_to_local(cfg.start_ms, cfg.tz_name), "->", ms_to_local(cfg.end_ms, cfg.tz_name), force=True)
+    dbg(cfg, "startup.verify", getattr(session, "verify", None), force=True)
+    dbg(cfg, "startup.symbol", cfg.symbol, force=True)
+    dbg(cfg, "startup.range.local", ms_to_local(cfg.start_ms, cfg.tz_name), "->", ms_to_local(cfg.end_ms, cfg.tz_name), force=True)
 
-    out_path = Path(args.out)
-    raw_json_path = Path(args.raw_json) if args.raw_json else None
-    fills_csv_path = Path(args.fills_csv) if args.fills_csv else None
-    orders_csv_path = Path(args.orders_csv) if args.orders_csv else None
+    base_name = f"{_safe_name(cfg.symbol)}_{cfg.start_ms}_{cfg.end_ms}"
+    out_dir = Path(args.out_dir)
+    out_path = _resolve_output_path(out_dir, args.out, f"{base_name}_trade_history.csv")
+    raw_json_path = _resolve_output_path(out_dir, args.raw_json, f"{base_name}_joined.json") if args.raw_json is not None else None
+    fills_csv_path = _resolve_output_path(out_dir, args.fills_csv, f"{base_name}_fills_normalized.csv") if args.fills_csv is not None else None
+    orders_csv_path = _resolve_output_path(out_dir, args.orders_csv, f"{base_name}_orders_normalized.csv") if args.orders_csv is not None else None
 
-    orders: List[Dict[str, Any]] = []
-    if not args.skip_orders:
-        orders = fetch_all_orders(session, cfg)
+    orders = fetch_all_orders(session, cfg)
+    fills = fetch_fill_history(session, cfg)
+    rows = build_browser_rows(fills, orders, cfg)
 
-    fills = fetch_all_fills(session, cfg)
-    joined = join_fills_with_orders(fills, orders, cfg)
-
-    export_browser_like_csv(joined, out_path, cfg.tz_name)
-    if raw_json_path:
-        raw_json_path.write_text(json.dumps(joined, ensure_ascii=False, indent=2), encoding="utf-8")
+    export_browser_like_csv(rows, out_path)
     if fills_csv_path:
-        export_normalized_fills_csv(joined, fills_csv_path, cfg.tz_name)
+        export_dict_rows(fills, fills_csv_path)
     if orders_csv_path:
-        export_orders_csv(orders, orders_csv_path, cfg.tz_name)
+        export_dict_rows(orders, orders_csv_path)
+    if raw_json_path:
+        raw_json_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"orders={len(orders)}")
     print(f"fills={len(fills)}")
-    print(f"joined={len(joined)}")
+    print(f"joined={len(rows)}")
     print(f"out={out_path}")
     if raw_json_path:
         print(f"raw_json={raw_json_path}")
