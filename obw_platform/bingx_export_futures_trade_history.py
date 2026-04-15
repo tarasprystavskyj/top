@@ -11,34 +11,31 @@ What it does
 - Joins fills to orders by orderId to recover side / positionSide.
 - Exports a browser-like CSV with Ukrainian headers similar to BingX Trade History.
 
-Why two endpoints
------------------
-`allFillOrders` gives the true execution-level records with fee and realized PnL.
-`allOrders` provides side / positionSide, which is needed to label records like
-"Відкрити коротку" vs "Закрити кор.".
+Fixes included in this version
+------------------------------
+- Python 3.8 timezone fallback:
+    * zoneinfo
+    * backports.zoneinfo
+    * pytz
+    * python-dateutil
+- Auto-loads API keys from:
+    * --api-key / --api-secret
+    * BINGX_API_KEY / BINGX_API_SECRET
+    * .env via --env-file or auto-discovery
+- Better HTTPS handling:
+    * requests.Session()
+    * certifi CA bundle if available
+    * --ca-bundle for custom CA
+    * --insecure fallback for broken server CA stores
 
 Notes
 -----
 - The official fill endpoint does not expose the PnL percentage shown by the web UI.
   This script fills the "Закриті PnL / %" column with the USDT amount only.
-- Historical order queries with `startTime`/`endTime` must not span more than 7 days,
+- Historical order queries with startTime/endTime must not span more than 7 days,
   so this script automatically chunks the range.
-- `allFillOrders` has no documented pagination. To reduce the chance of truncation on
-  very active accounts, the script fetches it in smaller chunks (default 24h).
-
-Environment variables
----------------------
-    BINGX_API_KEY
-    BINGX_API_SECRET
-
-Example
--------
-python bingx_export_futures_trade_history.py \
-  --symbol ENA-USDT \
-  --start "2026-04-12 00:35:00" \
-  --end   "2026-04-14 20:30:00" \
-  --tz Europe/Kyiv \
-  --out bingx_ena_trade_history.csv
+- allFillOrders has no documented pagination. To reduce the chance of truncation on
+  very active accounts, the script fetches it in smaller chunks.
 """
 from __future__ import annotations
 
@@ -50,6 +47,7 @@ import json
 import os
 import sys
 import time
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +55,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import requests
+
+try:
+    import certifi  # type: ignore
+except Exception:  # pragma: no cover
+    certifi = None  # type: ignore
 
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
@@ -107,11 +110,40 @@ class Config:
     orders_limit: int = 1000
     fill_chunk_hours: int = 24
     tz_name: str = "Europe/Kyiv"
-    timeout_sec: int = 15
+    timeout_sec: int = 20
+    insecure: bool = False
+    ca_bundle: Optional[str] = None
+    verbose: bool = False
 
 
 class BingXError(RuntimeError):
     pass
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Export BingX perpetual futures trade history")
+    p.add_argument("--symbol", required=True, help="Trading pair, e.g. ENA-USDT")
+    p.add_argument("--start", required=True, help='Start datetime, e.g. "2026-04-12 00:35:00"')
+    p.add_argument("--end", required=True, help='End datetime, e.g. "2026-04-14 20:30:00"')
+    p.add_argument("--tz", default="Europe/Kyiv", help="Input/output timezone name")
+    p.add_argument("--out", default="bingx_trade_history.csv", help="Output browser-like CSV")
+    p.add_argument("--raw-json", default=None, help="Optional path to save raw joined JSON")
+    p.add_argument("--fills-csv", default=None, help="Optional path to save normalized fills CSV")
+    p.add_argument("--orders-csv", default=None, help="Optional path to save normalized orders CSV")
+    p.add_argument("--currency", default="USDT", choices=["USDT", "USDC"], help="Settlement currency")
+    p.add_argument("--trading-unit", default="COIN", choices=["COIN", "CONT"], help="Trading unit for allFillOrders")
+    p.add_argument("--fill-chunk-hours", type=int, default=24, help="Chunk size for fill queries")
+    p.add_argument("--orders-limit", type=int, default=1000, help="Limit for allOrders page size")
+    p.add_argument("--recv-window", type=int, default=5000, help="Request recvWindow in ms")
+    p.add_argument("--timeout-sec", type=int, default=20, help="HTTP timeout in seconds")
+    p.add_argument("--api-key", default=os.getenv("BINGX_API_KEY"), help="BingX API key")
+    p.add_argument("--api-secret", default=os.getenv("BINGX_API_SECRET"), help="BingX API secret")
+    p.add_argument("--env-file", default=None, help="Optional .env path")
+    p.add_argument("--ca-bundle", default=None, help="Custom CA bundle path")
+    p.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification")
+    p.add_argument("--skip-orders", action="store_true", help="Skip /allOrders and rely only on fills")
+    p.add_argument("--verbose", action="store_true", help="Verbose logging")
+    return p.parse_args()
 
 
 def parse_dotenv_file(path: Path) -> Dict[str, str]:
@@ -121,15 +153,15 @@ def parse_dotenv_file(path: Path) -> Dict[str, str]:
     except Exception:
         return data
 
-    for line in raw.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
             continue
-        if s.startswith("export "):
-            s = s[len("export "):].strip()
-        if "=" not in s:
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
             continue
-        key, value = s.split("=", 1)
+        key, value = line.split("=", 1)
         data[key.strip()] = value.strip().strip('"').strip("'")
     return data
 
@@ -139,7 +171,7 @@ def find_env_file(explicit: Optional[str]) -> Optional[Path]:
         p = Path(explicit).expanduser().resolve()
         return p if p.exists() else None
 
-    candidates = []
+    candidates: List[Path] = []
     cwd = Path.cwd().resolve()
     for base in [cwd, *cwd.parents]:
         candidates.append(base / ".env")
@@ -159,44 +191,23 @@ def find_env_file(explicit: Optional[str]) -> Optional[Path]:
     return None
 
 
-def load_api_credentials(args: argparse.Namespace) -> tuple[str, str]:
-    api_key = args.api_key
-    api_secret = args.api_secret
+def load_api_credentials(args: argparse.Namespace) -> Tuple[str, str]:
+    api_key = args.api_key or ""
+    api_secret = args.api_secret or ""
 
     if api_key and api_secret:
         return api_key, api_secret
 
-    env_path = find_env_file(getattr(args, "env_file", None))
+    env_path = find_env_file(args.env_file)
     if env_path is not None:
         env_data = parse_dotenv_file(env_path)
-        api_key = api_key or env_data.get("BINGX_API_KEY") or env_data.get("API_KEY")
-        api_secret = api_secret or env_data.get("BINGX_API_SECRET") or env_data.get("SECRET_KEY") or env_data.get("API_SECRET")
+        api_key = api_key or env_data.get("BINGX_API_KEY") or env_data.get("API_KEY") or env_data.get("BINGX_KEY") or ""
+        api_secret = api_secret or env_data.get("BINGX_API_SECRET") or env_data.get("API_SECRET") or env_data.get("SECRET_KEY") or env_data.get("BINGX_SECRET") or ""
 
-    return api_key or "", api_secret or ""
-
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Export BingX perpetual futures trade history")
-    p.add_argument("--symbol", required=True, help="Trading pair, e.g. ENA-USDT")
-    p.add_argument("--start", required=True, help='Start datetime, e.g. "2026-04-12 00:35:00"')
-    p.add_argument("--end", required=True, help='End datetime, e.g. "2026-04-14 20:30:00"')
-    p.add_argument("--tz", default="Europe/Kyiv", help="Output timezone name for CSV timestamps")
-    p.add_argument("--out", default="bingx_trade_history.csv", help="Output browser-like CSV")
-    p.add_argument("--raw-json", default=None, help="Optional path to save raw joined JSON")
-    p.add_argument("--fills-csv", default=None, help="Optional path to save normalized fills CSV")
-    p.add_argument("--currency", default="USDT", choices=["USDT", "USDC"], help="Settlement currency")
-    p.add_argument("--trading-unit", default="COIN", choices=["COIN", "CONT"], help="Trading unit for allFillOrders")
-    p.add_argument("--fill-chunk-hours", type=int, default=24, help="Chunk size for fill queries")
-    p.add_argument("--orders-limit", type=int, default=1000, help="Limit for allOrders page size")
-    p.add_argument("--recv-window", type=int, default=5000, help="Request recvWindow in ms")
-    p.add_argument("--api-key", default=os.getenv("BINGX_API_KEY"), help="BingX API key")
-    p.add_argument("--api-secret", default=os.getenv("BINGX_API_SECRET"), help="BingX API secret")
-    p.add_argument("--env-file", default=None, help="Optional path to .env with BINGX_API_KEY/BINGX_API_SECRET")
-    return p.parse_args()
+    return api_key, api_secret
 
 
 def ensure_tz(name: str):
-    """Return a tzinfo object on Python 3.8+ with several fallbacks."""
     if ZoneInfo is not None:
         try:
             return ZoneInfo(name)
@@ -228,7 +239,10 @@ def parse_dt_to_ms(text: str, tz_name: str) -> int:
     tz = ensure_tz(tz_name)
     dt = datetime.fromisoformat(text.replace(" ", "T"))
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=tz)
+        if pytz is not None and hasattr(tz, "localize"):
+            dt = tz.localize(dt)  # type: ignore[attr-defined]
+        else:
+            dt = dt.replace(tzinfo=tz)
     return int(dt.astimezone(timezone.utc).timestamp() * 1000)
 
 
@@ -236,6 +250,23 @@ def sign_query(secret: str, params: Dict[str, Any]) -> str:
     qs = urlencode(sorted((k, v) for k, v in params.items() if v is not None), doseq=False)
     sig = hmac.new(secret.encode("utf-8"), qs.encode("utf-8"), hashlib.sha256).hexdigest()
     return qs + "&signature=" + sig
+
+
+def build_session(cfg: Config) -> requests.Session:
+    s = requests.Session()
+    if cfg.insecure:
+        s.verify = False
+        warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+    elif cfg.ca_bundle:
+        s.verify = cfg.ca_bundle
+    elif certifi is not None:
+        try:
+            s.verify = certifi.where()
+        except Exception:
+            s.verify = True
+    else:
+        s.verify = True
+    return s
 
 
 def request_signed(session: requests.Session, method: str, path: str, params: Dict[str, Any], cfg: Config) -> Any:
@@ -277,6 +308,8 @@ def request_signed(session: requests.Session, method: str, path: str, params: Di
             return data.get("data")
         except Exception as exc:
             last_err = exc
+            if cfg.verbose:
+                print(f"[warn] {base}{path} failed: {exc}", file=sys.stderr)
             continue
 
     raise BingXError(f"All BingX endpoints failed: {last_err}")
@@ -328,6 +361,9 @@ def fetch_all_orders(session: requests.Session, cfg: Config) -> List[Dict[str, A
                 except Exception:
                     pass
 
+            if cfg.verbose:
+                print(f"[orders] chunk {chunk_start}..{chunk_end} got={len(rows)} new={new_count}", file=sys.stderr)
+
             if len(rows) < cfg.orders_limit or new_count == 0 or max_order_id is None or max_order_id == cursor:
                 break
             cursor = max_order_id
@@ -349,6 +385,7 @@ def fetch_all_fills(session: requests.Session, cfg: Config) -> List[Dict[str, An
         }
         data = request_signed(session, "GET", "/openApi/swap/v2/trade/allFillOrders", params, cfg)
         rows = data if isinstance(data, list) else []
+        added = 0
         for row in rows:
             if str(row.get("symbol")) != cfg.symbol:
                 continue
@@ -357,6 +394,10 @@ def fetch_all_fills(session: requests.Session, cfg: Config) -> List[Dict[str, An
                 continue
             seen_trade_ids.add(tid)
             all_rows.append(row)
+            added += 1
+
+        if cfg.verbose:
+            print(f"[fills] chunk {chunk_start}..{chunk_end} got={len(rows)} kept={added}", file=sys.stderr)
 
     return all_rows
 
@@ -485,11 +526,45 @@ def export_normalized_fills_csv(rows: List[Dict[str, Any]], out_path: Path, tz_n
             writer.writerow({k: out.get(k, "") for k in headers})
 
 
+def export_orders_csv(rows: List[Dict[str, Any]], out_path: Path, tz_name: str) -> None:
+    headers = [
+        "orderId", "symbol", "side", "positionSide", "type", "status",
+        "price", "avgPrice", "origQty", "executedQty", "time", "updateTime",
+        "time_local", "update_time_local",
+    ]
+    with out_path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            out = {
+                "orderId": row.get("orderId"),
+                "symbol": row.get("symbol"),
+                "side": row.get("side"),
+                "positionSide": row.get("positionSide"),
+                "type": row.get("type"),
+                "status": row.get("status"),
+                "price": row.get("price"),
+                "avgPrice": row.get("avgPrice"),
+                "origQty": row.get("origQty"),
+                "executedQty": row.get("executedQty"),
+                "time": row.get("time"),
+                "updateTime": row.get("updateTime"),
+                "time_local": format_ts(int(row["time"]), tz_name) if row.get("time") else "",
+                "update_time_local": format_ts(int(row["updateTime"]), tz_name) if row.get("updateTime") else "",
+            }
+            writer.writerow(out)
+
+
 def main() -> int:
     args = parse_args()
+    args.api_key, args.api_secret = load_api_credentials(args)
 
     if not args.api_key or not args.api_secret:
-        print("Set --api-key/--api-secret or environment variables BINGX_API_KEY/BINGX_API_SECRET", file=sys.stderr)
+        print(
+            "Set --api-key/--api-secret, export BINGX_API_KEY/BINGX_API_SECRET, "
+            "or place them in a .env file",
+            file=sys.stderr,
+        )
         return 2
 
     cfg = Config(
@@ -504,6 +579,10 @@ def main() -> int:
         orders_limit=args.orders_limit,
         fill_chunk_hours=args.fill_chunk_hours,
         tz_name=args.tz,
+        timeout_sec=args.timeout_sec,
+        insecure=bool(args.insecure),
+        ca_bundle=args.ca_bundle,
+        verbose=bool(args.verbose),
     )
 
     if cfg.end_ms <= cfg.start_ms:
@@ -513,10 +592,18 @@ def main() -> int:
     out_path = Path(args.out)
     raw_json_path = Path(args.raw_json) if args.raw_json else None
     fills_csv_path = Path(args.fills_csv) if args.fills_csv else None
+    orders_csv_path = Path(args.orders_csv) if args.orders_csv else None
 
-    session = requests.Session()
+    session = build_session(cfg)
 
-    orders = fetch_all_orders(session, cfg)
+    if cfg.verbose:
+        verify_mode = getattr(session, "verify", True)
+        print(f"[cfg] symbol={cfg.symbol} verify={verify_mode} tz={cfg.tz_name}", file=sys.stderr)
+
+    orders: List[Dict[str, Any]] = []
+    if not args.skip_orders:
+        orders = fetch_all_orders(session, cfg)
+
     fills = fetch_all_fills(session, cfg)
     joined = join_fills_with_orders(fills, orders)
 
@@ -526,6 +613,8 @@ def main() -> int:
         raw_json_path.write_text(json.dumps(joined, ensure_ascii=False, indent=2), encoding="utf-8")
     if fills_csv_path:
         export_normalized_fills_csv(joined, fills_csv_path, cfg.tz_name)
+    if orders_csv_path:
+        export_orders_csv(orders, orders_csv_path, cfg.tz_name)
 
     print(f"orders={len(orders)}")
     print(f"fills={len(fills)}")
@@ -535,6 +624,8 @@ def main() -> int:
         print(f"raw_json={raw_json_path}")
     if fills_csv_path:
         print(f"fills_csv={fills_csv_path}")
+    if orders_csv_path:
+        print(f"orders_csv={orders_csv_path}")
     return 0
 
 
