@@ -59,9 +59,22 @@ from urllib.parse import urlencode
 import requests
 
 try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover
-    ZoneInfo = None  # type: ignore
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:  # pragma: no cover
+    try:
+        from backports.zoneinfo import ZoneInfo  # type: ignore
+    except Exception:  # pragma: no cover
+        ZoneInfo = None  # type: ignore
+
+try:
+    import pytz  # type: ignore
+except Exception:  # pragma: no cover
+    pytz = None  # type: ignore
+
+try:
+    from dateutil import tz as dateutil_tz  # type: ignore
+except Exception:  # pragma: no cover
+    dateutil_tz = None  # type: ignore
 
 
 BASE_URLS = (
@@ -101,6 +114,67 @@ class BingXError(RuntimeError):
     pass
 
 
+def parse_dotenv_file(path: Path) -> Dict[str, str]:
+    data: Dict[str, str] = {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        return data
+
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("export "):
+            s = s[len("export "):].strip()
+        if "=" not in s:
+            continue
+        key, value = s.split("=", 1)
+        data[key.strip()] = value.strip().strip('"').strip("'")
+    return data
+
+
+def find_env_file(explicit: Optional[str]) -> Optional[Path]:
+    if explicit:
+        p = Path(explicit).expanduser().resolve()
+        return p if p.exists() else None
+
+    candidates = []
+    cwd = Path.cwd().resolve()
+    for base in [cwd, *cwd.parents]:
+        candidates.append(base / ".env")
+
+    script_dir = Path(__file__).resolve().parent
+    for base in [script_dir, *script_dir.parents]:
+        candidates.append(base / ".env")
+
+    seen = set()
+    for p in candidates:
+        sp = str(p)
+        if sp in seen:
+            continue
+        seen.add(sp)
+        if p.exists():
+            return p
+    return None
+
+
+def load_api_credentials(args: argparse.Namespace) -> tuple[str, str]:
+    api_key = args.api_key
+    api_secret = args.api_secret
+
+    if api_key and api_secret:
+        return api_key, api_secret
+
+    env_path = find_env_file(getattr(args, "env_file", None))
+    if env_path is not None:
+        env_data = parse_dotenv_file(env_path)
+        api_key = api_key or env_data.get("BINGX_API_KEY") or env_data.get("API_KEY")
+        api_secret = api_secret or env_data.get("BINGX_API_SECRET") or env_data.get("SECRET_KEY") or env_data.get("API_SECRET")
+
+    return api_key or "", api_secret or ""
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Export BingX perpetual futures trade history")
     p.add_argument("--symbol", required=True, help="Trading pair, e.g. ENA-USDT")
@@ -117,13 +191,37 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--recv-window", type=int, default=5000, help="Request recvWindow in ms")
     p.add_argument("--api-key", default=os.getenv("BINGX_API_KEY"), help="BingX API key")
     p.add_argument("--api-secret", default=os.getenv("BINGX_API_SECRET"), help="BingX API secret")
+    p.add_argument("--env-file", default=None, help="Optional path to .env with BINGX_API_KEY/BINGX_API_SECRET")
     return p.parse_args()
 
 
 def ensure_tz(name: str):
-    if ZoneInfo is None:
-        raise RuntimeError("zoneinfo is not available in this Python build")
-    return ZoneInfo(name)
+    """Return a tzinfo object on Python 3.8+ with several fallbacks."""
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+
+    if pytz is not None:
+        try:
+            return pytz.timezone(name)
+        except Exception:
+            pass
+
+    if dateutil_tz is not None:
+        try:
+            tz = dateutil_tz.gettz(name)
+            if tz is not None:
+                return tz
+        except Exception:
+            pass
+
+    raise RuntimeError(
+        "Timezone support is unavailable. Install one of: "
+        "`pip install backports.zoneinfo`, `pip install pytz`, "
+        "or `pip install python-dateutil`."
+    )
 
 
 def parse_dt_to_ms(text: str, tz_name: str) -> int:
