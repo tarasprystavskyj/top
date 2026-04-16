@@ -7,6 +7,7 @@ export default function Home() {
       <li><Link href='/runs'>Runs</Link></li>
       <li><Link href='/grid'>Grid</Link></li>
       <li><Link href='/live_result'>Live Result</Link></li>
+      <li><Link href='/backtest_live_validation'>Backtest vs Live Validation</Link></li>
     </ul>
   );
 }
