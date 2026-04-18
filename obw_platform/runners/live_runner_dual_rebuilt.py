@@ -13,12 +13,6 @@ from .common import (
     make_bot_id, read_hour_cache_row, save_positions, write_config_snapshot,
     write_equity,
 )
-try:
-    from .exchange_trace_layer import ExchangeTraceProxy, ensure_exchange_trace_db
-except Exception:
-    ExchangeTraceProxy = None
-    def ensure_exchange_trace_db(db_path: str) -> None:
-        return None
 
 try:
     from .common import cprint as _cprint, dot as _dot
@@ -645,16 +639,7 @@ def run_live(cfg: dict, args):
     os.makedirs(args.results_dir, exist_ok=True)
     session_db_path, cache_out_path = ensure_session_dbs(args.results_dir, getattr(args, 'session_db', ''), getattr(args, 'cache_out', ''))
     ensure_orders_db(session_db_path)
-    ensure_exchange_trace_db(session_db_path)
-    if ExchangeTraceProxy is not None and not isinstance(fetcher.ex, ExchangeTraceProxy):
-        fetcher.ex = ExchangeTraceProxy(fetcher.ex, session_db_path, source='live_runner_dual', scenario_id='')
-        try:
-            fetcher.markets = fetcher.ex.load_markets()
-        except Exception:
-            fetcher.markets = getattr(fetcher.ex, 'markets', {}) or {}
     run_id = _dt.datetime.utcnow().strftime('LIVE_DUAL_%Y%m%d_%H%M%S')
-    if ExchangeTraceProxy is not None and isinstance(fetcher.ex, ExchangeTraceProxy):
-        fetcher.ex._scenario_id = run_id
     write_config_snapshot(session_db_path, run_id, cfg)
     global DEBUG_OPEN; DEBUG_OPEN = bool(getattr(args, 'debug', False) or cfg.get('debug_open', False))
     positions = load_positions(args.results_dir)

@@ -207,22 +207,6 @@ try:
 except Exception:
     VirtualExchange = None
 
-# ---------- Exchange trace / replay ----------
-try:
-    try:
-        from .exchange_trace_layer import ExchangeTraceProxy, ReplayExchange, ensure_exchange_trace_db
-    except Exception:
-        import sys as _sys
-        _here = os.path.dirname(__file__)
-        if _here and _here not in _sys.path:
-            _sys.path.insert(0, _here)
-        from exchange_trace_layer import ExchangeTraceProxy, ReplayExchange, ensure_exchange_trace_db
-except Exception:
-    ExchangeTraceProxy = None
-    ReplayExchange = None
-    def ensure_exchange_trace_db(db_path: str) -> None:
-        return None
-
 # ---------- CCXT ----------
 try:
     import ccxt  # type: ignore
@@ -240,20 +224,6 @@ class CCXTFetcher:
             if VirtualExchange is None:
                 raise RuntimeError('VirtualExchange unavailable')
             self.ex = VirtualExchange.from_env(debug=debug)
-        elif ex_name in ('replay', 'scenario', 'replay_exchange'):
-            if ReplayExchange is None:
-                raise RuntimeError('ReplayExchange unavailable')
-            backend_name = str(os.environ.get('REPLAY_EXCHANGE_BACKEND', 'virtual') or 'virtual').lower()
-            if backend_name in ('virtual', 'sim', 'paper_virtual'):
-                if VirtualExchange is None:
-                    raise RuntimeError('VirtualExchange unavailable for replay backend')
-                backend = VirtualExchange.from_env(debug=debug)
-            else:
-                if not ccxt:
-                    raise RuntimeError("ccxt is not installed. pip install 'ccxt<5'")
-                backend = getattr(ccxt, backend_name)({'enableRateLimit': True, 'timeout': 20000})
-                backend.load_markets()
-            self.ex = ReplayExchange.from_env(backend=backend, debug=debug)
         else:
             if not ccxt:
                 raise RuntimeError("ccxt is not installed. pip install 'ccxt<5'")
@@ -263,10 +233,6 @@ class CCXTFetcher:
             if api_k and api_s:
                 opts.update({'apiKey': api_k, 'secret': api_s})
             self.ex = getattr(ccxt, exchange)(opts)
-        trace_db = os.environ.get('EXCHANGE_TRACE_DB', '').strip()
-        if trace_db and ExchangeTraceProxy is not None and not isinstance(self.ex, ExchangeTraceProxy):
-            ensure_exchange_trace_db(trace_db)
-            self.ex = ExchangeTraceProxy(self.ex, trace_db, source='ccxt_fetcher', scenario_id=os.environ.get('EXCHANGE_TRACE_SCENARIO_ID', '').strip(), debug=debug)
         try:
             self.markets = self.ex.load_markets()
         except Exception as e:
@@ -602,26 +568,31 @@ def write_decisions(sess_path: str, run_id: str, bar_time, ranked_list, selected
     con.commit()
     con.close()
 
-def write_equity(sess_path: str, run_id: str, t, equity_dict: dict):
-    if isinstance(equity_dict, (int, float)):
+def write_equity(sess_path: str, run_id: str, t, equity_dict):
+    if not isinstance(equity_dict, dict):
+        try:
+            eq = float(equity_dict)
+        except Exception:
+            eq = 0.0
         equity_dict = {
-            'equity': float(equity_dict),
-            'cash': float(equity_dict),
+            'equity': eq,
+            'cash': eq,
             'position_value': 0.0,
             'realized_pnl_cum': 0.0,
             'unrealized_pnl': 0.0,
         }
     con = sqlite3.connect(sess_path)
     cur = con.cursor()
-    cur.execute("""INSERT OR REPLACE INTO equity(run_id, ts_utc, equity_usdt, cash_usdt, position_value_usdt,
+    ts_iso = t.isoformat() if hasattr(t, 'isoformat') else str(t)
+    cur.execute('''INSERT OR REPLACE INTO equity(run_id, ts_utc, equity_usdt, cash_usdt, position_value_usdt,
                     realized_pnl_cum, unrealized_pnl)
-                    VALUES(?,?,?,?,?,?,?)""",
-                (run_id, t.isoformat() if hasattr(t, 'isoformat') else str(t),
-                 float((equity_dict or {}).get('equity', 0.0)),
-                 float((equity_dict or {}).get('cash', (equity_dict or {}).get('equity', 0.0))),
-                 float((equity_dict or {}).get('position_value', 0.0)),
-                 float((equity_dict or {}).get('realized_pnl_cum', 0.0)),
-                 float((equity_dict or {}).get('unrealized_pnl', 0.0))))
+                    VALUES(?,?,?,?,?,?,?)''',
+                (run_id, ts_iso,
+                 float(equity_dict.get('equity', 0.0)),
+                 float(equity_dict.get('cash', 0.0)),
+                 float(equity_dict.get('position_value', 0.0)),
+                 float(equity_dict.get('realized_pnl_cum', 0.0)),
+                 float(equity_dict.get('unrealized_pnl', 0.0))))
     con.commit()
     con.close()
 
