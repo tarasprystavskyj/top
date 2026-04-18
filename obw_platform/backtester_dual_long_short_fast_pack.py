@@ -209,11 +209,14 @@ def main():
     ap.add_argument('--limit-bars', type=int, default=0)
     ap.add_argument('--time-from', default='')
     ap.add_argument('--time-to', default='')
+    ap.add_argument('--debug', action='store_true', help='Verbose progress output')
     args = ap.parse_args()
     t0=time.time()
     cfg = yaml.safe_load(open(args.cfg, 'r'))
     data = np.load(args.npz, allow_pickle=True)
     market_symbol, ts_s, open_, high, low, close, volume, extras = pick_symbol_block(data, args.symbol)
+    if args.debug:
+        print(f'[cfg] symbol={market_symbol} bars={len(ts_s)} extras={sorted(extras.keys())}', flush=True)
     if args.time_from:
         tf = parse_iso_to_epoch_s(args.time_from)
         m=ts_s>=tf
@@ -239,6 +242,8 @@ def main():
         low = low[-args.limit_bars:] if low is not None else None
         volume = volume[-args.limit_bars:] if volume is not None else None
         extras = {k: v[-args.limit_bars:] for k, v in extras.items()}
+    if args.debug:
+        print(f'[run] bars_after_filters={len(ts_s)}', flush=True)
     summary = simulate(cfg, ts_s, close, open_=open_, high=high, low=low, volume=volume, extras=extras, market_symbol=market_symbol)
     summary['elapsed_sec']=time.time()-t0
     print(json.dumps(summary, indent=2, default=str), flush=True)

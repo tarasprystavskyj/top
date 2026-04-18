@@ -149,6 +149,7 @@ def main():
     ap.add_argument('--w-pnl', type=float, default=1.0)
     ap.add_argument('--w-mdd', type=float, default=80.0)
     ap.add_argument('--w-realized-mdd', type=float, default=5.0)
+    ap.add_argument('--debug', action='store_true', help='Verbose progress output')
     args = ap.parse_args()
 
     weights = {
@@ -166,13 +167,16 @@ def main():
     session.mkdir(parents=True, exist_ok=False)
     log_csv = session / 'tuner_log.csv'
 
+    if args.debug:
+        print(f'[cfg] npz={args.npz} symbol={args.symbol or "<auto>"} jobs={args.jobs} limit_bars={args.limit_bars}', flush=True)
     worker_init(args.npz, args.symbol)
     baseline = eval_cfg((base_cfg, args.limit_bars, weights, time_from_s, time_to_s))
     baseline['param'] = 'baseline'
     baseline['value'] = 'baseline'
     best_overall = dict(baseline)
     rows = [baseline]
-    print('[baseline]', baseline, flush=True)
+    if args.debug:
+        print('[baseline]', baseline, flush=True)
 
     def append_rows(rows_list):
         import pandas as pd
@@ -204,7 +208,8 @@ def main():
             append_rows(rows)
             if best['score'] > best_overall['score']:
                 best_overall = dict(best)
-            print('[rays]', pname, 'best=', best['value'], 'score=', best['score'], flush=True)
+            if args.debug:
+                print('[rays]', pname, 'best=', best['value'], 'score=', best['score'], flush=True)
         elif mode == 'grid':
             keys = list(params.keys())
             cand_lists = [realize(params[k], deep_get(base_cfg, k), delta_mode) for k in keys]
@@ -233,7 +238,8 @@ def main():
             append_rows(rows)
             if best['score'] > best_overall['score']:
                 best_overall = dict(best)
-            print('[grid]', 'best=', best['value'], 'score=', best['score'], flush=True)
+            if args.debug:
+                print('[grid]', 'best=', best['value'], 'score=', best['score'], flush=True)
         else:
             raise ValueError(mode)
 

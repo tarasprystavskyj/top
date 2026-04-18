@@ -22,8 +22,11 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--symbols-file', default='')
     ap.add_argument('--include-optional', action='store_true', help='Also export known optional cached feature columns when present')
+    ap.add_argument('--debug', action='store_true', help='Verbose progress output')
     args = ap.parse_args()
 
+    if args.debug:
+        print(f'[cfg] db={args.db} out={args.out} include_optional={args.include_optional}', flush=True)
     con = sqlite3.connect(args.db)
     cols = existing_columns(con, 'price_indicators')
     select_cols = ['symbol', 'datetime_utc', 'open', 'high', 'low', 'close', 'volume']
@@ -57,6 +60,8 @@ def main():
             out_parts.setdefault(col, []).append(part[col].astype('float64').to_numpy())
         pos += len(part)
         offsets.append(pos)
+        if args.debug:
+            print(f'[sym] {sym} rows={len(part)}', flush=True)
 
     out = {
         'symbols': np.asarray(symbols, dtype=object),
