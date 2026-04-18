@@ -188,6 +188,23 @@ class _PackAdaptiveBase:
         score_rng=max(abs(self.trend_score_max-self.trend_score_min),1e-6)
         factor=max(0.0,min(1.0,(strength-self.trend_score_min)/score_rng))
         return self.min_invest_pct + (self.max_invest_pct-self.min_invest_pct)*factor
+    def _cached_target_pct(self, row):
+        if not self.use_trend_adaptive_sizing:
+            return self.base_order_pct_eq
+        if not isinstance(row, dict):
+            return None
+        keys = ('trend_target_pct_long', 'trend_target_pct_LONG', 'cached_trend_target_pct_long') if self.SIDE=='LONG' else ('trend_target_pct_short', 'trend_target_pct_SHORT', 'cached_trend_target_pct_short')
+        for key in keys:
+            val = row.get(key)
+            if val is None:
+                continue
+            try:
+                f = float(val)
+                if math.isfinite(f):
+                    return f
+            except Exception:
+                pass
+        return None
     def _calc_base_qty(self, close, target_invest_pct):
         sizing_pct=target_invest_pct if self.use_trend_adaptive_sizing else self.base_order_pct_eq
         raw=((self.equity_for_sizing*sizing_pct/100.0)/close) if self.use_equity_pct_base else self.first_qty_coin
@@ -201,7 +218,9 @@ class _PackAdaptiveBase:
         if not is_opening or not self._can_place_order(t): return None
         st=self._get_state(sym)
         _,_,close=self._trigger_prices(row)
-        target_pct=self._update_trend(st,t,close)
+        target_pct=self._cached_target_pct(row)
+        if target_pct is None:
+            target_pct = self._update_trend(st,t,close) if self.use_trend_adaptive_sizing else self.base_order_pct_eq
         if st.reset_pending or (st.pos_size==0 and len(st.lots)==0):
             st.reset_pending=False; st.trailing_active=False; st.trailing_ref=None; st.pending_new_entry=None
             st.cycle_base_qty_coin=self._calc_base_qty(close,target_pct)
@@ -216,7 +235,9 @@ class _PackAdaptiveBase:
         t=row.get('datetime_utc'); self._roll_bar(t)
         if not self._live_now(t) or not self._allow_this_bar(t): return None
         st=self._get_state(sym)
-        hi,lo,close=self._trigger_prices(row); _=self._update_trend(st,t,close)
+        hi,lo,close=self._trigger_prices(row)
+        if self._cached_target_pct(row) is None and self.use_trend_adaptive_sizing:
+            _=self._update_trend(st,t,close)
         if st.pos_size>0 and pos.qty is not None and pos.qty>0 and abs(pos.qty-st.pos_size)/max(st.pos_size,1e-12)>1e-6:
             ratio=pos.qty/st.pos_size; st.lots=[(q*ratio,p) for q,p in st.lots]; st.pos_size=float(pos.qty)
         if st.pending_new_entry is not None:

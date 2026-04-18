@@ -1,44 +1,73 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, sqlite3
+import argparse
+import sqlite3
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
+DEFAULT_OPTIONAL_COLUMNS = [
+    'trend_ma', 'trend_ma_prev', 'trend_slope_pct',
+    'trend_target_pct_long', 'trend_target_pct_short',
+]
+
+
+def existing_columns(con: sqlite3.Connection, table: str) -> list[str]:
+    return [str(row[1]) for row in con.execute(f'PRAGMA table_info({table})')]
+
+
 def main():
-    ap=argparse.ArgumentParser(description='Build multi-symbol fast NPZ from standard SQLite price_indicators DB')
+    ap = argparse.ArgumentParser(description='Build multi-symbol fast NPZ from standard SQLite price_indicators DB')
     ap.add_argument('--db', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--symbols-file', default='')
-    args=ap.parse_args()
-    con=sqlite3.connect(args.db)
-    q='SELECT symbol, datetime_utc, close FROM price_indicators'
-    params=[]
+    ap.add_argument('--include-optional', action='store_true', help='Also export known optional cached feature columns when present')
+    args = ap.parse_args()
+
+    con = sqlite3.connect(args.db)
+    cols = existing_columns(con, 'price_indicators')
+    select_cols = ['symbol', 'datetime_utc', 'open', 'high', 'low', 'close', 'volume']
+    if args.include_optional:
+        select_cols += [c for c in DEFAULT_OPTIONAL_COLUMNS if c in cols]
+
+    q = 'SELECT ' + ', '.join(select_cols) + ' FROM price_indicators'
+    params = []
     if args.symbols_file:
-        syms=[line.strip() for line in open(args.symbols_file,'r',encoding='utf-8') if line.strip() and not line.startswith('#')]
+        syms = [line.strip() for line in open(args.symbols_file, 'r', encoding='utf-8') if line.strip() and not line.startswith('#')]
         if syms:
-            q += ' WHERE symbol IN (%s)' % ','.join(['?']*len(syms))
+            q += ' WHERE symbol IN (%s)' % ','.join(['?'] * len(syms))
             params.extend(syms)
     q += ' ORDER BY symbol ASC, datetime_utc ASC'
-    df=pd.read_sql_query(q, con, params=params)
+    df = pd.read_sql_query(q, con, params=params)
     con.close()
     if df.empty:
         raise SystemExit('No rows found')
-    symbols=[]; offsets=[]; ts_all=[]; close_all=[]
-    pos=0
-    for sym, part in df.groupby('symbol', sort=True):
-        symbols.append(sym); offsets.append(pos)
-        ts = pd.to_datetime(part['datetime_utc'], utc=True).astype('int64').to_numpy() // 1_000_000_000
-        cl = part['close'].astype('float64').to_numpy()
-        ts_all.append(ts.astype('int64')); close_all.append(cl)
-        pos += len(cl)
-    np.savez_compressed(args.out,
-        symbols=np.asarray(symbols, dtype=object),
-        offsets=np.asarray(offsets, dtype=np.int64),
-        timestamp_s=np.concatenate(ts_all).astype(np.int64),
-        close=np.concatenate(close_all).astype(np.float64),
-    )
-    print(f'[ok] wrote {args.out} symbols={len(symbols)} rows={pos}')
 
-if __name__=='__main__':
+    symbols = []
+    offsets = [0]
+    out_parts: dict[str, list[np.ndarray]] = {'timestamp_s': []}
+    num_cols = [c for c in df.columns if c not in {'symbol', 'datetime_utc'}]
+
+    pos = 0
+    for sym, part in df.groupby('symbol', sort=True):
+        symbols.append(sym)
+        ts = pd.to_datetime(part['datetime_utc'], utc=True).astype('int64').to_numpy() // 1_000_000_000
+        out_parts['timestamp_s'].append(ts.astype(np.int64))
+        for col in num_cols:
+            out_parts.setdefault(col, []).append(part[col].astype('float64').to_numpy())
+        pos += len(part)
+        offsets.append(pos)
+
+    out = {
+        'symbols': np.asarray(symbols, dtype=object),
+        'offsets': np.asarray(offsets, dtype=np.int64),
+    }
+    for col, arrs in out_parts.items():
+        out[col] = np.concatenate(arrs) if arrs else np.asarray([], dtype=np.float64)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(args.out, **out)
+    print(f'[ok] wrote {args.out} symbols={len(symbols)} rows={pos}', flush=True)
+
+
+if __name__ == '__main__':
     main()

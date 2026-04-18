@@ -4,11 +4,11 @@ import argparse, copy, importlib.util, itertools, json, os, time, yaml
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import numpy as np
-from backtester_dual_long_short_fast_pack import simulate
+from backtester_dual_long_short_fast_pack import simulate, pick_symbol_block
 
 CACHE = None
-TS = None
-CLOSE = None
+SERIES = None
+MARKET_SYMBOL = None
 
 
 def parse_iso_to_epoch_s(s: str) -> int:
@@ -21,11 +21,19 @@ def parse_iso_to_epoch_s(s: str) -> int:
     return int(dt.timestamp())
 
 
-def worker_init(npz_path: str):
-    global CACHE, TS, CLOSE
+def worker_init(npz_path: str, symbol: str = ''):
+    global CACHE, SERIES, MARKET_SYMBOL
     CACHE = np.load(npz_path, allow_pickle=True)
-    TS = CACHE['timestamp_s'].astype(np.int64)
-    CLOSE = CACHE['close'].astype(np.float64)
+    MARKET_SYMBOL, ts_s, open_, high, low, close, volume, extras = pick_symbol_block(CACHE, symbol)
+    SERIES = {
+        'timestamp_s': ts_s,
+        'open': open_,
+        'high': high,
+        'low': low,
+        'close': close,
+        'volume': volume,
+        'extras': extras,
+    }
 
 
 def deep_get(d, key):
@@ -80,33 +88,47 @@ def score(s, min_trades=50, w_pnl=1.0, w_mdd=80.0, w_realized_mdd=5.0):
     trades_total = int(s.get('trades_total', 0) or 0)
     if trades_total < min_trades:
         return -1e12 - (min_trades - trades_total) * 1000.0
-
     eq0 = float(s.get('equity_start_total', 0.0) or 0.0)
     pnl = float(s.get('realized_pnl_total', -1e9))
     return_pct = (pnl / eq0 * 100.0) if eq0 > 0 else -1e9
-
     mdd_mtm = abs(float(s.get('mdd_mtm_frac', s.get('mdd_total_frac', 0.0)) or 0.0)) * 100.0
     mdd_realized = abs(float(s.get('mdd_realized_frac', 0.0) or 0.0)) * 100.0
     return (return_pct * 1000.0 * w_pnl) - (mdd_mtm * 10.0 * w_mdd) - (mdd_realized * w_realized_mdd)
 
 
+def _slice(mask, arr):
+    if arr is None:
+        return None
+    return arr[mask]
+
+
 def eval_cfg(args_tuple):
     cfg, limit_bars, weights, time_from_s, time_to_s = args_tuple
     t0 = time.time()
-    ts = TS
-    cl = CLOSE
+    ts = SERIES['timestamp_s']
+    open_ = SERIES['open']
+    high = SERIES['high']
+    low = SERIES['low']
+    close = SERIES['close']
+    volume = SERIES['volume']
+    extras = SERIES['extras']
     if time_from_s is not None:
         m = ts >= time_from_s
-        ts = ts[m]
-        cl = cl[m]
+        ts = ts[m]; open_ = _slice(m, open_); high = _slice(m, high); low = _slice(m, low); close = close[m]; volume = _slice(m, volume)
+        extras = {k: v[m] for k, v in extras.items()}
     if time_to_s is not None:
         m = ts <= time_to_s
-        ts = ts[m]
-        cl = cl[m]
+        ts = ts[m]; open_ = _slice(m, open_); high = _slice(m, high); low = _slice(m, low); close = close[m]; volume = _slice(m, volume)
+        extras = {k: v[m] for k, v in extras.items()}
     if limit_bars and limit_bars > 0:
         ts = ts[-limit_bars:]
-        cl = cl[-limit_bars:]
-    s = simulate(cfg, ts, cl)
+        open_ = open_[-limit_bars:] if open_ is not None else None
+        high = high[-limit_bars:] if high is not None else None
+        low = low[-limit_bars:] if low is not None else None
+        close = close[-limit_bars:]
+        volume = volume[-limit_bars:] if volume is not None else None
+        extras = {k: v[-limit_bars:] for k, v in extras.items()}
+    s = simulate(cfg, ts, close, open_=open_, high=high, low=low, volume=volume, extras=extras, market_symbol=MARKET_SYMBOL)
     s['elapsed_sec'] = time.time() - t0
     s['score'] = score(s, **weights)
     return s
@@ -116,6 +138,7 @@ def main():
     ap = argparse.ArgumentParser(description='Fast tuner for dual pack strategy using NPZ cache and workers')
     ap.add_argument('--cfg', required=True)
     ap.add_argument('--npz', required=True)
+    ap.add_argument('--symbol', default='')
     ap.add_argument('--plan', required=True)
     ap.add_argument('--limit-bars', type=int, default=0)
     ap.add_argument('--prefix', default='dual_fast_pack')
@@ -143,7 +166,7 @@ def main():
     session.mkdir(parents=True, exist_ok=False)
     log_csv = session / 'tuner_log.csv'
 
-    worker_init(args.npz)
+    worker_init(args.npz, args.symbol)
     baseline = eval_cfg((base_cfg, args.limit_bars, weights, time_from_s, time_to_s))
     baseline['param'] = 'baseline'
     baseline['value'] = 'baseline'
@@ -162,7 +185,7 @@ def main():
             cur = deep_get(base_cfg, pname)
             vals = realize(cand, cur, delta_mode)
             payloads = []
-            with ProcessPoolExecutor(max_workers=args.jobs, initializer=worker_init, initargs=(args.npz,)) as ex:
+            with ProcessPoolExecutor(max_workers=args.jobs, initializer=worker_init, initargs=(args.npz, args.symbol)) as ex:
                 futs = []
                 for v in vals:
                     cfg = copy.deepcopy(base_cfg)
@@ -187,7 +210,7 @@ def main():
             cand_lists = [realize(params[k], deep_get(base_cfg, k), delta_mode) for k in keys]
             vecs = list(itertools.product(*cand_lists))
             payloads = []
-            with ProcessPoolExecutor(max_workers=args.jobs, initializer=worker_init, initargs=(args.npz,)) as ex:
+            with ProcessPoolExecutor(max_workers=args.jobs, initializer=worker_init, initargs=(args.npz, args.symbol)) as ex:
                 futs = []
                 for vec in vecs:
                     cfg = copy.deepcopy(base_cfg)
