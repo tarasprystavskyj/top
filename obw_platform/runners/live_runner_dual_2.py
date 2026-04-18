@@ -625,25 +625,9 @@ def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: di
     snapshot = _strategy_snapshot(strat, sym)
     sig = strat.entry_signal(True, sym, row, ctx={})
     if sig is None:
-        if DEBUG_OPEN:
-            reason_payload = None
-            fn = getattr(strat, 'debug_entry_check', None)
-            if callable(fn):
-                try:
-                    reason_payload = fn(True, sym, row, ctx={})
-                except Exception as e:
-                    reason_payload = {'reason': 'debug_entry_check_failed', 'error': str(e), 'symbol': sym, 'side': side}
-            else:
-                reason_payload = {'reason': 'entry_signal_none', 'symbol': sym, 'side': side}
-            try:
-                cprint('[entry NONE]', json.dumps(reason_payload, ensure_ascii=False, sort_keys=True), fg='yellow')
-            except Exception:
-                cprint('[entry NONE]', str(reason_payload), fg='yellow')
         return False
     requested_px = float(fetcher.fetch_ticker_price(sym) or row.get('close') or 0.0)
     qty = _compute_entry_qty(sig, side, requested_px, notional_long, notional_short)
-    if DEBUG_OPEN:
-        cprint('[entry SIG]', sym, side, f'px={requested_px:.8g}', f'qty={qty:.8g}', f'tp={_sig_get(sig, "tp")}', f'sl={_sig_get(sig, "sl")}', fg='green')
     return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=_sig_get(sig, 'tp'), sl_price=_sig_get(sig, 'sl'))[0]
 
 
