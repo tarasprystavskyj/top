@@ -865,6 +865,13 @@ class GridReq(BaseModel):
     cache_db: Optional[str] = None
     grid: List[GridAxis]
 
+
+class LiveRunReq(BaseModel):
+    cfg_name: str
+    exchange: str = "bingx"
+    universe_file: str
+    debug: bool = False
+
 def deep_update(d, path, value):
     cur = d
     keys = path.split(".")
@@ -1103,6 +1110,80 @@ def universes():
     for p in sorted(glob.glob(os.path.join(UNIVERSE_DIR, "*.txt"))):
         items.append(os.path.basename(p))
     return items
+
+
+@app.post("/api/live_run")
+def live_run(req: LiveRunReq):
+    exchange = (req.exchange or "").strip().lower()
+    if exchange not in {"bingx", "bybit"}:
+        raise HTTPException(400, "exchange must be 'bingx' or 'bybit'")
+
+    cfg_path = find_config(req.cfg_name)
+    if not cfg_path:
+        raise HTTPException(404, f"config not found: {req.cfg_name}")
+
+    universe_name = (req.universe_file or "").strip()
+    if not universe_name:
+        raise HTTPException(400, "universe_file is required")
+    universe_path = os.path.join(UNIVERSE_DIR, universe_name)
+    if not os.path.isfile(universe_path):
+        raise HTTPException(404, f"universe file not found: {universe_name}")
+
+    rel_cfg = os.path.relpath(cfg_path, BT_ROOT)
+    rel_universe = os.path.relpath(universe_path, BT_ROOT)
+    rel_results = os.path.join("_reports", "_live", f"{exchange}_ena_bundle")
+    os.makedirs(os.path.join(BT_ROOT, rel_results), exist_ok=True)
+    logs_file = os.path.join(
+        BT_ROOT,
+        rel_results,
+        f"live_runner_{exchange}_{time.strftime('%Y%m%d_%H%M%S')}.log",
+    )
+
+    cmd = [
+        "python3",
+        "bt_live_paper_runner_separated_universe_4.py",
+        "--mode",
+        "live",
+        "--env-file",
+        ".env",
+        "--cfg",
+        rel_cfg,
+        "--exchange",
+        exchange,
+        "--symbol-format",
+        "usdtm",
+        "--poll-sec",
+        "2",
+        "--bar-delay-sec",
+        "1",
+        "--limit_klines",
+        "300",
+        "--prewarm-bars",
+        "300",
+        "--results-dir",
+        rel_results,
+        "--session-db",
+        "session.sqlite",
+        "--cache-out",
+        "combined_cache_session.db",
+        "--hour-cache",
+        "save",
+        "--universe-file",
+        rel_universe,
+    ]
+    if req.debug:
+        cmd.append("--debug")
+
+    with open(logs_file, "w") as lf:
+        proc = subprocess.Popen(cmd, cwd=BT_ROOT, stdout=lf, stderr=lf)
+
+    return {
+        "ok": True,
+        "pid": proc.pid,
+        "cmd": cmd,
+        "logs_file": os.path.relpath(logs_file, BT_ROOT),
+        "results_dir": rel_results,
+    }
 
 @app.post("/api/backtest")
 def backtest(req: BacktestReq):
