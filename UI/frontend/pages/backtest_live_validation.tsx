@@ -6,11 +6,36 @@ import {
   computeSharedDomain,
   preparePnlSeries,
   seriesToSvgPath,
+  sortSeriesByTs,
 } from '../utils/backtestValidation';
 
 type FileEntry = { name: string; path: string; size: number; modified_at: string; symbol_guess?: string | null };
-
 type Point = { ts: string; value: number };
+type LiveSessionStatus = 'running' | 'stopped' | 'error' | 'unknown';
+type LiveSessionEntry = {
+  name: string;
+  path: string;
+  exchange?: string | null;
+  timeframe?: string | null;
+  status?: LiveSessionStatus;
+  updated_at?: string | null;
+};
+type LiveSessionInspect = {
+  path: string;
+  name?: string;
+  exchange?: string | null;
+  timeframe?: string | null;
+  status?: string | null;
+  started_at?: string | null;
+  updated_at?: string | null;
+  open_legs?: number;
+  filled_orders?: number;
+  last_debug_event?: { level?: string; event_type?: string; ts?: string } | null;
+  last_equity_ts?: string | null;
+};
+type LiveChartPayload = { live?: Point[]; backtest?: Point[]; distance?: Point[] };
+
+type LiveTableKind = 'open_positions' | 'orders' | 'debug_events' | 'stdio';
 
 function LineChart({ title, series }: { title: string; series: { name: string; color: string; data: Point[] }[] }) {
   const width = 920;
@@ -81,6 +106,41 @@ function LineChart({ title, series }: { title: string; series: { name: string; c
   );
 }
 
+const LIVE_TABLE_DEFS: { kind: LiveTableKind; title: string; emptyLabel: string }[] = [
+  { kind: 'open_positions', title: 'Latest open positions', emptyLabel: 'No open positions' },
+  { kind: 'orders', title: 'Latest orders', emptyLabel: 'No orders' },
+  { kind: 'debug_events', title: 'Latest debug events', emptyLabel: 'No debug events' },
+  { kind: 'stdio', title: 'Latest stdio log lines', emptyLabel: 'No stdio lines' },
+];
+
+const STATUS_COLOR_MAP: Record<string, string> = {
+  running: '#16a34a',
+  stopped: '#64748b',
+  error: '#dc2626',
+  unknown: '#94a3b8',
+};
+
+const DEBUG_LEVEL_COLOR_MAP: Record<string, string> = {
+  error: '#dc2626',
+  warn: '#d97706',
+  warning: '#d97706',
+  info: '#0284c7',
+  debug: '#7c3aed',
+};
+
+function fmtTs(ts?: string | null) {
+  if (!ts) return '—';
+  const dt = new Date(ts);
+  if (!Number.isFinite(dt.getTime())) return String(ts);
+  return dt.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+function normalizeAndSortSeries(points: any): Point[] {
+  return sortSeriesByTs(Array.isArray(points) ? points : [])
+    .map((p: any) => ({ ts: String(p?.ts || ''), value: Number(p?.value) || 0 }))
+    .filter(p => p.ts);
+}
+
 export default function BacktestLiveValidationPage() {
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [selectedPath, setSelectedPath] = useState('');
@@ -96,15 +156,49 @@ export default function BacktestLiveValidationPage() {
   const [lastRefreshTs, setLastRefreshTs] = useState<string>('');
   const [normalizePnl, setNormalizePnl] = useState(false);
 
+  const [liveSessions, setLiveSessions] = useState<LiveSessionEntry[]>([]);
+  const [selectedLivePath, setSelectedLivePath] = useState('');
+  const [liveInspect, setLiveInspect] = useState<LiveSessionInspect | null>(null);
+  const [liveStatus, setLiveStatus] = useState<any>(null);
+  const [liveCharts, setLiveCharts] = useState<LiveChartPayload | null>(null);
+  const [liveTables, setLiveTables] = useState<Record<LiveTableKind, any[]>>({
+    open_positions: [],
+    orders: [],
+    debug_events: [],
+    stdio: [],
+  });
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [liveAutoRefresh, setLiveAutoRefresh] = useState(false);
+  const [liveLastRefreshTs, setLiveLastRefreshTs] = useState('');
+
   const pollingIntervalMs = useMemo(() => {
     return computePollingIntervalMs(inspect?.bar_interval_seconds || runData?.inspect?.bar_interval_seconds || 60);
   }, [inspect?.bar_interval_seconds, runData?.inspect?.bar_interval_seconds]);
+
+  const livePollingIntervalMs = useMemo(() => {
+    return computePollingIntervalMs(liveStatus?.bar_interval_seconds || 20);
+  }, [liveStatus?.bar_interval_seconds]);
+
+  const selectedLiveEntry = useMemo(() => liveSessions.find(s => s.path === selectedLivePath), [liveSessions, selectedLivePath]);
+
+  const liveSeries = useMemo(() => {
+    const live = normalizeAndSortSeries(liveCharts?.live || []);
+    const backtest = normalizeAndSortSeries(liveCharts?.backtest || []);
+    const distance = normalizeAndSortSeries(liveCharts?.distance || []);
+    return { live, backtest, distance };
+  }, [liveCharts]);
 
   useEffect(() => {
     apiFetch('/api/backtest_live_validation/files')
       .then(r => r.json())
       .then(d => setFiles(Array.isArray(d?.files) ? d.files : []))
       .catch(() => setFiles([]));
+
+    apiFetch('/api/backtest_live_validation/live_sessions')
+      .then(r => r.json())
+      .then(d => setLiveSessions(Array.isArray(d?.sessions) ? d.sessions : []))
+      .catch(() => setLiveSessions([]));
   }, []);
 
   useEffect(() => {
@@ -137,6 +231,28 @@ export default function BacktestLiveValidationPage() {
     return () => clearInterval(timer);
   }, [runId, autoRefresh, pollingIntervalMs]);
 
+  useEffect(() => {
+    if (!selectedLivePath || !liveAutoRefresh) return;
+    const timer = setInterval(() => {
+      loadLiveStatus(selectedLivePath, { silent: true });
+    }, livePollingIntervalMs);
+    return () => clearInterval(timer);
+  }, [selectedLivePath, liveAutoRefresh, livePollingIntervalMs]);
+
+  async function refreshLiveSessions(keepPath = true) {
+    try {
+      const r = await apiFetch('/api/backtest_live_validation/live_sessions');
+      const d = await r.json().catch(() => ({}));
+      const sessions = Array.isArray(d?.sessions) ? d.sessions : [];
+      setLiveSessions(sessions);
+      if (keepPath && selectedLivePath && !sessions.some((s: LiveSessionEntry) => s.path === selectedLivePath)) {
+        setSelectedLivePath('');
+      }
+    } catch {
+      setLiveSessions([]);
+    }
+  }
+
   async function inspectPath(path: string) {
     setSelectedPath(path);
     setRunId('');
@@ -160,6 +276,86 @@ export default function BacktestLiveValidationPage() {
       setInspect(null);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function inspectLiveSession(path: string) {
+    setSelectedLivePath(path);
+    setLiveInspect(null);
+    setLiveStatus(null);
+    setLiveCharts(null);
+    setLiveTables({ open_positions: [], orders: [], debug_events: [], stdio: [] });
+    if (!path) return;
+    setLiveLoading(true);
+    setLiveError(null);
+    try {
+      const r = await apiFetch('/api/backtest_live_validation/live_session/inspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      if (!r.ok) throw new Error('Live inspect failed');
+      const data = await r.json();
+      setLiveInspect(data || null);
+      setLiveLastRefreshTs(new Date().toISOString());
+    } catch (e: any) {
+      setLiveError(e?.message || 'live inspect failed');
+    } finally {
+      setLiveLoading(false);
+    }
+  }
+
+  async function loadLiveStatus(path = selectedLivePath, opts: { silent?: boolean } = {}) {
+    if (!path) return;
+    if (!opts.silent) {
+      setLiveLoading(true);
+      setLiveError(null);
+    }
+    try {
+      const r = await apiFetch(`/api/backtest_live_validation/live_session/status?path=${encodeURIComponent(path)}`);
+      if (!r.ok) throw new Error('Live status failed');
+      const d = await r.json();
+      setLiveStatus(d || null);
+      setLiveLastRefreshTs(new Date().toISOString());
+    } catch (e: any) {
+      if (!opts.silent) setLiveError(e?.message || 'live status failed');
+    } finally {
+      if (!opts.silent) setLiveLoading(false);
+    }
+  }
+
+  async function loadLiveChart(path = selectedLivePath) {
+    if (!path) return;
+    setLiveLoading(true);
+    setLiveError(null);
+    try {
+      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?path=${encodeURIComponent(path)}`);
+      if (!r.ok) throw new Error('Live chart failed');
+      const d = await r.json();
+      setLiveCharts(d || {});
+      setLiveLastRefreshTs(new Date().toISOString());
+    } catch (e: any) {
+      setLiveError(e?.message || 'live chart failed');
+      setLiveCharts(null);
+    } finally {
+      setLiveLoading(false);
+    }
+  }
+
+  async function loadLiveTable(kind: LiveTableKind, path = selectedLivePath) {
+    if (!path) return;
+    setLiveLoading(true);
+    try {
+      const r = await apiFetch(`/api/backtest_live_validation/live_session/table?path=${encodeURIComponent(path)}&kind=${kind}`);
+      if (!r.ok) throw new Error(`Live ${kind} failed`);
+      const d = await r.json();
+      const rows = Array.isArray(d?.rows) ? d.rows : [];
+      setLiveTables(prev => ({ ...prev, [kind]: rows }));
+      setLiveLastRefreshTs(new Date().toISOString());
+    } catch {
+      setLiveTables(prev => ({ ...prev, [kind]: [] }));
+    } finally {
+      setLiveLoading(false);
     }
   }
 
@@ -212,12 +408,44 @@ export default function BacktestLiveValidationPage() {
     }
   }
 
+  function statusBadge(status?: string | null) {
+    const key = String(status || 'unknown').toLowerCase();
+    const bg = STATUS_COLOR_MAP[key] || STATUS_COLOR_MAP.unknown;
+    return (
+      <span style={{ background: `${bg}20`, color: bg, border: `1px solid ${bg}55`, borderRadius: 999, padding: '2px 8px', fontWeight: 700 }}>
+        {key}
+      </span>
+    );
+  }
+
+  function renderLiveTable(kind: LiveTableKind, title: string, emptyLabel: string) {
+    const rows = Array.isArray(liveTables[kind]) ? liveTables[kind] : [];
+    return (
+      <details key={kind} style={{ border: '1px solid #d1d5db', borderRadius: 8, padding: 10, background: '#fff' }}>
+        <summary style={{ cursor: 'pointer', fontWeight: 700 }}>{title}</summary>
+        <div style={{ marginTop: 8, marginBottom: 8 }}>
+          <button disabled={!selectedLivePath || liveLoading} onClick={() => loadLiveTable(kind)}>
+            {liveLoading ? 'Loading...' : `Refresh ${title.toLowerCase()}`}
+          </button>
+        </div>
+        {!rows.length ? (
+          <div style={{ color: '#64748b', fontSize: 13 }}>{emptyLabel}</div>
+        ) : (
+          <pre style={{ margin: 0, maxHeight: 260, overflow: 'auto', background: '#f8fafc', borderRadius: 6, padding: 8 }}>{JSON.stringify(rows, null, 2)}</pre>
+        )}
+      </details>
+    );
+  }
+
   const avgDiffColor = runData?.stats?.comparison?.avg_price_diff_color || avgPriceDiffColorRule(runData?.stats?.live?.current_average_price, runData?.stats?.backtest?.current_average_price);
   const alignedPnl = preparePnlSeries(runData?.pnl_chart?.backtest || [], runData?.pnl_chart?.live || [], normalizePnl);
   const pnlDomain = computeSharedDomain([
     { data: alignedPnl.backtest },
     { data: alignedPnl.live },
   ]);
+
+  const debugLevel = liveInspect?.last_debug_event?.level || liveStatus?.last_debug_event?.level || 'unknown';
+  const debugLevelColor = DEBUG_LEVEL_COLOR_MAP[String(debugLevel).toLowerCase()] || '#64748b';
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -236,6 +464,87 @@ export default function BacktestLiveValidationPage() {
           <pre style={{ background: '#f8fafc', padding: 8, borderRadius: 6, overflowX: 'auto' }}>{JSON.stringify(inspect, null, 2)}</pre>
         )}
       </div>
+
+      <div style={{ border: '1px solid #d1d5db', borderRadius: 8, padding: 12, background: '#fff' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <h4 style={{ margin: 0 }}>Live runner sessions</h4>
+          <button onClick={() => refreshLiveSessions(false)}>Refresh sessions</button>
+        </div>
+        <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <select value={selectedLivePath} onChange={e => inspectLiveSession(e.target.value)} style={{ minWidth: 600 }}>
+            <option value="">--select live session from _reports/_live--</option>
+            {liveSessions.map(session => (
+              <option key={session.path} value={session.path}>
+                {session.name || session.path} | ex: {session.exchange || 'n/a'} | tf: {session.timeframe || 'n/a'} | updated: {fmtTs(session.updated_at)} | status: {session.status || 'unknown'}
+              </option>
+            ))}
+          </select>
+          <label><input type="checkbox" checked={liveAutoRefresh} onChange={e => setLiveAutoRefresh(e.target.checked)} /> Auto refresh live status</label>
+        </div>
+        {!liveSessions.length && <div style={{ marginTop: 8, color: '#64748b' }}>No live sessions</div>}
+      </div>
+
+      {!!selectedLivePath && (
+        <>
+          <div style={{ border: '1px solid #d1d5db', borderRadius: 8, padding: 12, background: '#fff' }}>
+            <h4 style={{ marginTop: 0 }}>Live session summary</h4>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <button onClick={() => refreshLiveSessions()} disabled={liveLoading}>Refresh session list</button>
+              <button onClick={() => loadLiveStatus()} disabled={liveLoading || !selectedLivePath}>Load session status</button>
+              <button onClick={() => loadLiveChart()} disabled={liveLoading || !selectedLivePath}>Load live chart overlay</button>
+            </div>
+            {liveError && <p style={{ color: '#dc2626' }}>{liveError}</p>}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: 13 }}>
+              <div><strong>Session path:</strong> {selectedLivePath}</div>
+              <div><strong>Status:</strong> {statusBadge(liveStatus?.status || liveInspect?.status || selectedLiveEntry?.status)}</div>
+              <div><strong>Started:</strong> {fmtTs(liveInspect?.started_at || liveStatus?.started_at)}</div>
+              <div><strong>Last updated:</strong> {fmtTs(liveStatus?.updated_at || liveInspect?.updated_at || selectedLiveEntry?.updated_at)}</div>
+              <div><strong>Exchange:</strong> {liveStatus?.exchange || liveInspect?.exchange || selectedLiveEntry?.exchange || '—'}</div>
+              <div><strong>Timeframe:</strong> {liveStatus?.timeframe || liveInspect?.timeframe || selectedLiveEntry?.timeframe || '—'}</div>
+              <div><strong>Current open legs:</strong> {Number(liveStatus?.open_legs ?? liveInspect?.open_legs ?? 0)}</div>
+              <div><strong>Total filled orders:</strong> {Number(liveStatus?.filled_orders ?? liveInspect?.filled_orders ?? 0)}</div>
+              <div>
+                <strong>Last debug event:</strong>{' '}
+                <span style={{ color: debugLevelColor, fontWeight: 700 }}>
+                  {String(debugLevel)} / {liveInspect?.last_debug_event?.event_type || liveStatus?.last_debug_event?.event_type || 'unknown'}
+                </span>
+              </div>
+              <div><strong>Last equity timestamp:</strong> {fmtTs(liveInspect?.last_equity_ts || liveStatus?.last_equity_ts)}</div>
+            </div>
+            {liveLastRefreshTs && <div style={{ marginTop: 8, fontSize: 12, color: '#475569' }}>Last live refresh: {liveLastRefreshTs}</div>}
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <h4 style={{ marginBottom: 0 }}>Live charts</h4>
+            {liveSeries.live.length ? (
+              <LineChart title="Live equity / PNL" series={[{ name: 'Live equity', color: '#16a34a', data: liveSeries.live }]} />
+            ) : (
+              <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 10, color: '#64748b' }}>No chart data</div>
+            )}
+
+            {liveSeries.live.length && liveSeries.backtest.length ? (
+              <LineChart
+                title="Live vs Backtest overlay"
+                series={[
+                  { name: 'Live', color: '#16a34a', data: liveSeries.live },
+                  { name: 'Backtest', color: '#2563eb', data: liveSeries.backtest },
+                ]}
+              />
+            ) : (
+              <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 10, color: '#64748b' }}>Overlay unavailable (requires both live and backtest series)</div>
+            )}
+
+            {liveSeries.distance.length > 0 && (
+              <LineChart title="Absolute distance" series={[{ name: 'Absolute distance', color: '#dc2626', data: liveSeries.distance }]} />
+            )}
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <h4 style={{ marginBottom: 0 }}>Session details tables</h4>
+            {LIVE_TABLE_DEFS.map(def => renderLiveTable(def.kind, def.title, def.emptyLabel))}
+          </div>
+        </>
+      )}
 
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={runComparison} disabled={!selectedPath || loading}>{loading ? 'Running...' : 'Run / Refresh comparison'}</button>
@@ -307,12 +616,20 @@ export default function BacktestLiveValidationPage() {
           <pre style={{ maxHeight: 360, overflow: 'auto' }}>
             {JSON.stringify({
               selected_backtest_file_path: selectedPath,
+              selected_live_path: selectedLivePath,
               inspect,
+              liveInspect,
+              liveStatus,
+              liveCharts,
+              liveTables,
               api_request_payload: lastPayload,
               last_refresh_time: lastRefreshTs,
+              live_last_refresh_time: liveLastRefreshTs,
               current_polling_interval: pollingIntervalMs,
+              live_polling_interval: livePollingIntervalMs,
               backend_debug: runData?.debug,
               loading,
+              liveLoading,
             }, null, 2)}
           </pre>
         )}
