@@ -6,15 +6,15 @@ portfolio:
   fee_rate: 0.001
   slippage_per_side: 4.0
   max_notional_frac: 1.0
-  position_notional_long: 2.0
-  position_notional_short: 2.0
+  position_notional_long: 1.2
+  position_notional_short: 1.2
 strategy_class_long: strategies.cryptomine_pack_dual_full.CryptomineLongPackAdaptiveEven
 strategy_class_short: strategies.cryptomine_pack_dual_full.CryptomineShortPackAdaptiveEven
 strategy_params_long:
   firstBuyQtyCoin: 20
   minOrderQtyCoin: 20
-  minOrderUSDT: 2.0
-  minLongInvestPct: 2.0
+  minOrderUSDT: 1.2
+  minLongInvestPct: 1.2
   useEquityPctBase: true
   baseOrderPctEq: 2
   equityForSizingUSDT: 100.0
@@ -58,8 +58,8 @@ strategy_params_long:
 strategy_params_short:
   firstSellQtyCoin: 20
   minOrderQtyCoin: 20
-  minOrderUSDT: 2.0
-  minShortInvestPct: 2.0
+  minOrderUSDT: 1.2
+  minShortInvestPct: 1.2
   useEquityPctBase: true
   baseOrderPctEq: 2
   equityForSizingUSDT: 100.0

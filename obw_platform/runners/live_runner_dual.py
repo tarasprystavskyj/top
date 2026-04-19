@@ -21,6 +21,12 @@ except Exception:
         return None
 
 try:
+    from .live_debug_bundle import debug_event
+except Exception:
+    def debug_event(db_path: str, run_id: str, event_type: str, payload=None, level: str = 'INFO') -> None:
+        return None
+
+try:
     from .common import cprint as _cprint, dot as _dot
 except Exception:
     _cprint, _dot = None, None
@@ -60,6 +66,49 @@ def split_pos_key(key: str) -> Tuple[str, str]:
 def _dbg(*parts):
     if DEBUG_OPEN:
         cprint('[dual dbg]', *parts, fg='yellow', dim=True)
+def _emit_runtime_debug(session_db_path: str, run_id: str, event_type: str, payload=None, *, level: str = 'INFO', fg: str = 'yellow'):
+    try:
+        debug_event(session_db_path, run_id, event_type, payload or {}, level=level)
+    except Exception:
+        pass
+    try:
+        txt = payload if isinstance(payload, str) else json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        txt = str(payload)
+    try:
+        cprint(f'[{event_type}]', txt, fg=fg)
+    except Exception:
+        pass
+
+
+def _auth_probe(fetcher, session_db_path: str, run_id: str):
+    payload = {}
+    try:
+        rep = {}
+        if hasattr(fetcher, 'debug_credentials_report'):
+            try:
+                rep = fetcher.debug_credentials_report() or {}
+            except Exception:
+                rep = {}
+        payload['credentials'] = rep
+        payload['credentials_present'] = bool(getattr(fetcher, 'credentials_present', False))
+        try:
+            bal = fetcher.ex.fetch_balance()
+            sleep_ms(RATE_MS)
+            payload['fetch_balance_ok'] = True
+            payload['balance_keys'] = sorted(list((bal or {}).keys()))[:20] if isinstance(bal, dict) else []
+            _emit_runtime_debug(session_db_path, run_id, 'auth_probe_ok', payload, level='INFO', fg='green')
+            return True
+        except Exception as e:
+            payload['fetch_balance_ok'] = False
+            payload['error'] = str(e)
+            _emit_runtime_debug(session_db_path, run_id, 'auth_probe_fail', payload, level='ERROR', fg='red')
+            return False
+    except Exception as e:
+        _emit_runtime_debug(session_db_path, run_id, 'auth_probe_fail', {'error': str(e)}, level='ERROR', fg='red')
+        return False
+
+
 
 
 def _normalize_close_reason(value, fallback: str = "") -> str:
@@ -156,6 +205,14 @@ def _step_from_precision(precision):
             return float(str(precision))
         except Exception:
             return None
+
+
+def _exchange_id(fetcher_or_ex) -> str:
+    ex = getattr(fetcher_or_ex, 'ex', fetcher_or_ex)
+    try:
+        return str(getattr(ex, 'id', '') or getattr(ex, 'name', '') or '').lower()
+    except Exception:
+        return ''
 
 
 def _market_steps(fetcher_or_ex, symbol):
@@ -440,7 +497,10 @@ def _place_tp_sl_after_open(fetcher: CCXTFetcher, sym: str, side: str, qty: floa
     if min_qty and qty_eff < min_qty:
         return
     close_side = _order_close_side(side)
-    base = {'reduceOnly': True, 'positionSide': 'BOTH' if pos_oneway else side}
+    ex_id = _exchange_id(fetcher)
+    base = {'positionSide': 'BOTH' if pos_oneway else side}
+    if not (ex_id == 'bingx' and not pos_oneway):
+        base['reduceOnly'] = True
     if tp_price is not None and float(tp_price) > 0:
         for otype, oprice, params in [('take_profit', float(tp_price), dict(base)), ('take_profit_market', None, {**base, 'triggerPrice': float(tp_price)}), ('limit', float(tp_price), {**base, 'takeProfit': True})]:
             try:
@@ -484,21 +544,38 @@ def place_open_qty(fetcher: CCXTFetcher, sym: str, side: str, qty: float, positi
 def place_reduce_only(fetcher: CCXTFetcher, sym: str, entry_side: str, qty: float, position_mode: str):
     ccxt_sym = fetcher.resolve_symbol(sym) or sym
     close_side = _order_close_side(entry_side)
-    params = {'reduceOnly': True}
+    ex_id = _exchange_id(fetcher)
+    params = {}
     if str(position_mode or '').lower() == 'hedge':
         params['positionSide'] = str(entry_side).upper()
+        # BingX hedge mode rejects reduceOnly on market close orders.
+        if ex_id != 'bingx':
+            params['reduceOnly'] = True
+    else:
+        params['reduceOnly'] = True
     try:
         od = fetcher.ex.create_order(ccxt_sym, 'market', close_side, qty, None, params); sleep_ms(RATE_MS)
         return {'ok': True, 'order': od, 'qty': qty, 'params': params}
     except Exception as e:
         msg = str(e).lower()
+        if ('reduceonly' in msg or 'reduce only' in msg) and 'reduceOnly' in params:
+            try:
+                p2 = {k: v for k, v in params.items() if k != 'reduceOnly'}
+                od = fetcher.ex.create_order(ccxt_sym, 'market', close_side, qty, None, p2); sleep_ms(RATE_MS)
+                return {'ok': True, 'order': od, 'qty': qty, 'params': p2, 'retry': True}
+            except Exception as e2:
+                return {'ok': False, 'error': str(e2), 'qty': qty}
         if ('one-way mode' in msg) or ('positionside' in msg):
             try:
-                od = fetcher.ex.create_order(ccxt_sym, 'market', close_side, qty, None, {'reduceOnly': True}); sleep_ms(RATE_MS)
-                return {'ok': True, 'order': od, 'qty': qty, 'params': {'reduceOnly': True}, 'retry': True}
+                base = {'reduceOnly': True}
+                if ex_id == 'bingx' and str(position_mode or '').lower() == 'hedge':
+                    base = {}
+                od = fetcher.ex.create_order(ccxt_sym, 'market', close_side, qty, None, base); sleep_ms(RATE_MS)
+                return {'ok': True, 'order': od, 'qty': qty, 'params': base, 'retry': True}
             except Exception as e2:
                 return {'ok': False, 'error': str(e2), 'qty': qty}
         return {'ok': False, 'error': str(e), 'qty': qty}
+
 
 
 def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_requested, ex_order_id, bar_close, fill_px, fill_dt, session_db_path, bot_id, results_dir, positions, run_id, position_mode):
@@ -522,6 +599,7 @@ def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_
     except Exception:
         pass
     cprint('[open OK]', sym, side, f'qty={qty:.6g} px={entry:.6g}' + (f' id={ex_order_id}' if ex_order_id else ''), fg='green', bold=True)
+    _emit_runtime_debug(session_db_path, run_id, 'open_ok', {'symbol': sym, 'side': side, 'qty': qty, 'entry': entry, 'fill': fill, 'order_id': ex_order_id, 'entry_lag_sec': rec.get('entry_lag_sec'), 'entry_slip_bp': rec.get('entry_slip_bp')}, level='INFO', fg='green')
     return True, rec
 
 
@@ -529,7 +607,9 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
     res = place_open_qty(fetcher, sym, side, qty, position_mode)
     if not res.get('ok'):
         _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', res)
-        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='REJECTED', reason=str(res.get('error') or res.get('skip_reason') or 'open_fail'), run_id=run_id)
+        fail_reason = str(res.get('error') or res.get('skip_reason') or 'open_fail')
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id)
+        _emit_runtime_debug(session_db_path, run_id, 'open_fail', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fail_reason, 'exchange_response': res}, level='ERROR', fg='red')
         return False, res
     ex_order_id = _extract_order_id(res.get('order'))
     fill_px, fill_dt, od = _fetch_order_fill(fetcher, sym, ex_order_id)
@@ -542,6 +622,7 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
         _strategy_restore(strat, sym, snapshot); reason = str(((od or {}).get('info') or {}).get('reason') or (od or {}).get('status') or 'timeout_no_fill')
         _strategy_rejected(strat, sym, 'open', {'reason': reason, 'order_id': ex_order_id})
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED', reason=reason, run_id=run_id, exchange_order_id=ex_order_id)
+        _emit_runtime_debug(session_db_path, run_id, 'open_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'order': od}, level='ERROR', fg='red')
         return False, {'error': reason, 'order': od}
     rec = {'symbol': sym, 'side': side, 'qty': qty, 'entry': requested_px, 'tp_price': tp_price, 'sl_price': sl_price, 'ts_open': bar_close.isoformat(), 'run_id': run_id, 'order_id': str(uuid.uuid4())}
     return _finalize_open_success(fetcher, strat, rec, sym=sym, side=side, requested_px=requested_px, qty_requested=qty, ex_order_id=ex_order_id, bar_close=bar_close, fill_px=fill_px, fill_dt=fill_dt, session_db_path=session_db_path, bot_id=bot_id, results_dir=results_dir, positions=positions, run_id=run_id, position_mode=position_mode)
@@ -551,7 +632,9 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
     res = place_reduce_only(fetcher, sym, side, qty, position_mode)
     if not res.get('ok'):
         _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, event_type, res)
-        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='REJECTED', reason=str(res.get('error') or 'close_fail'), run_id=run_id)
+        fail_reason = str(res.get('error') or 'close_fail')
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id)
+        _emit_runtime_debug(session_db_path, run_id, 'close_fail', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fail_reason, 'exchange_response': res, 'partial': partial}, level='ERROR', fg='red')
         return False, res
     ex_order_id = _extract_order_id(res.get('order'))
     fill_px, fill_dt, od = _fetch_order_fill(fetcher, sym, ex_order_id)
@@ -564,6 +647,7 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
         _strategy_restore(strat, sym, snapshot); reason = str(((od or {}).get('info') or {}).get('reason') or (od or {}).get('status') or 'timeout_no_fill')
         _strategy_rejected(strat, sym, event_type, {'reason': reason, 'order_id': ex_order_id})
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='CANCELED', reason=reason, run_id=run_id, exchange_order_id=ex_order_id)
+        _emit_runtime_debug(session_db_path, run_id, 'close_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'order': od, 'partial': partial}, level='ERROR', fg='red')
         return False, {'error': reason, 'order': od}
     fill = float(fill_px)
     ex_pos = _fetch_exchange_position(fetcher, sym, side)
@@ -572,6 +656,7 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
         db_mark_closed(session_db_path, bot_id, rec.get('order_id'), _dt.datetime.now(_dt.timezone.utc).isoformat(), exit_fill=fill, exit_fill_ts=fill_dt.isoformat() if fill_dt else None, exit_slip_bp=_signed_slip_bp(side, requested_px, fill, is_close=True), exit_lag_sec=(fill_dt - bar_close).total_seconds() if fill_dt else None, exit_mark_price=fetcher.fetch_mark_price(sym), close_reason=_normalize_close_reason(close_reason, 'close'))
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'closed': True})
         _strategy_sync_after_fill(strat, sym, qty=0.0, entry=0.0, fill_price=fill, delta_qty=qty, event='close')
+        _emit_runtime_debug(session_db_path, run_id, 'close_ok', {'symbol': sym, 'side': side, 'qty': qty, 'fill': fill, 'closed': True, 'close_reason': _normalize_close_reason(close_reason, 'close')}, level='INFO', fg='green')
         return True, {'closed': True}
     new_qty = float(ex_pos['qty']); new_entry = float(ex_pos['entry'])
     rec.update({'qty': new_qty, 'entry': new_entry, 'exit_fill': fill, 'exit_fill_ts': fill_dt.isoformat() if fill_dt else None, 'exit_slip_bp': _signed_slip_bp(side, requested_px, fill, is_close=True), 'exit_lag_sec': (fill_dt - bar_close).total_seconds() if fill_dt else None, 'exit_mark_price': fetcher.fetch_mark_price(sym)})
@@ -579,6 +664,7 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN', 'close_reason': _normalize_close_reason(close_reason)})
     _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'remaining_qty': new_qty, 'remaining_entry': new_entry})
     _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=new_entry, fill_price=fill, delta_qty=qty, event='partial' if partial else 'close')
+    _emit_runtime_debug(session_db_path, run_id, 'close_ok', {'symbol': sym, 'side': side, 'qty': qty, 'fill': fill, 'closed': False, 'remaining_qty': new_qty, 'remaining_entry': new_entry, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'partial': partial}, level='INFO', fg='green')
     return True, {'closed': False, 'qty': new_qty, 'entry': new_entry}
 
 
@@ -625,29 +711,14 @@ def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: di
     snapshot = _strategy_snapshot(strat, sym)
     sig = strat.entry_signal(True, sym, row, ctx={})
     if sig is None:
-        if DEBUG_OPEN:
-            reason_payload = None
-            fn = getattr(strat, 'debug_entry_check', None)
-            if callable(fn):
-                try:
-                    reason_payload = fn(True, sym, row, ctx={})
-                except Exception as e:
-                    reason_payload = {'reason': 'debug_entry_check_failed', 'error': str(e), 'symbol': sym, 'side': side}
-            else:
-                reason_payload = {'reason': 'entry_signal_none', 'symbol': sym, 'side': side}
-            try:
-                cprint('[entry NONE]', json.dumps(reason_payload, ensure_ascii=False, sort_keys=True), fg='yellow')
-            except Exception:
-                cprint('[entry NONE]', str(reason_payload), fg='yellow')
         return False
     requested_px = float(fetcher.fetch_ticker_price(sym) or row.get('close') or 0.0)
     qty = _compute_entry_qty(sig, side, requested_px, notional_long, notional_short)
-    if DEBUG_OPEN:
-        cprint('[entry SIG]', sym, side, f'px={requested_px:.8g}', f'qty={qty:.8g}', f'tp={_sig_get(sig, "tp")}', f'sl={_sig_get(sig, "sl")}', fg='green')
     return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=_sig_get(sig, 'tp'), sl_price=_sig_get(sig, 'sl'))[0]
 
 
 def run_live(cfg: dict, args):
+    global DEBUG_OPEN
     assert ccxt is not None or str(args.exchange).lower() in {'virtual', 'sim', 'virtual_exchange', 'paper_virtual'}, 'ccxt required for LIVE mode'
     if getattr(args, 'env_file', '') and os.path.exists(args.env_file):
         for line in open(args.env_file, 'r', encoding='utf-8').read().splitlines():
@@ -672,7 +743,12 @@ def run_live(cfg: dict, args):
     if ExchangeTraceProxy is not None and isinstance(fetcher.ex, ExchangeTraceProxy):
         fetcher.ex._scenario_id = run_id
     write_config_snapshot(session_db_path, run_id, cfg)
-    global DEBUG_OPEN; DEBUG_OPEN = bool(getattr(args, 'debug', False) or cfg.get('debug_open', False))
+    DEBUG_OPEN = bool(getattr(args, 'debug', False) or cfg.get('debug_open', False))
+    if DEBUG_OPEN:
+        try:
+            _auth_probe(fetcher, session_db_path, run_id)
+        except Exception as e:
+            _emit_runtime_debug(session_db_path, run_id, 'auth_probe_fail', {'error': str(e)}, level='ERROR', fg='red')
     positions = load_positions(args.results_dir)
     bot_id = make_bot_id(args.results_dir, args.exchange, tf)
     try:

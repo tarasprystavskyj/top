@@ -109,6 +109,16 @@ def _is_dual_cfg(cfg: Dict[str, Any]) -> bool:
 
 
 def _run_live(cfg: Dict[str, Any], args):
+    if getattr(args, 'live_runner_module', ''):
+        try:
+            import importlib
+            mod = importlib.import_module(str(args.live_runner_module))
+            fn = getattr(mod, 'run_live')
+            print(f'[live] using {args.live_runner_module}.run_live')
+            return fn(cfg, args)
+        except Exception as e:
+            print(f'[live] {args.live_runner_module}.run_live not available:', e)
+            print('[live] falling back to auto runner selection')
     if _is_dual_cfg(cfg):
         try:
             from runners.live_runner_dual import run_live as _run_live_dual
@@ -167,6 +177,7 @@ def main():
     ap.add_argument('--universe-file', default='')
     ap.add_argument('--allow-symbols', default='')
     ap.add_argument('--deny-symbols', default='')
+    ap.add_argument('--live-runner-module', default='', help='Explicit live runner module path, e.g. runners.live_runner_dual_verbose_debug')
     args = ap.parse_args()
 
     cfg_name = os.path.splitext(os.path.basename(args.cfg))[0]
