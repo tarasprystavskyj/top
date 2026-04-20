@@ -1,5 +1,5 @@
 # FastAPI MVP backend
-import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re
+import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re, sys
 from typing import Any, Dict, Optional, List
 from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
@@ -2587,8 +2587,9 @@ def backtest_live_validation_run(payload: Dict[str, Any] = Body(default={})):  #
 
     inspect = _inspect_tv_path(tv_path)
     extract_script = os.path.join(BT_ROOT, "extract_bingx_window_from_tv.py")
+    python_bin = sys.executable or "python3"
     cmd = [
-        "python",
+        python_bin,
         extract_script,
         "--tv",
         tv_path,
@@ -2602,7 +2603,10 @@ def backtest_live_validation_run(payload: Dict[str, Any] = Body(default={})):  #
     log.info("bt_live_validation run selected_file=%s symbol=%s timeframe=%s start=%s end=%s", tv_path, inspect.get("symbol"), inspect.get("bar_interval_label"), inspect.get("start"), inspect.get("end"))
     log.info("bt_live_validation extract command: %s", " ".join(cmd))
 
-    proc = subprocess.run(cmd, cwd=BT_ROOT, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(cmd, cwd=BT_ROOT, capture_output=True, text=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": "extract launch failed", "message": str(e), "cmd": cmd})
     stderr = proc.stderr or ""
     stdout = proc.stdout or ""
     if proc.returncode != 0:

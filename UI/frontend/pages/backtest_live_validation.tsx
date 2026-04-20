@@ -452,7 +452,17 @@ export default function BacktestLiveValidationPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      if (!r.ok) throw new Error('run failed');
+      if (!r.ok) {
+        let detail = '';
+        try {
+          const body = await r.json();
+          const d = body?.detail ?? body;
+          detail = typeof d === 'string' ? d : JSON.stringify(d);
+        } catch {
+          detail = await r.text().catch(() => '');
+        }
+        throw new Error(detail || `run failed (HTTP ${r.status})`);
+      }
       const d = await r.json();
       setRunId(d.run_id);
       const details = await apiFetch(`/api/backtest_live_validation/run/${d.run_id}`).then(x => x.json());
