@@ -27,6 +27,43 @@ except Exception:
         return None
 
 try:
+    from .orderbook_slippage_probe_v1 import (
+        ensure_microstructure_tables,
+        safe_fetch_order_book,
+        record_pretrade_snapshot,
+        record_fill_observation,
+    )
+except Exception:
+    def ensure_microstructure_tables(session_db_path: str) -> None:
+        return None
+    def safe_fetch_order_book(fetcher, symbol: str, limit: int = 10):
+        return None
+    def record_pretrade_snapshot(session_db_path: str, **kwargs):
+        return {}
+    def record_fill_observation(session_db_path: str, **kwargs):
+        return {}
+
+try:
+    from .slippage_directional_model_v2 import (
+        load_or_fit_model as _load_or_fit_slippage_model,
+        save_model as _save_slippage_model,
+        update_directional_slippage_model as _update_slippage_model,
+        build_training_frame as _build_slippage_frame,
+        make_feature_row as _make_slippage_feature_row,
+    )
+except Exception:
+    def _load_or_fit_slippage_model(*args, **kwargs):
+        return {}
+    def _save_slippage_model(*args, **kwargs):
+        return None
+    def _update_slippage_model(model, observation):
+        return model
+    def _build_slippage_frame(*args, **kwargs):
+        return None
+    def _make_slippage_feature_row(*args, **kwargs):
+        return {}
+
+try:
     from .common import cprint as _cprint, dot as _dot
 except Exception:
     _cprint, _dot = None, None
@@ -81,6 +118,57 @@ def _emit_runtime_debug(session_db_path: str, run_id: str, event_type: str, payl
         pass
 
 
+
+def _slippage_model_path(results_dir: str) -> str:
+    return str(Path(results_dir) / 'slippage_live_model.json')
+
+def _fit_bootstrap_slippage_model(session_db_path: str, results_dir: str, symbol: str):
+    model_path = _slippage_model_path(results_dir)
+    try:
+        model = _load_or_fit_slippage_model(model_path, session_db_path, None, symbol=symbol)
+        _save_slippage_model(model_path, model)
+        return model
+    except Exception:
+        return {}
+
+def _online_update_slippage_model(session_db_path: str, results_dir: str, symbol: str, strategy_side: str, order_action: str, qty: float, requested_px: float, fill_px: float, pre_snapshot: dict):
+    try:
+        model_path = _slippage_model_path(results_dir)
+        model = _load_or_fit_slippage_model(model_path, session_db_path, None, symbol=symbol)
+        obs = {
+            'symbol': symbol,
+            'strategy_side': strategy_side,
+            'order_action': order_action,
+            'qty': float(qty),
+            'requested_price': float(requested_px),
+            'fill_price': float(fill_px),
+            'actual_adverse_bp': float(record_fill_observation.__globals__.get('adverse_slip_bp', lambda a,b,c,d:0.0)(requested_px, fill_px, strategy_side, order_action)) if False else 0.0,
+        }
+        obs['actual_adverse_bp'] = 0.0
+        try:
+            from .slippage_directional_model_v2 import adverse_slip_bp_from_fill
+            obs['actual_adverse_bp'] = adverse_slip_bp_from_fill(requested_px, fill_px, strategy_side, order_action)
+        except Exception:
+            pass
+        feat_row = _make_slippage_feature_row({
+            'open': requested_px,
+            'high': requested_px,
+            'low': requested_px,
+            'close': requested_px,
+            'volume': 0.0,
+            'quote_volume': requested_px * qty,
+            'spread_bp': (pre_snapshot or {}).get('spread_bp') or 0.0,
+            'est_sweep_slip_bp': (pre_snapshot or {}).get('est_sweep_slip_bp') or 0.0,
+            'bid_depth_qty': (pre_snapshot or {}).get('bid_depth_qty') or 0.0,
+            'ask_depth_qty': (pre_snapshot or {}).get('ask_depth_qty') or 0.0,
+            'book_imbalance': (pre_snapshot or {}).get('book_imbalance') or 0.0,
+        }, strategy_side, order_action, qty)
+        obs.update(feat_row)
+        model = _update_slippage_model(model, obs)
+        _save_slippage_model(model_path, model)
+        return model
+    except Exception:
+        return {}
 def _auth_probe(fetcher, session_db_path: str, run_id: str):
     payload = {}
     try:
@@ -604,6 +692,20 @@ def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_
 
 
 def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, snapshot, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None):
+    pre_book = safe_fetch_order_book(fetcher, sym, limit=10)
+    pre_snapshot = record_pretrade_snapshot(
+        session_db_path,
+        run_id=run_id,
+        bar_time_utc=bar_close.isoformat(),
+        symbol=sym,
+        strategy_side=side,
+        order_action='OPEN',
+        qty=qty,
+        requested_price=requested_px,
+        book=pre_book,
+    )
+    if pre_snapshot and pre_snapshot.get('spread_bp') is not None:
+        _emit_runtime_debug(session_db_path, run_id, 'orderbook_pre_open', {'symbol': sym, 'side': side, 'qty': qty, 'spread_bp': pre_snapshot.get('spread_bp'), 'est_sweep_bp': pre_snapshot.get('est_sweep_slip_bp'), 'imbalance': pre_snapshot.get('book_imbalance')}, level='INFO', fg='cyan')
     res = place_open_qty(fetcher, sym, side, qty, position_mode)
     if not res.get('ok'):
         _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', res)
@@ -622,13 +724,41 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
         _strategy_restore(strat, sym, snapshot); reason = str(((od or {}).get('info') or {}).get('reason') or (od or {}).get('status') or 'timeout_no_fill')
         _strategy_rejected(strat, sym, 'open', {'reason': reason, 'order_id': ex_order_id})
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED', reason=reason, run_id=run_id, exchange_order_id=ex_order_id)
-        _emit_runtime_debug(session_db_path, run_id, 'open_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'order': od}, level='ERROR', fg='red')
+        _emit_runtime_debug(session_db_path, run_id, 'open_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'order': od, 'pre_snapshot': pre_snapshot}, level='ERROR', fg='red')
         return False, {'error': reason, 'order': od}
+    record_fill_observation(
+        session_db_path,
+        run_id=run_id,
+        bar_time_utc=bar_close.isoformat(),
+        symbol=sym,
+        strategy_side=side,
+        order_action='OPEN',
+        qty=qty,
+        requested_price=requested_px,
+        fill_price=fill_px,
+        pre_snapshot=pre_snapshot,
+    )
+    _online_update_slippage_model(session_db_path, results_dir, sym, side, 'OPEN', qty, requested_px, fill_px, pre_snapshot)
     rec = {'symbol': sym, 'side': side, 'qty': qty, 'entry': requested_px, 'tp_price': tp_price, 'sl_price': sl_price, 'ts_open': bar_close.isoformat(), 'run_id': run_id, 'order_id': str(uuid.uuid4())}
     return _finalize_open_success(fetcher, strat, rec, sym=sym, side=side, requested_px=requested_px, qty_requested=qty, ex_order_id=ex_order_id, bar_close=bar_close, fill_px=fill_px, fill_dt=fill_dt, session_db_path=session_db_path, bot_id=bot_id, results_dir=results_dir, positions=positions, run_id=run_id, position_mode=position_mode)
 
 
 def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_px, bar_close, position_mode, snapshot, session_db_path, run_id, close_reason, rec, positions, results_dir, bot_id, event_type, partial=False):
+    action_name = 'PARTIAL' if partial else 'CLOSE'
+    pre_book = safe_fetch_order_book(fetcher, sym, limit=10)
+    pre_snapshot = record_pretrade_snapshot(
+        session_db_path,
+        run_id=run_id,
+        bar_time_utc=bar_close.isoformat(),
+        symbol=sym,
+        strategy_side=side,
+        order_action=action_name,
+        qty=qty,
+        requested_price=requested_px,
+        book=pre_book,
+    )
+    if pre_snapshot and pre_snapshot.get('spread_bp') is not None:
+        _emit_runtime_debug(session_db_path, run_id, 'orderbook_pre_close', {'symbol': sym, 'side': side, 'qty': qty, 'spread_bp': pre_snapshot.get('spread_bp'), 'est_sweep_bp': pre_snapshot.get('est_sweep_slip_bp'), 'imbalance': pre_snapshot.get('book_imbalance'), 'partial': partial}, level='INFO', fg='cyan')
     res = place_reduce_only(fetcher, sym, side, qty, position_mode)
     if not res.get('ok'):
         _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, event_type, res)
@@ -647,9 +777,22 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
         _strategy_restore(strat, sym, snapshot); reason = str(((od or {}).get('info') or {}).get('reason') or (od or {}).get('status') or 'timeout_no_fill')
         _strategy_rejected(strat, sym, event_type, {'reason': reason, 'order_id': ex_order_id})
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='CANCELED', reason=reason, run_id=run_id, exchange_order_id=ex_order_id)
-        _emit_runtime_debug(session_db_path, run_id, 'close_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'order': od, 'partial': partial}, level='ERROR', fg='red')
+        _emit_runtime_debug(session_db_path, run_id, 'close_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'order': od, 'partial': partial, 'pre_snapshot': pre_snapshot}, level='ERROR', fg='red')
         return False, {'error': reason, 'order': od}
     fill = float(fill_px)
+    record_fill_observation(
+        session_db_path,
+        run_id=run_id,
+        bar_time_utc=bar_close.isoformat(),
+        symbol=sym,
+        strategy_side=side,
+        order_action=action_name,
+        qty=qty,
+        requested_price=requested_px,
+        fill_price=fill,
+        pre_snapshot=pre_snapshot,
+    )
+    _online_update_slippage_model(session_db_path, results_dir, sym, side, action_name, qty, requested_px, fill, pre_snapshot)
     ex_pos = _fetch_exchange_position(fetcher, sym, side)
     if not ex_pos or float(ex_pos.get('qty') or 0.0) <= 1e-12:
         positions.pop(pos_key(sym, side), None); save_positions(results_dir, positions)
@@ -733,6 +876,7 @@ def run_live(cfg: dict, args):
     session_db_path, cache_out_path = ensure_session_dbs(args.results_dir, getattr(args, 'session_db', ''), getattr(args, 'cache_out', ''))
     ensure_orders_db(session_db_path)
     ensure_exchange_trace_db(session_db_path)
+    ensure_microstructure_tables(session_db_path)
     if ExchangeTraceProxy is not None and not isinstance(fetcher.ex, ExchangeTraceProxy):
         fetcher.ex = ExchangeTraceProxy(fetcher.ex, session_db_path, source='live_runner_dual', scenario_id='')
         try:
@@ -749,6 +893,10 @@ def run_live(cfg: dict, args):
             _auth_probe(fetcher, session_db_path, run_id)
         except Exception as e:
             _emit_runtime_debug(session_db_path, run_id, 'auth_probe_fail', {'error': str(e)}, level='ERROR', fg='red')
+    try:
+        _fit_bootstrap_slippage_model(session_db_path, results_dir, (args.symbol if hasattr(args, 'symbol') else None) or '')
+    except Exception:
+        pass
     positions = load_positions(args.results_dir)
     bot_id = make_bot_id(args.results_dir, args.exchange, tf)
     try:
