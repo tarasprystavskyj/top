@@ -23,6 +23,8 @@ class Position:
 class SimBook:
     fee_rate: float
     realized: float = 0.0
+    realized_long: float = 0.0
+    realized_short: float = 0.0
     lots_long: list = None
     lots_short: list = None
 
@@ -33,26 +35,35 @@ class SimBook:
     def _lots(self, side: str):
         return self.lots_long if str(side).upper() == 'LONG' else self.lots_short
 
+    def _apply_realized_delta(self, side: str, delta: float) -> None:
+        delta = float(delta)
+        self.realized += delta
+        if str(side).upper() == 'LONG':
+            self.realized_long += delta
+        else:
+            self.realized_short += delta
+
     def open_fill(self, side: str, qty: float, exec_px: float) -> None:
         self._lots(side).append([float(qty), float(exec_px)])
-        self.realized -= self.fee_rate * float(exec_px) * float(qty)
+        self._apply_realized_delta(side, -self.fee_rate * float(exec_px) * float(qty))
 
     def close_fill(self, side: str, qty: float, exec_px: float) -> None:
         rem = float(qty)
         book = self._lots(side)
         pnl = 0.0
+        fees = 0.0
         while rem > 1e-12 and book:
             lot_qty, entry_px = book[-1]
             take = min(lot_qty, rem)
             pnl += ((exec_px - entry_px) * take) if str(side).upper() == 'LONG' else ((entry_px - exec_px) * take)
-            self.realized -= self.fee_rate * float(exec_px) * take
+            fees += self.fee_rate * float(exec_px) * take
             lot_qty -= take
             rem -= take
             if lot_qty <= 1e-12:
                 book.pop()
             else:
                 book[-1][0] = lot_qty
-        self.realized += pnl
+        self._apply_realized_delta(side, pnl - fees)
 
     def avg_entry(self, side: str) -> float:
         book = self._lots(side)
@@ -63,13 +74,14 @@ class SimBook:
             return 0.0
         return sum(float(q) * float(px) for q, px in book) / qty
 
-    def unrealized(self, mark_px: float) -> float:
+    def unrealized_side(self, side: str, mark_px: float) -> float:
         u = 0.0
-        for qty, entry_px in self.lots_long:
-            u += (mark_px - entry_px) * qty
-        for qty, entry_px in self.lots_short:
-            u += (entry_px - mark_px) * qty
+        for qty, entry_px in self._lots(side):
+            u += (mark_px - entry_px) * qty if str(side).upper() == 'LONG' else (entry_px - mark_px) * qty
         return float(u)
+
+    def unrealized(self, mark_px: float) -> float:
+        return float(self.unrealized_side('LONG', mark_px) + self.unrealized_side('SHORT', mark_px))
 
 
 def import_by_path(path: str):
@@ -370,13 +382,27 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
         eq_real.append(eq_r)
         eq_mtm.append(eq_u)
         if export_curves:
+            unreal_long = book.unrealized_side('LONG', px)
+            unreal_short = book.unrealized_side('SHORT', px)
             curve_rows.append({
                 'bar_ts': pd.to_datetime(int(ts), unit='s', utc=True),
                 'realized_pnl': book.realized,
-                'unrealized_pnl': book.unrealized(px),
-                'total_pnl': book.realized + book.unrealized(px),
+                'realized_pnl_long': book.realized_long,
+                'realized_pnl_short': book.realized_short,
+                'unrealized_pnl': unreal_long + unreal_short,
+                'unrealized_pnl_long': unreal_long,
+                'unrealized_pnl_short': unreal_short,
+                'total_pnl': book.realized + unreal_long + unreal_short,
+                'equity_realized_total': eq_r,
+                'equity_realized_long': eq0_leg + book.realized_long,
+                'equity_realized_short': eq0_leg + book.realized_short,
+                'equity_mtm_total': eq_u,
                 'long_notional': gross_long,
                 'short_notional': gross_short,
+                'effective_notional': effective,
+                'allowed_notional': allowed,
+                'margin_excess': effective - allowed,
+                'in_margin_call': int(in_margin),
                 'mark_close': px,
             })
 
@@ -389,10 +415,10 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
     out = {
         'equity_start_total': equity_start_total,
         'equity_end_realized_total': arr_r[-1] if len(arr_r) else equity_start_total,
-        'equity_end_realized_long': None,
-        'equity_end_realized_short': None,
-        'realized_pnl_long': None,
-        'realized_pnl_short': None,
+        'equity_end_realized_long': eq0_leg + book.realized_long,
+        'equity_end_realized_short': eq0_leg + book.realized_short,
+        'realized_pnl_long': book.realized_long,
+        'realized_pnl_short': book.realized_short,
         'realized_pnl_total': book.realized,
         'trades_long': trades_long,
         'trades_short': trades_short,

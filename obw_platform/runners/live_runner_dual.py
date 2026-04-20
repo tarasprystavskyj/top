@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy, datetime as _dt, importlib, json, logging, math, os, time, uuid
+from pathlib import Path
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from typing import Optional, Tuple
 
@@ -75,6 +76,8 @@ ORDER_SYNC_POLL_SEC = float(os.getenv("ORDER_SYNC_POLL_SEC", "0.25"))
 MAX_ENTRY_SLIP_BP = float(os.getenv("MAX_ENTRY_SLIP_BP", "0"))
 MAX_EXIT_SLIP_BP = float(os.getenv("MAX_EXIT_SLIP_BP", "0"))
 ENABLE_FALLBACK_TPSL = os.getenv("ENABLE_FALLBACK_TPSL", "0") == "1"
+ENABLE_STARTUP_RECONCILE = os.getenv("ENABLE_STARTUP_RECONCILE", "0") == "1"
+ENABLE_LOOP_RECONCILE = os.getenv("ENABLE_LOOP_RECONCILE", "0") == "1"
 
 
 def cprint(*parts, fg: str = "", bold: bool = False, dim: bool = False, file=None, end="\n", flush=False):
@@ -360,6 +363,100 @@ def _extract_order_id(order_obj: Optional[dict]) -> str:
         return ''
     return str(order_obj.get('id') or order_obj.get('orderId') or order_obj.get('clientOrderId') or '')
 
+def _normalize_fetch_timeframe(fetcher, tf: str) -> str:
+    tf = str(tf or '1m')
+    if tf in {'30s', '0.5m', '15s'}:
+        return '1m'
+    ex = getattr(fetcher, 'ex', fetcher)
+    allowed = getattr(ex, 'timeframes', None) or {}
+    if isinstance(allowed, dict) and allowed:
+        if tf in allowed:
+            return tf
+        if tf not in allowed and '1m' in allowed:
+            return '1m'
+    return tf
+
+
+def _normalize_order_qty(fetcher, sym: str, qty: float, *, is_close: bool = False, max_qty: float = None) -> float:
+    _tick, lot_step, min_qty = _market_steps(fetcher, sym)
+    q = float(qty or 0.0)
+    if max_qty is not None:
+        q = min(q, float(max_qty))
+    if q <= 0:
+        return 0.0
+    if is_close:
+        if lot_step:
+            q = _floor_step(q, lot_step)
+        if max_qty is not None and q <= 0 and float(max_qty) > 0:
+            q = float(max_qty)
+        if min_qty and q < min_qty:
+            if max_qty is not None and float(max_qty) <= min_qty + 1e-12:
+                q = float(max_qty)
+            else:
+                q = float(min_qty)
+                if max_qty is not None:
+                    q = min(q, float(max_qty))
+        return max(0.0, q)
+    # opens / adds: round UP to exchange minimums
+    if min_qty and q < min_qty:
+        q = float(min_qty)
+    if lot_step:
+        q = _round_step(q, lot_step, ROUND_UP)
+    return max(0.0, q)
+
+
+def _choose_requested_price(fetcher, sym: str, fallback: float) -> float:
+    t = None
+    try:
+        t = fetcher.ex.fetch_ticker(fetcher.resolve_symbol(sym) or sym)
+        sleep_ms(RATE_MS)
+    except Exception:
+        pass
+    px = None
+    if isinstance(t, dict):
+        px = _safe_float(t.get('last')) or _safe_float(t.get('close')) or _safe_float(t.get('bid')) or _safe_float(t.get('ask'))
+    if px is None:
+        px = _safe_float(fetcher.fetch_ticker_price(sym))
+    return float(px or fallback or 0.0)
+
+
+def _sync_close_local_only(strat, key: str, rec: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, run_id: str, reason: str):
+    sym, side = split_pos_key(key)
+    positions.pop(key, None)
+    save_positions(results_dir, positions)
+    try:
+        db_mark_closed(session_db_path, bot_id, rec.get('order_id'), _dt.datetime.now(_dt.timezone.utc).isoformat(), exit_fill=None, exit_fill_ts=None, exit_slip_bp=None, exit_lag_sec=None, exit_mark_price=None, close_reason=reason)
+    except Exception:
+        pass
+    _strategy_sync_after_fill(strat, sym, qty=0.0, entry=0.0, fill_price=None, delta_qty=float(rec.get('qty') or 0.0), event='sync')
+    _emit_runtime_debug(session_db_path, run_id, 'position_sync_absent', {'symbol': sym, 'side': side, 'reason': reason, 'local_qty': float(rec.get('qty') or 0.0)}, level='WARNING', fg='yellow')
+
+
+def _reconcile_position_with_exchange(fetcher, strat, key: str, rec: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, run_id: str):
+    sym, side = split_pos_key(key)
+    ex_pos = _fetch_exchange_position(fetcher, sym, side)
+    if not ex_pos or float(ex_pos.get('qty') or 0.0) <= 1e-12:
+        _sync_close_local_only(strat, key, rec, positions, results_dir, session_db_path, bot_id, run_id, 'exchange_sync_absent')
+        return None
+    ex_qty = float(ex_pos.get('qty') or 0.0)
+    ex_entry = float(ex_pos.get('entry') or 0.0)
+    loc_qty = float(rec.get('qty') or 0.0)
+    loc_entry = float(rec.get('entry') or 0.0)
+    qty_mismatch = abs(ex_qty - loc_qty) > max(1e-9, 0.01 * max(ex_qty, loc_qty, 1e-9))
+    entry_mismatch = abs(ex_entry - loc_entry) > max(1e-9, 5e-4 * max(ex_entry, loc_entry, 1e-9))
+    if qty_mismatch or entry_mismatch:
+        rec['qty'] = ex_qty
+        rec['entry'] = ex_entry
+        positions[key] = rec
+        save_positions(results_dir, positions)
+        try:
+            db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN'})
+        except Exception:
+            pass
+        _strategy_sync_after_fill(strat, sym, qty=ex_qty, entry=ex_entry, fill_price=ex_entry, delta_qty=0.0, event='sync')
+        _emit_runtime_debug(session_db_path, run_id, 'position_sync_update', {'symbol': sym, 'side': side, 'local_qty': loc_qty, 'exchange_qty': ex_qty, 'local_entry': loc_entry, 'exchange_entry': ex_entry}, level='INFO', fg='cyan')
+    return rec
+
 
 def _order_close_side(entry_side: str) -> str:
     return 'sell' if str(entry_side).upper() == 'LONG' else 'buy'
@@ -506,6 +603,43 @@ def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str, wait_sec: f
         time.sleep(max(float(poll_sec), 0.05))
 
 
+def _normalize_position_side(raw) -> str:
+    text = str(raw or '').strip().upper()
+    if not text:
+        return ''
+    if text.startswith('LONG') or text in {'BUY', 'BID'}:
+        return 'LONG'
+    if text.startswith('SHORT') or text in {'SELL', 'ASK'}:
+        return 'SHORT'
+    if text == 'BOTH':
+        return 'BOTH'
+    return text
+
+def _extract_signed_position_qty(p: dict):
+    info = p.get('info', {}) if isinstance(p.get('info'), dict) else {}
+    for source in (p, info):
+        for k in ('contracts', 'positionAmt', 'positionAmount', 'position', 'size', 'availableAmt', 'holding'):
+            v = _safe_float(source.get(k))
+            if v is not None:
+                return float(v)
+    return 0.0
+
+def _extract_position_side(p: dict) -> str:
+    info = p.get('info', {}) if isinstance(p.get('info'), dict) else {}
+    for raw in (
+        info.get('positionSide'),
+        p.get('positionSide'),
+        info.get('posSide'),
+        p.get('posSide'),
+        p.get('side'),
+        info.get('side'),
+        info.get('position_side'),
+    ):
+        side = _normalize_position_side(raw)
+        if side in {'LONG', 'SHORT', 'BOTH'}:
+            return side
+    return ''
+
 def _fetch_exchange_position(fetcher: CCXTFetcher, sym: str, side: str):
     ccxt_sym = fetcher.resolve_symbol(sym) or sym
     want_side = str(side).upper()
@@ -518,28 +652,49 @@ def _fetch_exchange_position(fetcher: CCXTFetcher, sym: str, side: str):
             sleep_ms(RATE_MS)
         except Exception:
             return None
+
+    rows = []
+    has_negative_signed_qty = False
     for p in (pos_list or []):
         try:
             got_sym = fetcher.resolve_symbol(p.get('symbol')) or p.get('symbol')
             if got_sym != ccxt_sym:
                 continue
-            info = p.get('info', {}) if isinstance(p.get('info'), dict) else {}
-            ps = str(info.get('positionSide') or p.get('positionSide') or p.get('side') or '').upper()
-            qty = _safe_float(p.get('contracts'))
-            if qty is None:
-                for k in ('positionAmt', 'positionAmount', 'position', 'size', 'contracts', 'availableAmt', 'holding'):
-                    qty = _safe_float(info.get(k))
-                    if qty is not None:
-                        break
-            qty = abs(float(qty or 0.0))
+            signed_qty = _extract_signed_position_qty(p)
+            qty = abs(float(signed_qty or 0.0))
             if qty <= 0:
                 continue
-            if want_side and ps and not ps.startswith(want_side):
-                continue
-            entry = _safe_float(p.get('entryPrice')) or _safe_float(p.get('entry')) or _safe_float(info.get('avgPrice')) or _safe_float(info.get('entryPrice')) or 0.0
-            return {'symbol': ccxt_sym, 'side': want_side, 'qty': qty, 'entry': float(entry or 0.0)}
+            ps = _extract_position_side(p)
+            if signed_qty < 0:
+                has_negative_signed_qty = True
+            entry = _safe_float(p.get('entryPrice')) or _safe_float(p.get('entry')) or _safe_float((p.get('info') or {}).get('avgPrice')) or _safe_float((p.get('info') or {}).get('entryPrice')) or 0.0
+            rows.append({'symbol': ccxt_sym, 'raw_side': ps, 'signed_qty': float(signed_qty or 0.0), 'qty': qty, 'entry': float(entry or 0.0), '_raw': p})
         except Exception:
             continue
+
+    exact = []
+    for r in rows:
+        ps = r['raw_side']
+        inferred = ''
+        if ps in {'LONG', 'SHORT'}:
+            inferred = ps
+        elif ps == 'BOTH':
+            inferred = ''
+        else:
+            # Conservative inference:
+            # - negative signed qty is safely SHORT
+            # - positive signed qty is LONG only when the exchange returned a mixed signed set
+            #   (typical hedge-style pair with one positive and one negative leg)
+            if r['signed_qty'] < 0:
+                inferred = 'SHORT'
+            elif r['signed_qty'] > 0 and has_negative_signed_qty:
+                inferred = 'LONG'
+        if inferred == want_side:
+            exact.append({'symbol': ccxt_sym, 'side': inferred, 'qty': r['qty'], 'entry': r['entry']})
+
+    if exact:
+        exact.sort(key=lambda r: r['qty'], reverse=True)
+        return exact[0]
     return None
 
 
@@ -613,6 +768,9 @@ def _compute_entry_qty(sig, side: str, entry_px: float, notional_long: float, no
 
 def place_open_qty(fetcher: CCXTFetcher, sym: str, side: str, qty: float, position_mode: str):
     ccxt_sym = fetcher.resolve_symbol(sym) or sym
+    qty = _normalize_order_qty(fetcher, sym, qty, is_close=False)
+    if qty <= 0:
+        return {'ok': False, 'error': 'open_qty_zero_after_normalize', 'qty': qty}
     order_side = _order_open_side(side)
     params = {'positionSide': str(side).upper()} if str(position_mode or '').lower() == 'hedge' else {}
     try:
@@ -626,11 +784,18 @@ def place_open_qty(fetcher: CCXTFetcher, sym: str, side: str, qty: float, positi
                 return {'ok': True, 'order': od, 'qty': qty, 'params': {}, 'retry': True}
             except Exception as e2:
                 return {'ok': False, 'error': str(e2), 'qty': qty}
-        return {'ok': False, 'error': str(e), 'qty': qty}
+        err = str(e)
+        msg = err.lower()
+        if ('no position to close' in msg) or ('code":101205' in msg) or ("code': 101205" in msg):
+            return {'ok': False, 'error': 'no_position', 'qty': qty}
+        return {'ok': False, 'error': err, 'qty': qty}
 
 
 def place_reduce_only(fetcher: CCXTFetcher, sym: str, entry_side: str, qty: float, position_mode: str):
     ccxt_sym = fetcher.resolve_symbol(sym) or sym
+    qty = _normalize_order_qty(fetcher, sym, qty, is_close=True)
+    if qty <= 0:
+        return {'ok': False, 'error': 'close_qty_zero_after_normalize', 'qty': qty}
     close_side = _order_close_side(entry_side)
     ex_id = _exchange_id(fetcher)
     params = {}
@@ -662,7 +827,11 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, entry_side: str, qty: floa
                 return {'ok': True, 'order': od, 'qty': qty, 'params': base, 'retry': True}
             except Exception as e2:
                 return {'ok': False, 'error': str(e2), 'qty': qty}
-        return {'ok': False, 'error': str(e), 'qty': qty}
+        err = str(e)
+        msg = err.lower()
+        if ('no position to close' in msg) or ('code":101205' in msg) or ("code': 101205" in msg):
+            return {'ok': False, 'error': 'no_position', 'qty': qty}
+        return {'ok': False, 'error': err, 'qty': qty}
 
 
 
@@ -745,6 +914,15 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
 
 def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_px, bar_close, position_mode, snapshot, session_db_path, run_id, close_reason, rec, positions, results_dir, bot_id, event_type, partial=False):
     action_name = 'PARTIAL' if partial else 'CLOSE'
+    ex_before = _fetch_exchange_position(fetcher, sym, side)
+    if not ex_before or float(ex_before.get('qty') or 0.0) <= 1e-12:
+        key = pos_key(sym, side)
+        _sync_close_local_only(strat, key, rec, positions, results_dir, session_db_path, bot_id, run_id, 'exchange_no_position_before_close')
+        return True, {'closed': True, 'synced_only': True}
+    qty = _normalize_order_qty(fetcher, sym, min(float(qty or 0.0), float(ex_before.get('qty') or 0.0)), is_close=True, max_qty=float(ex_before.get('qty') or 0.0))
+    if qty <= 0:
+        _strategy_restore(strat, sym, snapshot)
+        return False, {'error': 'zero_close_qty_after_reconcile'}
     pre_book = safe_fetch_order_book(fetcher, sym, limit=10)
     pre_snapshot = record_pretrade_snapshot(
         session_db_path,
@@ -761,8 +939,13 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
         _emit_runtime_debug(session_db_path, run_id, 'orderbook_pre_close', {'symbol': sym, 'side': side, 'qty': qty, 'spread_bp': pre_snapshot.get('spread_bp'), 'est_sweep_bp': pre_snapshot.get('est_sweep_slip_bp'), 'imbalance': pre_snapshot.get('book_imbalance'), 'partial': partial}, level='INFO', fg='cyan')
     res = place_reduce_only(fetcher, sym, side, qty, position_mode)
     if not res.get('ok'):
-        _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, event_type, res)
         fail_reason = str(res.get('error') or 'close_fail')
+        if fail_reason == 'no_position':
+            key = pos_key(sym, side)
+            _sync_close_local_only(strat, key, rec, positions, results_dir, session_db_path, bot_id, run_id, 'exchange_no_position_on_reduce')
+            _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='SYNCED', reason=fail_reason, run_id=run_id)
+            return True, {'closed': True, 'synced_only': True}
+        _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, event_type, res)
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id)
         _emit_runtime_debug(session_db_path, run_id, 'close_fail', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fail_reason, 'exchange_response': res, 'partial': partial}, level='ERROR', fg='red')
         return False, res
@@ -820,7 +1003,7 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
     action = str(getattr(ex_sig, 'action', '') or '').upper()
     reason = _normalize_close_reason(getattr(ex_sig, 'reason', None), action.lower())
     bar_dt = _dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00'))
-    requested_px = float(fetcher.fetch_ticker_price(sym) or row.get('close') or 0.0)
+    requested_px = _choose_requested_price(fetcher, sym, float(row.get('close') or 0.0))
     if action in {'TP', 'SL', 'EXIT'}:
         qty_close = float(rec.get('qty', 0.0) or 0.0)
         if qty_close <= 0:
@@ -855,7 +1038,7 @@ def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: di
     sig = strat.entry_signal(True, sym, row, ctx={})
     if sig is None:
         return False
-    requested_px = float(fetcher.fetch_ticker_price(sym) or row.get('close') or 0.0)
+    requested_px = _choose_requested_price(fetcher, sym, float(row.get('close') or 0.0))
     qty = _compute_entry_qty(sig, side, requested_px, notional_long, notional_short)
     return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=_sig_get(sig, 'tp'), sl_price=_sig_get(sig, 'sl'))[0]
 
@@ -871,6 +1054,7 @@ def run_live(cfg: dict, args):
     strat_long, strat_short = _load_strategy_pair(cfg)
     rcfg = _resolve_runner_cfg(cfg)
     tf, tf_sec, top_n = rcfg['timeframe'], _tf_to_seconds(rcfg['timeframe']), rcfg['top_n']
+    md_tf = _normalize_fetch_timeframe(fetcher, tf)
     notional_long, notional_short, position_mode = rcfg['notional_long'], rcfg['notional_short'], rcfg['position_mode']
     os.makedirs(args.results_dir, exist_ok=True)
     session_db_path, cache_out_path = ensure_session_dbs(args.results_dir, getattr(args, 'session_db', ''), getattr(args, 'cache_out', ''))
@@ -894,7 +1078,7 @@ def run_live(cfg: dict, args):
         except Exception as e:
             _emit_runtime_debug(session_db_path, run_id, 'auth_probe_fail', {'error': str(e)}, level='ERROR', fg='red')
     try:
-        _fit_bootstrap_slippage_model(session_db_path, results_dir, (args.symbol if hasattr(args, 'symbol') else None) or '')
+        _fit_bootstrap_slippage_model(session_db_path, args.results_dir, (args.symbol if hasattr(args, 'symbol') else None) or '')
     except Exception:
         pass
     positions = load_positions(args.results_dir)
@@ -905,8 +1089,20 @@ def run_live(cfg: dict, args):
             positions = db_positions
     except Exception:
         pass
+    if ENABLE_STARTUP_RECONCILE:
+        try:
+            for key, rec in list(positions.items()):
+                sym0, side0 = split_pos_key(key)
+                strat0 = strat_long if side0 == 'LONG' else strat_short
+                _reconcile_position_with_exchange(fetcher, strat0, key, rec, positions, args.results_dir, session_db_path, bot_id, run_id)
+        except Exception as e:
+            _emit_runtime_debug(session_db_path, run_id, 'startup_position_reconcile_fail', {'error': str(e)}, level='ERROR', fg='red')
     last_bar_ts = None
     cprint('[live dual]', f'polling every {args.poll_sec}s; entries at bar close +{args.bar_delay_sec}s', fg='cyan')
+    if DEBUG_OPEN:
+        _emit_runtime_debug(session_db_path, run_id, 'reconcile_flags', {'startup': ENABLE_STARTUP_RECONCILE, 'loop': ENABLE_LOOP_RECONCILE}, level='INFO', fg='cyan')
+    if md_tf != tf:
+        _emit_runtime_debug(session_db_path, run_id, 'market_data_timeframe_fallback', {'strategy_timeframe': tf, 'market_data_timeframe': md_tf, 'exchange': args.exchange}, level='WARNING', fg='yellow')
     while True:
         now = _dt.datetime.now(_dt.timezone.utc)
         bar_close = _align_bar_close(now, tf_sec)
@@ -927,7 +1123,7 @@ def run_live(cfg: dict, args):
             for ccxt_sym in universe:
                 feats = read_hour_cache_row(cache_out_path, ccxt_sym, bar_close) if getattr(args, 'hour_cache', 'off') == 'load' else {}
                 if not feats:
-                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=tf, limit=max(60, getattr(args, 'limit_klines', 180)))
+                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=md_tf, limit=max(60, getattr(args, 'limit_klines', 180)))
                     if df is not None and len(df) >= 2:
                         feats_df = compute_feats(df, tf_seconds=tf_sec)
                         if getattr(args, 'hour_cache', 'off') in ('save', 'load'):
@@ -942,9 +1138,15 @@ def run_live(cfg: dict, args):
                     feats['datetime_utc'] = bar_close.isoformat(); md[ccxt_sym] = feats
             for key, rec in list(positions.items()):
                 sym, side = split_pos_key(key); row = md.get(sym)
-                if row is None: continue
+                if row is None:
+                    continue
                 strat = strat_long if side == 'LONG' else strat_short
-                _maybe_apply_manage_result(fetcher, key, rec, row, strat, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id)
+                rec2 = rec
+                if ENABLE_LOOP_RECONCILE:
+                    rec2 = _reconcile_position_with_exchange(fetcher, strat, key, rec, positions, args.results_dir, session_db_path, bot_id, run_id)
+                    if rec2 is None:
+                        continue
+                _maybe_apply_manage_result(fetcher, key, rec2, row, strat, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id)
             ranked = list(strat_long.rank(bar_close, md, strat_long.universe(bar_close, md))[:top_n]) if md else []
             for sym in ranked:
                 row = md.get(sym)
