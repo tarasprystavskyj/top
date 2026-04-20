@@ -193,6 +193,36 @@ def compute_feats(df: pd.DataFrame, tf_seconds: Optional[int] = None) -> pd.Data
             out[k] = 0.0
     return out
 
+
+# ---------- Virtual exchange (offline replay) ----------
+try:
+    try:
+        from .virtual_exchange import VirtualExchange  # package-style
+    except Exception:
+        import sys as _sys
+        _here = os.path.dirname(__file__)
+        if _here and _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from virtual_exchange import VirtualExchange  # flat-file fallback
+except Exception:
+    VirtualExchange = None
+
+# ---------- Exchange trace / replay ----------
+try:
+    try:
+        from .exchange_trace_layer import ExchangeTraceProxy, ReplayExchange, ensure_exchange_trace_db
+    except Exception:
+        import sys as _sys
+        _here = os.path.dirname(__file__)
+        if _here and _here not in _sys.path:
+            _sys.path.insert(0, _here)
+        from exchange_trace_layer import ExchangeTraceProxy, ReplayExchange, ensure_exchange_trace_db
+except Exception:
+    ExchangeTraceProxy = None
+    ReplayExchange = None
+    def ensure_exchange_trace_db(db_path: str) -> None:
+        return None
+
 # ---------- CCXT ----------
 try:
     import ccxt  # type: ignore
@@ -203,47 +233,45 @@ RATE_MS = 130
 
 class CCXTFetcher:
     def __init__(self, exchange='bingx', symbol_format='usdtm', debug=False, logfile=''):
-        if not ccxt:
-            raise RuntimeError("ccxt is not installed. pip install 'ccxt<5'")
         self.debug = debug
         self.logfile = logfile
-        ex_name = str(exchange or '').upper()
-        key_aliases = [
-            f'{ex_name}_KEY', f'{ex_name}_API_KEY',
-            'BINGX_KEY', 'BINGX_API_KEY',
-            'BYBIT_KEY', 'BYBIT_API_KEY',
-            'API_KEY', 'CCXT_API_KEY',
-        ]
-        secret_aliases = [
-            f'{ex_name}_SECRET', f'{ex_name}_API_SECRET',
-            'BINGX_SECRET', 'BINGX_API_SECRET',
-            'BYBIT_SECRET', 'BYBIT_API_SECRET',
-            'API_SECRET', 'CCXT_SECRET',
-        ]
-        api_k = next((os.environ.get(k) for k in key_aliases if os.environ.get(k)), None)
-        api_s = next((os.environ.get(k) for k in secret_aliases if os.environ.get(k)), None)
-        self.credentials_present = bool(api_k and api_s)
-        self.credentials_summary = {
-            'exchange': exchange,
-            'key_aliases_checked': key_aliases,
-            'secret_aliases_checked': secret_aliases,
-            'key_found': bool(api_k),
-            'secret_found': bool(api_s),
-        }
-        opts = {'enableRateLimit': True, 'timeout': 20000}
-        if api_k and api_s:
-            opts.update({'apiKey': api_k, 'secret': api_s})
-        if debug:
-            try:
-                cprint('[ccxt creds]', exchange, f"key={self.credentials_summary['key_found']} secret={self.credentials_summary['secret_found']}", fg='cyan')
-            except Exception:
-                pass
-        self.ex = getattr(ccxt, exchange)(opts)
+        ex_name = str(exchange or 'bingx').lower()
+        if ex_name in ('virtual', 'sim', 'virtual_exchange', 'paper_virtual'):
+            if VirtualExchange is None:
+                raise RuntimeError('VirtualExchange unavailable')
+            self.ex = VirtualExchange.from_env(debug=debug)
+        elif ex_name in ('replay', 'scenario', 'replay_exchange'):
+            if ReplayExchange is None:
+                raise RuntimeError('ReplayExchange unavailable')
+            backend_name = str(os.environ.get('REPLAY_EXCHANGE_BACKEND', 'virtual') or 'virtual').lower()
+            if backend_name in ('virtual', 'sim', 'paper_virtual'):
+                if VirtualExchange is None:
+                    raise RuntimeError('VirtualExchange unavailable for replay backend')
+                backend = VirtualExchange.from_env(debug=debug)
+            else:
+                if not ccxt:
+                    raise RuntimeError("ccxt is not installed. pip install 'ccxt<5'")
+                backend = getattr(ccxt, backend_name)({'enableRateLimit': True, 'timeout': 20000})
+                backend.load_markets()
+            self.ex = ReplayExchange.from_env(backend=backend, debug=debug)
+        else:
+            if not ccxt:
+                raise RuntimeError("ccxt is not installed. pip install 'ccxt<5'")
+            api_k = os.environ.get('BINGX_KEY') or os.environ.get('API_KEY')
+            api_s = os.environ.get('BINGX_SECRET') or os.environ.get('API_SECRET')
+            opts = {'enableRateLimit': True, 'timeout': 20000}
+            if api_k and api_s:
+                opts.update({'apiKey': api_k, 'secret': api_s})
+            self.ex = getattr(ccxt, exchange)(opts)
+        trace_db = os.environ.get('EXCHANGE_TRACE_DB', '').strip()
+        if trace_db and ExchangeTraceProxy is not None and not isinstance(self.ex, ExchangeTraceProxy):
+            ensure_exchange_trace_db(trace_db)
+            self.ex = ExchangeTraceProxy(self.ex, trace_db, source='ccxt_fetcher', scenario_id=os.environ.get('EXCHANGE_TRACE_SCENARIO_ID', '').strip(), debug=debug)
         try:
             self.markets = self.ex.load_markets()
         except Exception as e:
             self.markets = {}
-            cprint("[ccxt load_markets]", e, fg="red")
+            cprint('[ccxt load_markets]', e, fg='red')
 
         self.by_base: Dict[str, str] = {}
         for m in self.markets.values():
@@ -254,9 +282,6 @@ class CCXTFetcher:
                         self.by_base[b] = m['symbol']
             except Exception:
                 continue
-
-    def debug_credentials_report(self) -> dict:
-        return dict(getattr(self, 'credentials_summary', {}) or {})
 
     def resolve_symbol(self, s: str) -> Optional[str]:
         if s in self.markets:
@@ -578,17 +603,25 @@ def write_decisions(sess_path: str, run_id: str, bar_time, ranked_list, selected
     con.close()
 
 def write_equity(sess_path: str, run_id: str, t, equity_dict: dict):
+    if isinstance(equity_dict, (int, float)):
+        equity_dict = {
+            'equity': float(equity_dict),
+            'cash': float(equity_dict),
+            'position_value': 0.0,
+            'realized_pnl_cum': 0.0,
+            'unrealized_pnl': 0.0,
+        }
     con = sqlite3.connect(sess_path)
     cur = con.cursor()
-    cur.execute('''INSERT OR REPLACE INTO equity(run_id, ts_utc, equity_usdt, cash_usdt, position_value_usdt,
+    cur.execute("""INSERT OR REPLACE INTO equity(run_id, ts_utc, equity_usdt, cash_usdt, position_value_usdt,
                     realized_pnl_cum, unrealized_pnl)
-                    VALUES(?,?,?,?,?,?,?)''',
-                (run_id, t.isoformat(),
-                 float(equity_dict.get('equity', 0.0)),
-                 float(equity_dict.get('cash', 0.0)),
-                 float(equity_dict.get('position_value', 0.0)),
-                 float(equity_dict.get('realized_pnl_cum', 0.0)),
-                 float(equity_dict.get('unrealized_pnl', 0.0))))
+                    VALUES(?,?,?,?,?,?,?)""",
+                (run_id, t.isoformat() if hasattr(t, 'isoformat') else str(t),
+                 float((equity_dict or {}).get('equity', 0.0)),
+                 float((equity_dict or {}).get('cash', (equity_dict or {}).get('equity', 0.0))),
+                 float((equity_dict or {}).get('position_value', 0.0)),
+                 float((equity_dict or {}).get('realized_pnl_cum', 0.0)),
+                 float((equity_dict or {}).get('unrealized_pnl', 0.0))))
     con.commit()
     con.close()
 
@@ -655,7 +688,7 @@ def make_bot_id(results_dir: str, exchange: str, timeframe: str) -> str:
     results_dir = os.path.abspath(results_dir or '.')
     return f"{results_dir}|{exchange}|{str(timeframe)}"
 
-def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]:
+def db_load_open_positions(session_db_path: str, bot_id: str, include_side_in_key: bool = False) -> Dict[str, dict]:
     out: Dict[str, dict] = {}
     try:
         con = sqlite3.connect(session_db_path)
@@ -679,7 +712,8 @@ def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]
                 luid, exid, exch, tf, entry_fill, entry_fill_ts,
                 entry_slip_bp, entry_lag_sec, entry_mark_price, exit_mark_price
             ) = r
-            out[sym] = {
+            key = f"{sym}|{str(side).upper()}" if include_side_in_key else sym
+            out[key] = {
                 'symbol': sym,
                 'side': side,
                 'qty': float(qty or 0.0),

@@ -5,6 +5,8 @@ import { apiFetch } from '../utils/api';
 export default function LiveResult() {
   const router = useRouter();
   const [sessions, setSessions] = useState<string[]>([]);
+  const [cfgs, setCfgs] = useState<string[]>([]);
+  const [universes, setUniverses] = useState<string[]>([]);
   const [sel, setSel] = useState('');
   const [summary, setSummary] = useState<any>(null);
   const [pairs, setPairs] = useState<{ name: string; live: string | null; back: string | null }[]>([]);
@@ -18,6 +20,13 @@ export default function LiveResult() {
   const [useFrontendCharts, setUseFrontendCharts] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
   const [btRangeText, setBtRangeText] = useState<string>('');
+  const [showRunPrompt, setShowRunPrompt] = useState(false);
+  const [runExchange, setRunExchange] = useState<'bingx' | 'bybit'>('bingx');
+  const [runCfg, setRunCfg] = useState('');
+  const [runUniverse, setRunUniverse] = useState('');
+  const [runDebug, setRunDebug] = useState(true);
+  const [runLoading, setRunLoading] = useState(false);
+  const [runMsg, setRunMsg] = useState<string | null>(null);
   const liveEquitySeries = useMemo(() => buildLiveEquitySeries(liveTrades), [liveTrades]);
   const liveHeaders = useMemo(() => {
     if (!Array.isArray(liveTrades) || liveTrades.length === 0) return [] as string[];
@@ -58,6 +67,32 @@ export default function LiveResult() {
         console.error('Sessions fetch error', err);
         setSessions([]);
       });
+  }, []);
+
+  useEffect(() => {
+    apiFetch('/api/configs')
+      .then(r => r.json())
+      .then((data: any[]) => {
+        const names = Array.isArray(data)
+          ? data
+            .map(item => (typeof item?.name === 'string' ? item.name : ''))
+            .filter(Boolean)
+          : [];
+        setCfgs(names);
+        if (!runCfg && names.length > 0) setRunCfg(names[0]);
+      })
+      .catch(() => setCfgs([]));
+  }, []);
+
+  useEffect(() => {
+    apiFetch('/api/universes')
+      .then(r => r.json())
+      .then((data: any) => {
+        const names = Array.isArray(data) ? data.filter((v: any) => typeof v === 'string') : [];
+        setUniverses(names);
+        if (!runUniverse && names.length > 0) setRunUniverse(names[0]);
+      })
+      .catch(() => setUniverses([]));
   }, []);
 
   useEffect(() => {
@@ -143,9 +178,91 @@ export default function LiveResult() {
   const tableColumnWidth = 'calc((100% - 20px) / 2)';
   const fallbackTableWidth = 'calc((100% - 16px) / 2)';
 
+  async function startLiveStrategy() {
+    if (!runCfg || !runUniverse || runLoading) return;
+    setRunLoading(true);
+    setRunMsg(null);
+    try {
+      const payload = {
+        cfg_name: runCfg,
+        exchange: runExchange,
+        universe_file: runUniverse,
+        debug: runDebug,
+      };
+      const response = await apiFetch('/api/live_run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = typeof data?.detail === 'string' ? data.detail : 'Failed to start live strategy';
+        throw new Error(detail);
+      }
+      const pid = data?.pid ? ` PID: ${data.pid}.` : '';
+      const logs = data?.logs_file ? ` Logs: ${data.logs_file}.` : '';
+      setRunMsg(`Live strategy started.${pid}${logs}`);
+      setShowRunPrompt(false);
+    } catch (err) {
+      setRunMsg(err instanceof Error ? err.message : 'Failed to start live strategy');
+    } finally {
+      setRunLoading(false);
+    }
+  }
+
   return (
     <div>
       <h3>Live Result{sel ? ` – ${sel}` : ''}</h3>
+      <button onClick={() => setShowRunPrompt(true)} style={{ marginRight: 8 }}>
+        Start new live strategy
+      </button>
+      {runMsg && <p>{runMsg}</p>}
+      {showRunPrompt && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.35)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 50,
+        }}>
+          <div style={{ background: '#fff', borderRadius: 8, padding: 16, minWidth: 420, maxWidth: 520 }}>
+            <h4 style={{ marginTop: 0 }}>Run live strategy</h4>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <label>
+                Exchange
+                <select value={runExchange} onChange={e => setRunExchange(e.target.value as 'bingx' | 'bybit')} style={{ width: '100%' }}>
+                  <option value="bingx">bingx</option>
+                  <option value="bybit">bybit</option>
+                </select>
+              </label>
+              <label>
+                Config (--cfg)
+                <select value={runCfg} onChange={e => setRunCfg(e.target.value)} style={{ width: '100%' }}>
+                  {cfgs.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </label>
+              <label>
+                Universe file (--universe-file)
+                <select value={runUniverse} onChange={e => setRunUniverse(e.target.value)} style={{ width: '100%' }}>
+                  {universes.map(name => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </label>
+              <label>
+                <input type="checkbox" checked={runDebug} onChange={e => setRunDebug(e.target.checked)} />
+                {' '}--debug
+              </label>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+              <button onClick={() => setShowRunPrompt(false)} disabled={runLoading}>Cancel</button>
+              <button onClick={startLiveStrategy} disabled={runLoading || !runCfg || !runUniverse}>
+                {runLoading ? 'Starting...' : 'Start'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <select
         value={sel}
         onChange={e => {
