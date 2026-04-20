@@ -1,0 +1,36 @@
+{
+  "ENA/USDT:USDT|LONG": {
+    "symbol": "ENA/USDT:USDT",
+    "side": "LONG",
+    "qty": 20.0,
+    "entry": 0.1191,
+    "tp_price": 0.11929749999999999,
+    "sl_price": null,
+    "ts_open": "2026-04-18T19:56:00+00:00",
+    "run_id": "LIVE_DUAL_20260418_195624",
+    "order_id": "8351d012-d02e-495d-bf2e-f6d10f99572c",
+    "exchange_order_id": "2045592307349282817",
+    "entry_fill": 0.1191,
+    "entry_fill_ts": "2026-04-18T19:56:25+00:00",
+    "entry_slip_bp": 0.0,
+    "entry_lag_sec": 25.0,
+    "entry_mark_price": 0.1191
+  },
+  "ENA/USDT:USDT|SHORT": {
+    "symbol": "ENA/USDT:USDT",
+    "side": "SHORT",
+    "qty": 20.0,
+    "entry": 0.119,
+    "tp_price": 0.11877389999999999,
+    "sl_price": null,
+    "ts_open": "2026-04-18T19:56:00+00:00",
+    "run_id": "LIVE_DUAL_20260418_195624",
+    "order_id": "39d3db7d-b1cd-4e1f-8b35-e1d520eb4288",
+    "exchange_order_id": "2045592315045830657",
+    "entry_fill": 0.119,
+    "entry_fill_ts": "2026-04-18T19:56:27+00:00",
+    "entry_slip_bp": 8.396305625525402,
+    "entry_lag_sec": 27.0,
+    "entry_mark_price": 0.1191
+  }
+}
