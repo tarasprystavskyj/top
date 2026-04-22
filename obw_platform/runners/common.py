@@ -203,11 +203,28 @@ RATE_MS = 130
 
 class CCXTFetcher:
     def __init__(self, exchange='bingx', symbol_format='usdtm', debug=False, logfile=''):
-        if not ccxt:
-            raise RuntimeError("ccxt is not installed. pip install 'ccxt<5'")
         self.debug = debug
         self.logfile = logfile
         ex_name = str(exchange or '').upper()
+        ex_norm = str(exchange or '').lower()
+        if ex_norm in {'virtual', 'sim', 'virtual_exchange', 'paper_virtual'}:
+            from .virtual_exchange import VirtualExchange
+            self.ex = VirtualExchange.from_env(debug=debug)
+            self.markets = self.ex.load_markets()
+            self.by_base = {}
+            for m in self.markets.values():
+                try:
+                    if m.get('swap') and m.get('quote') == 'USDT':
+                        b = m.get('base')
+                        if b:
+                            self.by_base[b] = m['symbol']
+                except Exception:
+                    continue
+            self.credentials_present = True
+            self.credentials_summary = {'exchange': exchange, 'virtual': True}
+            return
+        if not ccxt:
+            raise RuntimeError("ccxt is not installed. pip install 'ccxt<5'")
         key_aliases = [
             f'{ex_name}_KEY', f'{ex_name}_API_KEY',
             'BINGX_KEY', 'BINGX_API_KEY',
@@ -577,7 +594,9 @@ def write_decisions(sess_path: str, run_id: str, bar_time, ranked_list, selected
     con.commit()
     con.close()
 
-def write_equity(sess_path: str, run_id: str, t, equity_dict: dict):
+def write_equity(sess_path: str, run_id: str, t, equity_dict):
+    if not isinstance(equity_dict, dict):
+        equity_dict = {'equity': float(equity_dict or 0.0), 'cash': float(equity_dict or 0.0), 'position_value': 0.0, 'realized_pnl_cum': 0.0, 'unrealized_pnl': 0.0}
     con = sqlite3.connect(sess_path)
     cur = con.cursor()
     cur.execute('''INSERT OR REPLACE INTO equity(run_id, ts_utc, equity_usdt, cash_usdt, position_value_usdt,
@@ -655,49 +674,47 @@ def make_bot_id(results_dir: str, exchange: str, timeframe: str) -> str:
     results_dir = os.path.abspath(results_dir or '.')
     return f"{results_dir}|{exchange}|{str(timeframe)}"
 
-def db_load_open_positions(session_db_path: str, bot_id: str) -> Dict[str, dict]:
+def db_load_open_positions(session_db_path: str, bot_id: str, include_side_in_key: bool = False) -> Dict[str, dict]:
     out: Dict[str, dict] = {}
     try:
         con = sqlite3.connect(session_db_path)
         cur = con.cursor()
-        rows = cur.execute(
-            """
-            SELECT symbol, side, qty, entry, tp_price, sl_price, ts_open, run_id,
-                   local_order_uuid, exchange_order_id, exchange, timeframe,
-                   entry_fill, entry_fill_ts, entry_slip_bp, entry_lag_sec,
-                   entry_mark_price, exit_mark_price
-            FROM open_positions
-            WHERE bot_id=? AND status='OPEN'
-            ORDER BY ts_open ASC
-            """,
-            (bot_id,)
-        ).fetchall()
+        cols = {r[1] for r in cur.execute('PRAGMA table_info(open_positions)').fetchall()}
+        select_cols = ['symbol','side','qty','entry','tp_price','sl_price','ts_open','run_id','local_order_uuid','exchange_order_id','exchange','timeframe','entry_fill','entry_fill_ts','entry_slip_bp','entry_lag_sec','entry_mark_price','exit_mark_price']
+        for extra in ['latest_funding_rate','next_funding_time_utc','funding_interval_hours','funding_mark_price','projected_funding_usdt']:
+            if extra in cols:
+                select_cols.append(extra)
+        rows = cur.execute(f"SELECT {', '.join(select_cols)} FROM open_positions WHERE bot_id=? AND status='OPEN' ORDER BY ts_open ASC", (bot_id,)).fetchall()
         con.close()
         for r in rows:
-            (
-                sym, side, qty, entry, tp, sl, ts_open, run_id,
-                luid, exid, exch, tf, entry_fill, entry_fill_ts,
-                entry_slip_bp, entry_lag_sec, entry_mark_price, exit_mark_price
-            ) = r
-            out[sym] = {
+            data = dict(zip(select_cols, r))
+            sym = data.get('symbol')
+            side = str(data.get('side','LONG')).upper()
+            key = f"{sym}|{side}" if include_side_in_key else sym
+            out[key] = {
                 'symbol': sym,
                 'side': side,
-                'qty': float(qty or 0.0),
-                'entry': float(entry) if entry is not None else None,
-                'tp_price': tp,
-                'sl_price': sl,
-                'ts_open': ts_open,
-                'run_id': run_id,
-                'order_id': luid,
-                'exchange_order_id': exid,
-                'exchange': exch,
-                'timeframe': tf,
-                'entry_fill': entry_fill,
-                'entry_fill_ts': entry_fill_ts,
-                'entry_slip_bp': entry_slip_bp,
-                'entry_lag_sec': entry_lag_sec,
-                'entry_mark_price': entry_mark_price,
-                'exit_mark_price': exit_mark_price,
+                'qty': float(data.get('qty') or 0.0),
+                'entry': float(data.get('entry')) if data.get('entry') is not None else None,
+                'tp_price': data.get('tp_price'),
+                'sl_price': data.get('sl_price'),
+                'ts_open': data.get('ts_open'),
+                'run_id': data.get('run_id'),
+                'order_id': data.get('local_order_uuid'),
+                'exchange_order_id': data.get('exchange_order_id'),
+                'exchange': data.get('exchange'),
+                'timeframe': data.get('timeframe'),
+                'entry_fill': data.get('entry_fill'),
+                'entry_fill_ts': data.get('entry_fill_ts'),
+                'entry_slip_bp': data.get('entry_slip_bp'),
+                'entry_lag_sec': data.get('entry_lag_sec'),
+                'entry_mark_price': data.get('entry_mark_price'),
+                'exit_mark_price': data.get('exit_mark_price'),
+                'latest_funding_rate': data.get('latest_funding_rate'),
+                'next_funding_time_utc': data.get('next_funding_time_utc'),
+                'funding_interval_hours': data.get('funding_interval_hours'),
+                'funding_mark_price': data.get('funding_mark_price'),
+                'projected_funding_usdt': data.get('projected_funding_usdt'),
             }
     except Exception as e:
         cprint('[db load open_positions]', e, fg='red')

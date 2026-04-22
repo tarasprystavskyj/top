@@ -1,0 +1,96 @@
+cache_db: /mnt/data/combined_cache_30s_ENA_2026-02-01_2026-03-01.db
+live: false
+portfolio:
+  fee_rate: 0.0005
+  initial_equity_per_leg: 100.0
+  max_notional_frac: 1.0
+  slippage_per_side: 0.0
+source: sqlite
+strategy_class_long: strategies.cryptomine_pack_dual_full.CryptomineLongPackAdaptiveEven
+strategy_class_short: strategies.cryptomine_pack_dual_full.CryptomineShortPackAdaptiveEven
+strategy_params_long:
+  autoMerge: 0.0
+  baseOrderPctEq: 1.186576
+  blockDcaOnTpTouch: 0.0
+  callbackPercent: 0.032415
+  drop1: 0.367488
+  drop2: 0.4
+  drop3: 0.6
+  drop4: 0.8
+  drop5: 0.8
+  equityForSizingUSDT: 300.0
+  firstBuyQtyCoin: 0.09
+  hardBreakevenDeleveragePct: 50.0
+  linearDropPercent: 0.049615
+  liveStartTime: 0.0
+  marginCallLimit: 244.0
+  maxFillsPerBar: 6.0
+  maxLongInvestPct: 2.0
+  maxOrdersPer3Min: 14.0
+  maxSubSellsPerBar: 10.0
+  minLongInvestPct: 0.5
+  minOrderQtyCoin: 0.09
+  minOrderUSDT: 2.0
+  mult2: 1.085342
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+  requireCloseAboveFullTP: 1.0
+  requireCloseBelowDcaLevel: 1.0
+  subSellCloseConfirmMode: breakeven
+  subSellTPPercent: 0.451472
+  tpPercent: 0.291319
+  trendMaLen: 20.0
+  trendMaTf: W
+  trendScoreMaxPct: 75.0
+  trendScoreMinPct: 45.0
+  trendSlopeBars: 3.0
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  useEquityPctBase: 1.0
+  useHighLowTouch: 1.0
+  useLiveSyncStart: 0.0
+  useTrendAdaptiveSizing: 1.0
+strategy_params_short:
+  autoMerge: 0.0
+  baseOrderPctEq: 1.222196
+  blockDcaOnTpTouch: 0.0
+  callbackPercent: 0.11
+  equityForSizingUSDT: 300.0
+  firstSellQtyCoin: 0.09
+  hardBreakevenDeleveragePct: 50.0
+  linearRisePercent: 0.208706
+  liveStartTime: 0.0
+  marginCallLimit: 244.0
+  maxFillsPerBar: 6.0
+  maxOrdersPer3Min: 14.0
+  maxShortInvestPct: 1.8
+  maxSubSellsPerBar: 10.0
+  minOrderQtyCoin: 0.09
+  minShortInvestPct: 0.5
+  mult2: 1.927968
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+  requireCloseAboveDcaLevel: 1.0
+  requireCloseBelowFullTP: 1.0
+  rise1: 0.158708
+  rise2: 0.4
+  rise3: 0.6
+  rise4: 0.8
+  rise5: 0.8
+  subCoverCloseConfirmMode: breakeven
+  subSellTPPercent: 0.478008
+  tpPercent: 0.285807
+  trendMaLen: 20.0
+  trendMaTf: W
+  trendScoreMaxPct: 75.0
+  trendScoreMinPct: 45.0
+  trendSlopeBars: 3.0
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  useEquityPctBase: 1.0
+  useHighLowTouch: 1.0
+  useLiveSyncStart: 0.0
+  useTrendAdaptiveSizing: 1.0
+timeframe: 0.5m

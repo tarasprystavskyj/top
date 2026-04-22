@@ -165,17 +165,27 @@ class VirtualExchange:
         z = np.load(path, allow_pickle=True)
         files = set(z.files)
         out: Dict[str, pd.DataFrame] = {}
+        def _frame_from_slice(sl: slice):
+            base = {
+                'ts': z['timestamp_s'][sl].astype('int64') * 1000,
+                'open': z['open'][sl].astype('float64') if 'open' in files else z['close'][sl].astype('float64'),
+                'high': z['high'][sl].astype('float64') if 'high' in files else z['close'][sl].astype('float64'),
+                'low': z['low'][sl].astype('float64') if 'low' in files else z['close'][sl].astype('float64'),
+                'close': z['close'][sl].astype('float64'),
+                'volume': z['volume'][sl].astype('float64') if 'volume' in files else np.zeros_like(z['close'][sl].astype('float64')),
+            }
+            reserved = {'symbols','offsets','symbol','timestamp_s','open','high','low','close','volume'}
+            for k in files - reserved:
+                try:
+                    base[k] = z[k][sl].astype('float64')
+                except Exception:
+                    pass
+            return pd.DataFrame(base)
         if {'symbol', 'timestamp_s', 'close'}.issubset(files):
             sym = str(z['symbol'].item() if getattr(z['symbol'], 'shape', ()) == () else z['symbol'][0])
             if symbols and sym not in symbols:
                 return {}
-            ts = z['timestamp_s'].astype('int64') * 1000
-            close = z['close'].astype('float64')
-            if {'open', 'high', 'low', 'volume'}.issubset(files):
-                o = z['open'].astype('float64'); h = z['high'].astype('float64'); l = z['low'].astype('float64'); v = z['volume'].astype('float64')
-            else:
-                o = h = l = close.copy(); v = np.zeros_like(close)
-            out[sym] = pd.DataFrame({'ts': ts, 'open': o, 'high': h, 'low': l, 'close': close, 'volume': v})
+            out[sym] = _frame_from_slice(slice(None))
             return out
         req = {'symbols', 'offsets', 'timestamp_s', 'close'}
         if not req.issubset(files):
@@ -184,23 +194,21 @@ class VirtualExchange:
         offs = z['offsets'].astype('int64').tolist()
         if len(offs) == len(syms):
             offs = offs + [len(z['close'])]
-        ts_all = z['timestamp_s'].astype('int64') * 1000
-        close_all = z['close'].astype('float64')
-        open_all = z['open'].astype('float64') if 'open' in files else close_all
-        high_all = z['high'].astype('float64') if 'high' in files else close_all
-        low_all = z['low'].astype('float64') if 'low' in files else close_all
-        vol_all = z['volume'].astype('float64') if 'volume' in files else np.zeros_like(close_all)
         keep = set(symbols or syms)
         for i, sym in enumerate(syms):
             if sym not in keep:
                 continue
-            a, b = offs[i], offs[i+1]
-            out[sym] = pd.DataFrame({'ts': ts_all[a:b], 'open': open_all[a:b], 'high': high_all[a:b], 'low': low_all[a:b], 'close': close_all[a:b], 'volume': vol_all[a:b]})
+            out[sym] = _frame_from_slice(slice(offs[i], offs[i+1]))
         return out
 
     def _load_from_db(self, path: str, symbols: Optional[List[str]]) -> Dict[str, pd.DataFrame]:
         con = sqlite3.connect(path)
-        q = 'SELECT symbol, datetime_utc, open, high, low, close, volume FROM price_indicators'
+        cols = {r[1] for r in con.execute('PRAGMA table_info(price_indicators)').fetchall()}
+        select_cols = ['symbol', 'datetime_utc', 'open', 'high', 'low', 'close', 'volume']
+        for extra in ['quote_volume', 'qv_24h', 'dp6h', 'dp12h', 'atr_ratio', 'vol_surge_mult']:
+            if extra in cols:
+                select_cols.append(extra)
+        q = 'SELECT ' + ', '.join(select_cols) + ' FROM price_indicators'
         params: List[Any] = []
         if symbols:
             q += ' WHERE symbol IN (%s)' % ','.join(['?'] * len(symbols))
@@ -210,8 +218,12 @@ class VirtualExchange:
         con.close()
         out: Dict[str, pd.DataFrame] = {}
         for sym, part in df.groupby('symbol', sort=True):
-            ts = pd.to_datetime(part['datetime_utc'], utc=True).astype('int64') // 10**6
-            out[str(sym)] = pd.DataFrame({'ts': ts.astype('int64').to_numpy(), 'open': part['open'].astype('float64').to_numpy(), 'high': part['high'].astype('float64').to_numpy(), 'low': part['low'].astype('float64').to_numpy(), 'close': part['close'].astype('float64').to_numpy(), 'volume': part['volume'].astype('float64').to_numpy()})
+            base = {'ts': (pd.to_datetime(part['datetime_utc'], utc=True).astype('int64') // 10**6).astype('int64').to_numpy()}
+            for c in part.columns:
+                if c in {'symbol', 'datetime_utc'}:
+                    continue
+                base[c] = part[c].astype('float64').to_numpy()
+            out[str(sym)] = pd.DataFrame(base)
         return out
 
     def load_markets(self) -> Dict[str, Dict[str, Any]]:
@@ -256,10 +268,27 @@ class VirtualExchange:
         self._clock_ms = int(self.data[sym]['ts'].iloc[self._cursor[sym]])
         self._expire_open_orders(sym)
 
+    def advance(self, steps: int = 1, symbol: Optional[str] = None) -> None:
+        syms = [self.resolve_symbol(symbol) or symbol] if symbol else list(self.symbols)
+        for sym in syms:
+            n = len(self.data[sym])
+            self._cursor[sym] = max(0, min(int(self._cursor[sym] + steps), n - 1))
+            self._clock_ms = max(self._clock_ms, int(self.data[sym]['ts'].iloc[self._cursor[sym]]))
+            self._expire_open_orders(sym)
+
     def current_bar(self, symbol: str) -> Dict[str, Any]:
         sym = self.resolve_symbol(symbol) or symbol
         row = self.data[sym].iloc[self._cursor[sym]]
-        return {'symbol': sym, 'timestamp': int(row['ts']), 'open': float(row['open']), 'high': float(row['high']), 'low': float(row['low']), 'close': float(row['close']), 'volume': float(row['volume'])}
+        out = {'symbol': sym, 'timestamp': int(row['ts']), 'datetime_utc': _iso_from_ms(int(row['ts']))}
+        for k, v in row.items():
+            if k == 'ts':
+                continue
+            try:
+                out[k] = float(v)
+            except Exception:
+                out[k] = v
+        out.setdefault('open', out.get('close', 0.0)); out.setdefault('high', out.get('close', 0.0)); out.setdefault('low', out.get('close', 0.0)); out.setdefault('volume', 0.0)
+        return out
 
     def fetch_ohlcv(self, symbol: str, timeframe: str = '1m', since: Optional[int] = None, limit: Optional[int] = None):
         sym = self.resolve_symbol(symbol) or symbol
@@ -349,6 +378,7 @@ class VirtualExchange:
         params = dict(params or {})
         sym = self.resolve_symbol(symbol) or symbol
         side = str(side).lower()
+        order_type = str(type or 'market').lower()
         qty = float(amount or 0.0)
         if qty <= 0:
             raise RuntimeError('amount must be > 0')
@@ -370,24 +400,38 @@ class VirtualExchange:
             raise RuntimeError("bingx {\"code\":109400,\"msg\":\"In the Hedge mode, the 'ReduceOnly' field can not be filled.\",\"data\":{}}")
         order_id = f'vex-{self.order_seq+1:08d}'
         self.order_seq += 1
-        fillable, exec_px, slip_bps, reason = self._decide_fill(sym, side, qty, requested_price=price)
         ts = self.milliseconds()
         ob = self.fetch_order_book(sym, 10)
         best_bid = float(ob['bids'][0][0]) if ob.get('bids') else None
         best_ask = float(ob['asks'][0][0]) if ob.get('asks') else None
-        od = {'id': order_id, 'orderId': order_id, 'clientOrderId': params.get('clientOrderId') or order_id, 'symbol': sym, 'type': str(type).lower(), 'side': side, 'amount': qty, 'remaining': 0.0 if fillable else qty, 'filled': qty if fillable else 0.0, 'average': exec_px if fillable else None, 'price': exec_px if fillable else price, 'status': 'closed' if fillable else 'open', 'timestamp': ts, 'datetime': _iso_from_ms(ts), 'reduceOnly': reduce_only, 'info': {'positionSide': params.get('positionSide') or 'BOTH', 'reduceOnly': reduce_only, 'slippageBps': slip_bps, 'reason': reason, 'bestBid': best_bid, 'bestAsk': best_ask, 'spreadBps': self._synthetic_spread_bps(sym)}, '_bar_index': self._cursor[sym], '_ttl_bars': self.order_ttl_bars}
+        od = {'id': order_id, 'orderId': order_id, 'clientOrderId': params.get('clientOrderId') or order_id, 'symbol': sym, 'type': order_type, 'side': side, 'amount': qty, 'remaining': qty, 'filled': 0.0, 'average': None, 'price': price, 'status': 'open', 'timestamp': ts, 'datetime': _iso_from_ms(ts), 'reduceOnly': reduce_only, 'info': {'positionSide': params.get('positionSide') or 'BOTH', 'reduceOnly': reduce_only, 'bestBid': best_bid, 'bestAsk': best_ask, 'spreadBps': self._synthetic_spread_bps(sym)}, '_bar_index': self._cursor[sym], '_ttl_bars': self.order_ttl_bars}
+        if order_type == 'market':
+            fillable, exec_px, slip_bps, reason = self._decide_fill(sym, side, qty, requested_price=price)
+            od.update({'remaining': 0.0 if fillable else qty, 'filled': qty if fillable else 0.0, 'average': exec_px if fillable else None, 'price': exec_px if fillable else price, 'status': 'closed' if fillable else 'open'})
+            od['info'].update({'slippageBps': slip_bps, 'reason': reason})
+            self.orders[order_id] = od
+            if fillable:
+                fee = abs(exec_px * qty) * self.taker_fee
+                self._apply_fill(sym, side=side, qty=qty, px=exec_px, reduce_only=reduce_only, position_side=str(params.get('positionSide') or '').upper() or None)
+                self.balance_free -= fee
+                od['fee'] = {'cost': fee, 'currency': 'USDT'}
+            return copy.deepcopy(od)
+        if order_type != 'limit':
+            raise RuntimeError(f'unsupported order type: {order_type}')
+        if price is None:
+            raise RuntimeError('limit order requires price')
+        od['price'] = float(price)
+        od['info'].update({'reason': 'resting_limit'})
         self.orders[order_id] = od
-        if fillable:
-            fee = abs(exec_px * qty) * self.taker_fee
-            self._apply_fill(sym, side=side, qty=qty, px=exec_px, reduce_only=reduce_only, position_side=str(params.get('positionSide') or '').upper() or None)
-            self.balance_free -= fee
-            od['fee'] = {'cost': fee, 'currency': 'USDT'}
-        else:
-            self._log('order-open', order_id, sym, side, qty, reason)
-        return copy.deepcopy(od)
+        self._refresh_open_orders(symbol=sym)
+        return copy.deepcopy(self.orders[order_id])
 
     def fetch_order(self, id: str, symbol: Optional[str] = None):
-        return copy.deepcopy(self.orders[str(id)])
+        od = self.orders[str(id)]
+        if od.get('status') == 'open' and str(od.get('type')).lower() == 'limit':
+            self._refresh_open_orders(symbol=od['symbol'])
+            od = self.orders[str(id)]
+        return copy.deepcopy(od)
 
     def cancel_order(self, id: str, symbol: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
         od = self.orders[str(id)]
@@ -407,8 +451,49 @@ class VirtualExchange:
             if age >= int(od.get('_ttl_bars') or 1):
                 od['status'] = 'canceled'
                 od['info']['reason'] = 'timeout'
-                od['remaining'] = od['amount'] - od.get('filled', 0.0)
+                od['remaining'] = max(0.0, float(od['amount']) - float(od.get('filled', 0.0)))
 
+    def _refresh_open_orders(self, symbol: Optional[str] = None) -> None:
+        for od in list(self.orders.values()):
+            if od.get('status') != 'open' or str(od.get('type')).lower() != 'limit':
+                continue
+            if symbol is not None and od.get('symbol') != symbol:
+                continue
+            cur_bar_idx = int(self._cursor[od['symbol']])
+            if od.get('_last_refresh_bar_index') == cur_bar_idx:
+                continue
+            od['_last_refresh_bar_index'] = cur_bar_idx
+            bar = self.current_bar(od['symbol'])
+            if not self._limit_touched(od, bar):
+                continue
+            fill_ratio = self._limit_fill_fraction(od, bar)
+            fill_qty = min(float(od.get('remaining') or 0.0), max(0.0, float(od.get('remaining') or 0.0) * fill_ratio))
+            if fill_qty <= 1e-12:
+                continue
+            fill_px = float(od.get('price') if od.get('price') is not None else bar.get('close', 0.0))
+            self._apply_fill(od['symbol'], side=od['side'], qty=fill_qty, px=fill_px, reduce_only=bool(od.get('reduceOnly')), position_side=str((od.get('info') or {}).get('positionSide') or '').upper() or None)
+            self.balance_free -= abs(fill_px * fill_qty) * self.maker_fee
+            od['average'] = fill_px
+            od['filled'] = float(od.get('filled') or 0.0) + fill_qty
+            od['remaining'] = max(0.0, float(od['amount']) - float(od['filled']))
+            od['status'] = 'closed' if od['remaining'] <= 1e-12 else 'open'
+            od['info'].update({'reason': 'limit_touch_fill', 'fill_price': fill_px, 'last_fill_qty': fill_qty, 'fill_ratio': fill_ratio, 'slippageBps': 0.0})
+
+    def _limit_touched(self, od: Dict[str, Any], bar: Dict[str, Any]) -> bool:
+        px = float(od.get('price') if od.get('price') is not None else bar.get('close', 0.0))
+        high = float(bar.get('high', bar.get('close', 0.0)))
+        low = float(bar.get('low', bar.get('close', 0.0)))
+        return low <= px if str(od.get('side')).lower() == 'buy' else high >= px
+
+    def _limit_fill_fraction(self, od: Dict[str, Any], bar: Dict[str, Any]) -> float:
+        side_key = 'buy' if str(od.get('side')).lower() == 'buy' else 'sell'
+        for key in (f'limit_fill_fraction_{side_key}', 'limit_fill_fraction'):
+            if key in bar and bar.get(key) not in (None, ''):
+                try:
+                    return min(1.0, max(0.0, float(bar.get(key))))
+                except Exception:
+                    pass
+        return 1.0
 
     def _predict_dynamic_slippage_bps(self, bar: Dict[str, Any], side: str, qty: float, requested_price: float, is_exit: bool = False) -> float:
         if not self.dynamic_slippage_model:

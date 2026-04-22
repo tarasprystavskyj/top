@@ -1,0 +1,96 @@
+live: false
+source: sqlite
+timeframe: 0.5m
+cache_db: /mnt/data/combined_cache_30s_ENA_2026-02-01_2026-03-01.db
+portfolio:
+  initial_equity_per_leg: 100.0
+  fee_rate: 0.0005
+  slippage_per_side: 0.0
+  max_notional_frac: 1.0
+strategy_class_long: strategies.cryptomine_pack_dual_full.CryptomineLongPackAdaptiveEven
+strategy_class_short: strategies.cryptomine_pack_dual_full.CryptomineShortPackAdaptiveEven
+strategy_params_long:
+  firstBuyQtyCoin: 0.09
+  minOrderQtyCoin: 0.09
+  minOrderUSDT: 2.0
+  useEquityPctBase: true
+  baseOrderPctEq: 1.16746
+  equityForSizingUSDT: 300.0
+  tpPercent: 0.3
+  callbackPercent: 0.04
+  marginCallLimit: 244
+  linearDropPercent: 0.062812
+  autoMerge: false
+  subSellTPPercent: 0.46
+  requireCloseAboveFullTP: true
+  subSellCloseConfirmMode: breakeven
+  requireCloseBelowDcaLevel: true
+  blockDcaOnTpTouch: false
+  drop1: 0.341966
+  drop2: 0.4
+  drop3: 0.6
+  drop4: 0.8
+  drop5: 0.8
+  mult2: 1.085342
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+  maxFillsPerBar: 6
+  maxSubSellsPerBar: 10
+  useHighLowTouch: true
+  useLiveSyncStart: false
+  liveStartTime: 0
+  maxOrdersPer3Min: 14
+  useTrendAdaptiveSizing: true
+  trendMaTf: W
+  trendMaLen: 20
+  trendSlopeBars: 3
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  trendScoreMinPct: 45.0
+  trendScoreMaxPct: 75.0
+  minLongInvestPct: 0.5
+  maxLongInvestPct: 2.0
+  hardBreakevenDeleveragePct: 50.0
+strategy_params_short:
+  firstSellQtyCoin: 0.09
+  minOrderQtyCoin: 0.09
+  useEquityPctBase: true
+  baseOrderPctEq: 1.338575
+  equityForSizingUSDT: 300.0
+  tpPercent: 0.26
+  callbackPercent: 0.11
+  marginCallLimit: 244
+  linearRisePercent: 0.189446
+  autoMerge: false
+  subSellTPPercent: 0.44
+  requireCloseBelowFullTP: true
+  subCoverCloseConfirmMode: breakeven
+  requireCloseAboveDcaLevel: true
+  blockDcaOnTpTouch: false
+  rise1: 0.158708
+  rise2: 0.4
+  rise3: 0.6
+  rise4: 0.8
+  rise5: 0.8
+  mult2: 2.055937
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+  maxFillsPerBar: 6
+  maxSubSellsPerBar: 10
+  useHighLowTouch: true
+  useLiveSyncStart: false
+  liveStartTime: 0
+  maxOrdersPer3Min: 14
+  useTrendAdaptiveSizing: true
+  trendMaTf: W
+  trendMaLen: 20
+  trendSlopeBars: 3
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  trendScoreMinPct: 45.0
+  trendScoreMaxPct: 75.0
+  minShortInvestPct: 0.5
+  maxShortInvestPct: 2.166146
+  hardBreakevenDeleveragePct: 50.0

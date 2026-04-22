@@ -1,0 +1,12 @@
+mode: short
+comp_len: 4
+base_len: 48
+brk_len: 8
+vol_mult: 1.0
+comp_ratio: 0.55
+range_ratio: 1.1
+ema_fast: 12
+ema_slow: 64
+stop_atr: 2.2
+tp_atr: 6.5
+max_hold: 48

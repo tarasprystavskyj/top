@@ -420,6 +420,113 @@ def _choose_requested_price(fetcher, sym: str, fallback: float) -> float:
     return float(px or fallback or 0.0)
 
 
+def _snapshot_limit_price(snapshot, fallback=None):
+    try:
+        if isinstance(snapshot, dict) and snapshot.get('next_level_price') not in (None, ''):
+            return float(snapshot.get('next_level_price'))
+    except Exception:
+        pass
+    try:
+        if snapshot is not None and getattr(snapshot, 'next_level_price', None) not in (None, ''):
+            return float(getattr(snapshot, 'next_level_price'))
+    except Exception:
+        pass
+    try:
+        return float(fallback) if fallback is not None else None
+    except Exception:
+        return None
+
+
+def _safe_order_average(od, fallback=None):
+    try:
+        if isinstance(od, dict) and od.get('average') not in (None, ''):
+            return float(od.get('average'))
+    except Exception:
+        pass
+    try:
+        info = od.get('info') if isinstance(od, dict) else None
+        if isinstance(info, dict):
+            for key in ('fill_price', 'avgPrice', 'price'):
+                if info.get(key) not in (None, ''):
+                    return float(info.get(key))
+    except Exception:
+        pass
+    try:
+        return float(fallback) if fallback is not None else None
+    except Exception:
+        return None
+
+
+def _pending_entry_order_type(cfg: dict) -> str:
+    v, _ = _cfg_pick(cfg or {}, ['live.dca_open_order_type', 'runner.dca_open_order_type', 'dca_open_order_type'], 'market')
+    return str(v or 'market').lower().strip()
+
+
+def place_open_qty_limit(fetcher: CCXTFetcher, sym: str, side: str, qty: float, limit_price: float, position_mode: str):
+    ccxt_sym = fetcher.resolve_symbol(sym) or sym
+    qty = _normalize_order_qty(fetcher, sym, qty, is_close=False)
+    if qty <= 0:
+        return {'ok': False, 'error': 'open_qty_zero_after_normalize', 'qty': qty}
+    order_side = _order_open_side(side)
+    params = {'positionSide': str(side).upper()} if str(position_mode or '').lower() == 'hedge' else {}
+    try:
+        od = fetcher.ex.create_order(ccxt_sym, 'limit', order_side, qty, float(limit_price), params); sleep_ms(RATE_MS)
+        return {'ok': True, 'order': od, 'qty': qty, 'params': params, 'limit_price': float(limit_price)}
+    except Exception as e:
+        return {'ok': False, 'error': str(e), 'qty': qty, 'limit_price': float(limit_price)}
+
+
+def _sync_pending_entry_orders(fetcher, pending_entries: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, strat_long, strat_short, current_bar_iso: str, run_id: str = ''):
+    for key, pend in list((pending_entries or {}).items()):
+        sym = pend.get('symbol')
+        side = str(pend.get('side', 'LONG')).upper()
+        strat = strat_long if side == 'LONG' else strat_short
+        order_id = pend.get('exchange_order_id')
+        created_iso = str(pend.get('created_bar_iso') or '')
+        if created_iso != str(current_bar_iso):
+            try:
+                fetcher.ex.cancel_order(order_id, fetcher.resolve_symbol(sym) or sym); sleep_ms(RATE_MS)
+            except Exception:
+                pass
+            if float(pend.get('applied_filled_qty') or 0.0) <= 1e-12:
+                _strategy_restore(strat, sym, pend.get('strategy_snapshot'))
+                _strategy_rejected(strat, sym, 'dca_limit_timeout', {'order_id': order_id, 'limit_price': pend.get('limit_price')})
+            pending_entries.pop(key, None)
+            continue
+        try:
+            od = fetcher.ex.fetch_order(order_id, fetcher.resolve_symbol(sym) or sym); sleep_ms(RATE_MS)
+        except Exception:
+            od = pend.get('last_order') or {}
+        status = str((od or {}).get('status') or pend.get('status') or '').lower()
+        filled = float((od or {}).get('filled') or 0.0)
+        already_applied = float(pend.get('applied_filled_qty') or 0.0)
+        delta_filled = max(0.0, filled - already_applied)
+        rec = positions.get(key)
+        if delta_filled > 1e-12 and rec:
+            fill_px = _safe_order_average(od, fallback=pend.get('limit_price'))
+            old_qty = float(rec.get('qty', 0.0) or 0.0)
+            old_entry = float(rec.get('entry', 0.0) or 0.0)
+            new_qty = old_qty + delta_filled
+            if fill_px is not None and old_qty > 0:
+                rec['entry'] = ((old_qty * old_entry) + (delta_filled * float(fill_px))) / max(new_qty, 1e-12)
+            elif fill_px is not None:
+                rec['entry'] = float(fill_px)
+            rec['qty'] = new_qty
+            positions[key] = rec
+            save_positions(results_dir, positions)
+            try:
+                db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN', 'entry_fill': fill_px, 'entry_fill_ts': _dt.datetime.now(_dt.timezone.utc).isoformat()})
+            except Exception:
+                pass
+            _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=float(rec.get('entry') or 0.0), fill_price=float(fill_px or rec.get('entry') or 0.0), delta_qty=delta_filled, event='dca_limit_fill')
+            pend['applied_filled_qty'] = already_applied + delta_filled
+        if status == 'closed':
+            pending_entries.pop(key, None)
+            continue
+        pend['last_order'] = od
+        pend['status'] = status
+
+
 def _sync_close_local_only(strat, key: str, rec: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, run_id: str, reason: str):
     sym, side = split_pos_key(key)
     positions.pop(key, None)
@@ -565,7 +672,8 @@ def _resolve_runner_cfg(cfg: dict):
     position_mode_v, _ = _cfg_pick(cfg, ['position_mode', 'runner.position_mode', 'live.position_mode'], 'hedge')
     notional_long_v, _ = _cfg_pick(cfg, ['portfolio.position_notional_long', 'portfolio.position_notional', 'position_notional_long'], 2.0)
     notional_short_v, _ = _cfg_pick(cfg, ['portfolio.position_notional_short', 'portfolio.position_notional', 'position_notional_short'], 20.0)
-    return {'timeframe': str(tf_v), 'top_n': int(top_n_v), 'position_mode': str(position_mode_v), 'notional_long': float(notional_long_v), 'notional_short': float(notional_short_v)}
+    dca_open_order_type_v, _ = _cfg_pick(cfg, ['live.dca_open_order_type', 'runner.dca_open_order_type', 'dca_open_order_type'], 'market')
+    return {'timeframe': str(tf_v), 'top_n': int(top_n_v), 'position_mode': str(position_mode_v), 'notional_long': float(notional_long_v), 'notional_short': float(notional_short_v), 'dca_open_order_type': str(dca_open_order_type_v or 'market').lower().strip()}
 
 
 def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str, wait_sec: float = ORDER_SYNC_WAIT_SEC, poll_sec: float = ORDER_SYNC_POLL_SEC):
@@ -994,7 +1102,8 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
     return True, {'closed': False, 'qty': new_qty, 'entry': new_entry}
 
 
-def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, positions: dict, results_dir: str, position_mode: str, session_db_path: str, bot_id: str, run_id: str):
+def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, positions: dict, results_dir: str, position_mode: str, session_db_path: str, bot_id: str, run_id: str, *, cfg: dict = None, pending_entries: dict = None):
+    pending_entries = pending_entries if pending_entries is not None else {}
     sym, side = split_pos_key(key)
     pos_before = _PosLike(rec)
     qty_before, entry_before = float(pos_before.qty), float(pos_before.entry)
@@ -1008,6 +1117,7 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
         qty_close = float(rec.get('qty', 0.0) or 0.0)
         if qty_close <= 0:
             _strategy_restore(strat, sym, snapshot); return False
+        pending_entries.pop(key, None)
         return _execute_reduce_with_rollback(fetcher, strat, sym=sym, side=side, qty=qty_close, requested_px=requested_px, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, close_reason=reason, rec=rec, positions=positions, results_dir=results_dir, bot_id=bot_id, event_type='close', partial=False)[0]
     if action == 'TP_PARTIAL':
         qty_frac = max(0.0, min(1.0, float(getattr(ex_sig, 'qty_frac', 0.0) or 0.0)))
@@ -1018,6 +1128,22 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
     qty_after, entry_after = float(pos_before.qty), float(pos_before.entry)
     if qty_after > qty_before + 1e-12:
         delta_qty = qty_after - qty_before
+        if _pending_entry_order_type(cfg or {}) in {'limit', 'maker', 'maker_limit'}:
+            limit_px = _snapshot_limit_price(snapshot, requested_px)
+            res = place_open_qty_limit(fetcher, sym, side, delta_qty, limit_px, position_mode)
+            if not res.get('ok'):
+                _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'dca_limit_open', res)
+                return False
+            ex_order_id = _extract_order_id(res.get('order'))
+            pending_entries[key] = {'symbol': sym, 'side': side, 'exchange_order_id': ex_order_id, 'created_bar_iso': bar_dt.isoformat(), 'limit_price': float(limit_px), 'delta_qty': float(delta_qty), 'strategy_snapshot': snapshot, 'applied_filled_qty': 0.0, 'last_order': res.get('order'), 'status': str((res.get('order') or {}).get('status') or '').lower()}
+            _sync_pending_entry_orders(fetcher, pending_entries, positions, results_dir, session_db_path, bot_id, strat, strat, bar_dt.isoformat(), run_id=run_id)
+            pend = pending_entries.get(key)
+            if pend is None and float(positions.get(key, rec).get('qty', 0.0) or 0.0) > qty_before + 1e-12:
+                positions[key]['order_id'] = rec.get('order_id') or positions[key].get('order_id')
+                save_positions(results_dir, positions)
+                db_upsert_open_position(session_db_path, bot_id, {**positions[key], 'status': 'OPEN'})
+                return True
+            return False
         ok, _ = _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=delta_qty, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=rec.get('tp_price'), sl_price=rec.get('sl_price'))
         if ok:
             new_rec = positions[pos_key(sym, side)]
@@ -1056,6 +1182,7 @@ def run_live(cfg: dict, args):
     tf, tf_sec, top_n = rcfg['timeframe'], _tf_to_seconds(rcfg['timeframe']), rcfg['top_n']
     md_tf = _normalize_fetch_timeframe(fetcher, tf)
     notional_long, notional_short, position_mode = rcfg['notional_long'], rcfg['notional_short'], rcfg['position_mode']
+    dca_open_order_type = rcfg.get('dca_open_order_type', 'market')
     os.makedirs(args.results_dir, exist_ok=True)
     session_db_path, cache_out_path = ensure_session_dbs(args.results_dir, getattr(args, 'session_db', ''), getattr(args, 'cache_out', ''))
     ensure_orders_db(session_db_path)
@@ -1091,6 +1218,7 @@ def run_live(cfg: dict, args):
         pass
     if ENABLE_STARTUP_RECONCILE:
         try:
+            _sync_pending_entry_orders(fetcher, pending_entries, positions, args.results_dir, session_db_path, bot_id, strat_long, strat_short, bar_close.isoformat(), run_id=run_id)
             for key, rec in list(positions.items()):
                 sym0, side0 = split_pos_key(key)
                 strat0 = strat_long if side0 == 'LONG' else strat_short
@@ -1098,6 +1226,7 @@ def run_live(cfg: dict, args):
         except Exception as e:
             _emit_runtime_debug(session_db_path, run_id, 'startup_position_reconcile_fail', {'error': str(e)}, level='ERROR', fg='red')
     last_bar_ts = None
+    pending_entries = {}
     cprint('[live dual]', f'polling every {args.poll_sec}s; entries at bar close +{args.bar_delay_sec}s', fg='cyan')
     if DEBUG_OPEN:
         _emit_runtime_debug(session_db_path, run_id, 'reconcile_flags', {'startup': ENABLE_STARTUP_RECONCILE, 'loop': ENABLE_LOOP_RECONCILE}, level='INFO', fg='cyan')
@@ -1136,6 +1265,7 @@ def run_live(cfg: dict, args):
                         feats = {'close': float(px), 'open': float(px), 'high': float(px), 'low': float(px), 'volume': 0.0, 'atr_ratio': 0.0, 'dp6h': 0.0, 'dp12h': 0.0, 'quote_volume': 0.0, 'qv_24h': 0.0}
                 if feats:
                     feats['datetime_utc'] = bar_close.isoformat(); md[ccxt_sym] = feats
+            _sync_pending_entry_orders(fetcher, pending_entries, positions, args.results_dir, session_db_path, bot_id, strat_long, strat_short, bar_close.isoformat(), run_id=run_id)
             for key, rec in list(positions.items()):
                 sym, side = split_pos_key(key); row = md.get(sym)
                 if row is None:
@@ -1146,7 +1276,7 @@ def run_live(cfg: dict, args):
                     rec2 = _reconcile_position_with_exchange(fetcher, strat, key, rec, positions, args.results_dir, session_db_path, bot_id, run_id)
                     if rec2 is None:
                         continue
-                _maybe_apply_manage_result(fetcher, key, rec2, row, strat, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id)
+                _maybe_apply_manage_result(fetcher, key, rec2, row, strat, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id, cfg=cfg, pending_entries=pending_entries)
             ranked = list(strat_long.rank(bar_close, md, strat_long.universe(bar_close, md))[:top_n]) if md else []
             for sym in ranked:
                 row = md.get(sym)
