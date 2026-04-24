@@ -166,8 +166,15 @@ def pick_symbol_block(data, symbol_filter: str = ''):
 
 
 def build_row(ts: int, i: int, open_: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, volume: np.ndarray, extras: Dict[str, np.ndarray]) -> Dict[str, Any]:
+    iso = pd.to_datetime(int(ts), unit='s', utc=True).strftime('%Y-%m-%dT%H:%M:%S+00:00')
     row: Dict[str, Any] = {
         'ts_s': int(ts),
+        'timestamp_s': int(ts),
+        'ts': int(ts),
+        'datetime_utc': iso,
+        'time': iso,
+        'datetime': iso,
+        'timestamp': iso,
         'open': float(open_[i]),
         'high': float(high[i]),
         'low': float(low[i]),
