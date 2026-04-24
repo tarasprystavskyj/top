@@ -4,14 +4,32 @@ import argparse, copy, importlib.util, itertools, json, os, time, yaml
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import numpy as np
-try:
-    from backtester_dual_long_short_fast_pack import simulate, pick_symbol_block
-except Exception:
-    from backtester_dual_core_dynamic_v2 import simulate, pick_symbol_block
+from backtester_dual_long_short_fast_pack import simulate, pick_symbol_block
 
 CACHE = None
 SERIES = None
 MARKET_SYMBOL = None
+
+def install_numpy_pickle_compat():
+    """Compatibility for NPZ files saved by newer NumPy and loaded by old NumPy/Python 3.8.
+
+    Some object arrays pickle references to numpy._core.*. Older NumPy exposes these
+    modules as numpy.core.*. Installing aliases before np.load(..., allow_pickle=True)
+    lets pickle resolve those names.
+    """
+    import sys
+    try:
+        import numpy.core as _np_core
+        sys.modules.setdefault('numpy._core', _np_core)
+    except Exception:
+        pass
+    for _sub in ('multiarray', 'umath', 'numeric', 'fromnumeric', 'shape_base', 'records'):
+        try:
+            _mod = __import__('numpy.core.' + _sub, fromlist=['*'])
+            sys.modules.setdefault('numpy._core.' + _sub, _mod)
+        except Exception:
+            pass
+
 
 
 def parse_iso_to_epoch_s(s: str) -> int:
@@ -26,6 +44,7 @@ def parse_iso_to_epoch_s(s: str) -> int:
 
 def worker_init(npz_path: str, symbol: str = ''):
     global CACHE, SERIES, MARKET_SYMBOL
+    install_numpy_pickle_compat()
     CACHE = np.load(npz_path, allow_pickle=True)
     MARKET_SYMBOL, ts_s, open_, high, low, close, volume, extras = pick_symbol_block(CACHE, symbol)
     SERIES = {
@@ -248,18 +267,11 @@ def main():
 
     final_yaml = session / 'final_best.yaml'
     final_yaml.write_text(yaml.safe_dump(base_cfg, sort_keys=False), encoding='utf-8')
-    try:
-        import pandas as pd
-        top_csv = session / 'tuner_top20.csv'
-        pd.DataFrame(rows).sort_values('score', ascending=False).head(20).to_csv(top_csv, index=False)
-    except Exception:
-        top_csv = None
     summary = {
         'session_dir': str(session),
         'final_yaml': str(final_yaml),
         'best_overall': best_overall,
         'log_csv': str(log_csv),
-        'top_csv': str(top_csv) if top_csv else None,
     }
     (session / 'tuner_summary.json').write_text(json.dumps(summary, indent=2, default=str), encoding='utf-8')
     print(json.dumps(summary, indent=2, default=str), flush=True)
