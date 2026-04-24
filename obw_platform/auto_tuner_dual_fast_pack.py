@@ -4,7 +4,10 @@ import argparse, copy, importlib.util, itertools, json, os, time, yaml
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import numpy as np
-from backtester_dual_long_short_fast_pack import simulate, pick_symbol_block
+try:
+    from backtester_dual_long_short_fast_pack import simulate, pick_symbol_block
+except Exception:
+    from backtester_dual_core_dynamic_v2 import simulate, pick_symbol_block
 
 CACHE = None
 SERIES = None
@@ -245,11 +248,18 @@ def main():
 
     final_yaml = session / 'final_best.yaml'
     final_yaml.write_text(yaml.safe_dump(base_cfg, sort_keys=False), encoding='utf-8')
+    try:
+        import pandas as pd
+        top_csv = session / 'tuner_top20.csv'
+        pd.DataFrame(rows).sort_values('score', ascending=False).head(20).to_csv(top_csv, index=False)
+    except Exception:
+        top_csv = None
     summary = {
         'session_dir': str(session),
         'final_yaml': str(final_yaml),
         'best_overall': best_overall,
         'log_csv': str(log_csv),
+        'top_csv': str(top_csv) if top_csv else None,
     }
     (session / 'tuner_summary.json').write_text(json.dumps(summary, indent=2, default=str), encoding='utf-8')
     print(json.dumps(summary, indent=2, default=str), flush=True)
