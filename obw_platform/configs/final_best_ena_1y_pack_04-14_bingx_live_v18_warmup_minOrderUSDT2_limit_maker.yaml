@@ -118,3 +118,30 @@ runner:
   entry_open_order_type: limit
   entry_limit_offset_bp: 1.2
   entry_limit_post_only: true
+  slippage_calibration:
+    enabled: true
+    min_obs: 30
+    window_obs: 500
+    recency_hours: 72
+    min_update_interval_sec: 30
+    output_json: live_slippage_calibration.json
+    suggested_yaml: backtest_slippage_suggestion.json
+    volume_regime:
+      enabled: true
+      metric: quote_volume
+      recent_bars: 60
+      baseline_bars: 360
+      shift_ratio: 2.0
+    note: Online calibration from slippage_observations; interrupts update when recent
+      quote volume shifts materially.
+backtest:
+  use_live_sync: false
+  slippage:
+    enabled: true
+    mode: static
+    static_bp: 8.3
+    note: 'Fresh live 2-USDT run: mean adverse slip 8.27bp, mean_abs 8.84bp, p90_abs
+      18.35bp, n=32. Static/dynamic are mutually exclusive.'
+  fees:
+    taker_fee_rate: 0.001
+    maker_fee_rate: 0.0002

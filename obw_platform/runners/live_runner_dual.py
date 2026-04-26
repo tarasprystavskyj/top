@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-import copy, datetime as _dt, importlib, json, logging, math, os, time, uuid
+import copy, datetime as _dt, importlib, json, logging, math, os, time, uuid, sqlite3
 from pathlib import Path
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from typing import Optional, Tuple
@@ -902,6 +902,196 @@ def _write_exec_metrics(results_dir: str, session_db_path: str, run_id: str, eve
         pass
     return snap
 
+
+def _calibration_cfg(cfg: dict) -> dict:
+    runner = cfg.get('runner') or {}
+    cal = dict(runner.get('slippage_calibration') or {})
+    cal.setdefault('enabled', False)
+    cal.setdefault('min_obs', 30)
+    cal.setdefault('window_obs', 500)
+    cal.setdefault('recency_hours', 72)
+    cal.setdefault('update_every_bars', 1)
+    cal.setdefault('output_json', 'live_slippage_calibration.json')
+    cal.setdefault('suggested_yaml', 'backtest_slippage_suggestion.yaml')
+    vr = dict(cal.get('volume_regime') or {})
+    vr.setdefault('enabled', True)
+    vr.setdefault('metric', 'quote_volume')
+    vr.setdefault('recent_bars', 60)
+    vr.setdefault('baseline_bars', 360)
+    vr.setdefault('shift_ratio', 2.0)
+    cal['volume_regime'] = vr
+    return cal
+
+def _median(vals):
+    vals = sorted([float(v) for v in vals if v is not None and math.isfinite(float(v))])
+    n = len(vals)
+    if n <= 0:
+        return None
+    mid = n // 2
+    return vals[mid] if n % 2 else 0.5 * (vals[mid-1] + vals[mid])
+
+def _read_recent_slippage_observations(session_db_path: str, cal: dict):
+    try:
+        con = sqlite3.connect(session_db_path)
+        q = """
+        SELECT id, ts_utc, bar_time_utc, symbol, strategy_side, order_action, order_direction,
+               qty, requested_price, fill_price, actual_adverse_bp, snapshot_est_sweep_bp,
+               snapshot_spread_bp, best_bid, best_ask, mid_price
+        FROM slippage_observations
+        ORDER BY id DESC
+        LIMIT ?
+        """
+        rows = [dict(zip([c[0] for c in cur.description], row)) for cur in [con.execute(q, (int(cal.get('window_obs', 500)),))] for row in cur.fetchall()]
+        con.close()
+    except Exception:
+        return []
+    # newest first -> oldest first for fitting/reporting
+    rows = list(reversed(rows))
+    if cal.get('recency_hours'):
+        try:
+            cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=float(cal.get('recency_hours')))
+            keep = []
+            for r in rows:
+                ts = str(r.get('ts_utc') or '').replace('Z', '+00:00')
+                try:
+                    dt = _dt.datetime.fromisoformat(ts)
+                    if dt.tzinfo is None: dt = dt.replace(tzinfo=_dt.timezone.utc)
+                    if dt >= cutoff: keep.append(r)
+                except Exception:
+                    keep.append(r)
+            rows = keep
+        except Exception:
+            pass
+    return rows
+
+def _volume_regime_status(cache_db_path: str, cal: dict) -> dict:
+    vr = cal.get('volume_regime') or {}
+    if not vr.get('enabled', True) or not cache_db_path:
+        return {'enabled': False, 'interrupted': False}
+    metric = str(vr.get('metric', 'quote_volume'))
+    recent_n = int(vr.get('recent_bars', 60) or 60)
+    base_n = int(vr.get('baseline_bars', 360) or 360)
+    shift = float(vr.get('shift_ratio', 2.0) or 2.0)
+    try:
+        con = sqlite3.connect(cache_db_path)
+        q = f"SELECT datetime_utc, {metric} FROM price_indicators WHERE {metric} IS NOT NULL ORDER BY datetime_utc DESC LIMIT ?"
+        rows = con.execute(q, (max(recent_n + base_n, base_n),)).fetchall()
+        con.close()
+    except Exception as e:
+        return {'enabled': True, 'interrupted': False, 'error': str(e), 'metric': metric}
+    vals = [float(r[1]) for r in rows if r and r[1] is not None and math.isfinite(float(r[1]))]
+    if len(vals) < max(10, recent_n):
+        return {'enabled': True, 'interrupted': False, 'metric': metric, 'n': len(vals), 'reason': 'not_enough_volume_rows'}
+    recent = vals[:recent_n]
+    baseline = vals[recent_n:recent_n+base_n] or vals
+    med_recent = _median(recent)
+    med_base = _median(baseline)
+    ratio = (med_recent / med_base) if med_recent is not None and med_base and med_base > 0 else None
+    interrupted = bool(ratio is not None and (ratio >= shift or ratio <= 1.0 / max(shift, 1e-9)))
+    return {'enabled': True, 'interrupted': interrupted, 'metric': metric, 'recent_median': med_recent, 'baseline_median': med_base, 'ratio': ratio, 'shift_ratio': shift, 'recent_bars': recent_n, 'baseline_bars': base_n}
+
+def _fit_slippage_calibration(rows: list) -> dict:
+    y = []
+    x = []
+    spread = []
+    groups = {}
+    for r in rows:
+        try:
+            yy = float(r.get('actual_adverse_bp'))
+            xx = float(r.get('snapshot_est_sweep_bp') or 0.0)
+            sp = float(r.get('snapshot_spread_bp') or 0.0)
+        except Exception:
+            continue
+        if not math.isfinite(yy) or not math.isfinite(xx):
+            continue
+        y.append(yy); x.append(xx); spread.append(sp)
+        key = f"{r.get('strategy_side')}|{r.get('order_action')}|{r.get('order_direction')}"
+        groups.setdefault(key, []).append(yy)
+    n = len(y)
+    if n <= 0:
+        return {'n': 0}
+    y_mean = sum(y)/n; x_mean = sum(x)/n
+    var_x = sum((v-x_mean)**2 for v in x)
+    slope = sum((x[i]-x_mean)*(y[i]-y_mean) for i in range(n))/var_x if var_x > 1e-12 else 1.0
+    intercept = y_mean - slope*x_mean
+    pred = [intercept + slope*v for v in x]
+    abs_err = [abs(pred[i]-y[i]) for i in range(n)]
+    y_abs = [abs(v) for v in y]
+    y_nonneg = [max(0.0, v) for v in y]
+    y_abs_sorted = sorted(y_abs)
+    def q(vals, p):
+        vals = sorted(vals)
+        if not vals: return None
+        k = (len(vals)-1)*p
+        lo = int(math.floor(k)); hi = int(math.ceil(k))
+        if lo == hi: return vals[lo]
+        return vals[lo]*(hi-k)+vals[hi]*(k-lo)
+    group_stats = {}
+    for k, vals in groups.items():
+        group_stats[k] = {'n': len(vals), 'mean_adverse_bp': sum(vals)/len(vals), 'mean_abs_bp': sum(abs(v) for v in vals)/len(vals)}
+    return {
+        'n': n,
+        'mean_adverse_bp': y_mean,
+        'mean_nonnegative_adverse_bp': sum(y_nonneg)/n,
+        'mean_abs_bp': sum(y_abs)/n,
+        'median_adverse_bp': q(y, 0.5),
+        'p90_abs_bp': q(y_abs, 0.90),
+        'p95_abs_bp': q(y_abs, 0.95),
+        'max_abs_bp': max(y_abs),
+        'mean_sweep_est_bp': sum(x)/n,
+        'mean_spread_bp': sum(spread)/len(spread) if spread else None,
+        'orderbook_sweep_linear': {'kind': 'orderbook_sweep_linear', 'intercept_bp': intercept, 'sweep_coeff': slope, 'clip_min_bp': 0.0, 'clip_max_bp': q(y_abs, 0.95) or max(y_abs)},
+        'static_suggestion_bp': sum(y_nonneg)/n,
+        'fit_mae_bp': sum(abs_err)/n,
+        'fit_bias_bp': sum(pred[i]-y[i] for i in range(n))/n,
+        'by_group': group_stats,
+    }
+
+def _maybe_update_slippage_calibration(cfg: dict, results_dir: str, session_db_path: str, cache_db_path: str, run_id: str, force: bool = False):
+    cal = _calibration_cfg(cfg)
+    if not cal.get('enabled', False):
+        return None
+    # Cheap throttle: use function attribute, no DB write every tick if not needed.
+    now = time.time()
+    last = getattr(_maybe_update_slippage_calibration, '_last_ts', 0.0)
+    interval = float(cal.get('min_update_interval_sec', 30.0) or 30.0)
+    if not force and now - last < interval:
+        return None
+    _maybe_update_slippage_calibration._last_ts = now
+    rows = _read_recent_slippage_observations(session_db_path, cal)
+    vol = _volume_regime_status(cache_db_path, cal)
+    status = 'ok'
+    if len(rows) < int(cal.get('min_obs', 30) or 30):
+        status = 'collecting'
+    if vol.get('interrupted'):
+        status = 'interrupted_volume_regime_shift'
+    fit = _fit_slippage_calibration(rows) if rows else {'n': 0}
+    payload = {'status': status, 'run_id': run_id, 'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(), 'calibration_cfg': cal, 'volume_regime': vol, 'fit': fit}
+    try:
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+        out_path = Path(results_dir) / str(cal.get('output_json', 'live_slippage_calibration.json'))
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+        # This YAML can be copied into backtest.slippage after enough observations.
+        sugg = {
+            'backtest': {
+                'use_live_sync': False,
+                'slippage': {
+                    'enabled': True,
+                    'mode': 'static' if status != 'ok' else 'static',
+                    'static_bp': round(float(fit.get('static_suggestion_bp') or 0.0), 4),
+                    'note': f"online calibration status={status}, n={fit.get('n', 0)}; orderbook_sweep_linear stored in live_slippage_calibration.json"
+                }
+            }
+        }
+        (Path(results_dir) / str(cal.get('suggested_yaml', 'backtest_slippage_suggestion.yaml'))).write_text(json.dumps(sugg, ensure_ascii=False, indent=2), encoding='utf-8')
+    except Exception:
+        pass
+    try:
+        debug_event(session_db_path, run_id, 'slippage_calibration_update', payload, level='WARNING' if status.startswith('interrupted') else 'INFO')
+    except Exception:
+        pass
+    return payload
+
 def _record_order(db_path: str, *, bar_time, symbol: str, side: str, type_: str, price: float, qty: float, status: str, reason: str, run_id: str, exchange_order_id: str = '', extra=None):
     insert_order_row(db_path, {'order_id': exchange_order_id or str(uuid.uuid4()), 'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(), 'bar_time_utc': bar_time.isoformat() if hasattr(bar_time, 'isoformat') else str(bar_time), 'mode': 'live', 'symbol': symbol, 'side': side, 'type': type_, 'price': float(price or 0.0), 'qty': float(qty or 0.0), 'status': status, 'reason': reason, 'run_id': run_id, 'extra': json.dumps(extra or {}, ensure_ascii=False, sort_keys=True)})
 
@@ -1480,6 +1670,7 @@ def run_live(cfg: dict, args):
             try: write_equity(session_db_path, bot_id, now, _calc_equity_snapshot(fetcher))
             except Exception as e: _dbg('write_equity_failed', str(e))
             _write_exec_metrics(args.results_dir, session_db_path, run_id, event_type='execution_metrics_bar')
+            _maybe_update_slippage_calibration(cfg, args.results_dir, session_db_path, cache_out_path, run_id)
             cprint('[live dual]', f'bar={bar_close.isoformat()} open_legs={len(positions)}', fg='cyan', bold=(len(positions) > 0))
         else:
             dot()
