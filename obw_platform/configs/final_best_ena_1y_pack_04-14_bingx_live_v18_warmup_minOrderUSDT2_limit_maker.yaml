@@ -56,9 +56,6 @@ strategy_params_long:
   hardBreakevenDeleveragePct: 50
   useEvenBars: true
   dcaBlockCounterTrendGainAbs: 0.1
-  useFixedOrderUSDT: true
-  fixedOrderUSDT: 2.0
-  applyMultipliersToFixedOrderUSDT: false
   useEntryLimitOrders: true
   entryLimitOffsetBp: 1.2
   entryLimitPostOnly: true
@@ -107,9 +104,6 @@ strategy_params_short:
   hardBreakevenDeleveragePct: 50.0
   useEvenBars: true
   dcaBlockCounterTrendGainAbs: 0.08
-  useFixedOrderUSDT: true
-  fixedOrderUSDT: 2.0
-  applyMultipliersToFixedOrderUSDT: false
   useEntryLimitOrders: true
   entryLimitOffsetBp: 1.2
   entryLimitPostOnly: true
