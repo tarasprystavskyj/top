@@ -76,7 +76,12 @@ DEBUG_EVENT_PAYLOAD = False
 CONSOLE_ERROR_SUMMARY = True
 CONSOLE_ERROR_DETAILS = False
 ENTRY_LIMIT_USE_BOOK_PASSIVE = True
-ENTRY_LIMIT_PASSIVE_TICKS = 1
+ENTRY_LIMIT_PASSIVE_TICKS = 0
+ENTRY_LIMIT_TTL_SEC = float(os.getenv("ENTRY_LIMIT_TTL_SEC", os.getenv("ORDER_SYNC_WAIT_SEC", "2.0")))
+ENTRY_LIMIT_FALLBACK_TO_MARKET = True
+ENTRY_LIMIT_FALLBACK_ON_REJECT = True
+ENTRY_LIMIT_FALLBACK_ON_TIMEOUT = True
+ENTRY_LIMIT_CANCEL_CONFIRM_SEC = float(os.getenv("ENTRY_LIMIT_CANCEL_CONFIRM_SEC", "2.0"))
 ORDER_SYNC_WAIT_SEC = float(os.getenv("ORDER_SYNC_WAIT_SEC", "2.0"))
 ORDER_SYNC_POLL_SEC = float(os.getenv("ORDER_SYNC_POLL_SEC", "0.25"))
 MAX_ENTRY_SLIP_BP = float(os.getenv("MAX_ENTRY_SLIP_BP", "0"))
@@ -547,15 +552,17 @@ def _infer_price_tick_from_snapshot(pre_snapshot: dict) -> float:
     return 1e-6
 
 
-def _sanitize_post_only_limit_price(fetcher: CCXTFetcher, sym: str, side: str, limit_price: float, pre_snapshot: dict, passive_ticks: int = 1, enabled: bool = True) -> float:
-    """Force a post-only entry limit to the passive side of the current book.
+def _sanitize_post_only_limit_price(fetcher: CCXTFetcher, sym: str, side: str, limit_price: float, pre_snapshot: dict, passive_ticks: int = 0, enabled: bool = True) -> float:
+    """Make a post-only entry limit non-crossing using current order book.
 
-    The strategy's limit is based on bar close / requested price. Between signal and submit,
-    the book can move and exchange precision can round the price into a crossing order.
-    BingX then rejects post-only with code 101215.
+    Maker, but aggressive:
+    - LONG open / BUY must be strictly below best_ask.
+      It may sit at best_bid or inside the spread.
+    - SHORT open / SELL must be strictly above best_bid.
+      It may sit at best_ask or inside the spread.
 
-    LONG open = BUY: must be <= best_bid, optionally one tick below.
-    SHORT open = SELL: must be >= best_ask, optionally one tick above.
+    Previous version forced BUY <= best_bid and SELL >= best_ask. That was too passive
+    and killed fill rate. This function only moves the price when it would cross.
     """
     px = float(limit_price)
     if not enabled or not pre_snapshot:
@@ -572,19 +579,23 @@ def _sanitize_post_only_limit_price(fetcher: CCXTFetcher, sym: str, side: str, l
 
     tick = _infer_price_tick_from_snapshot(pre_snapshot)
     ticks = max(0, int(passive_ticks or 0))
-    if str(side).upper() == 'LONG':
-        passive_px = best_bid - tick * ticks
-        px = min(px, passive_px)
-    else:
-        passive_px = best_ask + tick * ticks
-        px = max(px, passive_px)
 
-    # Round once through exchange precision, then re-check. Some exchanges round toward crossing.
+    if str(side).upper() == 'LONG':
+        # Crossing BUY is >= best_ask. Move just below ask if needed.
+        if px >= best_ask:
+            px = best_ask - tick * max(1, ticks + 1)
+    else:
+        # Crossing SELL is <= best_bid. Move just above bid if needed.
+        if px <= best_bid:
+            px = best_bid + tick * max(1, ticks + 1)
+
     px = _price_to_precision_float(fetcher, sym, px)
+
+    # Re-check after exchange precision rounding.
     if str(side).upper() == 'LONG' and px >= best_ask:
-        px = _price_to_precision_float(fetcher, sym, best_bid - tick * max(1, ticks))
+        px = _price_to_precision_float(fetcher, sym, best_ask - tick)
     elif str(side).upper() == 'SHORT' and px <= best_bid:
-        px = _price_to_precision_float(fetcher, sym, best_ask + tick * max(1, ticks))
+        px = _price_to_precision_float(fetcher, sym, best_bid + tick)
     return float(px)
 
 
@@ -602,6 +613,71 @@ def place_open_qty_limit(fetcher: CCXTFetcher, sym: str, side: str, qty: float, 
         return {'ok': True, 'order': od, 'qty': qty, 'params': params, 'limit_price': float(limit_price)}
     except Exception as e:
         return {'ok': False, 'error': str(e), 'qty': qty, 'limit_price': float(limit_price)}
+
+
+
+def _place_market_fallback_open(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, snapshot=None, pre_snapshot=None, fallback_reason='limit_no_fill'):
+    _emit_runtime_debug(
+        session_db_path, run_id, 'entry_limit_fallback_market',
+        {
+            'symbol': sym,
+            'side': side,
+            'qty': qty,
+            'requested_px': requested_px,
+            'reason': fallback_reason,
+        },
+        level='WARNING', fg='yellow'
+    )
+    _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'submitted', 1.0)
+    _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'qty_requested', qty)
+    _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'notional_requested', float(qty or 0.0) * float(requested_px or 0.0))
+
+    res = place_open_qty(fetcher, sym, side, qty, position_mode)
+    if not res.get('ok'):
+        if snapshot is not None:
+            _strategy_restore(strat, sym, snapshot)
+        _strategy_rejected(strat, sym, 'open_market_fallback', res)
+        fail_reason = str(res.get('error') or res.get('skip_reason') or 'market_fallback_open_fail')
+        _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'rejected', 1.0)
+        _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_market_fallback_fail')
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id, extra={'order_type': 'market_fallback', 'fallback_reason': fallback_reason})
+        _emit_runtime_debug(session_db_path, run_id, 'open_market_fallback_fail', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fail_reason}, level='ERROR', fg='red')
+        return False, res
+
+    ex_order_id = _extract_order_id(res.get('order'))
+    fill_px, fill_dt, od = _fetch_order_fill(fetcher, sym, ex_order_id, wait_sec=ORDER_SYNC_WAIT_SEC)
+    if fill_px is None:
+        if snapshot is not None:
+            _strategy_restore(strat, sym, snapshot)
+        reason = str(((od or {}).get('info') or {}).get('reason') or (od or {}).get('status') or 'market_fallback_timeout_no_fill')
+        _strategy_rejected(strat, sym, 'open_market_fallback', {'reason': reason, 'order_id': ex_order_id})
+        _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'canceled_no_fill', 1.0)
+        _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_market_fallback_nofill')
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED', reason=reason, run_id=run_id, exchange_order_id=ex_order_id, extra={'order_type': 'market_fallback', 'fallback_reason': fallback_reason})
+        _emit_runtime_debug(session_db_path, run_id, 'open_market_fallback_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id}, level='ERROR', fg='red')
+        return False, {'error': reason, 'order': od}
+
+    record_fill_observation(
+        session_db_path,
+        run_id=run_id,
+        bar_time_utc=bar_close.isoformat(),
+        symbol=sym,
+        strategy_side=side,
+        order_action='OPEN',
+        qty=qty,
+        requested_price=requested_px,
+        fill_price=fill_px,
+        pre_snapshot=pre_snapshot,
+    )
+    _online_update_slippage_model(session_db_path, results_dir, sym, side, 'OPEN', qty, requested_px, fill_px, pre_snapshot)
+    _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'filled', 1.0)
+    _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'qty_filled', qty)
+    _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'notional_filled', float(qty or 0.0) * float(fill_px or requested_px or 0.0))
+    _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'adverse_slip_bp_sum', _adverse_slip_bp(side, requested_px, fill_px, is_close=False))
+    _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'signed_slip_bp_sum', _signed_slip_bp(side, requested_px, fill_px, is_close=False))
+    _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_market_fallback_fill')
+    rec = {'symbol': sym, 'side': side, 'qty': qty, 'entry': requested_px, 'tp_price': tp_price, 'sl_price': sl_price, 'ts_open': bar_close.isoformat(), 'run_id': run_id, 'order_id': str(uuid.uuid4()), 'entry_order_type': 'market_fallback', 'fallback_reason': fallback_reason}
+    return _finalize_open_success(fetcher, strat, rec, sym=sym, side=side, requested_px=requested_px, qty_requested=qty, ex_order_id=ex_order_id, bar_close=bar_close, fill_px=fill_px, fill_dt=fill_dt, session_db_path=session_db_path, bot_id=bot_id, results_dir=results_dir, positions=positions, run_id=run_id, position_mode=position_mode)
 
 
 def _sync_pending_entry_orders(fetcher, pending_entries: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, strat_long, strat_short, current_bar_iso: str, run_id: str = ''):
@@ -836,6 +912,63 @@ def _fetch_order_fill(fetcher: CCXTFetcher, sym: str, order_id: str, wait_sec: f
                 return None, fill_dt, od
         if time.time() >= deadline:
             return None, None, last
+        time.sleep(max(float(poll_sec), 0.05))
+
+
+
+def _cancel_order_and_fetch_final(fetcher: CCXTFetcher, sym: str, order_id: str, confirm_sec: float = 2.0, poll_sec: float = ORDER_SYNC_POLL_SEC):
+    """Cancel an order and confirm final state.
+
+    Returns: (state, fill_px, fill_dt, order)
+      state in {'filled', 'canceled', 'rejected', 'expired', 'open', 'unknown'}
+
+    This prevents the dangerous sequence:
+      limit timeout -> cancel request -> immediately market fallback -> old limit fills later
+    """
+    if not order_id:
+        return 'unknown', None, None, None
+    ccxt_sym = fetcher.resolve_symbol(sym) or sym
+    try:
+        fetcher.ex.cancel_order(order_id, ccxt_sym)
+        sleep_ms(RATE_MS)
+    except Exception:
+        pass
+
+    deadline = time.time() + max(float(confirm_sec or 0.0), 0.0)
+    last = None
+    while True:
+        try:
+            od = fetcher.ex.fetch_order(order_id, ccxt_sym)
+            sleep_ms(RATE_MS)
+        except Exception:
+            od = None
+        if od:
+            last = od
+            status = str(od.get('status') or '').lower()
+            avg = od.get('average') or od.get('avgPrice') or od.get('avg_price')
+            # Do not use od.price as fill average if filled=0.
+            filled = float(od.get('filled') or ((od.get('info') or {}).get('executedQty') or 0.0) or 0.0)
+            ts = od.get('timestamp')
+            if ts is None:
+                dt_str = od.get('datetime')
+                if dt_str:
+                    try:
+                        ts = int(_dt.datetime.fromisoformat(dt_str.replace('Z', '+00:00')).timestamp() * 1000)
+                    except Exception:
+                        ts = None
+            fill_dt = _dt.datetime.fromtimestamp(int(ts) / 1000.0, tz=_dt.timezone.utc) if ts is not None else None
+            if status in {'closed', 'filled'} and filled > 0:
+                if avg is None:
+                    avg = od.get('price') or (od.get('info') or {}).get('avgPrice')
+                return 'filled', float(avg), fill_dt, od
+            if status in {'canceled', 'cancelled'}:
+                return 'canceled', None, fill_dt, od
+            if status in {'rejected', 'expired'}:
+                return status, None, fill_dt, od
+            if status in {'open', 'new'}:
+                pass
+        if time.time() >= deadline:
+            return 'open' if last else 'unknown', None, None, last
         time.sleep(max(float(poll_sec), 0.05))
 
 
@@ -1403,28 +1536,37 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
     else:
         res = place_open_qty(fetcher, sym, side, qty, position_mode)
     if not res.get('ok'):
-        _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', res)
         fail_reason = str(res.get('error') or res.get('skip_reason') or 'open_fail')
         _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'rejected', 1.0)
-        _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_fail')
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id, extra={'order_type': order_type_norm})
+        if order_type_norm == 'limit' and ENTRY_LIMIT_FALLBACK_TO_MARKET and ENTRY_LIMIT_FALLBACK_ON_REJECT:
+            return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_reject:{fail_reason}')
+        _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', res)
+        _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_fail')
         _emit_runtime_debug(session_db_path, run_id, 'open_fail', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fail_reason, 'exchange_response': res, 'order_type': order_type_norm}, level='ERROR', fg='red')
         return False, res
     ex_order_id = _extract_order_id(res.get('order'))
-    fill_px, fill_dt, od = _fetch_order_fill(fetcher, sym, ex_order_id)
+    wait_sec = ENTRY_LIMIT_TTL_SEC if order_type_norm == 'limit' else ORDER_SYNC_WAIT_SEC
+    fill_px, fill_dt, od = _fetch_order_fill(fetcher, sym, ex_order_id, wait_sec=wait_sec)
     if fill_px is None:
-        try:
-            if ex_order_id:
-                fetcher.ex.cancel_order(ex_order_id, fetcher.resolve_symbol(sym) or sym); sleep_ms(RATE_MS)
-        except Exception:
-            pass
-        _strategy_restore(strat, sym, snapshot); reason = str(((od or {}).get('info') or {}).get('reason') or (od or {}).get('status') or 'timeout_no_fill')
-        _strategy_rejected(strat, sym, 'open', {'reason': reason, 'order_id': ex_order_id})
-        _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'canceled_no_fill', 1.0)
-        _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_nofill')
-        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED', reason=reason, run_id=run_id, exchange_order_id=ex_order_id, extra={'order_type': order_type_norm})
-        _emit_runtime_debug(session_db_path, run_id, 'open_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'order': od, 'pre_snapshot': pre_snapshot, 'order_type': order_type_norm}, level='ERROR', fg='red')
-        return False, {'error': reason, 'order': od}
+        cancel_state, cancel_fill_px, cancel_fill_dt, cancel_od = _cancel_order_and_fetch_final(
+            fetcher, sym, ex_order_id, confirm_sec=ENTRY_LIMIT_CANCEL_CONFIRM_SEC
+        )
+        if cancel_state == 'filled' and cancel_fill_px is not None:
+            fill_px, fill_dt, od = cancel_fill_px, cancel_fill_dt, cancel_od
+            _emit_runtime_debug(session_db_path, run_id, 'limit_filled_during_cancel', {'symbol': sym, 'side': side, 'order_id': ex_order_id, 'fill_px': fill_px}, level='WARNING', fg='yellow')
+        else:
+            reason = str(((cancel_od or od or {}).get('info') or {}).get('reason') or (cancel_od or od or {}).get('status') or f'timeout_no_fill:{cancel_state}')
+            _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'canceled_no_fill', 1.0)
+            _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED' if cancel_state == 'canceled' else 'UNKNOWN', reason=reason, run_id=run_id, exchange_order_id=ex_order_id, extra={'order_type': order_type_norm, 'cancel_state': cancel_state})
+            if cancel_state == 'canceled' and order_type_norm == 'limit' and ENTRY_LIMIT_FALLBACK_TO_MARKET and ENTRY_LIMIT_FALLBACK_ON_TIMEOUT:
+                return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_timeout:{reason}')
+            # If cancel is not confirmed, do NOT market fallback. Otherwise we risk double-entry:
+            # old limit fills late + fallback market also opens.
+            _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', {'reason': reason, 'order_id': ex_order_id, 'cancel_state': cancel_state})
+            _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_nofill')
+            _emit_runtime_debug(session_db_path, run_id, 'open_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'cancel_state': cancel_state, 'order_type': order_type_norm}, level='ERROR', fg='red')
+            return False, {'error': reason, 'order': cancel_od or od, 'cancel_state': cancel_state}
     record_fill_observation(
         session_db_path,
         run_id=run_id,
@@ -1683,7 +1825,12 @@ def run_live(cfg: dict, args):
     CONSOLE_ERROR_SUMMARY = bool(console_cfg.get('error_summary', True))
     CONSOLE_ERROR_DETAILS = bool(console_cfg.get('error_details', False))
     globals()['ENTRY_LIMIT_USE_BOOK_PASSIVE'] = bool(runner_cfg0.get('entry_limit_use_book_passive_price', True))
-    globals()['ENTRY_LIMIT_PASSIVE_TICKS'] = int(runner_cfg0.get('entry_limit_passive_ticks', 1) or 0)
+    globals()['ENTRY_LIMIT_PASSIVE_TICKS'] = int(runner_cfg0.get('entry_limit_passive_ticks', 0) or 0)
+    globals()['ENTRY_LIMIT_TTL_SEC'] = float(runner_cfg0.get('entry_limit_ttl_sec', ENTRY_LIMIT_TTL_SEC) or ENTRY_LIMIT_TTL_SEC)
+    globals()['ENTRY_LIMIT_FALLBACK_TO_MARKET'] = bool(runner_cfg0.get('entry_limit_fallback_to_market', True))
+    globals()['ENTRY_LIMIT_FALLBACK_ON_REJECT'] = bool(runner_cfg0.get('entry_limit_fallback_on_reject', True))
+    globals()['ENTRY_LIMIT_FALLBACK_ON_TIMEOUT'] = bool(runner_cfg0.get('entry_limit_fallback_on_timeout', True))
+    globals()['ENTRY_LIMIT_CANCEL_CONFIRM_SEC'] = float(runner_cfg0.get('entry_limit_cancel_confirm_sec', ENTRY_LIMIT_CANCEL_CONFIRM_SEC) or ENTRY_LIMIT_CANCEL_CONFIRM_SEC)
     assert ccxt is not None or str(args.exchange).lower() in {'virtual', 'sim', 'virtual_exchange', 'paper_virtual'}, 'ccxt required for LIVE mode'
     if getattr(args, 'env_file', '') and os.path.exists(args.env_file):
         for line in open(args.env_file, 'r', encoding='utf-8').read().splitlines():

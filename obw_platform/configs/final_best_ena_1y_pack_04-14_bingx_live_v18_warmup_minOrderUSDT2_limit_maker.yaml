@@ -144,7 +144,12 @@ runner:
     note: Full debug payloads are still persisted to session.sqlite; console prints
       only short error summaries unless --debug or debug_payload=true.
   entry_limit_use_book_passive_price: true
-  entry_limit_passive_ticks: 1
+  entry_limit_passive_ticks: 0
+  entry_limit_ttl_sec: 2.0
+  entry_limit_fallback_to_market: true
+  entry_limit_fallback_on_reject: true
+  entry_limit_fallback_on_timeout: true
+  entry_limit_cancel_confirm_sec: 2.0
 backtest:
   use_live_sync: false
   slippage:
