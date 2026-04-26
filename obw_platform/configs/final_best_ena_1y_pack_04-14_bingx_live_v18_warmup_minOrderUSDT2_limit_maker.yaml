@@ -159,5 +159,5 @@ backtest:
     note: 'Fresh live 2-USDT run: mean adverse slip 8.27bp, mean_abs 8.84bp, p90_abs
       18.35bp, n=32. Static/dynamic are mutually exclusive.'
   fees:
-    taker_fee_rate: 0.001
+    taker_fee_rate: 0.0005
     maker_fee_rate: 0.0002
