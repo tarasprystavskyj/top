@@ -18,7 +18,7 @@ strategy_params_long:
   minLongInvestPct: 0.5
   useEquityPctBase: 1.0
   baseOrderPctEq: 1.5
-  equityForSizingUSDT: 348
+  equityForSizingUSDT: 400  
   tpPercent: 0.34
   callbackPercent: 0.06
   marginCallLimit: 244.0
@@ -61,12 +61,12 @@ strategy_params_long:
   entryLimitPostOnly: true
 strategy_params_short:
   firstSellQtyCoin: 0.0
-  minOrderQtyCoin: 0.0
+  minOrderQtyCoin: 20
   minOrderUSDT: 2.0
   minShortInvestPct: 0.5
   useEquityPctBase: 1.0
   baseOrderPctEq: 1.388859
-  equityForSizingUSDT: 358
+  equityForSizingUSDT: 400
   tpPercent: 0.23
   callbackPercent: 0.11
   marginCallLimit: 244.0
