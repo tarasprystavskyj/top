@@ -22,6 +22,7 @@ class Position:
 @dataclass
 class SimBook:
     fee_rate: float
+    maker_fee_rate: Optional[float] = None
     realized: float = 0.0
     realized_long: float = 0.0
     realized_short: float = 0.0
@@ -43,9 +44,10 @@ class SimBook:
         else:
             self.realized_short += delta
 
-    def open_fill(self, side: str, qty: float, exec_px: float) -> None:
+    def open_fill(self, side: str, qty: float, exec_px: float, fee_rate: Optional[float] = None) -> None:
         self._lots(side).append([float(qty), float(exec_px)])
-        self._apply_realized_delta(side, -self.fee_rate * float(exec_px) * float(qty))
+        fr = self.fee_rate if fee_rate is None else float(fee_rate)
+        self._apply_realized_delta(side, -fr * float(exec_px) * float(qty))
 
     def close_fill(self, side: str, qty: float, exec_px: float) -> None:
         rem = float(qty)
@@ -331,10 +333,46 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
     pf = cfg.get('portfolio', {}) or {}
     eq0_leg = float(pf.get('initial_equity_per_leg', 100.0))
     fee = float(pf.get('fee_rate', 0.0))
+    maker_fee = float(pf.get('maker_fee_rate', fee))
     max_notional_frac = float(pf.get('max_notional_frac', 1.0))
     equity_start_total = 2 * eq0_leg
     slip_model = _load_dynamic_slippage(cfg, model_override=model_override)
     dca_order_type = _dca_open_order_type(cfg)
+
+    def _entry_order_details(sig, side, px):
+        ot = 'market'
+        lp = None
+        mf = maker_fee
+        try:
+            if hasattr(sig, 'order_type'):
+                ot = str(getattr(sig, 'order_type') or 'market').lower().strip()
+            elif isinstance(sig, dict):
+                ot = str(sig.get('order_type', 'market') or 'market').lower().strip()
+        except Exception:
+            ot = 'market'
+        try:
+            if hasattr(sig, 'limit_price'):
+                lp = getattr(sig, 'limit_price')
+            elif isinstance(sig, dict):
+                lp = sig.get('limit_price')
+            lp = float(lp) if lp not in (None, '') else None
+        except Exception:
+            lp = None
+        if lp is None and ot in {'limit', 'maker', 'maker_limit'}:
+            lp = float(px)
+        try:
+            if hasattr(sig, 'maker_fee_rate') and getattr(sig, 'maker_fee_rate') is not None:
+                mf = float(getattr(sig, 'maker_fee_rate'))
+        except Exception:
+            pass
+        return ot, lp, mf
+
+    def _limit_entry_touched(side, row, limit_px):
+        if limit_px is None:
+            return False
+        if str(side).upper() == 'LONG':
+            return float(row.get('low', row.get('close', limit_px))) <= float(limit_px)
+        return float(row.get('high', row.get('close', limit_px))) >= float(limit_px)
 
     open_ = close if open_ is None else open_
     high = close if high is None else high
@@ -354,13 +392,13 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
 
     pos_long = None
     pos_short = None
-    book = SimBook(fee_rate=fee)
+    book = SimBook(fee_rate=fee, maker_fee_rate=maker_fee)
     trades_long = trades_short = wins_long = wins_short = 0
     eq_real = []
     eq_mtm = []
     curve_rows = []
     event_counts = {
-        'open_long': 0, 'open_short': 0,
+        'open_long': 0, 'open_short': 0, 'open_limit_long': 0, 'open_limit_short': 0, 'open_limit_miss_long': 0, 'open_limit_miss_short': 0,
         'close_long': 0, 'close_short': 0,
         'partial_long': 0, 'partial_short': 0,
         'dca_long': 0, 'dca_short': 0,
@@ -510,31 +548,61 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
 
         # LONG entry
         if pos_long is None:
+            long_entry_snapshot = _strategy_snapshot(strat_long, market_symbol)
             sig = strat_long.entry_signal(True, market_symbol, row, ctx=None)
             if sig is not None:
                 qty = float(getattr(sig, 'qty', 0.0) or 0.0)
                 if qty > 0:
-                    slip_bp = predict_adverse_slippage_bp(row, 'LONG', 'OPEN', qty, slip_model)
-                    exec_px = execution_price(px, 'LONG', 'OPEN', slip_bp)
-                    book.open_fill('LONG', qty, exec_px)
-                    event_counts['open_long'] += 1
-                    pos_long = Position('LONG', px, qty)
-                    if hasattr(strat_long, 'sync_after_external_fill'):
-                        strat_long.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('LONG'), fill_price=exec_px, delta_qty=qty, event='open')
+                    order_type, limit_px, maker_fr = _entry_order_details(sig, 'LONG', px)
+                    if order_type in {'limit', 'maker', 'maker_limit'}:
+                        if _limit_entry_touched('LONG', row, limit_px):
+                            exec_px = float(limit_px)
+                            book.open_fill('LONG', qty, exec_px, fee_rate=maker_fr)
+                            event_counts['open_long'] += 1
+                            event_counts['open_limit_long'] += 1
+                            pos_long = Position('LONG', exec_px, qty)
+                            if hasattr(strat_long, 'sync_after_external_fill'):
+                                strat_long.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('LONG'), fill_price=exec_px, delta_qty=qty, event='open_limit')
+                        else:
+                            _strategy_restore(strat_long, market_symbol, long_entry_snapshot)
+                            event_counts['open_limit_miss_long'] += 1
+                    else:
+                        slip_bp = predict_adverse_slippage_bp(row, 'LONG', 'OPEN', qty, slip_model)
+                        exec_px = execution_price(px, 'LONG', 'OPEN', slip_bp)
+                        book.open_fill('LONG', qty, exec_px)
+                        event_counts['open_long'] += 1
+                        pos_long = Position('LONG', px, qty)
+                        if hasattr(strat_long, 'sync_after_external_fill'):
+                            strat_long.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('LONG'), fill_price=exec_px, delta_qty=qty, event='open')
 
         # SHORT entry
         if pos_short is None:
+            short_entry_snapshot = _strategy_snapshot(strat_short, market_symbol)
             sig = strat_short.entry_signal(True, market_symbol, row, ctx=None)
             if sig is not None:
                 qty = float(getattr(sig, 'qty', 0.0) or 0.0)
                 if qty > 0:
-                    slip_bp = predict_adverse_slippage_bp(row, 'SHORT', 'OPEN', qty, slip_model)
-                    exec_px = execution_price(px, 'SHORT', 'OPEN', slip_bp)
-                    book.open_fill('SHORT', qty, exec_px)
-                    event_counts['open_short'] += 1
-                    pos_short = Position('SHORT', px, qty)
-                    if hasattr(strat_short, 'sync_after_external_fill'):
-                        strat_short.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('SHORT'), fill_price=exec_px, delta_qty=qty, event='open')
+                    order_type, limit_px, maker_fr = _entry_order_details(sig, 'SHORT', px)
+                    if order_type in {'limit', 'maker', 'maker_limit'}:
+                        if _limit_entry_touched('SHORT', row, limit_px):
+                            exec_px = float(limit_px)
+                            book.open_fill('SHORT', qty, exec_px, fee_rate=maker_fr)
+                            event_counts['open_short'] += 1
+                            event_counts['open_limit_short'] += 1
+                            pos_short = Position('SHORT', exec_px, qty)
+                            if hasattr(strat_short, 'sync_after_external_fill'):
+                                strat_short.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('SHORT'), fill_price=exec_px, delta_qty=qty, event='open_limit')
+                        else:
+                            _strategy_restore(strat_short, market_symbol, short_entry_snapshot)
+                            event_counts['open_limit_miss_short'] += 1
+                    else:
+                        slip_bp = predict_adverse_slippage_bp(row, 'SHORT', 'OPEN', qty, slip_model)
+                        exec_px = execution_price(px, 'SHORT', 'OPEN', slip_bp)
+                        book.open_fill('SHORT', qty, exec_px)
+                        event_counts['open_short'] += 1
+                        pos_short = Position('SHORT', px, qty)
+                        if hasattr(strat_short, 'sync_after_external_fill'):
+                            strat_short.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('SHORT'), fill_price=exec_px, delta_qty=qty, event='open')
 
         eq_r = equity_start_total + book.realized
         eq_u = eq_r + book.unrealized(px)
@@ -602,6 +670,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
         'margin_call_events_total': margin_call_events_total,
         'bars_in_margin_call': bars_in_margin_call,
         'dynamic_slippage_model': slip_model,
+        'maker_fee_rate': maker_fee,
         'warmup_bars_seen': int(warmup_bars_seen),
         'trade_start_ts_s': int(trade_start_ts_s) if trade_start_ts_s is not None else None,
         'order_event_counts': event_counts,

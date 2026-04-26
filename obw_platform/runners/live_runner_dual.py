@@ -462,13 +462,15 @@ def _pending_entry_order_type(cfg: dict) -> str:
     return str(v or 'market').lower().strip()
 
 
-def place_open_qty_limit(fetcher: CCXTFetcher, sym: str, side: str, qty: float, limit_price: float, position_mode: str):
+def place_open_qty_limit(fetcher: CCXTFetcher, sym: str, side: str, qty: float, limit_price: float, position_mode: str, post_only: bool = True):
     ccxt_sym = fetcher.resolve_symbol(sym) or sym
     qty = _normalize_order_qty(fetcher, sym, qty, is_close=False)
     if qty <= 0:
         return {'ok': False, 'error': 'open_qty_zero_after_normalize', 'qty': qty}
     order_side = _order_open_side(side)
     params = {'positionSide': str(side).upper()} if str(position_mode or '').lower() == 'hedge' else {}
+    if post_only:
+        params['postOnly'] = True
     try:
         od = fetcher.ex.create_order(ccxt_sym, 'limit', order_side, qty, float(limit_price), params); sleep_ms(RATE_MS)
         return {'ok': True, 'order': od, 'qty': qty, 'params': params, 'limit_price': float(limit_price)}
@@ -830,6 +832,76 @@ def _calc_equity_snapshot(fetcher: CCXTFetcher) -> dict:
     return {'equity': float(equity), 'cash': float(cash), 'position_value': float(position_value), 'realized_pnl_cum': 0.0, 'unrealized_pnl': float(unrealized)}
 
 
+
+_EXEC_METRICS = {}
+
+def _exec_metrics_key(symbol: str, side: str, type_: str, order_type: str = 'market') -> str:
+    return f"{symbol}|{side}|{type_}|{order_type}".upper()
+
+def _exec_metric_inc(symbol: str, side: str, type_: str, order_type: str, field: str, amount: float = 1.0):
+    key = _exec_metrics_key(symbol, side, type_, order_type)
+    rec = _EXEC_METRICS.setdefault(key, {
+        'symbol': symbol,
+        'side': side,
+        'type': type_,
+        'order_type': order_type,
+        'signals': 0,
+        'submitted': 0,
+        'filled': 0,
+        'rejected': 0,
+        'canceled_no_fill': 0,
+        'reverted': 0,
+        'qty_requested': 0.0,
+        'qty_filled': 0.0,
+        'notional_requested': 0.0,
+        'notional_filled': 0.0,
+        'adverse_slip_bp_sum': 0.0,
+        'signed_slip_bp_sum': 0.0,
+    })
+    rec[field] = float(rec.get(field, 0.0) or 0.0) + float(amount or 0.0)
+    return rec
+
+def _exec_metric_snapshot():
+    out = []
+    totals = {
+        'signals': 0.0, 'submitted': 0.0, 'filled': 0.0, 'rejected': 0.0,
+        'canceled_no_fill': 0.0, 'reverted': 0.0,
+        'qty_requested': 0.0, 'qty_filled': 0.0,
+        'notional_requested': 0.0, 'notional_filled': 0.0,
+    }
+    for rec in _EXEC_METRICS.values():
+        r = dict(rec)
+        submitted = float(r.get('submitted', 0.0) or 0.0)
+        signals = float(r.get('signals', 0.0) or 0.0)
+        filled = float(r.get('filled', 0.0) or 0.0)
+        r['submit_rate'] = submitted / signals if signals > 0 else None
+        r['fill_rate'] = filled / submitted if submitted > 0 else None
+        r['signal_to_fill_rate'] = filled / signals if signals > 0 else None
+        r['avg_adverse_slip_bp'] = float(r.get('adverse_slip_bp_sum', 0.0) or 0.0) / filled if filled > 0 else None
+        r['avg_signed_slip_bp'] = float(r.get('signed_slip_bp_sum', 0.0) or 0.0) / filled if filled > 0 else None
+        out.append(r)
+        for k in totals:
+            totals[k] += float(r.get(k, 0.0) or 0.0)
+    totals['fill_rate'] = totals['filled'] / totals['submitted'] if totals['submitted'] > 0 else None
+    totals['signal_to_fill_rate'] = totals['filled'] / totals['signals'] if totals['signals'] > 0 else None
+    return {'totals': totals, 'by_key': sorted(out, key=lambda x: (x.get('symbol',''), x.get('side',''), x.get('type',''), x.get('order_type','')))}
+
+def _write_exec_metrics(results_dir: str, session_db_path: str, run_id: str, event_type: str = 'execution_metrics'):
+    snap = _exec_metric_snapshot()
+    snap['run_id'] = run_id
+    snap['ts_utc'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    try:
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+        path = Path(results_dir) / 'live_execution_metrics.json'
+        path.write_text(json.dumps(snap, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+    except Exception:
+        pass
+    try:
+        debug_event(session_db_path, run_id, event_type, snap, level='INFO')
+    except Exception:
+        pass
+    return snap
+
 def _record_order(db_path: str, *, bar_time, symbol: str, side: str, type_: str, price: float, qty: float, status: str, reason: str, run_id: str, exchange_order_id: str = '', extra=None):
     insert_order_row(db_path, {'order_id': exchange_order_id or str(uuid.uuid4()), 'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(), 'bar_time_utc': bar_time.isoformat() if hasattr(bar_time, 'isoformat') else str(bar_time), 'mode': 'live', 'symbol': symbol, 'side': side, 'type': type_, 'price': float(price or 0.0), 'qty': float(qty or 0.0), 'status': status, 'reason': reason, 'run_id': run_id, 'extra': json.dumps(extra or {}, ensure_ascii=False, sort_keys=True)})
 
@@ -948,6 +1020,8 @@ def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_
     adverse_bp = _adverse_slip_bp(side, requested_px, fill, is_close=False)
     if MAX_ENTRY_SLIP_BP > 0 and adverse_bp > MAX_ENTRY_SLIP_BP:
         close_res = place_reduce_only(fetcher, sym, side, qty_requested, position_mode)
+        _exec_metric_inc(sym, side, 'OPEN', 'unknown', 'reverted', 1.0)
+        _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_reverted')
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty_requested, status='REVERTED', reason=f'max_entry_slip {adverse_bp:.3f}bp > {MAX_ENTRY_SLIP_BP:.3f}bp', run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'close_res': close_res})
         return False, {'error': 'max_entry_slip'}
     ex_pos = _fetch_exchange_position(fetcher, sym, side)
@@ -968,7 +1042,7 @@ def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_
     return True, rec
 
 
-def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, snapshot, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None):
+def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, snapshot, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, order_type='market', limit_price=None, post_only=True):
     pre_book = safe_fetch_order_book(fetcher, sym, limit=10)
     pre_snapshot = record_pretrade_snapshot(
         session_db_path,
@@ -981,14 +1055,24 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
         requested_price=requested_px,
         book=pre_book,
     )
+    order_type_norm = 'limit' if str(order_type or 'market').lower() in {'limit', 'maker', 'maker_limit'} and limit_price not in (None, '') else 'market'
+    _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'signals', 1.0)
+    _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'submitted', 1.0)
+    _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'qty_requested', qty)
+    _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'notional_requested', float(qty or 0.0) * float(requested_px or 0.0))
     if pre_snapshot and pre_snapshot.get('spread_bp') is not None:
-        _emit_runtime_debug(session_db_path, run_id, 'orderbook_pre_open', {'symbol': sym, 'side': side, 'qty': qty, 'spread_bp': pre_snapshot.get('spread_bp'), 'est_sweep_bp': pre_snapshot.get('est_sweep_slip_bp'), 'imbalance': pre_snapshot.get('book_imbalance')}, level='INFO', fg='cyan')
-    res = place_open_qty(fetcher, sym, side, qty, position_mode)
+        _emit_runtime_debug(session_db_path, run_id, 'orderbook_pre_open', {'symbol': sym, 'side': side, 'qty': qty, 'spread_bp': pre_snapshot.get('spread_bp'), 'est_sweep_bp': pre_snapshot.get('est_sweep_slip_bp'), 'imbalance': pre_snapshot.get('book_imbalance'), 'order_type': order_type_norm}, level='INFO', fg='cyan')
+    if order_type_norm == 'limit':
+        res = place_open_qty_limit(fetcher, sym, side, qty, float(limit_price), position_mode, post_only=bool(post_only))
+    else:
+        res = place_open_qty(fetcher, sym, side, qty, position_mode)
     if not res.get('ok'):
         _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', res)
         fail_reason = str(res.get('error') or res.get('skip_reason') or 'open_fail')
-        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id)
-        _emit_runtime_debug(session_db_path, run_id, 'open_fail', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fail_reason, 'exchange_response': res}, level='ERROR', fg='red')
+        _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'rejected', 1.0)
+        _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_fail')
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id, extra={'order_type': order_type_norm})
+        _emit_runtime_debug(session_db_path, run_id, 'open_fail', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fail_reason, 'exchange_response': res, 'order_type': order_type_norm}, level='ERROR', fg='red')
         return False, res
     ex_order_id = _extract_order_id(res.get('order'))
     fill_px, fill_dt, od = _fetch_order_fill(fetcher, sym, ex_order_id)
@@ -1000,8 +1084,10 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
             pass
         _strategy_restore(strat, sym, snapshot); reason = str(((od or {}).get('info') or {}).get('reason') or (od or {}).get('status') or 'timeout_no_fill')
         _strategy_rejected(strat, sym, 'open', {'reason': reason, 'order_id': ex_order_id})
-        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED', reason=reason, run_id=run_id, exchange_order_id=ex_order_id)
-        _emit_runtime_debug(session_db_path, run_id, 'open_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'order': od, 'pre_snapshot': pre_snapshot}, level='ERROR', fg='red')
+        _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'canceled_no_fill', 1.0)
+        _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_nofill')
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED', reason=reason, run_id=run_id, exchange_order_id=ex_order_id, extra={'order_type': order_type_norm})
+        _emit_runtime_debug(session_db_path, run_id, 'open_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'order': od, 'pre_snapshot': pre_snapshot, 'order_type': order_type_norm}, level='ERROR', fg='red')
         return False, {'error': reason, 'order': od}
     record_fill_observation(
         session_db_path,
@@ -1016,6 +1102,12 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
         pre_snapshot=pre_snapshot,
     )
     _online_update_slippage_model(session_db_path, results_dir, sym, side, 'OPEN', qty, requested_px, fill_px, pre_snapshot)
+    _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'filled', 1.0)
+    _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'qty_filled', qty)
+    _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'notional_filled', float(qty or 0.0) * float(fill_px or requested_px or 0.0))
+    _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'adverse_slip_bp_sum', _adverse_slip_bp(side, requested_px, fill_px, is_close=False))
+    _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'signed_slip_bp_sum', _signed_slip_bp(side, requested_px, fill_px, is_close=False))
+    _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_fill')
     rec = {'symbol': sym, 'side': side, 'qty': qty, 'entry': requested_px, 'tp_price': tp_price, 'sl_price': sl_price, 'ts_open': bar_close.isoformat(), 'run_id': run_id, 'order_id': str(uuid.uuid4())}
     return _finalize_open_success(fetcher, strat, rec, sym=sym, side=side, requested_px=requested_px, qty_requested=qty, ex_order_id=ex_order_id, bar_close=bar_close, fill_px=fill_px, fill_dt=fill_dt, session_db_path=session_db_path, bot_id=bot_id, results_dir=results_dir, positions=positions, run_id=run_id, position_mode=position_mode)
 
@@ -1166,7 +1258,12 @@ def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: di
         return False
     requested_px = _choose_requested_price(fetcher, sym, float(row.get('close') or 0.0))
     qty = _compute_entry_qty(sig, side, requested_px, notional_long, notional_short)
-    return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=_sig_get(sig, 'tp'), sl_price=_sig_get(sig, 'sl'))[0]
+    order_type = str(_sig_get(sig, 'order_type', 'market') or 'market').lower().strip()
+    limit_price = _sig_get(sig, 'limit_price', None)
+    post_only = bool(_sig_get(sig, 'entry_limit_post_only', True))
+    if limit_price in (None, '') and order_type in {'limit', 'maker', 'maker_limit'}:
+        limit_price = requested_px
+    return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=_sig_get(sig, 'tp'), sl_price=_sig_get(sig, 'sl'), order_type=order_type, limit_price=limit_price, post_only=post_only)[0]
 
 
 
@@ -1382,6 +1479,7 @@ def run_live(cfg: dict, args):
                 _attempt_entry(fetcher, sym, 'SHORT', strat_short, row, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id, notional_long=notional_long, notional_short=notional_short)
             try: write_equity(session_db_path, bot_id, now, _calc_equity_snapshot(fetcher))
             except Exception as e: _dbg('write_equity_failed', str(e))
+            _write_exec_metrics(args.results_dir, session_db_path, run_id, event_type='execution_metrics_bar')
             cprint('[live dual]', f'bar={bar_close.isoformat()} open_legs={len(positions)}', fg='cyan', bold=(len(positions) > 0))
         else:
             dot()

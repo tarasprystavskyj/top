@@ -14,6 +14,9 @@ class Sig:
     sl: Optional[float] = None
     reason: str = ""
     qty: Optional[float] = None
+    order_type: str = "market"
+    limit_price: Optional[float] = None
+    maker_fee_rate: Optional[float] = None
 
 @dataclass
 class ExitSig:
@@ -61,6 +64,12 @@ class _PackAdaptiveBase:
         self.use_fixed_order_usdt = bool(sp.get('useFixedOrderUSDT', False))
         self.fixed_order_usdt = float(sp.get('fixedOrderUSDT', 0.0))
         self.apply_multipliers_to_fixed_order_usdt = bool(sp.get('applyMultipliersToFixedOrderUSDT', False))
+        # Optional maker/limit entry mode. This affects FIRST entries only.
+        # DCA can stay market or use existing runner/backtester DCA-limit mode separately.
+        self.use_entry_limit_orders = bool(sp.get('useEntryLimitOrders', False))
+        self.entry_limit_offset_bp = float(sp.get('entryLimitOffsetBp', 0.0))
+        self.entry_limit_post_only = bool(sp.get('entryLimitPostOnly', True))
+        self.maker_fee_rate = float((cfg.get('portfolio') or {}).get('maker_fee_rate', (cfg.get('portfolio') or {}).get('fee_rate', 0.0)))
         self.use_equity_pct_base = bool(sp.get('useEquityPctBase', True))
         self.base_order_pct_eq = float(sp.get('baseOrderPctEq', 1.0))
         self.equity_for_sizing = float(sp.get('equityForSizingUSDT', 300.0))
@@ -312,6 +321,18 @@ class _PackAdaptiveBase:
             raw = float(self.cycle_base_qty_coin or 0.0) * float(mult or 1.0)
         min_usdt_qty = self._qty_for_order_usdt(self.min_order_usdt, close) if self.min_order_usdt > 0.0 else 0.0
         return max(float(raw or 0.0), float(self.min_order_qty_coin or 0.0), min_usdt_qty)
+    def _entry_order_type(self):
+        return 'limit' if self.use_entry_limit_orders else 'market'
+
+    def _entry_limit_price(self, price):
+        price = float(price or 0.0)
+        if price <= 0 or not self.use_entry_limit_orders:
+            return None
+        off = max(0.0, float(self.entry_limit_offset_bp or 0.0)) / 10000.0
+        # LONG opens are buys: place below current price.
+        # SHORT opens are sells: place above current price.
+        return price * (1.0 - off) if self.SIDE == 'LONG' else price * (1.0 + off)
+
     def _entry_tp(self, price):
         return price*(1.0+self.tp_percent/100.0) if self.SIDE=='LONG' else price*(1.0-self.tp_percent/100.0)
     def _order_value_ok(self, price, qty):
@@ -477,7 +498,7 @@ class _PackAdaptiveBase:
                 return None
             st.pos_value_usdt=value; st.pos_size=qty0; st.avg_price=close; st.num_fills=1; st.last_fill_price=close; st.next_level_price=self._next_level(close,1); st.lots=[(qty0,close)]
             self._register_order()
-            return Sig(side=self.SIDE, tp=self._entry_tp(close), sl=None, reason='First', qty=qty0)
+            return Sig(side=self.SIDE, tp=self._entry_tp(close), sl=None, reason='First', qty=qty0, order_type=self._entry_order_type(), limit_price=self._entry_limit_price(close), maker_fee_rate=self.maker_fee_rate)
         return None
 
     def manage_position(self,sym,row,pos,ctx=None):

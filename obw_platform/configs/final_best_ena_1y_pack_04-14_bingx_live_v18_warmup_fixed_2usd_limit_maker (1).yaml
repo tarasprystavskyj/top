@@ -6,13 +6,14 @@ portfolio:
   fee_rate: 0.001
   slippage_per_side: 4.0
   max_notional_frac: 1.0
-  position_notional_long: 1.2
-  position_notional_short: 1.2
+  position_notional_long: 2.0
+  position_notional_short: 2.0
+  maker_fee_rate: 0.0002
 strategy_class_long: strategies.cryptomine_pack_dual_full.CryptomineLongPackAdaptiveEven
 strategy_class_short: strategies.cryptomine_pack_dual_full.CryptomineShortPackAdaptiveEven
 strategy_params_long:
-  firstBuyQtyCoin: 20
-  minOrderQtyCoin: 20
+  firstBuyQtyCoin: 0.0
+  minOrderQtyCoin: 0.0
   minOrderUSDT: 2.0
   minLongInvestPct: 0.5
   useEquityPctBase: 1.0
@@ -55,9 +56,15 @@ strategy_params_long:
   hardBreakevenDeleveragePct: 50
   useEvenBars: true
   dcaBlockCounterTrendGainAbs: 0.1
+  useFixedOrderUSDT: true
+  fixedOrderUSDT: 2.0
+  applyMultipliersToFixedOrderUSDT: false
+  useEntryLimitOrders: true
+  entryLimitOffsetBp: 1.2
+  entryLimitPostOnly: true
 strategy_params_short:
-  firstSellQtyCoin: 20
-  minOrderQtyCoin: 20
+  firstSellQtyCoin: 0.0
+  minOrderQtyCoin: 0.0
   minOrderUSDT: 2.0
   minShortInvestPct: 0.5
   useEquityPctBase: 1.0
@@ -100,6 +107,12 @@ strategy_params_short:
   hardBreakevenDeleveragePct: 50.0
   useEvenBars: true
   dcaBlockCounterTrendGainAbs: 0.08
+  useFixedOrderUSDT: true
+  fixedOrderUSDT: 2.0
+  applyMultipliersToFixedOrderUSDT: false
+  useEntryLimitOrders: true
+  entryLimitOffsetBp: 1.2
+  entryLimitPostOnly: true
 runner:
   prewarm:
     bars: 1500
@@ -108,3 +121,6 @@ runner:
     block_until_ready: true
     source: exchange_ohlcv
   limit_klines: 1500
+  entry_open_order_type: limit
+  entry_limit_offset_bp: 1.2
+  entry_limit_post_only: true
