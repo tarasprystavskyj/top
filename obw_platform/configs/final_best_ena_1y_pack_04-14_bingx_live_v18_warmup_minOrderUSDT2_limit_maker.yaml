@@ -134,6 +134,17 @@ runner:
       shift_ratio: 2.0
     note: Online calibration from slippage_observations; interrupts update when recent
       quote volume shifts materially.
+  debug_console: false
+  debug_payload: false
+  console:
+    debug: false
+    debug_payload: false
+    error_summary: true
+    error_details: false
+    note: Full debug payloads are still persisted to session.sqlite; console prints
+      only short error summaries unless --debug or debug_payload=true.
+  entry_limit_use_book_passive_price: true
+  entry_limit_passive_ticks: 1
 backtest:
   use_live_sync: false
   slippage:

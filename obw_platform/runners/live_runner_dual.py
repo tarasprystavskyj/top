@@ -71,6 +71,12 @@ except Exception:
 
 log = logging.getLogger(__name__)
 DEBUG_OPEN = False
+DEBUG_RUNTIME = False
+DEBUG_EVENT_PAYLOAD = False
+CONSOLE_ERROR_SUMMARY = True
+CONSOLE_ERROR_DETAILS = False
+ENTRY_LIMIT_USE_BOOK_PASSIVE = True
+ENTRY_LIMIT_PASSIVE_TICKS = 1
 ORDER_SYNC_WAIT_SEC = float(os.getenv("ORDER_SYNC_WAIT_SEC", "2.0"))
 ORDER_SYNC_POLL_SEC = float(os.getenv("ORDER_SYNC_POLL_SEC", "0.25"))
 MAX_ENTRY_SLIP_BP = float(os.getenv("MAX_ENTRY_SLIP_BP", "0"))
@@ -106,15 +112,52 @@ def split_pos_key(key: str) -> Tuple[str, str]:
 def _dbg(*parts):
     if DEBUG_OPEN:
         cprint('[dual dbg]', *parts, fg='yellow', dim=True)
+def _debug_summary(event_type: str, payload):
+    if isinstance(payload, str):
+        return payload[:500]
+    if not isinstance(payload, dict):
+        return str(payload)[:500]
+    keep = {}
+    for k in ('symbol', 'side', 'order_type', 'reason', 'qty', 'requested_px', 'spread_bp', 'est_sweep_bp', 'imbalance', 'order_id', 'ready', 'bars_loaded'):
+        if k in payload:
+            keep[k] = payload.get(k)
+    # Special-case large exchange payloads. Never print full raw order/orderbook unless DEBUG_EVENT_PAYLOAD is on.
+    if 'exchange_response' in payload:
+        ex = payload.get('exchange_response') or {}
+        if isinstance(ex, dict):
+            keep['exchange_error'] = ex.get('error') or ex.get('skip_reason') or ex.get('status')
+    if 'order' in payload:
+        od = payload.get('order') or {}
+        if isinstance(od, dict):
+            keep['order_status'] = od.get('status')
+            keep['order_id'] = keep.get('order_id') or od.get('id')
+    try:
+        return json.dumps(keep or {'event': event_type}, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(keep)[:500]
+
+
 def _emit_runtime_debug(session_db_path: str, run_id: str, event_type: str, payload=None, *, level: str = 'INFO', fg: str = 'yellow'):
+    # Always persist full payload to session.sqlite. Console output is gated separately.
     try:
         debug_event(session_db_path, run_id, event_type, payload or {}, level=level)
     except Exception:
         pass
+
+    should_print = bool(DEBUG_RUNTIME)
+    if not should_print and str(level).upper() in {'ERROR', 'CRITICAL'}:
+        should_print = bool(CONSOLE_ERROR_SUMMARY or CONSOLE_ERROR_DETAILS)
+    if not should_print:
+        return
+
     try:
-        txt = payload if isinstance(payload, str) else json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
+        if DEBUG_EVENT_PAYLOAD or CONSOLE_ERROR_DETAILS:
+            txt = payload if isinstance(payload, str) else json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
+        else:
+            txt = _debug_summary(event_type, payload)
     except Exception:
-        txt = str(payload)
+        txt = str(payload)[:500]
+
     try:
         cprint(f'[{event_type}]', txt, fg=fg)
     except Exception:
@@ -460,6 +503,89 @@ def _safe_order_average(od, fallback=None):
 def _pending_entry_order_type(cfg: dict) -> str:
     v, _ = _cfg_pick(cfg or {}, ['live.dca_open_order_type', 'runner.dca_open_order_type', 'dca_open_order_type'], 'market')
     return str(v or 'market').lower().strip()
+
+
+
+def _price_to_precision_float(fetcher: CCXTFetcher, sym: str, price: float) -> float:
+    try:
+        ccxt_sym = fetcher.resolve_symbol(sym) or sym
+        return float(fetcher.ex.price_to_precision(ccxt_sym, float(price)))
+    except Exception:
+        return float(price)
+
+
+def _infer_price_tick_from_snapshot(pre_snapshot: dict) -> float:
+    prices = []
+    try:
+        raw = pre_snapshot.get('raw_json')
+        if raw:
+            book = json.loads(raw) if isinstance(raw, str) else raw
+            for side in ('bids', 'asks'):
+                for lvl in (book.get(side) or []):
+                    if lvl and lvl[0] not in (None, ''):
+                        prices.append(float(lvl[0]))
+    except Exception:
+        pass
+    try:
+        for k in ('best_bid', 'best_ask'):
+            if pre_snapshot.get(k) not in (None, ''):
+                prices.append(float(pre_snapshot.get(k)))
+    except Exception:
+        pass
+    prices = sorted(set([p for p in prices if p > 0]))
+    diffs = [round(prices[i+1] - prices[i], 12) for i in range(len(prices)-1) if prices[i+1] > prices[i]]
+    diffs = [d for d in diffs if d > 0]
+    if diffs:
+        return float(min(diffs))
+    # Fallback for low-priced futures like ENA. This is intentionally conservative.
+    try:
+        best = float(pre_snapshot.get('best_bid') or pre_snapshot.get('best_ask') or 0.0)
+        if best < 1:
+            return 0.0001
+    except Exception:
+        pass
+    return 1e-6
+
+
+def _sanitize_post_only_limit_price(fetcher: CCXTFetcher, sym: str, side: str, limit_price: float, pre_snapshot: dict, passive_ticks: int = 1, enabled: bool = True) -> float:
+    """Force a post-only entry limit to the passive side of the current book.
+
+    The strategy's limit is based on bar close / requested price. Between signal and submit,
+    the book can move and exchange precision can round the price into a crossing order.
+    BingX then rejects post-only with code 101215.
+
+    LONG open = BUY: must be <= best_bid, optionally one tick below.
+    SHORT open = SELL: must be >= best_ask, optionally one tick above.
+    """
+    px = float(limit_price)
+    if not enabled or not pre_snapshot:
+        return _price_to_precision_float(fetcher, sym, px)
+
+    try:
+        best_bid = float(pre_snapshot.get('best_bid') or 0.0)
+        best_ask = float(pre_snapshot.get('best_ask') or 0.0)
+    except Exception:
+        best_bid, best_ask = 0.0, 0.0
+
+    if best_bid <= 0 or best_ask <= 0:
+        return _price_to_precision_float(fetcher, sym, px)
+
+    tick = _infer_price_tick_from_snapshot(pre_snapshot)
+    ticks = max(0, int(passive_ticks or 0))
+    if str(side).upper() == 'LONG':
+        passive_px = best_bid - tick * ticks
+        px = min(px, passive_px)
+    else:
+        passive_px = best_ask + tick * ticks
+        px = max(px, passive_px)
+
+    # Round once through exchange precision, then re-check. Some exchanges round toward crossing.
+    px = _price_to_precision_float(fetcher, sym, px)
+    if str(side).upper() == 'LONG' and px >= best_ask:
+        px = _price_to_precision_float(fetcher, sym, best_bid - tick * max(1, ticks))
+    elif str(side).upper() == 'SHORT' and px <= best_bid:
+        px = _price_to_precision_float(fetcher, sym, best_ask + tick * max(1, ticks))
+    return float(px)
 
 
 def place_open_qty_limit(fetcher: CCXTFetcher, sym: str, side: str, qty: float, limit_price: float, position_mode: str, post_only: bool = True):
@@ -1253,7 +1379,27 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
     if pre_snapshot and pre_snapshot.get('spread_bp') is not None:
         _emit_runtime_debug(session_db_path, run_id, 'orderbook_pre_open', {'symbol': sym, 'side': side, 'qty': qty, 'spread_bp': pre_snapshot.get('spread_bp'), 'est_sweep_bp': pre_snapshot.get('est_sweep_slip_bp'), 'imbalance': pre_snapshot.get('book_imbalance'), 'order_type': order_type_norm}, level='INFO', fg='cyan')
     if order_type_norm == 'limit':
-        res = place_open_qty_limit(fetcher, sym, side, qty, float(limit_price), position_mode, post_only=bool(post_only))
+        raw_limit_price = float(limit_price)
+        safe_limit_price = _sanitize_post_only_limit_price(
+            fetcher, sym, side, raw_limit_price, pre_snapshot,
+            passive_ticks=ENTRY_LIMIT_PASSIVE_TICKS,
+            enabled=bool(post_only) and ENTRY_LIMIT_USE_BOOK_PASSIVE,
+        )
+        if abs(float(safe_limit_price) - float(raw_limit_price)) > 1e-12:
+            _emit_runtime_debug(
+                session_db_path, run_id, 'post_only_reprice',
+                {
+                    'symbol': sym,
+                    'side': side,
+                    'raw_limit_price': raw_limit_price,
+                    'safe_limit_price': safe_limit_price,
+                    'best_bid': (pre_snapshot or {}).get('best_bid'),
+                    'best_ask': (pre_snapshot or {}).get('best_ask'),
+                    'passive_ticks': ENTRY_LIMIT_PASSIVE_TICKS,
+                },
+                level='INFO', fg='cyan'
+            )
+        res = place_open_qty_limit(fetcher, sym, side, qty, float(safe_limit_price), position_mode, post_only=bool(post_only))
     else:
         res = place_open_qty(fetcher, sym, side, qty, position_mode)
     if not res.get('ok'):
@@ -1529,7 +1675,15 @@ def _strategy_warmup_pair(strat_long, strat_short, sym: str, rows, session_db_pa
     return ok
 
 def run_live(cfg: dict, args):
-    global DEBUG_OPEN
+    global DEBUG_OPEN, DEBUG_RUNTIME, DEBUG_EVENT_PAYLOAD, CONSOLE_ERROR_SUMMARY, CONSOLE_ERROR_DETAILS
+    runner_cfg0 = (cfg.get('runner') or {})
+    console_cfg = (runner_cfg0.get('console') or {})
+    DEBUG_RUNTIME = bool(getattr(args, 'debug', False) or runner_cfg0.get('debug_console', False) or console_cfg.get('debug', False))
+    DEBUG_EVENT_PAYLOAD = bool(getattr(args, 'debug', False) or runner_cfg0.get('debug_payload', False) or console_cfg.get('debug_payload', False))
+    CONSOLE_ERROR_SUMMARY = bool(console_cfg.get('error_summary', True))
+    CONSOLE_ERROR_DETAILS = bool(console_cfg.get('error_details', False))
+    globals()['ENTRY_LIMIT_USE_BOOK_PASSIVE'] = bool(runner_cfg0.get('entry_limit_use_book_passive_price', True))
+    globals()['ENTRY_LIMIT_PASSIVE_TICKS'] = int(runner_cfg0.get('entry_limit_passive_ticks', 1) or 0)
     assert ccxt is not None or str(args.exchange).lower() in {'virtual', 'sim', 'virtual_exchange', 'paper_virtual'}, 'ccxt required for LIVE mode'
     if getattr(args, 'env_file', '') and os.path.exists(args.env_file):
         for line in open(args.env_file, 'r', encoding='utf-8').read().splitlines():
