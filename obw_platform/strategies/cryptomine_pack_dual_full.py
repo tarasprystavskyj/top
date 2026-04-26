@@ -128,15 +128,53 @@ class _PackAdaptiveBase:
         self._recent_history_fills = 0
 
     # --------- state / runner hooks ----------
+    _SNAPSHOT_FIELDS = (
+        'pos_size', 'pos_value_usdt', 'avg_price', 'num_fills',
+        'last_fill_price', 'next_level_price', 'lots',
+        'trailing_active', 'trailing_ref', 'reset_pending',
+        'cycle_base_qty_coin', 'pending_new_entry',
+        'tp_levels_done', 'pending_comp_usdt', 'pending_exit_meta',
+    )
+
     def export_state_snapshot(self, sym: str):
+        """Lightweight rollback snapshot for backtester/live order failures.
+
+        Do NOT deepcopy rolling indicator histories here:
+        - close_history_24h
+        - trend_htf_closes
+        - trend_ma_series
+
+        Those deques can contain thousands of bars after warmup and made yearly
+        fast backtests crawl. Rollback needs trade/order state, not historical
+        feature context.
+        """
         st = self._states.get(sym)
-        return copy.deepcopy(st)
+        if st is None:
+            return None
+        snap = {}
+        for k in self._SNAPSHOT_FIELDS:
+            v = getattr(st, k, None)
+            if k in ('lots', 'tp_levels_done'):
+                snap[k] = list(v or [])
+            elif k == 'pending_exit_meta':
+                snap[k] = dict(v or {}) if v else None
+            else:
+                snap[k] = v
+        return snap
 
     def restore_state_snapshot(self, sym: str, snapshot):
         if snapshot is None:
             self._states.pop(sym, None)
-        else:
-            self._states[sym] = copy.deepcopy(snapshot)
+            return
+        st = self._get_state(sym)
+        # Preserve warmed indicator histories in the current state object.
+        for k, v in dict(snapshot).items():
+            if k in ('lots', 'tp_levels_done'):
+                setattr(st, k, list(v or []))
+            elif k == 'pending_exit_meta':
+                setattr(st, k, dict(v or {}) if v else None)
+            else:
+                setattr(st, k, v)
 
     def on_order_rejected(self, sym: str, event: str = '', details=None):
         st = self._get_state(sym)
