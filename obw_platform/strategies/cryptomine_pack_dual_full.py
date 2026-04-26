@@ -346,7 +346,7 @@ class _PackAdaptiveBase:
         min_usdt_qty = self._qty_for_order_usdt(self.min_order_usdt, close) if self.min_order_usdt > 0.0 else 0.0
         return max(float(raw or 0.0), float(self.min_order_qty_coin or 0.0), min_usdt_qty)
 
-    def _calc_dca_qty(self, close, mult):
+    def _calc_dca_qty(self, close, mult, cycle_base_qty_coin=None):
         close = float(close or 0.0)
         if close <= 0:
             return 0.0
@@ -354,9 +354,8 @@ class _PackAdaptiveBase:
             order_usdt = self.fixed_order_usdt * (float(mult or 1.0) if self.apply_multipliers_to_fixed_order_usdt else 1.0)
             raw = self._qty_for_order_usdt(order_usdt, close)
         else:
-            if self.cycle_base_qty_coin is None:
-                self.cycle_base_qty_coin = self._calc_base_qty(close, 0.0)
-            raw = float(self.cycle_base_qty_coin or 0.0) * float(mult or 1.0)
+            base_qty = cycle_base_qty_coin if cycle_base_qty_coin is not None else self._calc_base_qty(close, 0.0)
+            raw = float(base_qty or 0.0) * float(mult or 1.0)
         min_usdt_qty = self._qty_for_order_usdt(self.min_order_usdt, close) if self.min_order_usdt > 0.0 else 0.0
         return max(float(raw or 0.0), float(self.min_order_qty_coin or 0.0), min_usdt_qty)
     def _entry_order_type(self):
@@ -574,12 +573,14 @@ class _PackAdaptiveBase:
                     fire = tp_close_confirmed and close >= trail_stop
                 if fire and self._can_place_order(t):
                     basis=float(st.avg_price or pos.entry or close); qty_close=float(st.pos_size or pos.qty or 0.0)
+                    if not self._order_value_ok(close, qty_close): return None
                     self._record_pending_exit(st, qty_close=qty_close, basis_price=basis, baseline_ref_price=base_tp_price, signal_ref_price=close)
                     st.reset_pending=True; st.pos_value_usdt=0.0; st.pos_size=0.0; st.avg_price=None; st.num_fills=0; st.last_fill_price=None; st.next_level_price=None; st.lots=[]; st.trailing_active=False; st.trailing_ref=None
                     self._register_order(); return ExitSig(action='TP', exit_price=close, reason='TP Full (Trailing)')
             else:
                 if tp_close_confirmed and self._can_place_order(t):
                     basis=float(st.avg_price or pos.entry or close); qty_close=float(st.pos_size or pos.qty or 0.0)
+                    if not self._order_value_ok(close, qty_close): return None
                     self._record_pending_exit(st, qty_close=qty_close, basis_price=basis, baseline_ref_price=base_tp_price, signal_ref_price=close)
                     st.reset_pending=True; st.pos_value_usdt=0.0; st.pos_size=0.0; st.avg_price=None; st.num_fills=0; st.last_fill_price=None; st.next_level_price=None; st.lots=[]; st.trailing_active=False; st.trailing_ref=None
                     self._register_order(); return ExitSig(action='TP', exit_price=close, reason='TP Full')
@@ -589,7 +590,7 @@ class _PackAdaptiveBase:
         while (not tp_blocks_dca and not dca_block_risk and st.num_fills<self.margin_call_limit and fills<self.max_fills_per_bar and st.next_level_price is not None and ((lo<=st.next_level_price) if self.SIDE=='LONG' else (hi>=st.next_level_price)) and (((not self.require_close_beyond_dca) or (close<=st.next_level_price)) if self.SIDE=='LONG' else ((not self.require_close_beyond_dca) or (close>=st.next_level_price))) and self._can_place_order(t)):
             mult=self._get_mult(st.num_fills)
             if st.cycle_base_qty_coin is None: st.cycle_base_qty_coin=self._calc_base_qty(close,0.0)
-            qty_add=self._calc_dca_qty(close, mult); value=qty_add*close
+            qty_add=self._calc_dca_qty(close, mult, st.cycle_base_qty_coin); value=qty_add*close
             if not self._order_value_ok(close, qty_add): break
             if (st.pos_value_usdt + value) > max_budget: break
             trigger_level=st.next_level_price
@@ -619,6 +620,7 @@ class _PackAdaptiveBase:
             if not (touch and close_ok): break
             qty_total=float(pos.qty); qty_close=min(float(qty_last), qty_total)
             if qty_total<=0 or qty_close<=0: break
+            if not self._order_value_ok(close, qty_close): break
             qty_frac=max(0.0,min(1.0, qty_close/max(qty_total,1e-12)))
             total_cost=sum(q*p for q,p in st.lots)
             profit = qty_close*((close-entry_last) if self.SIDE=='LONG' else (entry_last-close))
