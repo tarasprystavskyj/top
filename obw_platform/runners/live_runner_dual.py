@@ -1169,6 +1169,78 @@ def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: di
     return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=_sig_get(sig, 'tp'), sl_price=_sig_get(sig, 'sl'))[0]
 
 
+
+def _strategy_prewarm_requirement_bars(strategies, tf_sec: int, cfg: dict, args) -> int:
+    vals = []
+    for strat in strategies:
+        fn = getattr(strat, 'warmup_requirements', None)
+        if callable(fn):
+            try:
+                req = fn(timeframe_seconds=tf_sec)
+                if isinstance(req, dict):
+                    vals.append(int(req.get('min_bars', 0) or 0))
+            except Exception:
+                pass
+    try:
+        vals.append(int(getattr(args, 'prewarm_bars', 0) or 0))
+    except Exception:
+        pass
+    try:
+        vals.append(int(((cfg.get('runner') or {}).get('prewarm') or {}).get('bars', 0) or 0))
+    except Exception:
+        pass
+    try:
+        h = int(getattr(args, 'prewarm_hours', 0) or 0)
+        if h > 0:
+            vals.append(int(math.ceil(h * 3600 / max(1, int(tf_sec)))))
+    except Exception:
+        pass
+    try:
+        h = int(((cfg.get('runner') or {}).get('prewarm') or {}).get('hours', 0) or 0)
+        if h > 0:
+            vals.append(int(math.ceil(h * 3600 / max(1, int(tf_sec)))))
+    except Exception:
+        pass
+    return max([0] + vals)
+
+
+def _rows_from_feats_df(feats_df):
+    rows = []
+    try:
+        for idx, r in feats_df.iterrows():
+            row = r.to_dict()
+            try:
+                row['datetime_utc'] = idx.isoformat()
+            except Exception:
+                row['datetime_utc'] = str(idx)
+            rows.append(row)
+    except Exception:
+        return []
+    return rows
+
+
+def _strategy_warmup_pair(strat_long, strat_short, sym: str, rows, session_db_path: str = '', run_id: str = '') -> bool:
+    ok = True
+    for side, strat in (('LONG', strat_long), ('SHORT', strat_short)):
+        fn = getattr(strat, 'warmup_history', None)
+        if callable(fn):
+            try:
+                res = fn(sym, rows, ctx={'source': 'live_runner_prewarm', 'side': side})
+                ready_fn = getattr(strat, 'is_warm_ready', None)
+                ready = bool(ready_fn(sym)) if callable(ready_fn) else True
+                ok = ok and ready
+                try:
+                    debug_event(session_db_path, run_id, 'strategy_warmup', {'symbol': sym, 'side': side, 'bars': len(rows), 'result': res, 'ready': ready}, level='INFO')
+                except Exception:
+                    pass
+            except Exception as e:
+                ok = False
+                try:
+                    debug_event(session_db_path, run_id, 'strategy_warmup_error', {'symbol': sym, 'side': side, 'error': str(e)}, level='ERROR')
+                except Exception:
+                    pass
+    return ok
+
 def run_live(cfg: dict, args):
     global DEBUG_OPEN
     assert ccxt is not None or str(args.exchange).lower() in {'virtual', 'sim', 'virtual_exchange', 'paper_virtual'}, 'ccxt required for LIVE mode'
@@ -1209,6 +1281,7 @@ def run_live(cfg: dict, args):
     except Exception:
         pass
     positions = load_positions(args.results_dir)
+    pending_entries = {}
     bot_id = make_bot_id(args.results_dir, args.exchange, tf)
     try:
         db_positions = db_load_open_positions(session_db_path, bot_id, include_side_in_key=True)
@@ -1226,12 +1299,36 @@ def run_live(cfg: dict, args):
         except Exception as e:
             _emit_runtime_debug(session_db_path, run_id, 'startup_position_reconcile_fail', {'error': str(e)}, level='ERROR', fg='red')
     last_bar_ts = None
-    pending_entries = {}
     cprint('[live dual]', f'polling every {args.poll_sec}s; entries at bar close +{args.bar_delay_sec}s', fg='cyan')
     if DEBUG_OPEN:
         _emit_runtime_debug(session_db_path, run_id, 'reconcile_flags', {'startup': ENABLE_STARTUP_RECONCILE, 'loop': ENABLE_LOOP_RECONCILE}, level='INFO', fg='cyan')
     if md_tf != tf:
         _emit_runtime_debug(session_db_path, run_id, 'market_data_timeframe_fallback', {'strategy_timeframe': tf, 'market_data_timeframe': md_tf, 'exchange': args.exchange}, level='WARNING', fg='yellow')
+
+    prewarm_bars = _strategy_prewarm_requirement_bars((strat_long, strat_short), tf_sec, cfg, args)
+    if prewarm_bars > 0:
+        try:
+            allow = list((cfg.get('universe', {}) or {}).get('allow', []) or [])
+        except Exception:
+            allow = []
+        all_syms0 = sorted(set(fetcher.by_base.values()))
+        universe0 = [s for s in all_syms0 if (not allow or s in allow)]
+        _emit_runtime_debug(session_db_path, run_id, 'prewarm_start', {'bars': prewarm_bars, 'symbols': universe0, 'md_tf': md_tf}, level='INFO', fg='cyan')
+        for ccxt_sym in universe0:
+            try:
+                df0 = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=md_tf, limit=max(60, int(prewarm_bars)))
+                if df0 is None or len(df0) < 2:
+                    _emit_runtime_debug(session_db_path, run_id, 'prewarm_no_data', {'symbol': ccxt_sym}, level='WARNING', fg='yellow')
+                    continue
+                feats0 = compute_feats(df0, tf_seconds=tf_sec)
+                rows0 = _rows_from_feats_df(feats0)
+                if getattr(args, 'hour_cache', 'off') in ('save', 'load'):
+                    try: cache_out_upsert(cache_out_path, ccxt_sym, feats0)
+                    except Exception: pass
+                ready = _strategy_warmup_pair(strat_long, strat_short, ccxt_sym, rows0, session_db_path, run_id)
+                _emit_runtime_debug(session_db_path, run_id, 'prewarm_done', {'symbol': ccxt_sym, 'bars_loaded': len(rows0), 'ready': ready}, level='INFO' if ready else 'WARNING', fg='green' if ready else 'yellow')
+            except Exception as e:
+                _emit_runtime_debug(session_db_path, run_id, 'prewarm_error', {'symbol': ccxt_sym, 'error': str(e)}, level='ERROR', fg='red')
     while True:
         now = _dt.datetime.now(_dt.timezone.utc)
         bar_close = _align_bar_close(now, tf_sec)
@@ -1252,7 +1349,7 @@ def run_live(cfg: dict, args):
             for ccxt_sym in universe:
                 feats = read_hour_cache_row(cache_out_path, ccxt_sym, bar_close) if getattr(args, 'hour_cache', 'off') == 'load' else {}
                 if not feats:
-                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=md_tf, limit=max(60, getattr(args, 'limit_klines', 180)))
+                    df = fetcher.fetch_ohlcv_df(ccxt_sym, timeframe=md_tf, limit=max(60, getattr(args, 'limit_klines', 180), int(prewarm_bars or 0)))
                     if df is not None and len(df) >= 2:
                         feats_df = compute_feats(df, tf_seconds=tf_sec)
                         if getattr(args, 'hour_cache', 'off') in ('save', 'load'):

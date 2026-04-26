@@ -102,6 +102,8 @@ def main():
     ap.add_argument('--symbol', default='')
     ap.add_argument('--limit-bars', type=int, default=0)
     ap.add_argument('--time-from', default='')
+    ap.add_argument('--warmup-bars', type=int, default=0, help='Include N bars before --time-from to warm strategy indicators, but do not trade them')
+    ap.add_argument('--warmup-hours', type=float, default=0.0, help='Include hours before --time-from as warmup; max with --warmup-bars')
     ap.add_argument('--time-to', default='')
     ap.add_argument('--export-curves', default='')
     ap.add_argument('--plots', default='')
@@ -112,15 +114,36 @@ def main():
     model_override = json.loads(args.dynamic_slippage_json) if args.dynamic_slippage_json else None
     data = np.load(args.npz, allow_pickle=True)
     market_symbol, ts_s, open_, high, low, close, volume, extras = pick_symbol_block(data, args.symbol)
+    trade_start_ts_s = None
     if args.time_from:
         tf = parse_iso_to_epoch_s(args.time_from)
-        m = ts_s >= tf
+        trade_start_ts_s = int(tf)
+        warmup_bars = max(0, int(getattr(args, 'warmup_bars', 0) or 0))
+        if getattr(args, 'warmup_hours', 0.0):
+            try:
+                if len(ts_s) >= 2:
+                    bar_sec = float(np.median(np.diff(ts_s[:min(len(ts_s), 10000)])))
+                else:
+                    bar_sec = 60.0
+                warmup_bars = max(warmup_bars, int(np.ceil(float(args.warmup_hours) * 3600.0 / max(1.0, bar_sec))))
+            except Exception:
+                pass
+        start_ts = int(tf)
+        if warmup_bars > 0 and len(ts_s) >= 2:
+            try:
+                bar_sec = float(np.median(np.diff(ts_s[:min(len(ts_s), 10000)])))
+            except Exception:
+                bar_sec = 60.0
+            start_ts = int(tf - warmup_bars * max(1.0, bar_sec))
+        m = ts_s >= start_ts
         ts_s, close = ts_s[m], close[m]
         open_ = open_[m] if open_ is not None else None
         high = high[m] if high is not None else None
         low = low[m] if low is not None else None
         volume = volume[m] if volume is not None else None
         extras = {k: v[m] for k, v in extras.items()}
+    else:
+        trade_start_ts_s = None
     if args.time_to:
         tt = parse_iso_to_epoch_s(args.time_to)
         m = ts_s <= tt
@@ -139,7 +162,7 @@ def main():
         extras = {k: v[-args.limit_bars:] for k, v in extras.items()}
 
     need_curves = bool(args.export_curves or args.plots)
-    out = simulate(cfg, ts_s, close, open_=open_, high=high, low=low, volume=volume, extras=extras, market_symbol=market_symbol, model_override=model_override, export_curves=need_curves)
+    out = simulate(cfg, ts_s, close, open_=open_, high=high, low=low, volume=volume, extras=extras, market_symbol=market_symbol, model_override=model_override, export_curves=need_curves, trade_start_ts_s=trade_start_ts_s)
     out['elapsed_sec'] = time.time() - t0
     curves = out.pop('curves', None)
     if curves is not None:

@@ -41,6 +41,9 @@ class _State:
     pending_new_entry: Optional[float] = None
     pending_comp_usdt: float = 0.0
     pending_exit_meta: Optional[Dict[str, Any]] = None
+    close_history_24h: deque = field(default_factory=deque)
+    gain_24h_ready: bool = False
+    last_gain_24h_before: float = 0.0
 
 class _PackAdaptiveBase:
     SIDE = 'LONG'
@@ -90,6 +93,12 @@ class _PackAdaptiveBase:
         self.min_invest_pct = float(sp.get('minLongInvestPct' if self.SIDE=='LONG' else 'minShortInvestPct', sp.get('minShortInvestPct', 0.5)))
         self.max_invest_pct = float(sp.get('maxLongInvestPct' if self.SIDE=='LONG' else 'maxShortInvestPct', sp.get('maxShortInvestPct', 2.0)))
         self.hard_breakeven_deleverage_pct = float(sp.get('hardBreakevenDeleveragePct', 50.0))
+        # v18-enabled DCA guard:
+        # If gain_24h_before goes against the active leg beyond this threshold,
+        # skip new DCA fills for this bar. Existing position stays open.
+        # LONG blocks when gain < -threshold; SHORT blocks when gain > +threshold.
+        # 0 = disabled. v18 uses LONG=0.10, SHORT=0.08. Values are fractions: 0.10 = 10%.
+        self.dca_block_counter_gain_abs = float(sp.get('dcaBlockCounterTrendGainAbs', 0.0))
         # new: carry forward USDT deficits caused by live slippage on closes
         self.enable_slip_loss_comp = bool(sp.get('enableSlipLossCompensation', True))
         self.max_comp_step_pct = float(sp.get('maxCompensationStepPct', 3.0))
@@ -293,15 +302,139 @@ class _PackAdaptiveBase:
             'pending_comp_before': float(st.pending_comp_usdt or 0.0),
         }
 
+    def _safe_float(self, value, default=0.0):
+        try:
+            f = float(value)
+            return f if math.isfinite(f) else default
+        except Exception:
+            return default
+
+    def _update_close_history_and_gain(self, st, row, t, close):
+        """Update rolling 24h close history and return gain_24h_before as FRACTION.
+
+        Important: cache builders store gain_24h_before as fraction:
+        0.10 means +10%, -0.10 means -10%. v18 thresholds use the same scale.
+        """
+        row_gain = None
+        if isinstance(row, dict):
+            for key in (
+                'gain_24h_before',
+                'gain24h_before',
+                'gain_24h',
+                'dp24h',
+                'change_24h_frac',
+            ):
+                if key in row and row.get(key) is not None:
+                    row_gain = self._safe_float(row.get(key), 0.0)
+                    break
+            # Some exchange APIs expose percent naming. Convert only for explicit *_pct keys.
+            if row_gain is None:
+                for key in ('change_24h_pct', 'price_change_24h_pct'):
+                    if key in row and row.get(key) is not None:
+                        row_gain = self._safe_float(row.get(key), 0.0) / 100.0
+                        break
+
+        try:
+            dt = self._parse_time(t)
+            if dt.tzinfo:
+                dt = dt.astimezone(_dt.timezone.utc)
+            else:
+                dt = dt.replace(tzinfo=_dt.timezone.utc)
+            ts = float(dt.timestamp())
+            close_f = float(close)
+        except Exception:
+            st.last_gain_24h_before = float(row_gain or 0.0)
+            st.gain_24h_ready = row_gain is not None
+            return st.last_gain_24h_before
+
+        dq = st.close_history_24h
+        cutoff = ts - 86400.0
+
+        # Keep one reference bar at/before cutoff, remove older useless bars.
+        while len(dq) >= 2 and float(dq[1][0]) <= cutoff:
+            dq.popleft()
+
+        local_gain = None
+        if dq and float(dq[0][0]) <= cutoff:
+            ref_price = float(dq[0][1])
+            if ref_price > 0:
+                local_gain = close_f / ref_price - 1.0
+
+        if dq and float(dq[-1][0]) == ts:
+            dq[-1] = (ts, close_f)
+        else:
+            dq.append((ts, close_f))
+
+        while len(dq) > 6000:
+            dq.popleft()
+
+        if local_gain is not None:
+            st.gain_24h_ready = True
+            st.last_gain_24h_before = float(local_gain)
+        elif row_gain is not None:
+            st.gain_24h_ready = True
+            st.last_gain_24h_before = float(row_gain)
+        else:
+            st.gain_24h_ready = False
+            st.last_gain_24h_before = 0.0
+        return st.last_gain_24h_before
+
+    def _dca_blocked_by_counter_trend(self, st, row, t, close):
+        if self.dca_block_counter_gain_abs <= 0.0:
+            return False
+        gain = self._update_close_history_and_gain(st, row, t, close)
+        if not st.gain_24h_ready:
+            # Do not invent regime data. Existing positions may still be managed;
+            # new entries are blocked separately until warmup is ready.
+            return False
+        if self.SIDE == 'LONG':
+            return gain < -self.dca_block_counter_gain_abs
+        return gain > self.dca_block_counter_gain_abs
+
+    def is_warm_ready(self, sym: str) -> bool:
+        st = self._get_state(sym)
+        if self.dca_block_counter_gain_abs > 0.0 and not bool(getattr(st, 'gain_24h_ready', False)):
+            return False
+        return True
+
+    def warmup_requirements(self, timeframe_seconds: int = None):
+        tf = int(timeframe_seconds or self._tf_seconds())
+        bars_24h = max(1, int(math.ceil(24 * 3600 / max(1, tf))))
+        need = bars_24h + 2 if self.dca_block_counter_gain_abs > 0.0 else 0
+        return {
+            'min_bars': int(need),
+            'hours': 24 if self.dca_block_counter_gain_abs > 0.0 else 0,
+            'reason': 'gain_24h_before for v18 dcaBlockCounterTrendGainAbs' if need else 'none',
+        }
+
+    def warmup_history(self, sym: str, rows, ctx=None):
+        st = self._get_state(sym)
+        count = 0
+        for row in rows or []:
+            try:
+                t = row.get('datetime_utc')
+                _, _, close = self._trigger_prices(row)
+                self._update_close_history_and_gain(st, row, t, close)
+                if self.use_trend_adaptive_sizing:
+                    # No orders are produced here. This only warms the same internal trend state
+                    # that live manage/entry would otherwise build blindly from startup.
+                    self._update_trend(st, t, close)
+                count += 1
+            except Exception:
+                continue
+        return {'bars': count, 'ready': self.is_warm_ready(sym), 'last_gain_24h_before': float(getattr(st, 'last_gain_24h_before', 0.0) or 0.0)}
+
     def entry_signal(self,is_opening,sym,row,ctx=None):
         t=row.get('datetime_utc')
         if not is_opening or not self._can_place_order(t): return None
         st=self._get_state(sym)
         _,_,close=self._trigger_prices(row)
+        _ = self._update_close_history_and_gain(st, row, t, close)
         target_pct=self._cached_target_pct(row)
         if target_pct is None:
             target_pct = self._update_trend(st,t,close) if self.use_trend_adaptive_sizing else self.base_order_pct_eq
         if st.reset_pending or (st.pos_size==0 and len(st.lots)==0):
+            if not self.is_warm_ready(sym): return None
             st.reset_pending=False; st.trailing_active=False; st.trailing_ref=None; st.pending_new_entry=None; st.pending_exit_meta=None
             st.cycle_base_qty_coin=self._calc_base_qty(close,target_pct)
             qty0=st.cycle_base_qty_coin; value=qty0*close
@@ -357,8 +490,9 @@ class _PackAdaptiveBase:
                     st.reset_pending=True; st.pos_value_usdt=0.0; st.pos_size=0.0; st.avg_price=None; st.num_fills=0; st.last_fill_price=None; st.next_level_price=None; st.lots=[]; st.trailing_active=False; st.trailing_ref=None
                     self._register_order(); return ExitSig(action='TP', exit_price=close, reason='TP Full')
         if not tp_touch: st.trailing_active=False; st.trailing_ref=None
+        dca_block_risk = self._dca_blocked_by_counter_trend(st, row, t, close)
         fills=0
-        while (not tp_blocks_dca and st.num_fills<self.margin_call_limit and fills<self.max_fills_per_bar and st.next_level_price is not None and ((lo<=st.next_level_price) if self.SIDE=='LONG' else (hi>=st.next_level_price)) and (((not self.require_close_beyond_dca) or (close<=st.next_level_price)) if self.SIDE=='LONG' else ((not self.require_close_beyond_dca) or (close>=st.next_level_price))) and self._can_place_order(t)):
+        while (not tp_blocks_dca and not dca_block_risk and st.num_fills<self.margin_call_limit and fills<self.max_fills_per_bar and st.next_level_price is not None and ((lo<=st.next_level_price) if self.SIDE=='LONG' else (hi>=st.next_level_price)) and (((not self.require_close_beyond_dca) or (close<=st.next_level_price)) if self.SIDE=='LONG' else ((not self.require_close_beyond_dca) or (close>=st.next_level_price))) and self._can_place_order(t)):
             mult=self._get_mult(st.num_fills)
             if st.cycle_base_qty_coin is None: st.cycle_base_qty_coin=self._calc_base_qty(close,0.0)
             qty_add=st.cycle_base_qty_coin*mult; value=qty_add*close

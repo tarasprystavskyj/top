@@ -167,8 +167,9 @@ def compute_feats(df: pd.DataFrame, tf_seconds: Optional[int] = None) -> pd.Data
 
     if tf_seconds is None:
         out['qv_24h'] = out['quote_volume'].rolling(24, min_periods=1).sum()
-        out['dp6h']  = (out['close'] / out['close'].shift(6)  - 1.0).fillna(0.0)
-        out['dp12h'] = (out['close'] / out['close'].shift(12) - 1.0).fillna(0.0)
+        out['gain_24h_before'] = (out['close'] / out['close'].shift(24) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        out['dp6h']  = (out['close'] / out['close'].shift(6)  - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        out['dp12h'] = (out['close'] / out['close'].shift(12) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
         if IGNORE_VOLSURGE:
             out['vol_surge_mult'] = 1e9
         else:
@@ -180,15 +181,16 @@ def compute_feats(df: pd.DataFrame, tf_seconds: Optional[int] = None) -> pd.Data
         bars_6h  = max(1, int(round( 6*3600 / tf_seconds)))
         bars_12h = max(1, int(round(12*3600 / tf_seconds)))
         out['qv_24h'] = out['quote_volume'].rolling(bars_24h, min_periods=1).sum()
-        out['dp6h']  = (out['close'] / out['close'].shift(bars_6h)  - 1.0).fillna(0.0)
-        out['dp12h'] = (out['close'] / out['close'].shift(bars_12h) - 1.0).fillna(0.0)
+        out['gain_24h_before'] = (out['close'] / out['close'].shift(bars_24h) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        out['dp6h']  = (out['close'] / out['close'].shift(bars_6h)  - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        out['dp12h'] = (out['close'] / out['close'].shift(bars_12h) - 1.0).replace([np.inf, -np.inf], np.nan).fillna(0.0)
         if IGNORE_VOLSURGE:
             out['vol_surge_mult'] = 1e9
         else:
             avg_per_bar = out['qv_24h'] / float(bars_24h)
             with np.errstate(divide='ignore', invalid='ignore'):
                 out['vol_surge_mult'] = np.where(avg_per_bar > 0, out['quote_volume'] / avg_per_bar, 0.0)
-    for k in ('rsi','stochastic','mfi','overbought_index','gain_24h_before'):
+    for k in ('rsi','stochastic','mfi','overbought_index'):
         if k not in out.columns:
             out[k] = 0.0
     return out

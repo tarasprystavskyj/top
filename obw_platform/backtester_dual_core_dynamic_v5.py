@@ -322,7 +322,7 @@ def _dca_open_order_type(cfg: dict) -> str:
     return 'market'
 
 
-def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.ndarray] = None, high: Optional[np.ndarray] = None, low: Optional[np.ndarray] = None, volume: Optional[np.ndarray] = None, extras: Optional[Dict[str, np.ndarray]] = None, market_symbol: str = 'ENA/USDT:USDT', model_override: Optional[dict] = None, export_curves: bool = False):
+def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.ndarray] = None, high: Optional[np.ndarray] = None, low: Optional[np.ndarray] = None, volume: Optional[np.ndarray] = None, extras: Optional[Dict[str, np.ndarray]] = None, market_symbol: str = 'ENA/USDT:USDT', model_override: Optional[dict] = None, export_curves: bool = False, trade_start_ts_s: Optional[int] = None):
     StratLong = import_by_path(cfg['strategy_class_long'])
     StratShort = import_by_path(cfg['strategy_class_short'])
     strat_long = StratLong(cfg)
@@ -341,6 +341,16 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
     low = close if low is None else low
     volume = np.zeros_like(close) if volume is None else volume
     extras = extras or {}
+
+    warmup_bars_seen = 0
+
+    def _warm_strategy(strat, row):
+        fn = getattr(strat, 'warmup_history', None)
+        if callable(fn):
+            try:
+                fn(market_symbol, [row], ctx={'source': 'backtester_prewarm'})
+            except Exception:
+                pass
 
     pos_long = None
     pos_short = None
@@ -363,6 +373,12 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
     for i, ts in enumerate(ts_s):
         row = build_row(ts, i, open_, high, low, close, volume, extras)
         px = float(row['close'])
+
+        if trade_start_ts_s is not None and int(ts) < int(trade_start_ts_s):
+            _warm_strategy(strat_long, row)
+            _warm_strategy(strat_short, row)
+            warmup_bars_seen += 1
+            continue
 
         # LONG manage
         if pos_long is not None:
@@ -586,6 +602,8 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
         'margin_call_events_total': margin_call_events_total,
         'bars_in_margin_call': bars_in_margin_call,
         'dynamic_slippage_model': slip_model,
+        'warmup_bars_seen': int(warmup_bars_seen),
+        'trade_start_ts_s': int(trade_start_ts_s) if trade_start_ts_s is not None else None,
         'order_event_counts': event_counts,
         'close_reason_counts': close_reason_counts,
         'total_order_events': int(sum(event_counts.values())),
