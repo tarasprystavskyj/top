@@ -53,6 +53,14 @@ class _PackAdaptiveBase:
         self.first_qty_coin = float(sp.get('firstBuyQtyCoin' if self.SIDE=='LONG' else 'firstSellQtyCoin', 0.09))
         self.min_order_qty_coin = float(sp.get('minOrderQtyCoin', 0.09))
         self.min_order_usdt = float(sp.get('minOrderUSDT', 0.0))
+        # Live minimal-risk sizing mode:
+        # useFixedOrderUSDT=true + fixedOrderUSDT=2.0 makes every OPEN/DCA order
+        # calculate coin qty from current price: qty = 2.0 / current_price.
+        # If applyMultipliersToFixedOrderUSDT=true, DCA multipliers scale the USDT notional;
+        # for strict minimum-live testing keep it false.
+        self.use_fixed_order_usdt = bool(sp.get('useFixedOrderUSDT', False))
+        self.fixed_order_usdt = float(sp.get('fixedOrderUSDT', 0.0))
+        self.apply_multipliers_to_fixed_order_usdt = bool(sp.get('applyMultipliersToFixedOrderUSDT', False))
         self.use_equity_pct_base = bool(sp.get('useEquityPctBase', True))
         self.base_order_pct_eq = float(sp.get('baseOrderPctEq', 1.0))
         self.equity_for_sizing = float(sp.get('equityForSizingUSDT', 300.0))
@@ -273,10 +281,37 @@ class _PackAdaptiveBase:
             except Exception:
                 pass
         return None
+    def _qty_for_order_usdt(self, order_usdt, price):
+        price = float(price or 0.0)
+        if price <= 0:
+            return 0.0
+        return float(order_usdt or 0.0) / price
+
     def _calc_base_qty(self, close, target_invest_pct):
-        sizing_pct=target_invest_pct if self.use_trend_adaptive_sizing else self.base_order_pct_eq
-        raw=((self.equity_for_sizing*sizing_pct/100.0)/close) if self.use_equity_pct_base else self.first_qty_coin
-        return max(raw, self.min_order_qty_coin)
+        close = float(close or 0.0)
+        if close <= 0:
+            return 0.0
+        if self.use_fixed_order_usdt and self.fixed_order_usdt > 0.0:
+            raw = self._qty_for_order_usdt(self.fixed_order_usdt, close)
+        else:
+            sizing_pct=target_invest_pct if self.use_trend_adaptive_sizing else self.base_order_pct_eq
+            raw=((self.equity_for_sizing*sizing_pct/100.0)/close) if self.use_equity_pct_base else self.first_qty_coin
+        min_usdt_qty = self._qty_for_order_usdt(self.min_order_usdt, close) if self.min_order_usdt > 0.0 else 0.0
+        return max(float(raw or 0.0), float(self.min_order_qty_coin or 0.0), min_usdt_qty)
+
+    def _calc_dca_qty(self, close, mult):
+        close = float(close or 0.0)
+        if close <= 0:
+            return 0.0
+        if self.use_fixed_order_usdt and self.fixed_order_usdt > 0.0:
+            order_usdt = self.fixed_order_usdt * (float(mult or 1.0) if self.apply_multipliers_to_fixed_order_usdt else 1.0)
+            raw = self._qty_for_order_usdt(order_usdt, close)
+        else:
+            if self.cycle_base_qty_coin is None:
+                self.cycle_base_qty_coin = self._calc_base_qty(close, 0.0)
+            raw = float(self.cycle_base_qty_coin or 0.0) * float(mult or 1.0)
+        min_usdt_qty = self._qty_for_order_usdt(self.min_order_usdt, close) if self.min_order_usdt > 0.0 else 0.0
+        return max(float(raw or 0.0), float(self.min_order_qty_coin or 0.0), min_usdt_qty)
     def _entry_tp(self, price):
         return price*(1.0+self.tp_percent/100.0) if self.SIDE=='LONG' else price*(1.0-self.tp_percent/100.0)
     def _order_value_ok(self, price, qty):
@@ -495,7 +530,7 @@ class _PackAdaptiveBase:
         while (not tp_blocks_dca and not dca_block_risk and st.num_fills<self.margin_call_limit and fills<self.max_fills_per_bar and st.next_level_price is not None and ((lo<=st.next_level_price) if self.SIDE=='LONG' else (hi>=st.next_level_price)) and (((not self.require_close_beyond_dca) or (close<=st.next_level_price)) if self.SIDE=='LONG' else ((not self.require_close_beyond_dca) or (close>=st.next_level_price))) and self._can_place_order(t)):
             mult=self._get_mult(st.num_fills)
             if st.cycle_base_qty_coin is None: st.cycle_base_qty_coin=self._calc_base_qty(close,0.0)
-            qty_add=st.cycle_base_qty_coin*mult; value=qty_add*close
+            qty_add=self._calc_dca_qty(close, mult); value=qty_add*close
             if not self._order_value_ok(close, qty_add): break
             if (st.pos_value_usdt + value) > max_budget: break
             trigger_level=st.next_level_price
