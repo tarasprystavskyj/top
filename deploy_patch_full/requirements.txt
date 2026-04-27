@@ -1,0 +1,12 @@
+# Git Deploy System Dependencies
+
+# Для завантаження змінних з .env файлу
+python-dotenv>=1.0.0
+
+# FastAPI та залежності (якщо ще не встановлено)
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+
+# Якщо потрібен CORS для frontend
+fastapi-cors>=0.0.6
