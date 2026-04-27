@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import datetime as _dt
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -168,15 +169,16 @@ def pick_symbol_block(data, symbol_filter: str = ''):
 
 
 def build_row(ts: int, i: int, open_: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, volume: np.ndarray, extras: Dict[str, np.ndarray]) -> Dict[str, Any]:
-    iso = pd.to_datetime(int(ts), unit='s', utc=True).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+    ts_i = int(ts)
+    dt = _dt.datetime.fromtimestamp(ts_i, tz=_dt.timezone.utc)
     row: Dict[str, Any] = {
-        'ts_s': int(ts),
-        'timestamp_s': int(ts),
-        'ts': int(ts),
-        'datetime_utc': iso,
-        'time': iso,
-        'datetime': iso,
-        'timestamp': iso,
+        'ts_s': ts_i,
+        'timestamp_s': ts_i,
+        'ts': ts_i,
+        'datetime_utc': dt,
+        'time': dt,
+        'datetime': dt,
+        'timestamp': ts_i,
         'open': float(open_[i]),
         'high': float(high[i]),
         'low': float(low[i]),
@@ -194,22 +196,50 @@ def build_row(ts: int, i: int, open_: np.ndarray, high: np.ndarray, low: np.ndar
 
 
 def _load_dynamic_slippage(cfg: dict, model_override: Optional[dict] = None) -> dict:
+    """Load exactly ONE slippage model for the backtest.
+
+    Priority:
+    1. CLI model_override, if provided.
+    2. cfg.backtest.slippage section.
+    3. legacy cfg.portfolio.dynamic_slippage_model.
+    4. legacy cfg.portfolio.slippage_per_side as constant model.
+    5. no slippage.
+
+    Static and dynamic slippage are deliberately mutually exclusive here.
+    They are not summed.
+    """
     pf = (cfg.get('portfolio') or {})
-    model = dict((pf.get('dynamic_slippage_model') or {}))
+    bt = (cfg.get('backtest') or {})
+    sl = (bt.get('slippage') or {})
+
     if model_override:
-        model.update(model_override)
+        model = dict(model_override)
+    elif sl:
+        enabled = bool(sl.get('enabled', True))
+        if not enabled:
+            return {'kind': 'constant', 'base_bp': 0.0}
+        mode = str(sl.get('mode', 'static')).lower().strip()
+        if mode in ('none', 'off', 'disabled'):
+            return {'kind': 'constant', 'base_bp': 0.0}
+        if mode in ('static', 'constant'):
+            base = float(sl.get('static_bp', sl.get('base_bp', pf.get('slippage_per_side', 0.0))) or 0.0)
+            return {'kind': 'constant', 'base_bp': base * 10000.0 if base < 1 else base}
+        if mode in ('dynamic', 'model'):
+            model = dict(sl.get('model') or sl.get('dynamic_model') or {})
+        else:
+            model = dict(sl.get('model') or {})
+    else:
+        model = dict((pf.get('dynamic_slippage_model') or {}))
+
     if not model:
         base = float(pf.get('slippage_per_side', 0.0) or 0.0)
-        return {
-            'kind': 'constant',
-            'base_bp': base * 10000.0 if base < 1 else base,
-        }
+        return {'kind': 'constant', 'base_bp': base * 10000.0 if base < 1 else base}
     if str(model.get('kind','')) == 'directional_knn_linear':
         return model
     if 'base_bp' in model and 'coefficients' not in model:
         return model
     return {
-        'kind': 'linear_bp',
+        'kind': str(model.get('kind', 'linear_bp')),
         'base_bp': float(model.get('base_bp', 0.0)),
         'coefficients': {str(k): float(v) for k, v in (model.get('coefficients') or {}).items()},
         'clip_min_bp': float(model.get('clip_min_bp', 0.0)),
@@ -310,6 +340,52 @@ def _snapshot_limit_price(snapshot, fallback=None):
         return None
 
 
+
+def _bt_debug_close_reasons(cfg: dict) -> bool:
+    """Return True only when detailed close reasons should be included in JSON output.
+
+    Detailed reasons can be enormous because strict LIFO/BE reasons include entry,
+    min_allowed and qty. Keep them in debug mode only.
+    """
+    bt = (cfg.get('backtest') or {})
+    return bool(
+        bt.get('debug', False)
+        or bt.get('debug_close_reasons', False)
+        or bt.get('include_close_reason_counts', False)
+    )
+
+
+def _reason_bucket(reason: str) -> str:
+    """Compact reason bucket safe for normal output."""
+    r = str(reason or '')
+    if 'Sub-sell last lot' in r:
+        if 'mode=normal_lot_tp_floor' in r:
+            return 'Sub-sell last lot | normal_lot_tp_floor'
+        if 'mode=deleverage_breakeven' in r:
+            return 'Sub-sell last lot | deleverage_breakeven'
+        return 'Sub-sell last lot'
+    if 'Sub-cover last lot' in r:
+        if 'mode=normal_lot_tp_floor' in r:
+            return 'Sub-cover last lot | normal_lot_tp_floor'
+        if 'mode=deleverage_breakeven' in r:
+            return 'Sub-cover last lot | deleverage_breakeven'
+        return 'Sub-cover last lot'
+    if 'TP Full' in r:
+        return 'TP Full'
+    if 'SL' in r:
+        return 'SL'
+    if 'EXIT' in r:
+        return 'EXIT'
+    return r[:80]
+
+
+def _record_close_reason(reason_counts: dict, reason_summary: dict, reason: str, *, debug_close_reasons: bool) -> None:
+    bucket = _reason_bucket(reason)
+    reason_summary[bucket] = int(reason_summary.get(bucket, 0)) + 1
+    if debug_close_reasons:
+        reason_counts[str(reason)] = int(reason_counts.get(str(reason), 0)) + 1
+
+
 def _dca_open_order_type(cfg: dict) -> str:
     for path in ('backtest.dca_open_order_type', 'live.dca_open_order_type', 'runner.dca_open_order_type', 'dca_open_order_type'):
         cur = cfg
@@ -337,6 +413,9 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
     max_notional_frac = float(pf.get('max_notional_frac', 1.0))
     equity_start_total = 2 * eq0_leg
     slip_model = _load_dynamic_slippage(cfg, model_override=model_override)
+    bt_cfg = (cfg.get('backtest') or {})
+    use_live_sync = bool(bt_cfg.get('use_live_sync', False))
+    debug_close_reasons = _bt_debug_close_reasons(cfg)
     dca_order_type = _dca_open_order_type(cfg)
 
     def _entry_order_details(sig, side, px):
@@ -405,6 +484,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
         'dca_limit_long': 0, 'dca_limit_short': 0,
     }
     close_reason_counts = {}
+    close_reason_summary = {}
     margin_call_events_total = bars_in_margin_call = 0
     prev_in_margin = False
 
@@ -430,14 +510,14 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                 before_real = book.realized
                 qty_close = pos_long.qty
                 book.close_fill('LONG', qty_close, exit_px)
-                if hasattr(strat_long, 'sync_after_external_fill'):
+                if use_live_sync and hasattr(strat_long, 'sync_after_external_fill'):
                     strat_long.sync_after_external_fill(market_symbol, qty=0.0, entry=0.0, fill_price=exit_px, delta_qty=qty_close, event='close')
                 pnl_trade = book.realized - before_real
                 trades_long += 1
                 wins_long += 1 if pnl_trade > 0 else 0
                 event_counts['close_long'] += 1
                 _reason = str(getattr(ex, 'reason', getattr(ex, 'action', 'close_long')) or getattr(ex, 'action', 'close_long'))
-                close_reason_counts[_reason] = int(close_reason_counts.get(_reason, 0)) + 1
+                _record_close_reason(close_reason_counts, close_reason_summary, _reason, debug_close_reasons=debug_close_reasons)
                 pos_long = None
             elif ex and getattr(ex, 'action', None) == 'TP_PARTIAL':
                 qty_close = before_qty * float(getattr(ex, 'qty_frac', 0.0) or 0.0)
@@ -449,14 +529,14 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                     pos_long.qty = max(0.0, before_qty - qty_close)
                     rem_qty = pos_long.qty
                     rem_entry = book.avg_entry('LONG') if rem_qty > 1e-12 else 0.0
-                    if hasattr(strat_long, 'sync_after_external_fill'):
+                    if use_live_sync and hasattr(strat_long, 'sync_after_external_fill'):
                         strat_long.sync_after_external_fill(market_symbol, qty=rem_qty, entry=rem_entry, fill_price=exit_px, delta_qty=qty_close, event='partial')
                     pnl_trade = book.realized - before_real
                     trades_long += 1
                     wins_long += 1 if pnl_trade > 0 else 0
                     event_counts['partial_long'] += 1
                     _reason = str(getattr(ex, 'reason', 'partial_long') or 'partial_long')
-                    close_reason_counts[_reason] = int(close_reason_counts.get(_reason, 0)) + 1
+                    _record_close_reason(close_reason_counts, close_reason_summary, _reason, debug_close_reasons=debug_close_reasons)
                     if pos_long.qty <= 1e-12:
                         pos_long = None
             elif pos_long is not None and pos_long.qty > before_qty + 1e-12:
@@ -468,7 +548,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                         exec_px = float(limit_px)
                         book.open_fill('LONG', add_qty, exec_px)
                         event_counts['dca_limit_long'] += 1
-                        if hasattr(strat_long, 'sync_after_external_fill'):
+                        if use_live_sync and hasattr(strat_long, 'sync_after_external_fill'):
                             strat_long.sync_after_external_fill(market_symbol, qty=pos_long.qty, entry=book.avg_entry('LONG'), fill_price=exec_px, delta_qty=add_qty, event='dca_limit')
                     else:
                         _strategy_restore(strat_long, market_symbol, long_snapshot)
@@ -479,7 +559,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                     exec_px = execution_price(px, 'LONG', 'OPEN', slip_bp)
                     book.open_fill('LONG', add_qty, exec_px)
                     event_counts['dca_long'] += 1
-                    if hasattr(strat_long, 'sync_after_external_fill'):
+                    if use_live_sync and hasattr(strat_long, 'sync_after_external_fill'):
                         strat_long.sync_after_external_fill(market_symbol, qty=pos_long.qty, entry=book.avg_entry('LONG'), fill_price=exec_px, delta_qty=add_qty, event='dca')
 
         # SHORT manage
@@ -494,14 +574,14 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                 before_real = book.realized
                 qty_close = pos_short.qty
                 book.close_fill('SHORT', qty_close, exit_px)
-                if hasattr(strat_short, 'sync_after_external_fill'):
+                if use_live_sync and hasattr(strat_short, 'sync_after_external_fill'):
                     strat_short.sync_after_external_fill(market_symbol, qty=0.0, entry=0.0, fill_price=exit_px, delta_qty=qty_close, event='close')
                 pnl_trade = book.realized - before_real
                 trades_short += 1
                 wins_short += 1 if pnl_trade > 0 else 0
                 event_counts['close_short'] += 1
                 _reason = str(getattr(ex, 'reason', getattr(ex, 'action', 'close_short')) or getattr(ex, 'action', 'close_short'))
-                close_reason_counts[_reason] = int(close_reason_counts.get(_reason, 0)) + 1
+                _record_close_reason(close_reason_counts, close_reason_summary, _reason, debug_close_reasons=debug_close_reasons)
                 pos_short = None
             elif ex and getattr(ex, 'action', None) == 'TP_PARTIAL':
                 qty_close = before_qty * float(getattr(ex, 'qty_frac', 0.0) or 0.0)
@@ -513,14 +593,14 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                     pos_short.qty = max(0.0, before_qty - qty_close)
                     rem_qty = pos_short.qty
                     rem_entry = book.avg_entry('SHORT') if rem_qty > 1e-12 else 0.0
-                    if hasattr(strat_short, 'sync_after_external_fill'):
+                    if use_live_sync and hasattr(strat_short, 'sync_after_external_fill'):
                         strat_short.sync_after_external_fill(market_symbol, qty=rem_qty, entry=rem_entry, fill_price=exit_px, delta_qty=qty_close, event='partial')
                     pnl_trade = book.realized - before_real
                     trades_short += 1
                     wins_short += 1 if pnl_trade > 0 else 0
                     event_counts['partial_short'] += 1
                     _reason = str(getattr(ex, 'reason', 'partial_short') or 'partial_short')
-                    close_reason_counts[_reason] = int(close_reason_counts.get(_reason, 0)) + 1
+                    _record_close_reason(close_reason_counts, close_reason_summary, _reason, debug_close_reasons=debug_close_reasons)
                     if pos_short.qty <= 1e-12:
                         pos_short = None
             elif pos_short is not None and pos_short.qty > before_qty + 1e-12:
@@ -532,7 +612,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                         exec_px = float(limit_px)
                         book.open_fill('SHORT', add_qty, exec_px)
                         event_counts['dca_limit_short'] += 1
-                        if hasattr(strat_short, 'sync_after_external_fill'):
+                        if use_live_sync and hasattr(strat_short, 'sync_after_external_fill'):
                             strat_short.sync_after_external_fill(market_symbol, qty=pos_short.qty, entry=book.avg_entry('SHORT'), fill_price=exec_px, delta_qty=add_qty, event='dca_limit')
                     else:
                         _strategy_restore(strat_short, market_symbol, short_snapshot)
@@ -543,7 +623,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                     exec_px = execution_price(px, 'SHORT', 'OPEN', slip_bp)
                     book.open_fill('SHORT', add_qty, exec_px)
                     event_counts['dca_short'] += 1
-                    if hasattr(strat_short, 'sync_after_external_fill'):
+                    if use_live_sync and hasattr(strat_short, 'sync_after_external_fill'):
                         strat_short.sync_after_external_fill(market_symbol, qty=pos_short.qty, entry=book.avg_entry('SHORT'), fill_price=exec_px, delta_qty=add_qty, event='dca')
 
         # LONG entry
@@ -561,7 +641,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                             event_counts['open_long'] += 1
                             event_counts['open_limit_long'] += 1
                             pos_long = Position('LONG', exec_px, qty)
-                            if hasattr(strat_long, 'sync_after_external_fill'):
+                            if use_live_sync and hasattr(strat_long, 'sync_after_external_fill'):
                                 strat_long.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('LONG'), fill_price=exec_px, delta_qty=qty, event='open_limit')
                         else:
                             _strategy_restore(strat_long, market_symbol, long_entry_snapshot)
@@ -572,7 +652,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                         book.open_fill('LONG', qty, exec_px)
                         event_counts['open_long'] += 1
                         pos_long = Position('LONG', px, qty)
-                        if hasattr(strat_long, 'sync_after_external_fill'):
+                        if use_live_sync and hasattr(strat_long, 'sync_after_external_fill'):
                             strat_long.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('LONG'), fill_price=exec_px, delta_qty=qty, event='open')
 
         # SHORT entry
@@ -590,7 +670,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                             event_counts['open_short'] += 1
                             event_counts['open_limit_short'] += 1
                             pos_short = Position('SHORT', exec_px, qty)
-                            if hasattr(strat_short, 'sync_after_external_fill'):
+                            if use_live_sync and hasattr(strat_short, 'sync_after_external_fill'):
                                 strat_short.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('SHORT'), fill_price=exec_px, delta_qty=qty, event='open_limit')
                         else:
                             _strategy_restore(strat_short, market_symbol, short_entry_snapshot)
@@ -601,7 +681,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
                         book.open_fill('SHORT', qty, exec_px)
                         event_counts['open_short'] += 1
                         pos_short = Position('SHORT', px, qty)
-                        if hasattr(strat_short, 'sync_after_external_fill'):
+                        if use_live_sync and hasattr(strat_short, 'sync_after_external_fill'):
                             strat_short.sync_after_external_fill(market_symbol, qty=qty, entry=book.avg_entry('SHORT'), fill_price=exec_px, delta_qty=qty, event='open')
 
         eq_r = equity_start_total + book.realized
@@ -670,13 +750,20 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
         'margin_call_events_total': margin_call_events_total,
         'bars_in_margin_call': bars_in_margin_call,
         'dynamic_slippage_model': slip_model,
+        'backtest_use_live_sync': bool(use_live_sync),
+        'backtest_slippage_config': (cfg.get('backtest') or {}).get('slippage', None),
         'maker_fee_rate': maker_fee,
         'warmup_bars_seen': int(warmup_bars_seen),
         'trade_start_ts_s': int(trade_start_ts_s) if trade_start_ts_s is not None else None,
         'order_event_counts': event_counts,
-        'close_reason_counts': close_reason_counts,
+        # Compact buckets are always safe to print.
+        'close_reason_summary': close_reason_summary,
+        # Full high-cardinality reasons are debug-only.
+        'close_reason_counts_debug_enabled': bool(debug_close_reasons),
         'total_order_events': int(sum(event_counts.values())),
     }
+    if debug_close_reasons:
+        out['close_reason_counts'] = close_reason_counts
     if export_curves:
         df_curves = pd.DataFrame(curve_rows)
         if not df_curves.empty and 'bar_ts_s' in df_curves.columns:
