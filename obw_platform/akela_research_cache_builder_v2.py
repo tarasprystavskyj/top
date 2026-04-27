@@ -78,6 +78,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import warnings
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,6 +86,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+
+# Avoid noisy numpy warnings on short warmup windows where long-horizon rolling stats are intentionally NaN.
+warnings.filterwarnings("ignore", message="Mean of empty slice", category=RuntimeWarning)
 
 try:
     import ccxt  # type: ignore
@@ -612,6 +616,19 @@ def _future_first_hit_bars(close: pd.Series, threshold: float, max_bars: int, di
 
 
 def compute_features_for_symbol(symbol: str, df: pd.DataFrame, timeframe_sec: int) -> Tuple[str, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Optimized v2.1 implementation.
+
+    The previous v2 version created DataFrame columns one by one:
+        feat["x"] = ...
+    With ~100+ indicators this triggers pandas PerformanceWarning:
+        DataFrame is highly fragmented.
+
+    This version accumulates Series/arrays in dictionaries and creates DataFrames
+    once at the end. It is faster and avoids fragmentation warnings.
+    """
+    ts_arr = df["timestamp_s"].to_numpy(dtype=np.int64)
+
     close = df["close"].astype(float)
     high = df["high"].astype(float)
     low = df["low"].astype(float)
@@ -621,250 +638,332 @@ def compute_features_for_symbol(symbol: str, df: pd.DataFrame, timeframe_sec: in
     qv = qv.where(np.isfinite(qv), volume * close)
     trade_count = df["trade_count"].astype(float) if "trade_count" in df.columns else pd.Series(np.nan, index=df.index)
 
-    feat = pd.DataFrame({"timestamp_s": df["timestamp_s"].to_numpy(dtype=np.int64)})
+    fcols: Dict[str, Any] = {"timestamp_s": ts_arr}
 
-    # --- Momentum / returns. Keep many horizons cached; this is used by rankers and labels.
+    def put(name: str, value: Any) -> None:
+        """Store a feature as an aligned numpy array without fragmenting a DataFrame."""
+        if isinstance(value, pd.Series):
+            fcols[name] = value.to_numpy()
+        elif isinstance(value, np.ndarray):
+            fcols[name] = value
+        else:
+            fcols[name] = np.full(len(df), value, dtype=np.float64)
+
+    # --- Momentum / returns.
     horizons = {
         "5m": 5 * 60, "15m": 15 * 60, "30m": 30 * 60, "1h": 3600, "2h": 2 * 3600,
         "4h": 4 * 3600, "8h": 8 * 3600, "12h": 12 * 3600, "24h": 24 * 3600,
         "3d": 3 * 86400, "7d": 7 * 86400, "14d": 14 * 86400, "30d": 30 * 86400,
     }
+    ret: Dict[str, pd.Series] = {}
     for name, sec in horizons.items():
-        feat[f"ret_{name}"] = rolling_return(close, bars_for(sec, timeframe_sec)).to_numpy()
+        r = rolling_return(close, bars_for(sec, timeframe_sec))
+        ret[name] = r
+        put(f"ret_{name}", r)
 
     one_bar_ret = close.pct_change()
     log_ret = np.log(close / close.shift(1))
-    feat["ret_1bar"] = one_bar_ret.to_numpy()
-    feat["logret_1bar"] = log_ret.to_numpy()
+    put("ret_1bar", one_bar_ret)
+    put("logret_1bar", log_ret)
 
-    # Acceleration / momentum breakdown.
-    feat["momentum_1h_minus_4h"] = (feat["ret_1h"] - feat["ret_4h"] / 4.0).to_numpy()
-    feat["momentum_4h_minus_24h"] = (feat["ret_4h"] - feat["ret_24h"] / 6.0).to_numpy()
-    feat["momentum_breakdown_1h_vs_24h"] = ((feat["ret_24h"] > 0) & (feat["ret_1h"] < 0)).astype(float).to_numpy()
-    feat["momentum_breakdown_4h_vs_7d"] = ((feat["ret_7d"] > 0) & (feat["ret_4h"] < 0)).astype(float).to_numpy()
+    put("momentum_1h_minus_4h", ret["1h"] - ret["4h"] / 4.0)
+    put("momentum_4h_minus_24h", ret["4h"] - ret["24h"] / 6.0)
+    put("momentum_breakdown_1h_vs_24h", ((ret["24h"] > 0) & (ret["1h"] < 0)).astype(float))
+    put("momentum_breakdown_4h_vs_7d", ((ret["7d"] > 0) & (ret["4h"] < 0)).astype(float))
 
-    # Rolling slopes are expensive; cache them.
     for name, sec in [("1h", 3600), ("4h", 4 * 3600), ("24h", 86400), ("7d", 7 * 86400)]:
         n = bars_for(sec, timeframe_sec)
-        if n <= max(10, len(close) // 2):
-            feat[f"log_slope_{name}"] = _rolling_slope_pct(close, n).to_numpy()
-        else:
-            feat[f"log_slope_{name}"] = np.nan
+        put(f"log_slope_{name}", _rolling_slope_pct(close, n) if n <= max(10, len(close) // 2) else np.nan)
 
     # --- Volatility / range / trend state.
+    rv: Dict[str, pd.Series] = {}
     for name, sec in [("1h", 3600), ("4h", 4 * 3600), ("24h", 86400), ("7d", 7 * 86400)]:
-        feat[f"realized_vol_{name}"] = realized_vol(close, bars_for(sec, timeframe_sec)).to_numpy()
+        rv[name] = realized_vol(close, bars_for(sec, timeframe_sec))
+        put(f"realized_vol_{name}", rv[name])
 
-    feat["atr_percent_14"] = atr_pct(df, 14).to_numpy()
-    feat["atr_percent_60"] = atr_pct(df, 60).to_numpy()
-    feat["atr_percent_288"] = atr_pct(df, min(len(df), max(14, bars_for(24 * 3600, timeframe_sec)))).to_numpy()
+    put("atr_percent_14", atr_pct(df, 14))
+    put("atr_percent_60", atr_pct(df, 60))
+    put("atr_percent_288", atr_pct(df, min(len(df), max(14, bars_for(24 * 3600, timeframe_sec)))))
 
     for name, sec in [("15m", 900), ("1h", 3600), ("4h", 4 * 3600), ("24h", 86400)]:
         n = bars_for(sec, timeframe_sec)
-        feat[f"range_percent_{name}"] = (
-            high.rolling(n, min_periods=max(2, n // 4)).max()
-            / low.rolling(n, min_periods=max(2, n // 4)).min()
-            - 1.0
-        ).to_numpy()
+        rmin = max(2, n // 4)
+        put(f"range_percent_{name}", high.rolling(n, min_periods=rmin).max() / low.rolling(n, min_periods=rmin).min() - 1.0)
 
     rng = (high - low).replace(0, np.nan)
     body_hi = pd.concat([open_, close], axis=1).max(axis=1)
     body_lo = pd.concat([open_, close], axis=1).min(axis=1)
     body_abs = (close - open_).abs()
-    feat["wick_up_ratio"] = ((high - body_hi) / rng).fillna(0.0).to_numpy()
-    feat["wick_down_ratio"] = ((body_lo - low) / rng).fillna(0.0).to_numpy()
-    feat["body_to_range_ratio"] = (body_abs / rng).fillna(0.0).to_numpy()
-    feat["close_location_in_bar"] = ((close - low) / rng).fillna(0.5).to_numpy()
+    wick_up_ratio = ((high - body_hi) / rng).fillna(0.0)
+    wick_down_ratio = ((body_lo - low) / rng).fillna(0.0)
+    body_to_range_ratio = (body_abs / rng).fillna(0.0)
+    close_location_in_bar = ((close - low) / rng).fillna(0.5)
 
-    # RSI / stochastic / EMA / MACD / Bollinger.
+    put("wick_up_ratio", wick_up_ratio)
+    put("wick_down_ratio", wick_down_ratio)
+    put("body_to_range_ratio", body_to_range_ratio)
+    put("close_location_in_bar", close_location_in_bar)
+
     for n in [14, 60, 288]:
         if n < len(df):
-            feat[f"rsi_{n}"] = _rsi(close, n).to_numpy()
-            feat[f"stoch_{n}"] = _stoch(close, high, low, n).to_numpy()
+            put(f"rsi_{n}", _rsi(close, n))
+            put(f"stoch_{n}", _stoch(close, high, low, n))
         else:
-            feat[f"rsi_{n}"] = np.nan
-            feat[f"stoch_{n}"] = np.nan
+            put(f"rsi_{n}", np.nan)
+            put(f"stoch_{n}", np.nan)
 
     ema_spans = [12, 26, 50, 100, 200, 288]
     ema_values: Dict[int, pd.Series] = {}
     for span in ema_spans:
         if span < len(df):
             ema_values[span] = _ema(close, span)
-            feat[f"ema_dist_{span}"] = (close / ema_values[span] - 1.0).to_numpy()
+            put(f"ema_dist_{span}", close / ema_values[span] - 1.0)
         else:
             ema_values[span] = pd.Series(np.nan, index=df.index)
-            feat[f"ema_dist_{span}"] = np.nan
-    feat["macd_12_26"] = ((ema_values[12] - ema_values[26]) / close).to_numpy()
-    feat["macd_signal_12_26_9"] = _ema(ema_values[12] - ema_values[26], 9).div(close).to_numpy()
-    feat["macd_hist_12_26_9"] = (feat["macd_12_26"] - feat["macd_signal_12_26_9"]).to_numpy()
+            put(f"ema_dist_{span}", np.nan)
+
+    macd_raw = ema_values[12] - ema_values[26]
+    macd = macd_raw / close
+    macd_signal = _ema(macd_raw, 9).div(close)
+    put("macd_12_26", macd)
+    put("macd_signal_12_26_9", macd_signal)
+    put("macd_hist_12_26_9", macd - macd_signal)
 
     for n in [20, 120, 288]:
         if n < len(df):
             ma = close.rolling(n, min_periods=max(2, n // 4)).mean()
             sd = close.rolling(n, min_periods=max(2, n // 4)).std()
-            feat[f"bb_z_{n}"] = ((close - ma) / sd.replace(0, np.nan)).to_numpy()
-            feat[f"bb_width_{n}"] = ((4.0 * sd) / ma.replace(0, np.nan)).to_numpy()
+            put(f"bb_z_{n}", (close - ma) / sd.replace(0, np.nan))
+            put(f"bb_width_{n}", (4.0 * sd) / ma.replace(0, np.nan))
         else:
-            feat[f"bb_z_{n}"] = np.nan
-            feat[f"bb_width_{n}"] = np.nan
+            put(f"bb_z_{n}", np.nan)
+            put(f"bb_width_{n}", np.nan)
 
     adx, plus_di, minus_di = _adx(df, 14)
-    feat["adx_14"] = adx.to_numpy()
-    feat["plus_di_14"] = plus_di.to_numpy()
-    feat["minus_di_14"] = minus_di.to_numpy()
-    feat["di_minus_minus_plus_14"] = (minus_di - plus_di).to_numpy()
+    put("adx_14", adx)
+    put("plus_di_14", plus_di)
+    put("minus_di_14", minus_di)
+    put("di_minus_minus_plus_14", minus_di - plus_di)
 
     # --- Volume / liquidity decay proxies.
+    qv_sum: Dict[str, pd.Series] = {}
     for name, sec in [("15m", 900), ("1h", 3600), ("4h", 4 * 3600), ("24h", 86400), ("7d", 7 * 86400), ("30d", 30 * 86400)]:
         n = bars_for(sec, timeframe_sec)
-        feat[f"qv_{name}"] = qv.rolling(n, min_periods=max(2, n // 4)).sum().to_numpy()
-        feat[f"volume_base_{name}"] = volume.rolling(n, min_periods=max(2, n // 4)).sum().to_numpy()
-        feat[f"trade_count_{name}"] = trade_count.rolling(n, min_periods=max(2, n // 4)).sum().to_numpy()
+        minp = max(2, n // 4)
+        qv_sum[name] = qv.rolling(n, min_periods=minp).sum()
+        put(f"qv_{name}", qv_sum[name])
+        put(f"volume_base_{name}", volume.rolling(n, min_periods=minp).sum())
+        put(f"trade_count_{name}", trade_count.rolling(n, min_periods=minp).sum())
 
     qv_avg_1h = qv.rolling(bars_for(3600, timeframe_sec), min_periods=2).mean()
     qv_avg_24h = qv.rolling(bars_for(86400, timeframe_sec), min_periods=max(2, bars_for(86400, timeframe_sec) // 4)).mean()
     qv_avg_7d = qv.rolling(bars_for(7 * 86400, timeframe_sec), min_periods=max(2, bars_for(7 * 86400, timeframe_sec) // 4)).mean()
     qv_avg_30d = qv.rolling(bars_for(30 * 86400, timeframe_sec), min_periods=max(2, bars_for(30 * 86400, timeframe_sec) // 4)).mean()
-    feat["volume_now_vs_1h_avg"] = (qv / qv_avg_1h).to_numpy()
-    feat["volume_now_vs_24h_avg"] = (qv / qv_avg_24h).to_numpy()
-    feat["volume_now_vs_7d_avg"] = (qv / qv_avg_7d).to_numpy()
-    feat["volume_1h_avg_vs_24h_avg"] = (qv_avg_1h / qv_avg_24h).to_numpy()
-    feat["volume_24h_avg_vs_7d_avg"] = (qv_avg_24h / qv_avg_7d).to_numpy()
-    feat["volume_7d_avg_vs_30d_avg"] = (qv_avg_7d / qv_avg_30d).to_numpy()
-    feat["liquidity_decay_24h_vs_7d"] = (1.0 - qv_avg_24h / qv_avg_7d).to_numpy()
-    feat["liquidity_decay_7d_vs_30d"] = (1.0 - qv_avg_7d / qv_avg_30d).to_numpy()
-    feat["qv_z_24h"] = _zscore(qv, bars_for(86400, timeframe_sec)).to_numpy()
+
+    volume_now_vs_1h_avg = qv / qv_avg_1h
+    volume_now_vs_24h_avg = qv / qv_avg_24h
+    volume_now_vs_7d_avg = qv / qv_avg_7d
+    volume_1h_avg_vs_24h_avg = qv_avg_1h / qv_avg_24h
+    volume_24h_avg_vs_7d_avg = qv_avg_24h / qv_avg_7d
+    volume_7d_avg_vs_30d_avg = qv_avg_7d / qv_avg_30d
+    liquidity_decay_24h_vs_7d = 1.0 - qv_avg_24h / qv_avg_7d
+    liquidity_decay_7d_vs_30d = 1.0 - qv_avg_7d / qv_avg_30d
+    qv_z_24h = _zscore(qv, bars_for(86400, timeframe_sec))
+
+    put("volume_now_vs_1h_avg", volume_now_vs_1h_avg)
+    put("volume_now_vs_24h_avg", volume_now_vs_24h_avg)
+    put("volume_now_vs_7d_avg", volume_now_vs_7d_avg)
+    put("volume_1h_avg_vs_24h_avg", volume_1h_avg_vs_24h_avg)
+    put("volume_24h_avg_vs_7d_avg", volume_24h_avg_vs_7d_avg)
+    put("volume_7d_avg_vs_30d_avg", volume_7d_avg_vs_30d_avg)
+    put("liquidity_decay_24h_vs_7d", liquidity_decay_24h_vs_7d)
+    put("liquidity_decay_7d_vs_30d", liquidity_decay_7d_vs_30d)
+    put("qv_z_24h", qv_z_24h)
 
     if trade_count.notna().any():
         tc_avg_24h = trade_count.rolling(bars_for(86400, timeframe_sec), min_periods=max(2, bars_for(86400, timeframe_sec)//4)).mean()
         tc_avg_7d = trade_count.rolling(bars_for(7*86400, timeframe_sec), min_periods=max(2, bars_for(7*86400, timeframe_sec)//4)).mean()
-        feat["trade_count_now_vs_24h_avg"] = (trade_count / tc_avg_24h).to_numpy()
-        feat["trade_count_decay_24h_vs_7d"] = (1.0 - tc_avg_24h / tc_avg_7d).to_numpy()
-        feat["avg_trade_size_quote"] = (qv / trade_count.replace(0, np.nan)).to_numpy()
-        feat["high_volume_low_trade_count"] = ((feat["volume_now_vs_24h_avg"] > 3.0) & (feat["trade_count_now_vs_24h_avg"] < 1.2)).astype(float).to_numpy()
+        trade_count_now_vs_24h_avg = trade_count / tc_avg_24h
+        trade_count_decay_24h_vs_7d = 1.0 - tc_avg_24h / tc_avg_7d
+        avg_trade_size_quote = qv / trade_count.replace(0, np.nan)
+        high_volume_low_trade_count = ((volume_now_vs_24h_avg > 3.0) & (trade_count_now_vs_24h_avg < 1.2)).astype(float)
+        put("trade_count_now_vs_24h_avg", trade_count_now_vs_24h_avg)
+        put("trade_count_decay_24h_vs_7d", trade_count_decay_24h_vs_7d)
+        put("avg_trade_size_quote", avg_trade_size_quote)
+        put("high_volume_low_trade_count", high_volume_low_trade_count)
     else:
-        feat["trade_count_now_vs_24h_avg"] = np.nan
-        feat["trade_count_decay_24h_vs_7d"] = np.nan
-        feat["avg_trade_size_quote"] = np.nan
-        feat["high_volume_low_trade_count"] = np.nan
+        put("trade_count_now_vs_24h_avg", np.nan)
+        put("trade_count_decay_24h_vs_7d", np.nan)
+        put("avg_trade_size_quote", np.nan)
+        put("high_volume_low_trade_count", np.nan)
 
-    # --- Post-pump exhaustion / distance from high / local failure structure.
+    # --- Post-pump exhaustion.
+    distance_from_7d_high = pd.Series(np.nan, index=df.index)
+    drawdown_from_7d_high = pd.Series(np.nan, index=df.index)
     for name, sec in [("1d", 86400), ("3d", 3 * 86400), ("7d", 7 * 86400), ("14d", 14 * 86400), ("30d", 30 * 86400)]:
         n = bars_for(sec, timeframe_sec)
-        roll_low = low.rolling(n, min_periods=max(5, n // 10)).min()
-        roll_high = high.rolling(n, min_periods=max(5, n // 10)).max()
-        feat[f"max_return_{name}"] = (roll_high / roll_low - 1.0).to_numpy()
-        feat[f"distance_from_{name}_high"] = (close / roll_high - 1.0).to_numpy()
-        feat[f"distance_from_{name}_low"] = (close / roll_low - 1.0).to_numpy()
-        feat[f"drawdown_from_{name}_high"] = (1.0 - close / roll_high).to_numpy()
+        minp = max(5, n // 10)
+        roll_low = low.rolling(n, min_periods=minp).min()
+        roll_high = high.rolling(n, min_periods=minp).max()
+        put(f"max_return_{name}", roll_high / roll_low - 1.0)
+        put(f"distance_from_{name}_high", close / roll_high - 1.0)
+        put(f"distance_from_{name}_low", close / roll_low - 1.0)
+        put(f"drawdown_from_{name}_high", 1.0 - close / roll_high)
+        if name == "7d":
+            distance_from_7d_high = close / roll_high - 1.0
+            drawdown_from_7d_high = 1.0 - close / roll_high
 
-    feat["volume_spike_ratio"] = (qv / qv_avg_24h).to_numpy()
-    feat["volume_spike_without_price_continuation"] = ((feat["volume_spike_ratio"] > 3.0) & (feat["ret_1h"].fillna(0) < 0.01)).astype(float).to_numpy()
-    feat["pump_fail_24h"] = ((feat["ret_24h"] > 0.10) & (feat["ret_1h"] < 0.0) & (feat["wick_up_ratio"] > 0.35)).astype(float).to_numpy()
-    feat["pump_fail_7d"] = ((feat["ret_7d"] > 0.25) & (feat["ret_4h"] < 0.0) & (feat["distance_from_7d_high"] < -0.03)).astype(float).to_numpy()
-    feat["pump_then_flat_volume_decay"] = ((feat["ret_7d"] > 0.20) & (feat["ret_24h"].abs() < 0.03) & (feat["liquidity_decay_24h_vs_7d"] > 0.25)).astype(float).to_numpy()
+    volume_spike_ratio = qv / qv_avg_24h
+    volume_spike_without_price_continuation = ((volume_spike_ratio > 3.0) & (ret["1h"].fillna(0) < 0.01)).astype(float)
+    pump_fail_24h = ((ret["24h"] > 0.10) & (ret["1h"] < 0.0) & (wick_up_ratio > 0.35)).astype(float)
+    pump_fail_7d = ((ret["7d"] > 0.25) & (ret["4h"] < 0.0) & (distance_from_7d_high < -0.03)).astype(float)
+    pump_then_flat_volume_decay = ((ret["7d"] > 0.20) & (ret["24h"].abs() < 0.03) & (liquidity_decay_24h_vs_7d > 0.25)).astype(float)
+
+    put("volume_spike_ratio", volume_spike_ratio)
+    put("volume_spike_without_price_continuation", volume_spike_without_price_continuation)
+    put("pump_fail_24h", pump_fail_24h)
+    put("pump_fail_7d", pump_fail_7d)
+    put("pump_then_flat_volume_decay", pump_then_flat_volume_decay)
 
     # Volatility / squeeze risk proxies.
-    feat["volatility_expansion_1h_vs_24h"] = (feat["realized_vol_1h"] / pd.Series(feat["realized_vol_24h"]).replace(0, np.nan)).to_numpy()
-    feat["volatility_expansion_24h_vs_7d"] = (feat["realized_vol_24h"] / pd.Series(feat["realized_vol_7d"]).replace(0, np.nan)).to_numpy()
-    feat["many_wicks_no_trend"] = (
-        ((pd.Series(feat["wick_up_ratio"]) + pd.Series(feat["wick_down_ratio"]))
-         .rolling(bars_for(3600, timeframe_sec), min_periods=2).mean() > 0.9)
-        & (pd.Series(feat["ret_1h"]).abs().fillna(0) < 0.01)
-    ).astype(float).to_numpy()
+    volatility_expansion_1h_vs_24h = rv["1h"] / rv["24h"].replace(0, np.nan)
+    volatility_expansion_24h_vs_7d = rv["24h"] / rv["7d"].replace(0, np.nan)
+    many_wicks_no_trend = (
+        ((wick_up_ratio + wick_down_ratio).rolling(bars_for(3600, timeframe_sec), min_periods=2).mean() > 0.9)
+        & (ret["1h"].abs().fillna(0) < 0.01)
+    ).astype(float)
     rolling_std_24h = one_bar_ret.rolling(bars_for(86400, timeframe_sec), min_periods=max(10, bars_for(86400, timeframe_sec)//8)).std()
-    feat["extreme_bar_count_24h"] = (one_bar_ret.abs() > 5.0 * rolling_std_24h).astype(float).rolling(bars_for(86400, timeframe_sec), min_periods=2).sum().to_numpy()
-    feat["gap_like_move_count_24h"] = (one_bar_ret.abs() > 0.05).astype(float).rolling(bars_for(86400, timeframe_sec), min_periods=2).sum().to_numpy()
-    feat["squeeze_risk_static"] = (
-        0.35 * pd.Series(feat["ret_24h"]).clip(lower=0).fillna(0)
-        + 0.25 * pd.Series(feat["volatility_expansion_1h_vs_24h"]).clip(lower=0, upper=5).fillna(0) / 5.0
-        + 0.20 * pd.Series(feat["volume_spike_ratio"]).clip(lower=0, upper=10).fillna(0) / 10.0
-        + 0.20 * pd.Series(feat["wick_up_ratio"]).clip(lower=0, upper=1).fillna(0)
-    ).to_numpy()
+    extreme_bar_count_24h = (one_bar_ret.abs() > 5.0 * rolling_std_24h).astype(float).rolling(bars_for(86400, timeframe_sec), min_periods=2).sum()
+    gap_like_move_count_24h = (one_bar_ret.abs() > 0.05).astype(float).rolling(bars_for(86400, timeframe_sec), min_periods=2).sum()
+    squeeze_risk_static = (
+        0.35 * ret["24h"].clip(lower=0).fillna(0)
+        + 0.25 * volatility_expansion_1h_vs_24h.clip(lower=0, upper=5).fillna(0) / 5.0
+        + 0.20 * volume_spike_ratio.clip(lower=0, upper=10).fillna(0) / 10.0
+        + 0.20 * wick_up_ratio.clip(lower=0, upper=1).fillna(0)
+    )
 
-    # Static meta-short score proxy. This is NOT final ML; it is a deterministic baseline.
-    feat["weakness_score_static"] = (
-        -0.35 * pd.Series(feat["ret_1h"]).fillna(0)
-        -0.25 * pd.Series(feat["ret_4h"]).fillna(0)
-        -0.20 * pd.Series(feat["momentum_4h_minus_24h"]).fillna(0)
-        +0.20 * pd.Series(feat["liquidity_decay_24h_vs_7d"]).fillna(0)
-    ).to_numpy()
-    feat["post_pump_exhaustion_score_static"] = (
-        0.40 * pd.Series(feat["pump_fail_7d"]).fillna(0)
-        +0.30 * pd.Series(feat["drawdown_from_7d_high"]).clip(lower=0, upper=1).fillna(0)
-        +0.20 * pd.Series(feat["volume_spike_without_price_continuation"]).fillna(0)
-        +0.10 * pd.Series(feat["pump_then_flat_volume_decay"]).fillna(0)
-    ).to_numpy()
-    feat["margin_occupation_penalty_static20"] = (
+    put("volatility_expansion_1h_vs_24h", volatility_expansion_1h_vs_24h)
+    put("volatility_expansion_24h_vs_7d", volatility_expansion_24h_vs_7d)
+    put("many_wicks_no_trend", many_wicks_no_trend)
+    put("extreme_bar_count_24h", extreme_bar_count_24h)
+    put("gap_like_move_count_24h", gap_like_move_count_24h)
+    put("squeeze_risk_static", squeeze_risk_static)
+
+    weakness_score_static = (
+        -0.35 * ret["1h"].fillna(0)
+        -0.25 * ret["4h"].fillna(0)
+        -0.20 * (ret["4h"] - ret["24h"] / 6.0).fillna(0)
+        +0.20 * liquidity_decay_24h_vs_7d.fillna(0)
+    )
+    post_pump_exhaustion_score_static = (
+        0.40 * pump_fail_7d.fillna(0)
+        +0.30 * drawdown_from_7d_high.clip(lower=0, upper=1).fillna(0)
+        +0.20 * volume_spike_without_price_continuation.fillna(0)
+        +0.10 * pump_then_flat_volume_decay.fillna(0)
+    )
+    margin_occupation_penalty_static20 = (
         0.20
-        * (1.0 + pd.Series(feat["squeeze_risk_static"]).fillna(0))
-        * (1.0 + pd.Series(feat["volatility_expansion_1h_vs_24h"]).clip(lower=0, upper=5).fillna(0) / 5.0)
-    ).to_numpy()
-    feat["meta_short_score_static"] = (
-        pd.Series(feat["weakness_score_static"]).fillna(0)
-        + pd.Series(feat["post_pump_exhaustion_score_static"]).fillna(0)
-        - pd.Series(feat["squeeze_risk_static"]).fillna(0)
-        - pd.Series(feat["margin_occupation_penalty_static20"]).fillna(0)
-    ).to_numpy()
+        * (1.0 + squeeze_risk_static.fillna(0))
+        * (1.0 + volatility_expansion_1h_vs_24h.clip(lower=0, upper=5).fillna(0) / 5.0)
+    )
+    meta_short_score_static = (
+        weakness_score_static.fillna(0)
+        + post_pump_exhaustion_score_static.fillna(0)
+        - squeeze_risk_static.fillna(0)
+        - margin_occupation_penalty_static20.fillna(0)
+    )
+
+    put("weakness_score_static", weakness_score_static)
+    put("post_pump_exhaustion_score_static", post_pump_exhaustion_score_static)
+    put("margin_occupation_penalty_static20", margin_occupation_penalty_static20)
+    put("meta_short_score_static", meta_short_score_static)
+
+    # Build feature DataFrame once to avoid fragmentation.
+    feat = pd.DataFrame(fcols)
+    feat.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     # --- Forward labels. Only future windows.
-    labels = pd.DataFrame({"timestamp_s": df["timestamp_s"].to_numpy(dtype=np.int64)})
+    lcols: Dict[str, Any] = {"timestamp_s": ts_arr}
+
+    def lput(name: str, value: Any) -> None:
+        if isinstance(value, pd.Series):
+            lcols[name] = value.to_numpy()
+        elif isinstance(value, np.ndarray):
+            lcols[name] = value
+        else:
+            lcols[name] = np.full(len(df), value, dtype=np.float64)
+
     label_h = {"1h": 3600, "4h": 4 * 3600, "24h": 86400, "3d": 3 * 86400, "7d": 7 * 86400, "14d": 14 * 86400, "30d": 30 * 86400}
+    future_return: Dict[str, pd.Series] = {}
+    future_max_up: Dict[str, pd.Series] = {}
+    future_max_down: Dict[str, pd.Series] = {}
+    future_short_path_score: Dict[str, pd.Series] = {}
+
     for name, sec in label_h.items():
         n = bars_for(sec, timeframe_sec)
-        labels[f"future_return_{name}"] = (close.shift(-n) / close - 1.0).to_numpy()
+        fr = close.shift(-n) / close - 1.0
         fut_hi = high.shift(-1).iloc[::-1].rolling(n, min_periods=max(2, n // 4)).max().iloc[::-1]
         fut_lo = low.shift(-1).iloc[::-1].rolling(n, min_periods=max(2, n // 4)).min().iloc[::-1]
-        labels[f"future_max_up_{name}"] = (fut_hi / close - 1.0).to_numpy()
-        labels[f"future_max_down_{name}"] = (fut_lo / close - 1.0).to_numpy()
-        labels[f"future_downside_upside_ratio_{name}"] = (labels[f"future_max_down_{name}"].abs() / labels[f"future_max_up_{name}"].clip(lower=1e-6)).to_numpy()
-        labels[f"future_short_path_score_{name}"] = (-labels[f"future_return_{name}"] - labels[f"future_max_up_{name}"]).to_numpy()
+        fup = fut_hi / close - 1.0
+        fdn = fut_lo / close - 1.0
+        ratio = fdn.abs() / fup.clip(lower=1e-6)
+        path_score = -fr - fup
 
-    # Expensive path timing labels, intentionally cached.
-    # Guard against impossible workloads on 1m multi-month datasets.
-    # 5m x 5000 bars is OK; 1m x 30d+ can be too expensive and should be done in a separate exact pass.
+        future_return[name] = fr
+        future_max_up[name] = fup
+        future_max_down[name] = fdn
+        future_short_path_score[name] = path_score
+
+        lput(f"future_return_{name}", fr)
+        lput(f"future_max_up_{name}", fup)
+        lput(f"future_max_down_{name}", fdn)
+        lput(f"future_downside_upside_ratio_{name}", ratio)
+        lput(f"future_short_path_score_{name}", path_score)
+
     max_path_ops = 150_000_000
     b24 = bars_for(86400, timeframe_sec)
     b7 = bars_for(7 * 86400, timeframe_sec)
     if len(close) * b24 <= max_path_ops:
-        labels["future_bars_to_down_3pct_24h"] = _future_first_hit_bars(close, 0.03, b24, "down").to_numpy()
-        labels["future_bars_to_up_10pct_24h"] = _future_first_hit_bars(close, 0.10, b24, "up").to_numpy()
+        lput("future_bars_to_down_3pct_24h", _future_first_hit_bars(close, 0.03, b24, "down"))
+        lput("future_bars_to_up_10pct_24h", _future_first_hit_bars(close, 0.10, b24, "up"))
     else:
-        labels["future_bars_to_down_3pct_24h"] = np.nan
-        labels["future_bars_to_up_10pct_24h"] = np.nan
-    if len(close) * b7 <= max_path_ops:
-        labels["future_bars_to_down_5pct_7d"] = _future_first_hit_bars(close, 0.05, b7, "down").to_numpy()
-        labels["future_bars_to_up_20pct_7d"] = _future_first_hit_bars(close, 0.20, b7, "up").to_numpy()
-    else:
-        labels["future_bars_to_down_5pct_7d"] = np.nan
-        labels["future_bars_to_up_20pct_7d"] = np.nan
+        lput("future_bars_to_down_3pct_24h", np.nan)
+        lput("future_bars_to_up_10pct_24h", np.nan)
 
-    labels["future_return_24h_negative"] = (labels["future_return_24h"] < 0).astype(float)
-    labels["future_return_7d_negative"] = (labels["future_return_7d"] < 0).astype(float)
-    labels["future_max_up_24h_below_10pct"] = (labels["future_max_up_24h"] < 0.10).astype(float)
-    labels["future_max_up_7d_below_20pct"] = (labels["future_max_up_7d"] < 0.20).astype(float)
-    labels["label_good_meta_short_24h_static20"] = (
-        (labels["future_return_24h"] < -0.02)
-        & (labels["future_max_up_24h"] < 0.20)
-        & (labels["future_short_path_score_24h"] > 0.00)
-    ).astype(float)
-    labels["label_good_meta_short_7d_static20"] = (
-        (labels["future_return_7d"] < -0.05)
-        & (labels["future_max_up_7d"] < 0.20)
-        & (labels["future_short_path_score_7d"] > 0.02)
-    ).astype(float)
+    if len(close) * b7 <= max_path_ops:
+        lput("future_bars_to_down_5pct_7d", _future_first_hit_bars(close, 0.05, b7, "down"))
+        lput("future_bars_to_up_20pct_7d", _future_first_hit_bars(close, 0.20, b7, "up"))
+    else:
+        lput("future_bars_to_down_5pct_7d", np.nan)
+        lput("future_bars_to_up_20pct_7d", np.nan)
+
+    lput("future_return_24h_negative", (future_return["24h"] < 0).astype(float))
+    lput("future_return_7d_negative", (future_return["7d"] < 0).astype(float))
+    lput("future_max_up_24h_below_10pct", (future_max_up["24h"] < 0.10).astype(float))
+    lput("future_max_up_7d_below_20pct", (future_max_up["7d"] < 0.20).astype(float))
+    lput(
+        "label_good_meta_short_24h_static20",
+        ((future_return["24h"] < -0.02) & (future_max_up["24h"] < 0.20) & (future_short_path_score["24h"] > 0.00)).astype(float),
+    )
+    lput(
+        "label_good_meta_short_7d_static20",
+        ((future_return["7d"] < -0.05) & (future_max_up["7d"] < 0.20) & (future_short_path_score["7d"] > 0.02)).astype(float),
+    )
+
+    labels = pd.DataFrame(lcols)
+    labels.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     # Quality per symbol/timestamp.
-    q = pd.DataFrame({"timestamp_s": df["timestamp_s"].to_numpy(dtype=np.int64)})
-    ts = df["timestamp_s"].to_numpy(dtype=np.int64)
+    ts = ts_arr
     step = int(np.nanmedian(np.diff(ts))) if len(ts) > 2 else timeframe_sec
     prev_gap = np.r_[step, np.diff(ts)] > step * 1.5
     next_gap = np.r_[np.diff(ts), step] > step * 1.5
-    q["missing_mask"] = (prev_gap | next_gap).astype(bool)
+    q = pd.DataFrame({
+        "timestamp_s": ts_arr,
+        "missing_mask": (prev_gap | next_gap).astype(bool),
+    })
     q["quality_score"] = (~q["missing_mask"]).astype(float)
 
-    for d in (feat, labels):
-        d.replace([np.inf, -np.inf], np.nan, inplace=True)
     return symbol, feat, labels, q
 
 
@@ -1147,11 +1246,28 @@ def export_enriched_npz(
 def write_reports(data: Dict[str, pd.DataFrame], labels: Dict[str, pd.DataFrame], features: Dict[str, pd.DataFrame], out_dir: str, meta: dict) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+
+    def series_stats(s: pd.Series) -> Dict[str, float]:
+        s = pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        if len(s) == 0:
+            return {"count": 0, "mean": np.nan, "median": np.nan, "p10": np.nan, "p90": np.nan}
+        return {
+            "count": int(len(s)),
+            "mean": safe_float(s.mean()),
+            "median": safe_float(s.median()),
+            "p10": safe_float(s.quantile(0.10)),
+            "p90": safe_float(s.quantile(0.90)),
+        }
+
     rows = []
     for sym, df in data.items():
         ts = df["timestamp_s"].to_numpy(dtype=np.int64)
         step = int(np.nanmedian(np.diff(ts))) if len(ts) > 2 else np.nan
         gaps = int((np.diff(ts) > step * 1.5).sum()) if np.isfinite(step) else 0
+        qv_median = np.nan
+        if "quote_volume" in df:
+            qv_valid = pd.to_numeric(df["quote_volume"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            qv_median = safe_float(qv_valid.median()) if len(qv_valid) else np.nan
         rows.append({
             "symbol": sym,
             "rows": len(df),
@@ -1161,7 +1277,7 @@ def write_reports(data: Dict[str, pd.DataFrame], labels: Dict[str, pd.DataFrame]
             "median_step_sec": step,
             "gaps": gaps,
             "zero_volume_pct": float((df["volume"].fillna(0) == 0).mean()) if "volume" in df else np.nan,
-            "qv_median": float(df["quote_volume"].median()) if "quote_volume" in df else np.nan,
+            "qv_median": qv_median,
         })
     pd.DataFrame(rows).sort_values("rows", ascending=False).to_csv(out / "symbol_coverage.csv", index=False)
 
@@ -1169,8 +1285,8 @@ def write_reports(data: Dict[str, pd.DataFrame], labels: Dict[str, pd.DataFrame]
     label_rows = []
     for sym, l in labels.items():
         for col in [c for c in l.columns if c != "timestamp_s"]:
-            s = pd.to_numeric(l[col], errors="coerce")
-            label_rows.append({"symbol": sym, "label": col, "count": int(s.notna().sum()), "mean": safe_float(s.mean()), "median": safe_float(s.median()), "p10": safe_float(s.quantile(0.10)), "p90": safe_float(s.quantile(0.90))})
+            st = series_stats(l[col])
+            label_rows.append({"symbol": sym, "label": col, **st})
     if label_rows:
         pd.DataFrame(label_rows).to_csv(out / "label_distribution_by_symbol.csv", index=False)
 
@@ -1179,7 +1295,16 @@ def write_reports(data: Dict[str, pd.DataFrame], labels: Dict[str, pd.DataFrame]
     for f in features.values():
         for col in [c for c in f.columns if c != "timestamp_s"]:
             nan.setdefault(col, []).append(float(f[col].isna().mean()))
-    pd.DataFrame([{"feature": k, "avg_nan_pct": float(np.mean(v)), "max_nan_pct": float(np.max(v))} for k, v in nan.items()]).to_csv(out / "feature_nan_report.csv", index=False)
+    rows_nan = []
+    for k, v in nan.items():
+        vv = [x for x in v if np.isfinite(x)]
+        rows_nan.append({
+            "feature": k,
+            "avg_nan_pct": float(np.mean(vv)) if vv else np.nan,
+            "max_nan_pct": float(np.max(vv)) if vv else np.nan,
+        })
+    pd.DataFrame(rows_nan).to_csv(out / "feature_nan_report.csv", index=False)
+
     (out / "run_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"[reports] wrote {out}")
 
