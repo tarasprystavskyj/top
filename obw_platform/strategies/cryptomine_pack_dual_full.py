@@ -56,6 +56,12 @@ class _PackAdaptiveBase:
         self.first_qty_coin = float(sp.get('firstBuyQtyCoin' if self.SIDE=='LONG' else 'firstSellQtyCoin', 0.09))
         self.min_order_qty_coin = float(sp.get('minOrderQtyCoin', 0.09))
         self.min_order_usdt = float(sp.get('minOrderUSDT', 0.0))
+        # Base order notional for live minimal-size testing.
+        # This is NOT a fixed-$2-for-every-order mode:
+        # first order = baseOrderUSDT / price;
+        # DCA orders still use base_qty * multipliers.
+        self.use_base_order_usdt = bool(sp.get('useBaseOrderUSDT', False))
+        self.base_order_usdt = float(sp.get('baseOrderUSDT', 0.0))
         # Live minimal-risk sizing mode:
         # useFixedOrderUSDT=true + fixedOrderUSDT=2.0 makes every OPEN/DCA order
         # calculate coin qty from current price: qty = 2.0 / current_price.
@@ -120,6 +126,7 @@ class _PackAdaptiveBase:
         self.enable_slip_loss_comp = bool(sp.get('enableSlipLossCompensation', True))
         self.max_comp_step_pct = float(sp.get('maxCompensationStepPct', 3.0))
         self.comp_roundtrip_fee_rate = float((cfg.get('portfolio') or {}).get('fee_rate', 0.001))
+        self.close_fee_rate = float((cfg.get('portfolio') or {}).get('fee_rate', 0.001))
         self.timeframe = str(cfg.get('timeframe', '1m'))
         self._states: Dict[str, _State] = {}
         self._bar_key = None
@@ -338,7 +345,9 @@ class _PackAdaptiveBase:
         close = float(close or 0.0)
         if close <= 0:
             return 0.0
-        if self.use_fixed_order_usdt and self.fixed_order_usdt > 0.0:
+        if self.use_base_order_usdt and self.base_order_usdt > 0.0:
+            raw = self._qty_for_order_usdt(self.base_order_usdt, close)
+        elif self.use_fixed_order_usdt and self.fixed_order_usdt > 0.0:
             raw = self._qty_for_order_usdt(self.fixed_order_usdt, close)
         else:
             sizing_pct=target_invest_pct if self.use_trend_adaptive_sizing else self.base_order_pct_eq
@@ -517,6 +526,17 @@ class _PackAdaptiveBase:
                 continue
         return {'bars': count, 'ready': self.is_warm_ready(sym), 'last_gain_24h_before': float(getattr(st, 'last_gain_24h_before', 0.0) or 0.0)}
 
+    def _lot_min_close_price(self, entry_price: float, *, tp_percent: float = 0.0) -> float:
+        entry_price = float(entry_price or 0.0)
+        fee_rate = float(getattr(self, 'close_fee_rate', getattr(self, 'comp_roundtrip_fee_rate', 0.0)) or 0.0)
+        tp_frac = float(tp_percent or 0.0) / 100.0
+        if self.SIDE == 'LONG':
+            return entry_price * (1.0 + fee_rate + tp_frac)
+        return entry_price * (1.0 - fee_rate - tp_frac)
+
+    def _lot_breakeven_price(self, entry_price: float) -> float:
+        return self._lot_min_close_price(entry_price, tp_percent=0.0)
+
     def entry_signal(self,is_opening,sym,row,ctx=None):
         t=row.get('datetime_utc')
         if not is_opening or not self._can_place_order(t): return None
@@ -604,20 +624,18 @@ class _PackAdaptiveBase:
             qty_last, entry_last = st.lots[-1]
             exposure_pct=((st.pos_size*close)/self.equity_for_sizing*100.0) if self.equity_for_sizing>0 else 0.0
             force_be=exposure_pct > self.hard_breakeven_deleverage_pct
-            base_last_tp = entry_last*(1.0 + self.subsell_tp_percent/100.0) if self.SIDE=='LONG' else entry_last*(1.0 - self.subsell_tp_percent/100.0)
+            normal_tp_floor = self._lot_min_close_price(float(entry_last), tp_percent=self.subsell_tp_percent)
+            breakeven_floor = self._lot_breakeven_price(float(entry_last))
             extra_px_sub = 0.0 if force_be else self._comp_extra_px(st, float(qty_last), float(st.pos_size or qty_total), float(entry_last))
-            adj_last_tp = base_last_tp + extra_px_sub if self.SIDE=='LONG' else base_last_tp - extra_px_sub
-
-            touch_level = entry_last if force_be else adj_last_tp
-            touch = (hi>=touch_level) if self.SIDE=='LONG' else (lo<=touch_level)
-            if self.subsell_close_confirm_mode=='off':
-                close_ok=True
+            if self.SIDE=='LONG':
+                touch_level = breakeven_floor if force_be else (normal_tp_floor + extra_px_sub)
             else:
-                confirm_level = entry_last if (self.subsell_close_confirm_mode=='breakeven' or force_be) else base_last_tp
-                if (not force_be) and extra_px_sub > 0:
-                    confirm_level = adj_last_tp
-                close_ok=(close>=confirm_level) if self.SIDE=='LONG' else (close<=confirm_level)
+                touch_level = breakeven_floor if force_be else (normal_tp_floor - extra_px_sub)
+            touch = (hi>=touch_level) if self.SIDE=='LONG' else (lo<=touch_level)
+            confirm_level = touch_level
+            close_ok=(close>=confirm_level) if self.SIDE=='LONG' else (close<=confirm_level)
             if not (touch and close_ok): break
+            mode = 'deleverage_breakeven' if force_be else 'normal_lot_tp_floor'
             qty_total=float(pos.qty); qty_close=min(float(qty_last), qty_total)
             if qty_total<=0 or qty_close<=0: break
             if not self._order_value_ok(close, qty_close): break
@@ -627,7 +645,7 @@ class _PackAdaptiveBase:
             remaining_qty=qty_total-qty_close
             remaining_cost=total_cost - qty_close*entry_last
             if self.auto_merge and remaining_qty>0: remaining_cost -= profit
-            self._record_pending_exit(st, qty_close=qty_close, basis_price=float(entry_last), baseline_ref_price=base_last_tp, signal_ref_price=close)
+            self._record_pending_exit(st, qty_close=qty_close, basis_price=float(entry_last), baseline_ref_price=confirm_level, signal_ref_price=close)
             if remaining_qty>0:
                 st.pending_new_entry = remaining_cost/max(remaining_qty,1e-12); st.avg_price=st.pending_new_entry
             pos.entry=float(entry_last)
@@ -636,7 +654,7 @@ class _PackAdaptiveBase:
                 st.last_fill_price=st.lots[-1][1]; st.next_level_price=self._next_level(st.last_fill_price, st.num_fills)
             else:
                 st.last_fill_price=None; st.next_level_price=None
-            self._register_order(); return ExitSig(action='TP_PARTIAL', exit_price=close, qty_frac=qty_frac, reason='Sub-sell last lot' if self.SIDE=='LONG' else 'Sub-cover last lot')
+            self._register_order(); return ExitSig(action='TP_PARTIAL', exit_price=close, qty_frac=qty_frac, reason=(('Sub-sell last lot' if self.SIDE=='LONG' else 'Sub-cover last lot') + f' | mode={mode} entry={float(entry_last):.8f} min_allowed={float(confirm_level):.8f} qty={float(qty_close):.8f}'))
         return None
 
 class CryptomineLongPackAdaptiveEven(_PackAdaptiveBase):

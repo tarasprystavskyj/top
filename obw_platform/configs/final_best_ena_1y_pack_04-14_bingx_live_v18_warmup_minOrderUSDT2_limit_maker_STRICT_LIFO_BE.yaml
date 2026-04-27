@@ -1,0 +1,167 @@
+live: true
+source: api
+timeframe: 0.5m
+portfolio:
+  initial_equity_per_leg: 100.0
+  fee_rate: 0.001
+  slippage_per_side: 4.0
+  max_notional_frac: 1.0
+  position_notional_long: 2.0
+  position_notional_short: 2.0
+  maker_fee_rate: 0.0002
+strategy_class_long: strategies.cryptomine_pack_dual_full.CryptomineLongPackAdaptiveEven
+strategy_class_short: strategies.cryptomine_pack_dual_full.CryptomineShortPackAdaptiveEven
+strategy_params_long:
+  firstBuyQtyCoin: 0.0
+  minOrderQtyCoin: 0.0
+  minOrderUSDT: 2.0
+  minLongInvestPct: 0.5
+  useEquityPctBase: 1.0
+  baseOrderPctEq: 1.5
+  equityForSizingUSDT: 348
+  tpPercent: 0.34
+  callbackPercent: 0.06
+  marginCallLimit: 244.0
+  linearDropPercent: 0.049615
+  autoMerge: 0.0
+  subSellTPPercent: 0.53
+  requireCloseAboveFullTP: 1.0
+  subSellCloseConfirmMode: breakeven
+  requireCloseBelowDcaLevel: 1.0
+  blockDcaOnTpTouch: 0.0
+  drop1: 0.3
+  drop2: 0.35
+  drop3: 0.6
+  drop4: 0.8
+  drop5: 0.8
+  mult2: 1.2
+  mult3: 1.0
+  mult4: 1.5
+  mult5: 3.5
+  maxFillsPerBar: 6.0
+  maxSubSellsPerBar: 10.0
+  useHighLowTouch: 1.0
+  useLiveSyncStart: 0.0
+  liveStartTime: 0.0
+  maxOrdersPer3Min: 14.0
+  useTrendAdaptiveSizing: 1.0
+  trendMaTf: W
+  trendMaLen: 20.0
+  trendSlopeBars: 3.0
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  trendScoreMinPct: 35.0
+  trendScoreMaxPct: 85.0
+  maxLongInvestPct: 2.05
+  hardBreakevenDeleveragePct: 50
+  useEvenBars: true
+  dcaBlockCounterTrendGainAbs: 0.1
+  useEntryLimitOrders: true
+  entryLimitOffsetBp: 1.2
+  entryLimitPostOnly: true
+  useBaseOrderUSDT: true
+  baseOrderUSDT: 2.0
+strategy_params_short:
+  firstSellQtyCoin: 0.0
+  minOrderQtyCoin: 0.0
+  minOrderUSDT: 2.0
+  minShortInvestPct: 0.5
+  useEquityPctBase: 1.0
+  baseOrderPctEq: 1.388859
+  equityForSizingUSDT: 358
+  tpPercent: 0.23
+  callbackPercent: 0.11
+  marginCallLimit: 244.0
+  linearRisePercent: 0.208706
+  autoMerge: 0.0
+  subSellTPPercent: 0.62
+  requireCloseBelowFullTP: 1.0
+  subCoverCloseConfirmMode: breakeven
+  requireCloseAboveDcaLevel: 0.0
+  blockDcaOnTpTouch: 0.0
+  rise1: 0.1
+  rise2: 0.4
+  rise3: 0.6
+  rise4: 0.8
+  rise5: 0.8
+  mult2: 2.272696
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+  maxFillsPerBar: 6.0
+  maxSubSellsPerBar: 10.0
+  useHighLowTouch: 1.0
+  useLiveSyncStart: 0.0
+  liveStartTime: 0.0
+  maxOrdersPer3Min: 14.0
+  useTrendAdaptiveSizing: 1.0
+  trendMaTf: D
+  trendMaLen: 20.0
+  trendSlopeBars: 3.0
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  trendScoreMinPct: 35.0
+  trendScoreMaxPct: 85.0
+  maxShortInvestPct: 1.95
+  hardBreakevenDeleveragePct: 50.0
+  useEvenBars: true
+  dcaBlockCounterTrendGainAbs: 0.08
+  useEntryLimitOrders: true
+  entryLimitOffsetBp: 1.2
+  entryLimitPostOnly: true
+  useBaseOrderUSDT: true
+  baseOrderUSDT: 2.0
+runner:
+  prewarm:
+    bars: 1500
+    enabled: true
+    hours: 26
+    block_until_ready: true
+    source: exchange_ohlcv
+  limit_klines: 1500
+  entry_open_order_type: limit
+  entry_limit_offset_bp: 1.2
+  entry_limit_post_only: true
+  slippage_calibration:
+    enabled: true
+    min_obs: 30
+    window_obs: 500
+    recency_hours: 72
+    min_update_interval_sec: 30
+    output_json: live_slippage_calibration.json
+    suggested_yaml: backtest_slippage_suggestion.json
+    volume_regime:
+      enabled: true
+      metric: quote_volume
+      recent_bars: 60
+      baseline_bars: 360
+      shift_ratio: 2.0
+    note: Online calibration from slippage_observations; interrupts update when recent
+      quote volume shifts materially.
+  debug_console: false
+  debug_payload: false
+  console:
+    debug: false
+    debug_payload: false
+    error_summary: true
+    error_details: false
+    note: Full debug payloads are still persisted to session.sqlite; console prints
+      only short error summaries unless --debug or debug_payload=true.
+  entry_limit_use_book_passive_price: true
+  entry_limit_passive_ticks: 0
+  entry_limit_ttl_sec: 2.0
+  entry_limit_fallback_to_market: true
+  entry_limit_fallback_on_reject: true
+  entry_limit_fallback_on_timeout: true
+  entry_limit_cancel_confirm_sec: 2.0
+backtest:
+  use_live_sync: false
+  slippage:
+    enabled: true
+    mode: static
+    static_bp: 8.3
+    note: 'Fresh live 2-USDT run: mean adverse slip 8.27bp, mean_abs 8.84bp, p90_abs
+      18.35bp, n=32. Static/dynamic are mutually exclusive.'
+  fees:
+    taker_fee_rate: 0.001
+    maker_fee_rate: 0.0002
