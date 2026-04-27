@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import logging
+from dotenv import load_dotenv
 import pandas as pd
 import numpy as np
 try:  # Python 3.9+
@@ -19,6 +20,9 @@ except Exception:  # pragma: no cover - fallback for Python < 3.9
         pass
 
 log = logging.getLogger(__name__)
+
+# Load backend-local environment variables, e.g. DEPLOY_SECRET and REPO_PATH.
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 try:
     from obw_platform.engine.visualize_results_3 import (
@@ -1053,6 +1057,10 @@ def run_grid(job):
             raise RuntimeError(f"backtester failed with code {p.returncode}")
 
 app = FastAPI()
+
+# Git deploy endpoints: /api/deploy/status and /api/deploy/pull
+from git_deploy import router as deploy_router
+app.include_router(deploy_router, prefix="/api", tags=["deploy"])
 
 @app.get("/api/health")
 def health(): return {"ok": True}
