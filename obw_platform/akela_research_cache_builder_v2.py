@@ -972,26 +972,96 @@ def _worker(args: Tuple[str, pd.DataFrame, int]) -> Tuple[str, pd.DataFrame, pd.
 
 
 def compute_all_features(data: Dict[str, pd.DataFrame], timeframe_sec: int, workers: int) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
+    """Compute per-symbol features.
+
+    v2_2 note:
+    The old implementation used ProcessPoolExecutor.map over all symbols at once.
+    On large DBs this can enqueue hundreds of heavy DataFrames into the multiprocessing
+    queue, which may produce noisy QueueManagerThread / CANCELLED errors after Ctrl+C,
+    OOM, or a killed worker.
+
+    This implementation keeps only a small bounded set of in-flight jobs and falls back
+    to sequential computation if the process pool breaks. It is slower in worst case,
+    but it is much more stable for 500+ symbol research caches.
+    """
     features: Dict[str, pd.DataFrame] = {}
     labels: Dict[str, pd.DataFrame] = {}
     quality: Dict[str, pd.DataFrame] = {}
+
     payloads = [(sym, df, timeframe_sec) for sym, df in data.items()]
-    log(f"[features] symbols={len(payloads)} workers={workers}")
+    total = len(payloads)
+    log(f"[features] symbols={total} workers={workers}")
+
+    def store_result(result: Tuple[str, pd.DataFrame, pd.DataFrame, pd.DataFrame], done_count: int) -> None:
+        sym, f, l, q = result
+        features[sym] = f
+        labels[sym] = l
+        quality[sym] = q
+        if done_count % 25 == 0 or done_count == total:
+            log(f"[features] done {done_count}/{total}")
+
     if workers <= 1:
-        iterator = map(_worker, payloads)
-    else:
-        pool = cf.ProcessPoolExecutor(max_workers=workers)
-        iterator = pool.map(_worker, payloads)
+        for i, payload in enumerate(payloads, 1):
+            try:
+                store_result(_worker(payload), i)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                sym = payload[0]
+                log(f"[features:error] {sym}: {type(exc).__name__}: {exc}")
+        return features, labels, quality
+
+    completed = 0
+    submitted = 0
+    pending: set = set()
+    inflight_limit = max(1, workers * 2)
+
     try:
-        for i, (sym, f, l, q) in enumerate(iterator, 1):
-            features[sym] = f
-            labels[sym] = l
-            quality[sym] = q
-            if i % 25 == 0 or i == len(payloads):
-                log(f"[features] done {i}/{len(payloads)}")
-    finally:
-        if workers > 1:
-            pool.shutdown()
+        with cf.ProcessPoolExecutor(max_workers=workers) as pool:
+            def submit_more() -> None:
+                nonlocal submitted
+                while submitted < total and len(pending) < inflight_limit:
+                    fut = pool.submit(_worker, payloads[submitted])
+                    # attach metadata for diagnostics only
+                    fut._akela_symbol = payloads[submitted][0]  # type: ignore[attr-defined]
+                    pending.add(fut)
+                    submitted += 1
+
+            submit_more()
+            while pending:
+                done, pending = cf.wait(pending, return_when=cf.FIRST_COMPLETED)
+                for fut in done:
+                    sym = getattr(fut, "_akela_symbol", "?")
+                    try:
+                        result = fut.result()
+                    except KeyboardInterrupt:
+                        raise
+                    except BaseException as exc:
+                        # BrokenProcessPool, killed worker, OOM, serialization error, etc.
+                        log(f"[features:pool-error] {sym}: {type(exc).__name__}: {exc}")
+                        raise
+                    completed += 1
+                    store_result(result, completed)
+                submit_more()
+
+    except KeyboardInterrupt:
+        log("[features] interrupted by user")
+        raise
+    except BaseException as exc:
+        log(f"[features] process pool failed after {completed}/{total}: {type(exc).__name__}: {exc}")
+        log("[features] falling back to sequential mode for remaining symbols")
+        for payload in payloads:
+            sym = payload[0]
+            if sym in features:
+                continue
+            try:
+                completed += 1
+                store_result(_worker(payload), completed)
+            except KeyboardInterrupt:
+                raise
+            except Exception as inner:
+                log(f"[features:error] {sym}: {type(inner).__name__}: {inner}")
+
     return features, labels, quality
 
 
