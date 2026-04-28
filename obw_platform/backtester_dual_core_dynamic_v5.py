@@ -730,14 +730,30 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
     peaks_m = np.maximum.accumulate(arr_m) if len(arr_m) else np.asarray([], dtype=float)
     mdd_r = float(((arr_r - peaks_r) / peaks_r).min()) if len(arr_r) else 0.0
     mdd_m = float(((arr_m - peaks_m) / peaks_m).min()) if len(arr_m) else 0.0
+    final_mark_px = float(close[-1]) if len(close) else 0.0
+    final_unrealized_long = book.unrealized_side('LONG', final_mark_px)
+    final_unrealized_short = book.unrealized_side('SHORT', final_mark_px)
+    final_unrealized_total = final_unrealized_long + final_unrealized_short
+    final_total_pnl_mtm = book.realized + final_unrealized_total
+    final_equity_mtm_total = equity_start_total + final_total_pnl_mtm
+
     out = {
         'equity_start_total': equity_start_total,
         'equity_end_realized_total': arr_r[-1] if len(arr_r) else equity_start_total,
+        'equity_end_mtm_total': final_equity_mtm_total,
         'equity_end_realized_long': eq0_leg + book.realized_long,
         'equity_end_realized_short': eq0_leg + book.realized_short,
         'realized_pnl_long': book.realized_long,
         'realized_pnl_short': book.realized_short,
         'realized_pnl_total': book.realized,
+        'unrealized_pnl_long': final_unrealized_long,
+        'unrealized_pnl_short': final_unrealized_short,
+        'unrealized_pnl_total': final_unrealized_total,
+        'total_pnl_mtm': final_total_pnl_mtm,
+        'total_pnl': final_total_pnl_mtm,
+        'return_mtm_pct_on_start': final_total_pnl_mtm * 100.0 / max(equity_start_total, 1e-12),
+        'terminal_unrealized_to_realized_ratio': final_unrealized_total / max(abs(book.realized), 1e-12),
+        'final_mark_px': final_mark_px,
         'trades_long': trades_long,
         'trades_short': trades_short,
         'trades_total': trades_long + trades_short,
