@@ -29,10 +29,19 @@ class SimBook:
     realized_short: float = 0.0
     lots_long: list = None
     lots_short: list = None
+    qty_long: float = 0.0
+    qty_short: float = 0.0
+    cost_long: float = 0.0
+    cost_short: float = 0.0
 
     def __post_init__(self):
         self.lots_long = [] if self.lots_long is None else self.lots_long
         self.lots_short = [] if self.lots_short is None else self.lots_short
+        # If a caller restored lots directly, derive aggregates once.
+        self.qty_long = float(sum(float(q) for q, _ in self.lots_long))
+        self.qty_short = float(sum(float(q) for q, _ in self.lots_short))
+        self.cost_long = float(sum(float(q) * float(px) for q, px in self.lots_long))
+        self.cost_short = float(sum(float(q) * float(px) for q, px in self.lots_short))
 
     def _lots(self, side: str):
         return self.lots_long if str(side).upper() == 'LONG' else self.lots_short
@@ -46,9 +55,17 @@ class SimBook:
             self.realized_short += delta
 
     def open_fill(self, side: str, qty: float, exec_px: float, fee_rate: Optional[float] = None) -> None:
-        self._lots(side).append([float(qty), float(exec_px)])
+        qty = float(qty)
+        exec_px = float(exec_px)
+        self._lots(side).append([qty, exec_px])
+        if str(side).upper() == 'LONG':
+            self.qty_long += qty
+            self.cost_long += qty * exec_px
+        else:
+            self.qty_short += qty
+            self.cost_short += qty * exec_px
         fr = self.fee_rate if fee_rate is None else float(fee_rate)
-        self._apply_realized_delta(side, -fr * float(exec_px) * float(qty))
+        self._apply_realized_delta(side, -fr * exec_px * qty)
 
     def close_fill(self, side: str, qty: float, exec_px: float) -> None:
         rem = float(qty)
@@ -60,6 +77,12 @@ class SimBook:
             take = min(lot_qty, rem)
             pnl += ((exec_px - entry_px) * take) if str(side).upper() == 'LONG' else ((entry_px - exec_px) * take)
             fees += self.fee_rate * float(exec_px) * take
+            if str(side).upper() == 'LONG':
+                self.qty_long -= take
+                self.cost_long -= float(entry_px) * take
+            else:
+                self.qty_short -= take
+                self.cost_short -= float(entry_px) * take
             lot_qty -= take
             rem -= take
             if lot_qty <= 1e-12:
@@ -69,19 +92,15 @@ class SimBook:
         self._apply_realized_delta(side, pnl - fees)
 
     def avg_entry(self, side: str) -> float:
-        book = self._lots(side)
-        if not book:
-            return 0.0
-        qty = sum(float(q) for q, _ in book)
-        if qty <= 1e-12:
-            return 0.0
-        return sum(float(q) * float(px) for q, px in book) / qty
+        if str(side).upper() == 'LONG':
+            return self.cost_long / self.qty_long if self.qty_long > 1e-12 else 0.0
+        return self.cost_short / self.qty_short if self.qty_short > 1e-12 else 0.0
 
     def unrealized_side(self, side: str, mark_px: float) -> float:
-        u = 0.0
-        for qty, entry_px in self._lots(side):
-            u += (mark_px - entry_px) * qty if str(side).upper() == 'LONG' else (entry_px - mark_px) * qty
-        return float(u)
+        mark_px = float(mark_px)
+        if str(side).upper() == 'LONG':
+            return float(mark_px * self.qty_long - self.cost_long)
+        return float(self.cost_short - mark_px * self.qty_short)
 
     def unrealized(self, mark_px: float) -> float:
         return float(self.unrealized_side('LONG', mark_px) + self.unrealized_side('SHORT', mark_px))
@@ -168,16 +187,12 @@ def pick_symbol_block(data, symbol_filter: str = ''):
     return market_symbol, ts_s, open_, high, low, close, volume, extras
 
 
-def build_row(ts: int, i: int, open_: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, volume: np.ndarray, extras: Dict[str, np.ndarray]) -> Dict[str, Any]:
+def build_row(ts: int, i: int, open_: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, volume: np.ndarray, extras: Dict[str, np.ndarray], include_datetime: bool = True) -> Dict[str, Any]:
     ts_i = int(ts)
-    dt = _dt.datetime.fromtimestamp(ts_i, tz=_dt.timezone.utc)
     row: Dict[str, Any] = {
         'ts_s': ts_i,
         'timestamp_s': ts_i,
         'ts': ts_i,
-        'datetime_utc': dt,
-        'time': dt,
-        'datetime': dt,
         'timestamp': ts_i,
         'open': float(open_[i]),
         'high': float(high[i]),
@@ -185,6 +200,11 @@ def build_row(ts: int, i: int, open_: np.ndarray, high: np.ndarray, low: np.ndar
         'close': float(close[i]),
         'volume': float(volume[i]),
     }
+    if include_datetime:
+        dt = _dt.datetime.fromtimestamp(ts_i, tz=_dt.timezone.utc)
+        row['datetime_utc'] = dt
+        row['time'] = dt
+        row['datetime'] = dt
     for key, arr in extras.items():
         try:
             row[key] = float(arr[i])
@@ -416,6 +436,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
     bt_cfg = (cfg.get('backtest') or {})
     use_live_sync = bool(bt_cfg.get('use_live_sync', False))
     debug_close_reasons = _bt_debug_close_reasons(cfg)
+    fast_time_rows = bool(bt_cfg.get('fast_time_rows', False))
     dca_order_type = _dca_open_order_type(cfg)
 
     def _entry_order_details(sig, side, px):
@@ -489,7 +510,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
     prev_in_margin = False
 
     for i, ts in enumerate(ts_s):
-        row = build_row(ts, i, open_, high, low, close, volume, extras)
+        row = build_row(ts, i, open_, high, low, close, volume, extras, include_datetime=not fast_time_rows)
         px = float(row['close'])
 
         if trade_start_ts_s is not None and int(ts) < int(trade_start_ts_s):
@@ -767,6 +788,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
         'bars_in_margin_call': bars_in_margin_call,
         'dynamic_slippage_model': slip_model,
         'backtest_use_live_sync': bool(use_live_sync),
+        'backtest_fast_time_rows': bool(fast_time_rows),
         'backtest_slippage_config': (cfg.get('backtest') or {}).get('slippage', None),
         'maker_fee_rate': maker_fee,
         'warmup_bars_seen': int(warmup_bars_seen),

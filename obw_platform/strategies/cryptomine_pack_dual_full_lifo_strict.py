@@ -133,6 +133,17 @@ class _PackAdaptiveBase:
         self._orders_this_bar = 0
         self._recent_bar_fills = deque()
         self._recent_history_fills = 0
+        # Hot-path caches for research/backtest speed.
+        self._tf_sec_cached = self._parse_tf_seconds(self.timeframe)
+        self._recent_hist_limit = max(0, int(math.ceil(180.0 / max(1, self._tf_sec_cached))) - 1)
+        self._trend_tf_key = str(self.trend_ma_tf).strip().upper()
+        self._trend_tf_sec_cached = self._parse_tf_seconds(str(self.trend_ma_tf).lower())
+        self._live_start_epoch_s = None
+        if self.use_live_sync_start and self.live_start_time not in (None, 0, '0'):
+            try:
+                self._live_start_epoch_s = self._epoch_s(self.live_start_time)
+            except Exception:
+                self._live_start_epoch_s = None
 
     # --------- state / runner hooks ----------
     _SNAPSHOT_FIELDS = (
@@ -235,38 +246,70 @@ class _PackAdaptiveBase:
     def _get_state(self, sym):
         if sym not in self._states: self._states[sym] = _State()
         return self._states[sym]
-    def _parse_time(self, t):
-        if isinstance(t, _dt.datetime): return t
-        return _dt.datetime.fromisoformat(str(t).replace('Z','+00:00'))
-    def _tf_seconds(self, tf=None):
-        s = str(tf or self.timeframe).strip().lower()
-        if s.endswith('m'): return max(1,int(round(float(s[:-1])*60)))
-        if s.endswith('h'): return max(1,int(round(float(s[:-1])*3600)))
-        if s.endswith('d'): return max(1,int(round(float(s[:-1])*86400)))
+
+    @staticmethod
+    def _parse_tf_seconds(tf):
+        s = str(tf or '1m').strip().lower()
+        if s.endswith('m'): return max(1, int(round(float(s[:-1]) * 60)))
+        if s.endswith('h'): return max(1, int(round(float(s[:-1]) * 3600)))
+        if s.endswith('d'): return max(1, int(round(float(s[:-1]) * 86400)))
         if s.endswith('w'): return 604800
         return 60
+
+    def _epoch_s(self, t):
+        if isinstance(t, (int, float)):
+            return int(t)
+        if isinstance(t, _dt.datetime):
+            if t.tzinfo:
+                return int(t.timestamp())
+            return int(t.replace(tzinfo=_dt.timezone.utc).timestamp())
+        dt = _dt.datetime.fromisoformat(str(t).replace('Z','+00:00'))
+        if dt.tzinfo:
+            return int(dt.timestamp())
+        return int(dt.replace(tzinfo=_dt.timezone.utc).timestamp())
+
+    def _parse_time(self, t):
+        if isinstance(t, _dt.datetime): return t
+        if isinstance(t, (int, float)):
+            return _dt.datetime.fromtimestamp(int(t), tz=_dt.timezone.utc)
+        return _dt.datetime.fromisoformat(str(t).replace('Z','+00:00'))
+
+    def _tf_seconds(self, tf=None):
+        if tf is None or str(tf) == str(self.timeframe):
+            return self._tf_sec_cached
+        return self._parse_tf_seconds(tf)
+
     def _allow_this_bar(self, t):
         if not self.use_even_bars: return True
-        dt=self._parse_time(t); dt = dt.astimezone(_dt.timezone.utc) if dt.tzinfo else dt.replace(tzinfo=_dt.timezone.utc)
-        anchor=_dt.datetime(dt.year,1,1,tzinfo=_dt.timezone.utc)
-        return int((dt-anchor).total_seconds()//self._tf_seconds()) % 2 == 0
+        # Anchor parity on epoch seconds. For minute/second bars this is identical
+        # to year-anchor parity and avoids constructing datetimes per call.
+        return int(self._epoch_s(t) // max(1, self._tf_sec_cached)) % 2 == 0
+
     def _live_now(self, t):
         if not self.use_live_sync_start or self.live_start_time in (None,0,'0'): return True
-        return self._parse_time(t) >= self._parse_time(self.live_start_time)
+        if self._live_start_epoch_s is None:
+            return True
+        return self._epoch_s(t) >= self._live_start_epoch_s
+
     def _roll_bar(self, t):
-        dt=self._parse_time(t); key=int(dt.timestamp())
+        key = self._epoch_s(t)
         if self._bar_key is None:
-            self._bar_key=key; self._orders_this_bar=0; return
+            self._bar_key = key
+            self._orders_this_bar = 0
+            return
         if key != self._bar_key:
-            hist_lim=max(0,int(math.ceil(180.0/self._tf_seconds()))-1)
-            if hist_lim>0:
+            hist_lim = self._recent_hist_limit
+            if hist_lim > 0:
                 self._recent_bar_fills.append(self._orders_this_bar)
                 self._recent_history_fills += self._orders_this_bar
-                while len(self._recent_bar_fills)>hist_lim:
+                while len(self._recent_bar_fills) > hist_lim:
                     self._recent_history_fills -= self._recent_bar_fills.popleft()
             else:
-                self._recent_bar_fills.clear(); self._recent_history_fills=0
-            self._orders_this_bar=0; self._bar_key=key
+                self._recent_bar_fills.clear()
+                self._recent_history_fills = 0
+            self._orders_this_bar = 0
+            self._bar_key = key
+
     def _can_place_order(self,t):
         self._roll_bar(t)
         return self._live_now(t) and self._allow_this_bar(t) and (self._recent_history_fills + self._orders_this_bar) < self.max_orders_per_3min
@@ -283,41 +326,62 @@ class _PackAdaptiveBase:
         close=float(row.get('close') or 0.0); op=float(row.get('open', close) or close); hi=float(row.get('high', close) or close); lo=float(row.get('low', close) or close)
         if self.use_high_low_touch: return hi, lo, close
         return max(op, close), min(op, close), close
-    def _trend_bucket_id(self, dt):
-        dt=dt.astimezone(_dt.timezone.utc) if dt.tzinfo else dt.replace(tzinfo=_dt.timezone.utc)
-        tf=self.trend_ma_tf.upper()
-        if tf=='W':
-            iso=dt.isocalendar()
+    def _trend_bucket_id(self, t):
+        tf = self._trend_tf_key
+        if tf == 'W':
+            dt = self._parse_time(t)
+            if dt.tzinfo:
+                dt = dt.astimezone(_dt.timezone.utc)
+            else:
+                dt = dt.replace(tzinfo=_dt.timezone.utc)
+            iso = dt.isocalendar()
             year = getattr(iso, 'year', iso[0])
             week = getattr(iso, 'week', iso[1])
-            return f'{year}-W{int(week):02d}'
-        if tf=='D': return dt.strftime('%Y-%m-%d')
-        secs=self._tf_seconds(tf.lower())
-        return str(int(dt.timestamp())//secs)
+            return (int(year), int(week))
+        if tf == 'D':
+            return self._epoch_s(t) // 86400
+        return self._epoch_s(t) // max(1, self._trend_tf_sec_cached)
+
     def _update_trend(self, st, t, close):
-        dt=self._parse_time(t)
-        bucket=self._trend_bucket_id(dt)
+        bucket = self._trend_bucket_id(t)
+        close = float(close)
         if st.trend_bucket is None:
-            st.trend_bucket=bucket; st.trend_htf_closes.append(close)
-        elif bucket!=st.trend_bucket:
-            st.trend_bucket=bucket; st.trend_htf_closes.append(close)
+            st.trend_bucket = bucket
+            st.trend_htf_closes.append(close)
+        elif bucket != st.trend_bucket:
+            st.trend_bucket = bucket
+            st.trend_htf_closes.append(close)
         else:
-            if st.trend_htf_closes: st.trend_htf_closes[-1]=close
-            else: st.trend_htf_closes.append(close)
-        vals=list(st.trend_htf_closes)
-        ma=sum(vals[-self.trend_ma_len:])/self.trend_ma_len if len(vals)>=self.trend_ma_len else None
+            if st.trend_htf_closes:
+                st.trend_htf_closes[-1] = close
+            else:
+                st.trend_htf_closes.append(close)
+
+        if len(st.trend_htf_closes) >= self.trend_ma_len:
+            # trendMaLen is small (20 by default). Avoid full deque->list conversion.
+            ma = 0.0
+            n = self.trend_ma_len
+            for j in range(1, n + 1):
+                ma += float(st.trend_htf_closes[-j])
+            ma /= n
+        else:
+            ma = None
+
         st.trend_ma_series.append(ma)
-        while len(st.trend_ma_series) > max(self.trend_slope_bars+5,256): st.trend_ma_series.popleft()
-        prev=list(st.trend_ma_series)[-1-self.trend_slope_bars] if len(st.trend_ma_series)>self.trend_slope_bars else None
-        slope=((ma-prev)/prev)*100.0 if (ma is not None and prev not in (None,0)) else 0.0
-        rng=max(abs(self.trend_slope_long_bound-self.trend_slope_short_bound),1e-6)
-        if self.SIDE=='SHORT':
-            strength=max(0.0,min(100.0,100.0*(self.trend_slope_long_bound-slope)/rng))
+        ma_lim = max(self.trend_slope_bars + 5, 256)
+        while len(st.trend_ma_series) > ma_lim:
+            st.trend_ma_series.popleft()
+
+        prev = st.trend_ma_series[-1 - self.trend_slope_bars] if len(st.trend_ma_series) > self.trend_slope_bars else None
+        slope = ((ma - prev) / prev) * 100.0 if (ma is not None and prev not in (None, 0)) else 0.0
+        rng = max(abs(self.trend_slope_long_bound - self.trend_slope_short_bound), 1e-6)
+        if self.SIDE == 'SHORT':
+            strength = max(0.0, min(100.0, 100.0 * (self.trend_slope_long_bound - slope) / rng))
         else:
-            strength=max(0.0,min(100.0,100.0*(slope-self.trend_slope_short_bound)/rng))
-        score_rng=max(abs(self.trend_score_max-self.trend_score_min),1e-6)
-        factor=max(0.0,min(1.0,(strength-self.trend_score_min)/score_rng))
-        return self.min_invest_pct + (self.max_invest_pct-self.min_invest_pct)*factor
+            strength = max(0.0, min(100.0, 100.0 * (slope - self.trend_slope_short_bound) / rng))
+        score_rng = max(abs(self.trend_score_max - self.trend_score_min), 1e-6)
+        factor = max(0.0, min(1.0, (strength - self.trend_score_min) / score_rng))
+        return self.min_invest_pct + (self.max_invest_pct - self.min_invest_pct) * factor
     def _cached_target_pct(self, row):
         if not self.use_trend_adaptive_sizing:
             return self.base_order_pct_eq
@@ -437,12 +501,7 @@ class _PackAdaptiveBase:
                         break
 
         try:
-            dt = self._parse_time(t)
-            if dt.tzinfo:
-                dt = dt.astimezone(_dt.timezone.utc)
-            else:
-                dt = dt.replace(tzinfo=_dt.timezone.utc)
-            ts = float(dt.timestamp())
+            ts = float(self._epoch_s(t))
             close_f = float(close)
         except Exception:
             st.last_gain_24h_before = float(row_gain or 0.0)
@@ -538,7 +597,7 @@ class _PackAdaptiveBase:
         return self._lot_min_close_price(entry_price, tp_percent=0.0)
 
     def entry_signal(self,is_opening,sym,row,ctx=None):
-        t=row.get('datetime_utc')
+        t=row.get('ts_s', row.get('timestamp_s', row.get('datetime_utc')))
         if not is_opening or not self._can_place_order(t): return None
         st=self._get_state(sym)
         _,_,close=self._trigger_prices(row)
@@ -559,7 +618,7 @@ class _PackAdaptiveBase:
         return None
 
     def manage_position(self,sym,row,pos,ctx=None):
-        t=row.get('datetime_utc'); self._roll_bar(t)
+        t=row.get('ts_s', row.get('timestamp_s', row.get('datetime_utc'))); self._roll_bar(t)
         if not self._live_now(t) or not self._allow_this_bar(t): return None
         st=self._get_state(sym)
         hi,lo,close=self._trigger_prices(row)
