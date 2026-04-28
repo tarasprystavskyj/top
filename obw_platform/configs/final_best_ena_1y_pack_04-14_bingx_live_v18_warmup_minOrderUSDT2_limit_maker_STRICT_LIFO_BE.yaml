@@ -9,8 +9,8 @@ portfolio:
   position_notional_long: 2.0
   position_notional_short: 2.0
   maker_fee_rate: 0.0002
-strategy_class_long: strategies.cryptomine_pack_dual_full.CryptomineLongPackAdaptiveEven
-strategy_class_short: strategies.cryptomine_pack_dual_full.CryptomineShortPackAdaptiveEven
+strategy_class_long: strategies.cryptomine_pack_dual_full_lifo_strict.CryptomineLongPackAdaptiveEven
+strategy_class_short: strategies.cryptomine_pack_dual_full_lifo_strict.CryptomineShortPackAdaptiveEven
 strategy_params_long:
   firstBuyQtyCoin: 0.0
   minOrderQtyCoin: 0.0
