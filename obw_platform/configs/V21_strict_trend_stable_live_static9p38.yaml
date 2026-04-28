@@ -21,7 +21,7 @@ strategy_params_long:
   drop4: 0.8
   drop5: 0.8
   entryTrendStrengthMin: 50.0
-  equityForSizingUSDT: 348
+  equityForSizingUSDT: 208
   firstBuyQtyCoin: 0.09
   hardBreakevenDeleveragePct: 50
   linearDropPercent: 0.049615
@@ -61,7 +61,7 @@ strategy_params_short:
   callbackPercent: 0.11
   dcaBlockCounterTrendGainAbs: 0.08
   entryTrendStrengthMin: 50.0
-  equityForSizingUSDT: 358
+  equityForSizingUSDT: 214
   firstSellQtyCoin: 0.09
   hardBreakevenDeleveragePct: 50.0
   linearRisePercent: 0.208706
