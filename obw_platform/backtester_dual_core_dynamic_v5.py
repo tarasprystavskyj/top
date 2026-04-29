@@ -438,6 +438,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
     debug_close_reasons = _bt_debug_close_reasons(cfg)
     fast_time_rows = bool(bt_cfg.get('fast_time_rows', False))
     dca_order_type = _dca_open_order_type(cfg)
+    manage_needs_snapshot = (not bool(bt_cfg.get('fast_no_manage_snapshots', False))) and dca_order_type in {'limit', 'maker', 'maker_limit'}
 
     def _entry_order_details(sig, side, px):
         ot = 'market'
@@ -521,7 +522,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
 
         # LONG manage
         if pos_long is not None:
-            long_snapshot = _strategy_snapshot(strat_long, market_symbol)
+            long_snapshot = _strategy_snapshot(strat_long, market_symbol) if manage_needs_snapshot else None
             before_qty = pos_long.qty
             before_entry = pos_long.entry
             ex = strat_long.manage_position(market_symbol, row, pos_long, ctx=None)
@@ -585,7 +586,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
 
         # SHORT manage
         if pos_short is not None:
-            short_snapshot = _strategy_snapshot(strat_short, market_symbol)
+            short_snapshot = _strategy_snapshot(strat_short, market_symbol) if manage_needs_snapshot else None
             before_qty = pos_short.qty
             before_entry = pos_short.entry
             ex = strat_short.manage_position(market_symbol, row, pos_short, ctx=None)
@@ -789,6 +790,7 @@ def simulate(cfg: dict, ts_s: np.ndarray, close: np.ndarray, open_: Optional[np.
         'dynamic_slippage_model': slip_model,
         'backtest_use_live_sync': bool(use_live_sync),
         'backtest_fast_time_rows': bool(fast_time_rows),
+        'backtest_manage_snapshots': bool(manage_needs_snapshot),
         'backtest_slippage_config': (cfg.get('backtest') or {}).get('slippage', None),
         'maker_fee_rate': maker_fee,
         'warmup_bars_seen': int(warmup_bars_seen),

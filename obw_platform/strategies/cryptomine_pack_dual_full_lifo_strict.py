@@ -41,6 +41,7 @@ class _State:
     trend_bucket: Optional[str] = None
     trend_htf_closes: deque = field(default_factory=deque)
     trend_ma_series: deque = field(default_factory=deque)
+    trend_ma_sum: float = 0.0
     pending_new_entry: Optional[float] = None
     pending_comp_usdt: float = 0.0
     pending_exit_meta: Optional[Dict[str, Any]] = None
@@ -345,27 +346,30 @@ class _PackAdaptiveBase:
     def _update_trend(self, st, t, close):
         bucket = self._trend_bucket_id(t)
         close = float(close)
+        n = int(self.trend_ma_len)
+
         if st.trend_bucket is None:
             st.trend_bucket = bucket
             st.trend_htf_closes.append(close)
+            st.trend_ma_sum += close
         elif bucket != st.trend_bucket:
+            # New HTF bucket: append close and drop the old nth-from-end from the rolling window.
+            if len(st.trend_htf_closes) >= n and n > 0:
+                st.trend_ma_sum -= float(st.trend_htf_closes[-n])
             st.trend_bucket = bucket
             st.trend_htf_closes.append(close)
+            st.trend_ma_sum += close
         else:
+            # Same HTF bucket: replace the last close by delta. Last close is always inside the MA window.
             if st.trend_htf_closes:
+                old_last = float(st.trend_htf_closes[-1])
                 st.trend_htf_closes[-1] = close
+                st.trend_ma_sum += close - old_last
             else:
                 st.trend_htf_closes.append(close)
+                st.trend_ma_sum += close
 
-        if len(st.trend_htf_closes) >= self.trend_ma_len:
-            # trendMaLen is small (20 by default). Avoid full deque->list conversion.
-            ma = 0.0
-            n = self.trend_ma_len
-            for j in range(1, n + 1):
-                ma += float(st.trend_htf_closes[-j])
-            ma /= n
-        else:
-            ma = None
+        ma = (st.trend_ma_sum / n) if (n > 0 and len(st.trend_htf_closes) >= n) else None
 
         st.trend_ma_series.append(ma)
         ma_lim = max(self.trend_slope_bars + 5, 256)
@@ -382,6 +386,7 @@ class _PackAdaptiveBase:
         score_rng = max(abs(self.trend_score_max - self.trend_score_min), 1e-6)
         factor = max(0.0, min(1.0, (strength - self.trend_score_min) / score_rng))
         return self.min_invest_pct + (self.max_invest_pct - self.min_invest_pct) * factor
+
     def _cached_target_pct(self, row):
         if not self.use_trend_adaptive_sizing:
             return self.base_order_pct_eq
