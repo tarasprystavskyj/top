@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-import copy, datetime as _dt, importlib, json, logging, math, os, time, uuid, sqlite3
+import copy, datetime as _dt, hashlib, importlib, json, logging, math, os, time, uuid, sqlite3
 from pathlib import Path
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from typing import Optional, Tuple
@@ -616,7 +616,7 @@ def place_open_qty_limit(fetcher: CCXTFetcher, sym: str, side: str, qty: float, 
 
 
 
-def _place_market_fallback_open(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, snapshot=None, pre_snapshot=None, fallback_reason='limit_no_fill'):
+def _place_market_fallback_open(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, snapshot=None, pre_snapshot=None, fallback_reason='limit_no_fill', strategy_event='open'):
     _emit_runtime_debug(
         session_db_path, run_id, 'entry_limit_fallback_market',
         {
@@ -677,7 +677,7 @@ def _place_market_fallback_open(fetcher, strat, *, sym, side, requested_px, qty,
     _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'signed_slip_bp_sum', _signed_slip_bp(side, requested_px, fill_px, is_close=False))
     _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_market_fallback_fill')
     rec = {'symbol': sym, 'side': side, 'qty': qty, 'entry': requested_px, 'tp_price': tp_price, 'sl_price': sl_price, 'ts_open': bar_close.isoformat(), 'run_id': run_id, 'order_id': str(uuid.uuid4()), 'entry_order_type': 'market_fallback', 'fallback_reason': fallback_reason}
-    return _finalize_open_success(fetcher, strat, rec, sym=sym, side=side, requested_px=requested_px, qty_requested=qty, ex_order_id=ex_order_id, bar_close=bar_close, fill_px=fill_px, fill_dt=fill_dt, session_db_path=session_db_path, bot_id=bot_id, results_dir=results_dir, positions=positions, run_id=run_id, position_mode=position_mode)
+    return _finalize_open_success(fetcher, strat, rec, sym=sym, side=side, requested_px=requested_px, qty_requested=qty, ex_order_id=ex_order_id, bar_close=bar_close, fill_px=fill_px, fill_dt=fill_dt, session_db_path=session_db_path, bot_id=bot_id, results_dir=results_dir, positions=positions, run_id=run_id, position_mode=position_mode, strategy_event=strategy_event)
 
 
 def _sync_pending_entry_orders(fetcher, pending_entries: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, strat_long, strat_short, current_bar_iso: str, run_id: str = ''):
@@ -722,7 +722,8 @@ def _sync_pending_entry_orders(fetcher, pending_entries: dict, positions: dict, 
                 db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN', 'entry_fill': fill_px, 'entry_fill_ts': _dt.datetime.now(_dt.timezone.utc).isoformat()})
             except Exception:
                 pass
-            _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=float(rec.get('entry') or 0.0), fill_price=float(fill_px or rec.get('entry') or 0.0), delta_qty=delta_filled, event='dca_limit_fill')
+            _record_order(session_db_path, bar_time=current_bar_iso, symbol=sym, side=side, type_='OPEN', price=float(pend.get('limit_price') or 0.0), qty=delta_filled, status='FILLED', reason='dca_limit_fill', run_id=run_id, exchange_order_id=order_id, extra={'fill': fill_px, 'strategy_event': 'dca_limit_fill', 'filled_total': filled, 'applied_before': already_applied})
+            _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=float(rec.get('entry') or 0.0), fill_price=float(fill_px or rec.get('entry') or 0.0), delta_qty=delta_filled, event='dca_limit_fill', bar_time=current_bar_iso, extra={'exchange_order_id': order_id, 'limit_price': pend.get('limit_price'), 'filled_total': filled, 'applied_before': already_applied})
             pend['applied_filled_qty'] = already_applied + delta_filled
         if status == 'closed':
             pending_entries.pop(key, None)
@@ -739,7 +740,7 @@ def _sync_close_local_only(strat, key: str, rec: dict, positions: dict, results_
         db_mark_closed(session_db_path, bot_id, rec.get('order_id'), _dt.datetime.now(_dt.timezone.utc).isoformat(), exit_fill=None, exit_fill_ts=None, exit_slip_bp=None, exit_lag_sec=None, exit_mark_price=None, close_reason=reason)
     except Exception:
         pass
-    _strategy_sync_after_fill(strat, sym, qty=0.0, entry=0.0, fill_price=None, delta_qty=float(rec.get('qty') or 0.0), event='sync')
+    _strategy_sync_after_fill(strat, sym, qty=0.0, entry=0.0, fill_price=None, delta_qty=float(rec.get('qty') or 0.0), event='sync_absent', extra={'reason': reason})
     _emit_runtime_debug(session_db_path, run_id, 'position_sync_absent', {'symbol': sym, 'side': side, 'reason': reason, 'local_qty': float(rec.get('qty') or 0.0)}, level='WARNING', fg='yellow')
 
 
@@ -764,7 +765,7 @@ def _reconcile_position_with_exchange(fetcher, strat, key: str, rec: dict, posit
             db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN'})
         except Exception:
             pass
-        _strategy_sync_after_fill(strat, sym, qty=ex_qty, entry=ex_entry, fill_price=ex_entry, delta_qty=0.0, event='sync')
+        _strategy_sync_after_fill(strat, sym, qty=ex_qty, entry=ex_entry, fill_price=ex_entry, delta_qty=0.0, event='sync_reconcile', extra={'reason': 'exchange_position_reconcile'})
         _emit_runtime_debug(session_db_path, run_id, 'position_sync_update', {'symbol': sym, 'side': side, 'local_qty': loc_qty, 'exchange_qty': ex_qty, 'local_entry': loc_entry, 'exchange_entry': ex_entry}, level='INFO', fg='cyan')
     return rec
 
@@ -834,22 +835,239 @@ def _strategy_rejected(strat, sym: str, event: str, details=None):
             pass
 
 
-def _strategy_sync_after_fill(strat, sym: str, *, qty: float, entry: float, fill_price=None, delta_qty=None, event: str = ''):
+
+def _json_safe_value(value, max_items: int = 50):
+    """Convert dataclass/state/exchange-ish values into bounded JSON-safe objects."""
+    try:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, (_dt.datetime, _dt.date)):
+            return value.isoformat()
+        if isinstance(value, dict):
+            out = {}
+            for i, (k, v) in enumerate(value.items()):
+                if i >= max_items:
+                    out['_truncated'] = True
+                    break
+                out[str(k)] = _json_safe_value(v, max_items=max_items)
+            return out
+        if isinstance(value, (list, tuple, set, deque)):
+            arr = list(value)
+            out = [_json_safe_value(v, max_items=max_items) for v in arr[:max_items]]
+            if len(arr) > max_items:
+                out.append({'_truncated_count': len(arr) - max_items})
+            return out
+        if hasattr(value, '__dict__'):
+            return _json_safe_value(vars(value), max_items=max_items)
+        return str(value)
+    except Exception:
+        return str(value)
+
+
+def _num_or_none(x):
+    try:
+        if x is None:
+            return None
+        v = float(x)
+        if not math.isfinite(v):
+            return None
+        return v
+    except Exception:
+        return None
+
+
+def _state_get(snapshot, name, default=None):
+    if snapshot is None:
+        return default
+    if isinstance(snapshot, dict):
+        return snapshot.get(name, default)
+    return getattr(snapshot, name, default)
+
+
+def _strategy_state_brief(snapshot) -> dict:
+    """Small deterministic state digest for parity/debug, not a full pickle."""
+    if snapshot is None:
+        return {}
+    lots_raw = _state_get(snapshot, 'lots', []) or []
+    lots = []
+    total_qty = 0.0
+    total_notional = 0.0
+    try:
+        for lot in list(lots_raw):
+            if isinstance(lot, dict):
+                q = _num_or_none(lot.get('qty') or lot.get('q'))
+                px = _num_or_none(lot.get('price') or lot.get('entry') or lot.get('px'))
+            else:
+                q = _num_or_none(lot[0]) if len(lot) > 0 else None
+                px = _num_or_none(lot[1]) if len(lot) > 1 else None
+            if q is not None:
+                total_qty += q
+            if q is not None and px is not None:
+                total_notional += q * px
+            lots.append({'qty': q, 'price': px})
+    except Exception:
+        lots = []
+        total_qty = _num_or_none(_state_get(snapshot, 'pos_size', 0.0)) or 0.0
+        total_notional = _num_or_none(_state_get(snapshot, 'pos_value_usdt', 0.0)) or 0.0
+
+    keys = [
+        'pos_size', 'pos_value_usdt', 'avg_price', 'num_fills', 'last_fill_price',
+        'next_level_price', 'trailing_active', 'trailing_ref', 'reset_pending',
+        'cycle_base_qty_coin', 'pending_new_entry', 'cycle_start_ts', 'last_fill_ts',
+    ]
+    out = {}
+    for k in keys:
+        v = _state_get(snapshot, k, None)
+        if isinstance(v, bool):
+            out[k] = bool(v)
+        elif isinstance(v, (int, float, Decimal)) or v is None:
+            out[k] = _num_or_none(v)
+        else:
+            out[k] = _json_safe_value(v, max_items=10)
+    out['lots_count'] = len(lots)
+    out['lots_total_qty'] = total_qty
+    out['lots_total_notional'] = total_notional
+    out['lots_tail'] = lots[-8:]
+    out['lots_lifo_top'] = lots[-1] if lots else None
+    return out
+
+
+def _strategy_state_diff(before: dict, after: dict) -> dict:
+    before = before or {}
+    after = after or {}
+    diff = {}
+    for k in sorted(set(before.keys()) | set(after.keys())):
+        b = before.get(k)
+        a = after.get(k)
+        if b != a:
+            diff[k] = {'before': b, 'after': a}
+    return diff
+
+
+def ensure_strategy_state_events_db(db_path: str) -> None:
+    if not db_path:
+        return
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_state_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_utc TEXT NOT NULL,
+            run_id TEXT,
+            bar_time_utc TEXT,
+            symbol TEXT,
+            side TEXT,
+            strategy_event TEXT,
+            order_action TEXT,
+            qty REAL,
+            entry REAL,
+            fill_price REAL,
+            delta_qty REAL,
+            state_before_json TEXT,
+            state_after_json TEXT,
+            state_diff_json TEXT,
+            extra_json TEXT
+        )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_strategy_state_events_run_time ON strategy_state_events(run_id, bar_time_utc, symbol, side)")
+        con.commit()
+    finally:
+        con.close()
+
+
+def _record_strategy_state_transition(*, strat, sym: str, event: str, qty: float, entry: float, fill_price=None, delta_qty=None, bar_time=None, extra=None, before_snapshot=None, after_snapshot=None):
+    db_path = globals().get('LIVE_SESSION_DB_PATH') or ''
+    run_id = globals().get('LIVE_RUN_ID') or ''
+    results_dir = globals().get('LIVE_RESULTS_DIR') or ''
+    if not db_path and not results_dir:
+        return None
+    side = str(getattr(strat, 'SIDE', '') or '').upper()
+    before = _strategy_state_brief(before_snapshot)
+    after = _strategy_state_brief(after_snapshot)
+    diff = _strategy_state_diff(before, after)
+    payload = {
+        'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        'run_id': run_id,
+        'bar_time_utc': bar_time.isoformat() if hasattr(bar_time, 'isoformat') else (str(bar_time) if bar_time else ''),
+        'symbol': sym,
+        'side': side,
+        'strategy_event': str(event or ''),
+        'order_action': 'OPEN' if str(event or '').lower() in {'first', 'open', 'dca', 'dca_limit_fill', 'sync_reconcile'} else ('PARTIAL' if str(event or '').lower() == 'partial' else 'CLOSE'),
+        'qty': _num_or_none(qty),
+        'entry': _num_or_none(entry),
+        'fill_price': _num_or_none(fill_price),
+        'delta_qty': _num_or_none(delta_qty),
+        'state_before': before,
+        'state_after': after,
+        'state_diff': diff,
+        'extra': _json_safe_value(extra or {}, max_items=30),
+    }
+    try:
+        if db_path:
+            ensure_strategy_state_events_db(db_path)
+            con = sqlite3.connect(db_path)
+            try:
+                con.execute(
+                    """INSERT INTO strategy_state_events
+                    (ts_utc, run_id, bar_time_utc, symbol, side, strategy_event, order_action, qty, entry, fill_price, delta_qty,
+                     state_before_json, state_after_json, state_diff_json, extra_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        payload['ts_utc'], payload['run_id'], payload['bar_time_utc'], payload['symbol'], payload['side'],
+                        payload['strategy_event'], payload['order_action'], payload['qty'], payload['entry'], payload['fill_price'], payload['delta_qty'],
+                        json.dumps(before, ensure_ascii=False, sort_keys=True),
+                        json.dumps(after, ensure_ascii=False, sort_keys=True),
+                        json.dumps(diff, ensure_ascii=False, sort_keys=True),
+                        json.dumps(payload['extra'], ensure_ascii=False, sort_keys=True),
+                    )
+                )
+                con.commit()
+            finally:
+                con.close()
+            try:
+                debug_event(db_path, run_id, 'strategy_state_transition', payload, level='INFO')
+            except Exception:
+                pass
+        if results_dir:
+            try:
+                with open(Path(results_dir) / 'strategy_state_events.jsonl', 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + '\n')
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            if db_path:
+                debug_event(db_path, run_id, 'strategy_state_transition_error', {'symbol': sym, 'side': side, 'event': event, 'error': str(e)}, level='ERROR')
+        except Exception:
+            pass
+    return payload
+
+def _strategy_sync_after_fill(strat, sym: str, *, qty: float, entry: float, fill_price=None, delta_qty=None, event: str = '', bar_time=None, extra=None):
+    before_snapshot = _strategy_snapshot(strat, sym)
     fn = getattr(strat, 'sync_after_external_fill', None)
+    used_native_sync = False
     if callable(fn):
         try:
             fn(sym, qty=qty, entry=entry, fill_price=fill_price, delta_qty=delta_qty, event=event)
-            return
+            used_native_sync = True
+        except Exception as exc:
+            try:
+                debug_event(globals().get('LIVE_SESSION_DB_PATH') or '', globals().get('LIVE_RUN_ID') or '', 'strategy_sync_after_fill_error', {'symbol': sym, 'event': event, 'error': str(exc)}, level='ERROR')
+            except Exception:
+                pass
+    if not used_native_sync:
+        try:
+            st = strat._get_state(sym)
+            st.pos_size = float(qty)
+            st.avg_price = float(entry) if qty > 0 else None
+            if hasattr(st, 'pos_value_usdt'):
+                st.pos_value_usdt = float(qty) * float(entry) if qty > 0 else 0.0
         except Exception:
             pass
-    try:
-        st = strat._get_state(sym)
-        st.pos_size = float(qty)
-        st.avg_price = float(entry) if qty > 0 else None
-        if hasattr(st, 'pos_value_usdt'):
-            st.pos_value_usdt = float(qty) * float(entry) if qty > 0 else 0.0
-    except Exception:
-        pass
+    after_snapshot = _strategy_snapshot(strat, sym)
+    _record_strategy_state_transition(strat=strat, sym=sym, event=event, qty=qty, entry=entry, fill_price=fill_price, delta_qty=delta_qty, bar_time=bar_time, extra=extra, before_snapshot=before_snapshot, after_snapshot=after_snapshot)
 
 
 class _PosLike:
@@ -859,6 +1077,88 @@ class _PosLike:
         self.side = str(rec.get('side', 'LONG')).upper()
         self.tp = rec.get('tp_price')
         self.sl = rec.get('sl_price')
+
+
+
+LIVE_ARTIFACT_MANIFEST = {}
+LIVE_SESSION_DB_PATH = ''
+LIVE_RUN_ID = ''
+LIVE_RESULTS_DIR = ''
+
+
+
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _module_file_for_class_path(class_path: str) -> Optional[str]:
+    try:
+        mod_path, _cls_name = str(class_path).rsplit('.', 1)
+        spec = importlib.util.find_spec(mod_path)
+        origin = getattr(spec, 'origin', None)
+        if origin and origin != 'built-in':
+            return os.path.abspath(origin)
+    except Exception:
+        return None
+    return None
+
+
+def _build_live_artifact_manifest(cfg: dict) -> dict:
+    """Build immutable artifact metadata for live reports.
+
+    Stored in:
+      - live_run_manifest.json
+      - live_execution_metrics.json under artifacts
+      - debug_events as live_run_manifest
+
+    The config path/hash is injected by bt_live_paper_runner_separated_universe_4.py
+    under cfg['_run_artifacts']['config'].
+    """
+    manifest = dict(cfg.get('_run_artifacts') or {})
+    strategies = {}
+    for role, key in (('long', 'strategy_class_long'), ('short', 'strategy_class_short')):
+        class_path = str(cfg.get(key) or '')
+        item = {'class_path': class_path}
+        fpath = _module_file_for_class_path(class_path) if class_path else None
+        if fpath and os.path.exists(fpath):
+            item.update({
+                'path': fpath,
+                'basename': os.path.basename(fpath),
+                'sha256': _sha256_file(fpath),
+                'size_bytes': int(os.path.getsize(fpath)),
+                'mtime_utc': _dt.datetime.fromtimestamp(os.path.getmtime(fpath), tz=_dt.timezone.utc).isoformat(),
+            })
+        else:
+            item['error'] = 'strategy module file not found'
+        strategies[role] = item
+    manifest['strategies'] = strategies
+    manifest['generated_at_utc'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    return manifest
+
+
+def _write_live_run_manifest(results_dir: str, session_db_path: str, run_id: str, manifest: dict) -> None:
+    payload = {
+        'run_id': run_id,
+        'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        'artifacts': manifest,
+    }
+    try:
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+        (Path(results_dir) / 'live_run_manifest.json').write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding='utf-8',
+        )
+    except Exception:
+        pass
+    try:
+        debug_event(session_db_path, run_id, 'live_run_manifest', payload, level='INFO')
+    except Exception:
+        pass
+
 
 
 def _load_strategy_pair(cfg: dict):
@@ -1149,6 +1449,8 @@ def _write_exec_metrics(results_dir: str, session_db_path: str, run_id: str, eve
     snap = _exec_metric_snapshot()
     snap['run_id'] = run_id
     snap['ts_utc'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    if LIVE_ARTIFACT_MANIFEST:
+        snap['artifacts'] = LIVE_ARTIFACT_MANIFEST
     try:
         Path(results_dir).mkdir(parents=True, exist_ok=True)
         path = Path(results_dir) / 'live_execution_metrics.json'
@@ -1464,7 +1766,7 @@ def place_reduce_only(fetcher: CCXTFetcher, sym: str, entry_side: str, qty: floa
 
 
 
-def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_requested, ex_order_id, bar_close, fill_px, fill_dt, session_db_path, bot_id, results_dir, positions, run_id, position_mode):
+def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_requested, ex_order_id, bar_close, fill_px, fill_dt, session_db_path, bot_id, results_dir, positions, run_id, position_mode, strategy_event='open'):
     fill = float(fill_px) if fill_px is not None else float(requested_px)
     adverse_bp = _adverse_slip_bp(side, requested_px, fill, is_close=False)
     if MAX_ENTRY_SLIP_BP > 0 and adverse_bp > MAX_ENTRY_SLIP_BP:
@@ -1480,8 +1782,8 @@ def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_
     positions[pos_key(sym, side)] = rec
     save_positions(results_dir, positions)
     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN'})
-    _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='FILLED', reason='open', run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'entry': entry})
-    _strategy_sync_after_fill(strat, sym, qty=qty, entry=entry, fill_price=fill, delta_qty=qty, event='open')
+    _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='FILLED', reason='open', run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'entry': entry, 'strategy_event': strategy_event})
+    _strategy_sync_after_fill(strat, sym, qty=qty, entry=entry, fill_price=fill, delta_qty=qty_requested, event=strategy_event, bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'order_type': rec.get('entry_order_type') or 'market'})
     try:
         _place_tp_sl_after_open(fetcher, sym, side, qty, rec.get('tp_price'), rec.get('sl_price'), position_mode)
     except Exception:
@@ -1491,7 +1793,7 @@ def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_
     return True, rec
 
 
-def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, snapshot, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, order_type='market', limit_price=None, post_only=True):
+def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, snapshot, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, order_type='market', limit_price=None, post_only=True, strategy_event='open'):
     pre_book = safe_fetch_order_book(fetcher, sym, limit=10)
     pre_snapshot = record_pretrade_snapshot(
         session_db_path,
@@ -1540,7 +1842,7 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
         _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'rejected', 1.0)
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id, extra={'order_type': order_type_norm})
         if order_type_norm == 'limit' and ENTRY_LIMIT_FALLBACK_TO_MARKET and ENTRY_LIMIT_FALLBACK_ON_REJECT:
-            return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_reject:{fail_reason}')
+            return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_reject:{fail_reason}', strategy_event=strategy_event)
         _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', res)
         _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_fail')
         _emit_runtime_debug(session_db_path, run_id, 'open_fail', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fail_reason, 'exchange_response': res, 'order_type': order_type_norm}, level='ERROR', fg='red')
@@ -1560,7 +1862,7 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
             _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'canceled_no_fill', 1.0)
             _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED' if cancel_state == 'canceled' else 'UNKNOWN', reason=reason, run_id=run_id, exchange_order_id=ex_order_id, extra={'order_type': order_type_norm, 'cancel_state': cancel_state})
             if cancel_state == 'canceled' and order_type_norm == 'limit' and ENTRY_LIMIT_FALLBACK_TO_MARKET and ENTRY_LIMIT_FALLBACK_ON_TIMEOUT:
-                return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_timeout:{reason}')
+                return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_timeout:{reason}', strategy_event=strategy_event)
             # If cancel is not confirmed, do NOT market fallback. Otherwise we risk double-entry:
             # old limit fills late + fallback market also opens.
             _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', {'reason': reason, 'order_id': ex_order_id, 'cancel_state': cancel_state})
@@ -1587,7 +1889,7 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
     _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'signed_slip_bp_sum', _signed_slip_bp(side, requested_px, fill_px, is_close=False))
     _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_fill')
     rec = {'symbol': sym, 'side': side, 'qty': qty, 'entry': requested_px, 'tp_price': tp_price, 'sl_price': sl_price, 'ts_open': bar_close.isoformat(), 'run_id': run_id, 'order_id': str(uuid.uuid4())}
-    return _finalize_open_success(fetcher, strat, rec, sym=sym, side=side, requested_px=requested_px, qty_requested=qty, ex_order_id=ex_order_id, bar_close=bar_close, fill_px=fill_px, fill_dt=fill_dt, session_db_path=session_db_path, bot_id=bot_id, results_dir=results_dir, positions=positions, run_id=run_id, position_mode=position_mode)
+    return _finalize_open_success(fetcher, strat, rec, sym=sym, side=side, requested_px=requested_px, qty_requested=qty, ex_order_id=ex_order_id, bar_close=bar_close, fill_px=fill_px, fill_dt=fill_dt, session_db_path=session_db_path, bot_id=bot_id, results_dir=results_dir, positions=positions, run_id=run_id, position_mode=position_mode, strategy_event=strategy_event)
 
 
 def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_px, bar_close, position_mode, snapshot, session_db_path, run_id, close_reason, rec, positions, results_dir, bot_id, event_type, partial=False):
@@ -1658,16 +1960,16 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
     if not ex_pos or float(ex_pos.get('qty') or 0.0) <= 1e-12:
         positions.pop(pos_key(sym, side), None); save_positions(results_dir, positions)
         db_mark_closed(session_db_path, bot_id, rec.get('order_id'), _dt.datetime.now(_dt.timezone.utc).isoformat(), exit_fill=fill, exit_fill_ts=fill_dt.isoformat() if fill_dt else None, exit_slip_bp=_signed_slip_bp(side, requested_px, fill, is_close=True), exit_lag_sec=(fill_dt - bar_close).total_seconds() if fill_dt else None, exit_mark_price=fetcher.fetch_mark_price(sym), close_reason=_normalize_close_reason(close_reason, 'close'))
-        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'closed': True})
-        _strategy_sync_after_fill(strat, sym, qty=0.0, entry=0.0, fill_price=fill, delta_qty=qty, event='close')
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'closed': True, 'strategy_event': 'close'})
+        _strategy_sync_after_fill(strat, sym, qty=0.0, entry=0.0, fill_price=fill, delta_qty=qty, event='close', bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'closed': True})
         _emit_runtime_debug(session_db_path, run_id, 'close_ok', {'symbol': sym, 'side': side, 'qty': qty, 'fill': fill, 'closed': True, 'close_reason': _normalize_close_reason(close_reason, 'close')}, level='INFO', fg='green')
         return True, {'closed': True}
     new_qty = float(ex_pos['qty']); new_entry = float(ex_pos['entry'])
     rec.update({'qty': new_qty, 'entry': new_entry, 'exit_fill': fill, 'exit_fill_ts': fill_dt.isoformat() if fill_dt else None, 'exit_slip_bp': _signed_slip_bp(side, requested_px, fill, is_close=True), 'exit_lag_sec': (fill_dt - bar_close).total_seconds() if fill_dt else None, 'exit_mark_price': fetcher.fetch_mark_price(sym)})
     positions[pos_key(sym, side)] = rec; save_positions(results_dir, positions)
     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN', 'close_reason': _normalize_close_reason(close_reason)})
-    _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'remaining_qty': new_qty, 'remaining_entry': new_entry})
-    _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=new_entry, fill_price=fill, delta_qty=qty, event='partial' if partial else 'close')
+    _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'remaining_qty': new_qty, 'remaining_entry': new_entry, 'strategy_event': 'partial' if partial else 'close'})
+    _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=new_entry, fill_price=fill, delta_qty=qty, event='partial' if partial else 'close', bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'closed': False, 'remaining_qty': new_qty, 'remaining_entry': new_entry})
     _emit_runtime_debug(session_db_path, run_id, 'close_ok', {'symbol': sym, 'side': side, 'qty': qty, 'fill': fill, 'closed': False, 'remaining_qty': new_qty, 'remaining_entry': new_entry, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'partial': partial}, level='INFO', fg='green')
     return True, {'closed': False, 'qty': new_qty, 'entry': new_entry}
 
@@ -1714,13 +2016,14 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
                 db_upsert_open_position(session_db_path, bot_id, {**positions[key], 'status': 'OPEN'})
                 return True
             return False
-        ok, _ = _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=delta_qty, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=rec.get('tp_price'), sl_price=rec.get('sl_price'))
+        ok, _ = _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=delta_qty, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=rec.get('tp_price'), sl_price=rec.get('sl_price'), strategy_event='dca')
         if ok:
             new_rec = positions[pos_key(sym, side)]
             new_rec['order_id'] = rec.get('order_id') or new_rec.get('order_id')
             positions[pos_key(sym, side)] = new_rec; save_positions(results_dir, positions)
             db_upsert_open_position(session_db_path, bot_id, {**new_rec, 'status': 'OPEN'})
-            _strategy_sync_after_fill(strat, sym, qty=float(new_rec['qty']), entry=float(new_rec['entry']), fill_price=_safe_float(new_rec.get('entry_fill'), new_rec.get('entry')), delta_qty=delta_qty, event='dca')
+            # State sync is already performed inside _finalize_open_success with strategy_event='dca'.
+            pass
         return ok
     if abs(entry_after - entry_before) > 1e-12:
         rec['entry'] = entry_after; positions[key] = rec; save_positions(results_dir, positions); db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN'}); return True
@@ -1741,7 +2044,7 @@ def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: di
     post_only = bool(_sig_get(sig, 'entry_limit_post_only', True))
     if limit_price in (None, '') and order_type in {'limit', 'maker', 'maker_limit'}:
         limit_price = requested_px
-    return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=_sig_get(sig, 'tp'), sl_price=_sig_get(sig, 'sl'), order_type=order_type, limit_price=limit_price, post_only=post_only)[0]
+    return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=_sig_get(sig, 'tp'), sl_price=_sig_get(sig, 'sl'), order_type=order_type, limit_price=limit_price, post_only=post_only, strategy_event='first')[0]
 
 
 
@@ -1855,8 +2158,18 @@ def run_live(cfg: dict, args):
         except Exception:
             fetcher.markets = getattr(fetcher.ex, 'markets', {}) or {}
     run_id = _dt.datetime.utcnow().strftime('LIVE_DUAL_%Y%m%d_%H%M%S')
+    globals()['LIVE_SESSION_DB_PATH'] = session_db_path
+    globals()['LIVE_RUN_ID'] = run_id
+    globals()['LIVE_RESULTS_DIR'] = args.results_dir
+    try:
+        ensure_strategy_state_events_db(session_db_path)
+    except Exception as e:
+        _emit_runtime_debug(session_db_path, run_id, 'strategy_state_events_db_init_fail', {'error': str(e)}, level='ERROR', fg='red')
     if ExchangeTraceProxy is not None and isinstance(fetcher.ex, ExchangeTraceProxy):
         fetcher.ex._scenario_id = run_id
+    globals()['LIVE_ARTIFACT_MANIFEST'] = _build_live_artifact_manifest(cfg)
+    cfg['_live_artifact_manifest'] = LIVE_ARTIFACT_MANIFEST
+    _write_live_run_manifest(args.results_dir, session_db_path, run_id, LIVE_ARTIFACT_MANIFEST)
     write_config_snapshot(session_db_path, run_id, cfg)
     DEBUG_OPEN = bool(getattr(args, 'debug', False) or cfg.get('debug_open', False))
     if DEBUG_OPEN:

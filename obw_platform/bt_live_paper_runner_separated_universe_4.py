@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 try:
@@ -38,6 +40,26 @@ except Exception:
 def _read_text(path: str) -> str:
     with open(path, 'r', encoding='utf-8') as f:
         return f.read()
+
+
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _config_artifact_metadata(path: str) -> Dict[str, Any]:
+    abs_path = os.path.abspath(path)
+    st = os.stat(abs_path)
+    return {
+        'path': abs_path,
+        'basename': os.path.basename(abs_path),
+        'sha256': _sha256_file(abs_path),
+        'size_bytes': int(st.st_size),
+        'mtime_utc': datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+    }
 
 
 def _load_yaml_or_json(path: str) -> Dict[str, Any]:
@@ -182,6 +204,7 @@ def main():
 
     cfg_name = os.path.splitext(os.path.basename(args.cfg))[0]
     cfg = _load_yaml_or_json(args.cfg)
+    cfg.setdefault('_run_artifacts', {})['config'] = _config_artifact_metadata(args.cfg)
     timeframe = str(cfg.get('timeframe') or 'na')
     if not args.results_dir:
         args.results_dir = os.path.join('_reports', '_live', f'livecfg_{cfg_name}_{timeframe}')
@@ -209,7 +232,7 @@ def main():
         'exchange': args.exchange,
         'results_dir': args.results_dir,
         'cfg': args.cfg,
-    }, extra={'wrapper': os.path.basename(__file__)})
+    }, extra={'wrapper': os.path.basename(__file__), 'artifacts': cfg.get('_run_artifacts', {})})
     snapshot_files(args.session_db, bundle_run_id, [__file__, args.cfg])
     debug_event(args.session_db, bundle_run_id, 'wrapper_start', {'mode': args.mode, 'results_dir': args.results_dir})
 
