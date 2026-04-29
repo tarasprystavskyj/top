@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy, datetime as _dt, hashlib, importlib, json, logging, math, os, time, uuid, sqlite3
+from collections import deque
 from pathlib import Path
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from typing import Optional, Tuple
@@ -1084,6 +1085,8 @@ LIVE_ARTIFACT_MANIFEST = {}
 LIVE_SESSION_DB_PATH = ''
 LIVE_RUN_ID = ''
 LIVE_RESULTS_DIR = ''
+LIVE_REALIZED_PNL_CUM = 0.0
+LIVE_FEE_RATE = 0.0005
 
 
 
@@ -1367,11 +1370,156 @@ def _fetch_exchange_position(fetcher: CCXTFetcher, sym: str, side: str):
     return None
 
 
-def _calc_equity_snapshot(fetcher: CCXTFetcher) -> dict:
+
+def ensure_live_pnl_ledger_db(db_path: str) -> None:
+    if not db_path:
+        return
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("""CREATE TABLE IF NOT EXISTS live_pnl_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_utc TEXT NOT NULL,
+            run_id TEXT,
+            bar_time_utc TEXT,
+            symbol TEXT,
+            side TEXT,
+            strategy_event TEXT,
+            qty REAL,
+            entry_price REAL,
+            fill_price REAL,
+            gross_pnl REAL,
+            entry_fee REAL,
+            exit_fee REAL,
+            total_fee REAL,
+            net_pnl REAL,
+            realized_pnl_cum REAL,
+            exchange_order_id TEXT,
+            order_id TEXT,
+            extra_json TEXT
+        )""")
+        con.commit()
+    finally:
+        con.close()
+
+
+def _fee_rate_from_cfg(cfg: dict) -> float:
+    candidates = [
+        ('portfolio', 'fee_rate'), ('portfolio', 'feeRate'),
+        ('backtest', 'fee_rate'), ('backtest', 'feeRate'),
+        ('runner', 'fee_rate'), ('runner', 'feeRate'),
+        ('live', 'fee_rate'), ('live', 'feeRate'),
+    ]
+    for section, key in candidates:
+        try:
+            sec = cfg.get(section) or {}
+            if key in sec:
+                return float(sec.get(key) or 0.0)
+        except Exception:
+            pass
+    for key in ('fee_rate', 'feeRate', 'commission_rate', 'commissionRate'):
+        try:
+            if key in cfg:
+                return float(cfg.get(key) or 0.0)
+        except Exception:
+            pass
+    return 0.0005
+
+
+def _load_live_realized_pnl_cum(db_path: str, run_id: str = '', continue_across_runs: bool = True) -> float:
+    if not db_path:
+        return 0.0
+    try:
+        ensure_live_pnl_ledger_db(db_path)
+        con = sqlite3.connect(db_path)
+        try:
+            if continue_across_runs:
+                row = con.execute("SELECT realized_pnl_cum FROM live_pnl_ledger ORDER BY id DESC LIMIT 1").fetchone()
+            else:
+                row = con.execute("SELECT realized_pnl_cum FROM live_pnl_ledger WHERE run_id=? ORDER BY id DESC LIMIT 1", (run_id,)).fetchone()
+            return float(row[0]) if row and row[0] is not None else 0.0
+        finally:
+            con.close()
+    except Exception:
+        return 0.0
+
+
+def _write_live_pnl_summary(results_dir: str, session_db_path: str, run_id: str, payload: dict) -> None:
+    try:
+        if results_dir:
+            Path(results_dir).mkdir(parents=True, exist_ok=True)
+            (Path(results_dir) / 'live_pnl_summary.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+    except Exception:
+        pass
+    try:
+        if session_db_path:
+            debug_event(session_db_path, run_id, 'live_pnl_update', payload, level='INFO')
+    except Exception:
+        pass
+
+
+def _record_live_pnl_close(*, session_db_path: str, results_dir: str, run_id: str, bar_time, symbol: str, side: str, qty: float, entry_price: float, fill_price: float, strategy_event: str, exchange_order_id: str = '', order_id: str = '', extra=None) -> dict:
+    global LIVE_REALIZED_PNL_CUM
+    q = float(qty or 0.0)
+    entry = float(entry_price or 0.0)
+    fill = float(fill_price or 0.0)
+    side_u = str(side or '').upper()
+    if q <= 0 or entry <= 0 or fill <= 0:
+        return {}
+    gross = q * (fill - entry) if side_u == 'LONG' else q * (entry - fill)
+    fee_rate = float(globals().get('LIVE_FEE_RATE', 0.0005) or 0.0)
+    entry_fee = abs(q * entry) * fee_rate
+    exit_fee = abs(q * fill) * fee_rate
+    total_fee = entry_fee + exit_fee
+    net = gross - total_fee
+    LIVE_REALIZED_PNL_CUM = float(LIVE_REALIZED_PNL_CUM or 0.0) + float(net)
+    payload = {
+        'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        'run_id': run_id,
+        'bar_time_utc': bar_time.isoformat() if hasattr(bar_time, 'isoformat') else str(bar_time),
+        'symbol': symbol,
+        'side': side_u,
+        'strategy_event': strategy_event,
+        'qty': q,
+        'entry_price': entry,
+        'fill_price': fill,
+        'gross_pnl': gross,
+        'entry_fee': entry_fee,
+        'exit_fee': exit_fee,
+        'total_fee': total_fee,
+        'net_pnl': net,
+        'realized_pnl_cum': LIVE_REALIZED_PNL_CUM,
+        'fee_rate': fee_rate,
+        'exchange_order_id': exchange_order_id,
+        'order_id': order_id,
+        'extra': _json_safe_value(extra or {}, max_items=30),
+    }
+    try:
+        ensure_live_pnl_ledger_db(session_db_path)
+        con = sqlite3.connect(session_db_path)
+        try:
+            con.execute("""INSERT INTO live_pnl_ledger
+                (ts_utc, run_id, bar_time_utc, symbol, side, strategy_event, qty, entry_price, fill_price,
+                 gross_pnl, entry_fee, exit_fee, total_fee, net_pnl, realized_pnl_cum, exchange_order_id, order_id, extra_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (payload['ts_utc'], run_id, payload['bar_time_utc'], symbol, side_u, strategy_event, q, entry, fill,
+                 gross, entry_fee, exit_fee, total_fee, net, LIVE_REALIZED_PNL_CUM, exchange_order_id, order_id,
+                 json.dumps(payload['extra'], ensure_ascii=False, sort_keys=True)))
+            con.commit()
+        finally:
+            con.close()
+    except Exception as e:
+        try:
+            debug_event(session_db_path, run_id, 'live_pnl_ledger_error', {'error': str(e), 'payload': payload}, level='ERROR')
+        except Exception:
+            pass
+    _write_live_pnl_summary(results_dir, session_db_path, run_id, payload)
+    return payload
+
+def _calc_equity_snapshot(fetcher: CCXTFetcher, session_db_path: str = '', run_id: str = '') -> dict:
     try:
         bal = fetcher.ex.fetch_balance(); sleep_ms(RATE_MS)
     except Exception:
-        return {'equity': 0.0, 'cash': 0.0, 'position_value': 0.0, 'realized_pnl_cum': 0.0, 'unrealized_pnl': 0.0}
+        return {'equity': 0.0, 'cash': 0.0, 'position_value': 0.0, 'realized_pnl_cum': float(globals().get('LIVE_REALIZED_PNL_CUM', 0.0) or 0.0), 'unrealized_pnl': 0.0}
     equity = cash = 0.0
     if isinstance(bal, dict):
         total = bal.get('total') or {}
@@ -1388,7 +1536,7 @@ def _calc_equity_snapshot(fetcher: CCXTFetcher) -> dict:
             unrealized += _safe_float(p.get('unrealizedPnl')) or 0.0
     except Exception:
         pass
-    return {'equity': float(equity), 'cash': float(cash), 'position_value': float(position_value), 'realized_pnl_cum': 0.0, 'unrealized_pnl': float(unrealized)}
+    return {'equity': float(equity), 'cash': float(cash), 'position_value': float(position_value), 'realized_pnl_cum': float(globals().get('LIVE_REALIZED_PNL_CUM', 0.0) or 0.0), 'unrealized_pnl': float(unrealized)}
 
 
 
@@ -1654,7 +1802,13 @@ def _maybe_update_slippage_calibration(cfg: dict, results_dir: str, session_db_p
     return payload
 
 def _record_order(db_path: str, *, bar_time, symbol: str, side: str, type_: str, price: float, qty: float, status: str, reason: str, run_id: str, exchange_order_id: str = '', extra=None):
-    insert_order_row(db_path, {'order_id': exchange_order_id or str(uuid.uuid4()), 'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(), 'bar_time_utc': bar_time.isoformat() if hasattr(bar_time, 'isoformat') else str(bar_time), 'mode': 'live', 'symbol': symbol, 'side': side, 'type': type_, 'price': float(price or 0.0), 'qty': float(qty or 0.0), 'status': status, 'reason': reason, 'run_id': run_id, 'extra': json.dumps(extra or {}, ensure_ascii=False, sort_keys=True)})
+    ex_id = str(exchange_order_id or '')
+    order_id = ex_id or str(uuid.uuid4())
+    extra_payload = dict(extra or {})
+    if ex_id:
+        extra_payload.setdefault('exchange_order_id', ex_id)
+    extra_payload.setdefault('order_id', order_id)
+    insert_order_row(db_path, {'order_id': order_id, 'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(), 'bar_time_utc': bar_time.isoformat() if hasattr(bar_time, 'isoformat') else str(bar_time), 'mode': 'live', 'symbol': symbol, 'side': side, 'type': type_, 'price': float(price or 0.0), 'qty': float(qty or 0.0), 'status': status, 'reason': reason, 'run_id': run_id, 'extra': json.dumps(extra_payload, ensure_ascii=False, sort_keys=True)})
 
 
 def _place_tp_sl_after_open(fetcher: CCXTFetcher, sym: str, side: str, qty: float, tp_price, sl_price, position_mode: str):
@@ -1782,8 +1936,9 @@ def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_
     positions[pos_key(sym, side)] = rec
     save_positions(results_dir, positions)
     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN'})
-    _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='FILLED', reason='open', run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'entry': entry, 'strategy_event': strategy_event})
-    _strategy_sync_after_fill(strat, sym, qty=qty, entry=entry, fill_price=fill, delta_qty=qty_requested, event=strategy_event, bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'order_type': rec.get('entry_order_type') or 'market'})
+    order_qty = float(qty_requested or qty or 0.0)
+    _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=order_qty, status='FILLED', reason='open', run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'entry': entry, 'strategy_event': strategy_event, 'order_qty': order_qty, 'position_qty_after': qty, 'position_entry_after': entry})
+    _strategy_sync_after_fill(strat, sym, qty=qty, entry=entry, fill_price=fill, delta_qty=order_qty, event=strategy_event, bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'order_type': rec.get('entry_order_type') or 'market', 'order_qty': order_qty, 'position_qty_after': qty, 'position_entry_after': entry})
     try:
         _place_tp_sl_after_open(fetcher, sym, side, qty, rec.get('tp_price'), rec.get('sl_price'), position_mode)
     except Exception:
@@ -1956,11 +2111,13 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
         pre_snapshot=pre_snapshot,
     )
     _online_update_slippage_model(session_db_path, results_dir, sym, side, action_name, qty, requested_px, fill, pre_snapshot)
+    entry_for_pnl = float((ex_before or {}).get('entry') or rec.get('entry') or 0.0)
+    pnl_event = _record_live_pnl_close(session_db_path=session_db_path, results_dir=results_dir, run_id=run_id, bar_time=bar_close, symbol=sym, side=side, qty=qty, entry_price=entry_for_pnl, fill_price=fill, strategy_event='partial' if partial else 'close', exchange_order_id=ex_order_id, order_id=rec.get('order_id') or '', extra={'close_reason': _normalize_close_reason(close_reason, 'close'), 'requested_px': requested_px, 'partial': partial})
     ex_pos = _fetch_exchange_position(fetcher, sym, side)
     if not ex_pos or float(ex_pos.get('qty') or 0.0) <= 1e-12:
         positions.pop(pos_key(sym, side), None); save_positions(results_dir, positions)
         db_mark_closed(session_db_path, bot_id, rec.get('order_id'), _dt.datetime.now(_dt.timezone.utc).isoformat(), exit_fill=fill, exit_fill_ts=fill_dt.isoformat() if fill_dt else None, exit_slip_bp=_signed_slip_bp(side, requested_px, fill, is_close=True), exit_lag_sec=(fill_dt - bar_close).total_seconds() if fill_dt else None, exit_mark_price=fetcher.fetch_mark_price(sym), close_reason=_normalize_close_reason(close_reason, 'close'))
-        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'closed': True, 'strategy_event': 'close'})
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'closed': True, 'strategy_event': 'close', 'pnl': pnl_event})
         _strategy_sync_after_fill(strat, sym, qty=0.0, entry=0.0, fill_price=fill, delta_qty=qty, event='close', bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'closed': True})
         _emit_runtime_debug(session_db_path, run_id, 'close_ok', {'symbol': sym, 'side': side, 'qty': qty, 'fill': fill, 'closed': True, 'close_reason': _normalize_close_reason(close_reason, 'close')}, level='INFO', fg='green')
         return True, {'closed': True}
@@ -1968,7 +2125,7 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
     rec.update({'qty': new_qty, 'entry': new_entry, 'exit_fill': fill, 'exit_fill_ts': fill_dt.isoformat() if fill_dt else None, 'exit_slip_bp': _signed_slip_bp(side, requested_px, fill, is_close=True), 'exit_lag_sec': (fill_dt - bar_close).total_seconds() if fill_dt else None, 'exit_mark_price': fetcher.fetch_mark_price(sym)})
     positions[pos_key(sym, side)] = rec; save_positions(results_dir, positions)
     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN', 'close_reason': _normalize_close_reason(close_reason)})
-    _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'remaining_qty': new_qty, 'remaining_entry': new_entry, 'strategy_event': 'partial' if partial else 'close'})
+    _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'remaining_qty': new_qty, 'remaining_entry': new_entry, 'strategy_event': 'partial' if partial else 'close', 'pnl': pnl_event})
     _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=new_entry, fill_price=fill, delta_qty=qty, event='partial' if partial else 'close', bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'closed': False, 'remaining_qty': new_qty, 'remaining_entry': new_entry})
     _emit_runtime_debug(session_db_path, run_id, 'close_ok', {'symbol': sym, 'side': side, 'qty': qty, 'fill': fill, 'closed': False, 'remaining_qty': new_qty, 'remaining_entry': new_entry, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'partial': partial}, level='INFO', fg='green')
     return True, {'closed': False, 'qty': new_qty, 'entry': new_entry}
@@ -2165,6 +2322,13 @@ def run_live(cfg: dict, args):
         ensure_strategy_state_events_db(session_db_path)
     except Exception as e:
         _emit_runtime_debug(session_db_path, run_id, 'strategy_state_events_db_init_fail', {'error': str(e)}, level='ERROR', fg='red')
+    try:
+        ensure_live_pnl_ledger_db(session_db_path)
+        globals()['LIVE_FEE_RATE'] = _fee_rate_from_cfg(cfg)
+        globals()['LIVE_REALIZED_PNL_CUM'] = _load_live_realized_pnl_cum(session_db_path, run_id, continue_across_runs=True)
+        _emit_runtime_debug(session_db_path, run_id, 'live_pnl_ledger_init', {'realized_pnl_cum': globals().get('LIVE_REALIZED_PNL_CUM'), 'fee_rate': globals().get('LIVE_FEE_RATE')}, level='INFO', fg='cyan')
+    except Exception as e:
+        _emit_runtime_debug(session_db_path, run_id, 'live_pnl_ledger_init_fail', {'error': str(e)}, level='ERROR', fg='red')
     if ExchangeTraceProxy is not None and isinstance(fetcher.ex, ExchangeTraceProxy):
         fetcher.ex._scenario_id = run_id
     globals()['LIVE_ARTIFACT_MANIFEST'] = _build_live_artifact_manifest(cfg)
@@ -2281,7 +2445,7 @@ def run_live(cfg: dict, args):
                 if row is None: continue
                 _attempt_entry(fetcher, sym, 'LONG', strat_long, row, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id, notional_long=notional_long, notional_short=notional_short)
                 _attempt_entry(fetcher, sym, 'SHORT', strat_short, row, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id, notional_long=notional_long, notional_short=notional_short)
-            try: write_equity(session_db_path, bot_id, now, _calc_equity_snapshot(fetcher))
+            try: write_equity(session_db_path, bot_id, now, _calc_equity_snapshot(fetcher, session_db_path, run_id))
             except Exception as e: _dbg('write_equity_failed', str(e))
             _write_exec_metrics(args.results_dir, session_db_path, run_id, event_type='execution_metrics_bar')
             _maybe_update_slippage_calibration(cfg, args.results_dir, session_db_path, cache_out_path, run_id)

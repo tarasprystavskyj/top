@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import os
 import sys
 import time
@@ -61,6 +62,27 @@ def _config_artifact_metadata(path: str) -> Dict[str, Any]:
         'mtime_utc': datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
     }
 
+
+
+def _module_file_for_class_path(class_path: str) -> str:
+    try:
+        mod_path, _cls_name = str(class_path).rsplit('.', 1)
+        spec = importlib.util.find_spec(mod_path)
+        origin = getattr(spec, 'origin', None)
+        if origin and origin != 'built-in':
+            return os.path.abspath(origin)
+    except Exception:
+        pass
+    return ''
+
+
+def _strategy_snapshot_paths(cfg: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    for key in ('strategy_class_long', 'strategy_class_short', 'strategy_class'):
+        path = _module_file_for_class_path(str(cfg.get(key) or ''))
+        if path and path not in out and os.path.exists(path):
+            out.append(path)
+    return out
 
 def _load_yaml_or_json(path: str) -> Dict[str, Any]:
     if path.endswith('.json'):
@@ -233,7 +255,7 @@ def main():
         'results_dir': args.results_dir,
         'cfg': args.cfg,
     }, extra={'wrapper': os.path.basename(__file__), 'artifacts': cfg.get('_run_artifacts', {})})
-    snapshot_files(args.session_db, bundle_run_id, [__file__, args.cfg])
+    snapshot_files(args.session_db, bundle_run_id, [__file__, args.cfg] + _strategy_snapshot_paths(cfg))
     debug_event(args.session_db, bundle_run_id, 'wrapper_start', {'mode': args.mode, 'results_dir': args.results_dir})
 
     cfg_uni = cfg.get('universe', {}) or {}
