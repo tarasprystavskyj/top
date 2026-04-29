@@ -251,10 +251,14 @@ class _PackAdaptiveBase:
     @staticmethod
     def _parse_tf_seconds(tf):
         s = str(tf or '1m').strip().lower()
-        if s.endswith('m'): return max(1, int(round(float(s[:-1]) * 60)))
-        if s.endswith('h'): return max(1, int(round(float(s[:-1]) * 3600)))
-        if s.endswith('d'): return max(1, int(round(float(s[:-1]) * 86400)))
-        if s.endswith('w'): return 604800
+        if s in ('m', '1m'): return 60
+        if s.endswith('m'): return max(1, int(round(float(s[:-1] or 1) * 60)))
+        if s in ('h', '1h'): return 3600
+        if s.endswith('h'): return max(1, int(round(float(s[:-1] or 1) * 3600)))
+        if s in ('d', '1d'): return 86400
+        if s.endswith('d'): return max(1, int(round(float(s[:-1] or 1) * 86400)))
+        if s in ('w', '1w'): return 604800
+        if s.endswith('w'): return max(1, int(round(float(s[:-1] or 1) * 604800)))
         return 60
 
     def _epoch_s(self, t):
