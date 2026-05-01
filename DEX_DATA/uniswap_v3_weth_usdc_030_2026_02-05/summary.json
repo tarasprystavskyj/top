@@ -1,0 +1,80 @@
+{
+  "created_at_utc": "2026-05-01T20:11:30.201196+00:00",
+  "source": "thegraph_uniswap_v3_subgraph",
+  "subgraph_id": "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
+  "endpoint_redacted": "https://gateway.thegraph.com/api/***/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
+  "pool": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+  "time_from": "2026-02-01T00:00:00Z",
+  "time_to": "2026-05-01T00:00:00Z",
+  "from_ts": 1769904000,
+  "to_ts": 1777593600,
+  "pool_info": {
+    "createdAtBlockNumber": "12370624",
+    "createdAtTimestamp": "1620169800",
+    "feeTier": "3000",
+    "feesUSD": "266374342.6811988165586395269768746",
+    "id": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+    "liquidity": "1798017888714385918",
+    "sqrtPrice": "1649877758917609076101891782373376",
+    "tick": "198887",
+    "token0": {
+      "decimals": "6",
+      "id": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "name": "USD Coin",
+      "symbol": "USDC"
+    },
+    "token0Price": "2305.980504408826070564279200093129",
+    "token1": {
+      "decimals": "18",
+      "id": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "name": "Wrapped Ether",
+      "symbol": "WETH"
+    },
+    "token1Price": "0.0004336550105640921437948857972031573",
+    "totalValueLockedUSD": "287689379.7899647932462700881695171",
+    "txCount": "1139574",
+    "volumeUSD": "88791447560.3996055195465089923036"
+  },
+  "entities": {
+    "swaps": {
+      "rows": 58293,
+      "files": {
+        "csv": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/swaps.csv",
+        "parquet": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/swaps.parquet",
+        "raw_jsonl": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/swaps.raw.jsonl"
+      }
+    },
+    "mints": {
+      "rows": 2365,
+      "files": {
+        "csv": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/mints.csv",
+        "parquet": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/mints.parquet",
+        "raw_jsonl": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/mints.raw.jsonl"
+      }
+    },
+    "burns": {
+      "rows": 4564,
+      "files": {
+        "csv": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/burns.csv",
+        "parquet": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/burns.parquet",
+        "raw_jsonl": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/burns.raw.jsonl"
+      }
+    },
+    "collects": {
+      "rows": 0,
+      "files": {
+        "csv": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/collects.csv",
+        "parquet": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/collects.parquet",
+        "raw_jsonl": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/collects.raw.jsonl"
+      }
+    }
+  },
+  "events_all": {
+    "rows": 65222,
+    "files": {
+      "csv": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/events_all.csv",
+      "parquet": "DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05/events_all.parquet"
+    }
+  },
+  "warning": "This dataset is event-level but still not a perfect LP replay by itself. For high-precision fee accounting, reconstruct tick liquidity state and fee growth, or query tick snapshots / use archive-node logs."
+}
