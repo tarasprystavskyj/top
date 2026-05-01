@@ -1,0 +1,17 @@
+# CHECK/USDC Aerodrome Slipstream 2% on Base
+
+pool:
+  network: base
+  dex: aerodrome_slipstream
+  pair: CHECK/USDC
+  fee_tier_pct: 2.0
+  address: "0x5a7b4970b2610aee4776a6944d9f2171ee6060b0"
+
+data:
+  preferred_source: base_rpc_logs
+  fallback_source: geckoterminal_ohlcv
+
+notes:
+  - This is the current main active-strategy candidate.
+  - OHLCV proxy is not enough for fee accounting.
+  - Use Aerodrome event collector before making any strategy conclusion.

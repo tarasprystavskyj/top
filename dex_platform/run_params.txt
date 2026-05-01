@@ -1,0 +1,12 @@
+ export THEGRAPH_API_KEY='34bcb6eba0f4b0c2496d3da0427b8aae'
+ 
+ python3 dex_platform/data_collectors/fetch_uniswap_v3_pool_events_v1.py \
+  --pool 0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8 \
+  --time-from 2026-02-01T00:00:00Z \
+  --time-to   2026-05-01T00:00:00Z \
+  --out-dir DEX_DATA/uniswap_v3_weth_usdc_030_2026_02-05
+ 
+ bash dex_platform/scripts/discover_l2_pools_from_universe.sh \
+  universe_akela_monthly_shortlist.txt \
+  DEX_DATA/l2_pool_discovery \
+  base,arbitrum,optimism
