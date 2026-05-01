@@ -1,1 +1,0 @@
-query_symbol,network,pool_id,pool_address,pool_name,dex_id,dex_name,base_token_symbol,base_token_name,base_token_address,quote_token_symbol,quote_token_name,quote_token_address,price_usd,tvl_usd,volume_h24_usd,volume_h6_usd,volume_h1_usd,volume_tvl_h24,tx_h24,fdv_usd,market_cap_usd,raw_api_url,dex_preferred,score
