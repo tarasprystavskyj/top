@@ -1,0 +1,27 @@
+{
+  "createdAtBlockNumber": "12376729",
+  "createdAtTimestamp": "1620250931",
+  "feeTier": "500",
+  "feesUSD": "297221782.0940955405002883003122405",
+  "id": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+  "liquidity": "4164699686532642074",
+  "sqrtPrice": "1649688459684919103943916343410497",
+  "tick": "198885",
+  "token0": {
+    "decimals": "6",
+    "id": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "name": "USD Coin",
+    "symbol": "USDC"
+  },
+  "token0Price": "2306.509750258296784162400183518048",
+  "token1": {
+    "decimals": "18",
+    "id": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "name": "Wrapped Ether",
+    "symbol": "WETH"
+  },
+  "token1Price": "0.0004335555051904783872053411573721551",
+  "totalValueLockedUSD": "396178502.8454477218468812020632758",
+  "txCount": "11344011",
+  "volumeUSD": "594443564188.1910810005766006244458"
+}
