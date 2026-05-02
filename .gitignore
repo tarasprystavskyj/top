@@ -24,3 +24,4 @@ obw_platform/_reports/
 obw_platform/tune_tmp/
 tmp/ 
 DEX_DATA/
+/DEX_REPORTS
