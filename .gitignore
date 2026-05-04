@@ -25,3 +25,5 @@ obw_platform/tune_tmp/
 tmp/ 
 DEX_DATA/
 /DEX_REPORTS
+DEX_REPORTS/aerodrome_check_2pct_quarter_fee_replay_v1/swaps_normalized.csv
+DEX_REPORTS/aerodrome_check_2pct_quarter_fee_replay_v1/curves.csv
