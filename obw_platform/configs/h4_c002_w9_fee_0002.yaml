@@ -5,7 +5,7 @@ portfolio:
   funding_rate_per_8h_bps: 0.0
   initial_equity_per_leg: 100.0
   max_notional_frac: 1.4
-  slippage_per_side: 0.0
+  slippage_per_side: 9.2387
 source: sqlite
 strategy_class_long: strategies.cryptomine_pack_dual_full_compound.CryptomineLongPackAdaptiveEven
 strategy_class_short: strategies.cryptomine_pack_dual_compound.CompoundShortPack
