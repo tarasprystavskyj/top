@@ -26,6 +26,12 @@ The legacy research scripts remain in `obw_platform/` for compatibility:
 - `monthly_akela_phase_proxybt.py`
 - `rank_short_leg_all_symbols_akela_v2.py`
 
+Each iteration currently runs three selector profiles:
+
+- `baseline`: current defaults from the existing scripts.
+- `sensitive_failed_pump`: earlier failed-pump detection.
+- `strict_late_decay`: slower, stricter late-decay confirmation.
+
 ## Research Contract
 
 Every candidate must pass two levels of proof before being treated as useful:

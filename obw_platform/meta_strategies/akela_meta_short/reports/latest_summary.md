@@ -1,32 +1,46 @@
 # Akela Meta Short Latest Summary
 
-Updated: 20260511T215350Z
+Updated: 20260511T215636Z
 Phase dataset: `DB/fast_cache_akela_shortlist_1m_30d.npz`
 Short-leg dataset: `DB/akela_top200_1m_30d.db`
-Raw artifacts: `_reports/akela_meta_short/20260511T215350Z`
+Raw artifacts: `_reports/akela_meta_short/20260511T215636Z`
 
 ## Job Results
 
 | job | returncode | seconds | log |
 | --- | --- | ---: | --- |
-| phase_proxy_rank | 0 | 11.65 | `_reports/akela_meta_short/20260511T215350Z/phase_proxy_rank.log` |
-| monthly_rolling_phase_proxy | 0 | 17.7 | `_reports/akela_meta_short/20260511T215350Z/monthly_rolling_phase_proxy.log` |
-| short_leg_rank_no_backtest | 0 | 14.48 | `_reports/akela_meta_short/20260511T215350Z/short_leg_rank_no_backtest.log` |
+| phase_proxy_rank:baseline | 0 | 11.58 | `_reports/akela_meta_short/20260511T215636Z/phase_proxy_rank:baseline.log` |
+| monthly_rolling_phase_proxy:baseline | 0 | 17.19 | `_reports/akela_meta_short/20260511T215636Z/monthly_rolling_phase_proxy:baseline.log` |
+| short_leg_rank_no_backtest:baseline | 0 | 14.85 | `_reports/akela_meta_short/20260511T215636Z/short_leg_rank_no_backtest:baseline.log` |
+| phase_proxy_rank:sensitive_failed_pump | 0 | 11.23 | `_reports/akela_meta_short/20260511T215636Z/phase_proxy_rank:sensitive_failed_pump.log` |
+| monthly_rolling_phase_proxy:sensitive_failed_pump | 0 | 18.1 | `_reports/akela_meta_short/20260511T215636Z/monthly_rolling_phase_proxy:sensitive_failed_pump.log` |
+| short_leg_rank_no_backtest:sensitive_failed_pump | 0 | 14.26 | `_reports/akela_meta_short/20260511T215636Z/short_leg_rank_no_backtest:sensitive_failed_pump.log` |
+| phase_proxy_rank:strict_late_decay | 0 | 11.96 | `_reports/akela_meta_short/20260511T215636Z/phase_proxy_rank:strict_late_decay.log` |
+| monthly_rolling_phase_proxy:strict_late_decay | 0 | 18.45 | `_reports/akela_meta_short/20260511T215636Z/monthly_rolling_phase_proxy:strict_late_decay.log` |
+| short_leg_rank_no_backtest:strict_late_decay | 0 | 15.46 | `_reports/akela_meta_short/20260511T215636Z/short_leg_rank_no_backtest:strict_late_decay.log` |
 
-## Repeated Candidates
+## Repeated Candidates Across Profiles
 
-- `IDOL/USDT:USDT` appears in: phase, monthly, short_leg
-- `4/USDT:USDT` appears in: phase, monthly
-- `BEAT/USDT:USDT` appears in: phase, monthly
-- `CYS/USDT:USDT` appears in: phase, monthly
-- `DRIFT/USDT:USDT` appears in: phase, monthly
-- `FREEDOMMONEY/USDT:USDT` appears in: phase, monthly
-- `KOMA/USDT:USDT` appears in: phase, monthly
-- `MAXXING/USDT:USDT` appears in: phase, monthly
-- `PIPPIN/USDT:USDT` appears in: phase, monthly
-- `PLAYSOUT/USDT:USDT` appears in: phase, monthly
-- `SUP/USDT:USDT` appears in: phase, monthly
-- `TESTICLE/USDT:USDT` appears in: phase, monthly
+- `IDOL/USDT:USDT` appears in 9 reports: phase:baseline, monthly:baseline, short_leg:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, short_leg:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay, short_leg:strict_late_decay
+- `4/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `BEAT/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `CYS/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `DRIFT/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `FREEDOMMONEY/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `KOMA/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `MAXXING/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `PIPPIN/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `PLAYSOUT/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `SUP/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `TESTICLE/USDT:USDT` appears in 6 reports: phase:baseline, monthly:baseline, phase:sensitive_failed_pump, monthly:sensitive_failed_pump, phase:strict_late_decay, monthly:strict_late_decay
+- `AIOT/USDT:USDT` appears in 3 reports: short_leg:baseline, short_leg:sensitive_failed_pump, short_leg:strict_late_decay
+- `BIO/USDT:USDT` appears in 3 reports: short_leg:baseline, short_leg:sensitive_failed_pump, short_leg:strict_late_decay
+- `BTC/USDT:USDT` appears in 3 reports: phase:baseline, phase:sensitive_failed_pump, phase:strict_late_decay
+- `DOLO/USDT:USDT` appears in 3 reports: short_leg:baseline, short_leg:sensitive_failed_pump, short_leg:strict_late_decay
+- `ETH/USDT:USDT` appears in 3 reports: phase:baseline, phase:sensitive_failed_pump, phase:strict_late_decay
+- `FLOCK/USDT:USDT` appears in 3 reports: short_leg:baseline, short_leg:sensitive_failed_pump, short_leg:strict_late_decay
+- `M/USDT:USDT` appears in 3 reports: short_leg:baseline, short_leg:sensitive_failed_pump, short_leg:strict_late_decay
+- `MEME/USDT:USDT` appears in 3 reports: short_leg:baseline, short_leg:sensitive_failed_pump, short_leg:strict_late_decay
 
 ## Phase Proxy Top Rows
 

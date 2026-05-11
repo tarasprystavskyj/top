@@ -47,6 +47,7 @@ Current wiring:
 - phase proxy rank: `DB/fast_cache_akela_shortlist_1m_30d.npz`
 - rolling monthly proxy rank: `DB/fast_cache_akela_shortlist_1m_30d.npz`
 - structural short-leg rank: `DB/akela_top200_1m_30d.db`
+- selector profiles: `baseline`, `sensitive_failed_pump`, `strict_late_decay`
 
 ## Evidence Gates
 

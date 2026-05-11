@@ -28,6 +28,62 @@ SHORTLIST_NPZ = ROOT / "DB" / "fast_cache_akela_shortlist_1m_30d.npz"
 FIVE_MIN_NPZ = ROOT / "DB" / "combined_cache_5m_5000_04.09.phase0_top100.research_v2_2_no_cross.npz"
 AKELA_TOP200_DB = ROOT / "DB" / "akela_top200_1m_30d.db"
 
+PROFILES = [
+    {
+        "name": "baseline",
+        "ranker_args": [],
+        "short_args": [],
+    },
+    {
+        "name": "sensitive_failed_pump",
+        "ranker_args": [
+            "--pump-pct",
+            "0.03",
+            "--setup-min-up-pct",
+            "0.008",
+            "--setup-min-down-pct",
+            "0.008",
+            "--late-dd-pct",
+            "45",
+        ],
+        "short_args": [
+            "--pump-pct",
+            "0.07",
+            "--pump-window",
+            "1440",
+            "--pump-fail-window",
+            "480",
+            "--high-lookback",
+            "7200",
+        ],
+    },
+    {
+        "name": "strict_late_decay",
+        "ranker_args": [
+            "--pump-pct",
+            "0.06",
+            "--setup-min-up-pct",
+            "0.015",
+            "--setup-min-down-pct",
+            "0.012",
+            "--phase-recent-window",
+            "480",
+            "--late-dd-pct",
+            "65",
+        ],
+        "short_args": [
+            "--pump-pct",
+            "0.12",
+            "--pump-window",
+            "1440",
+            "--pump-fail-window",
+            "480",
+            "--high-lookback",
+            "7200",
+        ],
+    },
+]
+
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -138,83 +194,98 @@ def main() -> int:
         print("No Akela NPZ dataset found.", file=sys.stderr)
         return 2
 
-    phase_csv = run_dir / "phase_rank.csv"
-    phase_json = run_dir / "phase_rank.json"
-    monthly_detail = run_dir / "monthly_detail.csv"
-    monthly_summary = run_dir / "monthly_summary.csv"
-    monthly_json = run_dir / "monthly.json"
-    short_csv = run_dir / "short_leg_rank.csv"
-    short_json = run_dir / "short_leg_rank.json"
+    jobs = []
+    report_paths: dict[str, dict[str, Path]] = {}
+    for profile in PROFILES:
+        profile_name = profile["name"]
+        phase_csv = run_dir / f"phase_rank_{profile_name}.csv"
+        phase_json = run_dir / f"phase_rank_{profile_name}.json"
+        monthly_detail = run_dir / f"monthly_detail_{profile_name}.csv"
+        monthly_summary = run_dir / f"monthly_summary_{profile_name}.csv"
+        monthly_json = run_dir / f"monthly_{profile_name}.json"
+        short_csv = run_dir / f"short_leg_rank_{profile_name}.csv"
+        short_json = run_dir / f"short_leg_rank_{profile_name}.json"
 
-    jobs = [
-        (
-            "phase_proxy_rank",
+        report_paths[profile_name] = {
+            "phase": phase_csv,
+            "monthly": monthly_summary,
+            "short_leg": short_csv,
+        }
+
+        jobs.extend(
             [
-                "python3",
-                "obw_platform/rank_fast_cache_akela_phase_proxybt.py",
-                "--npz",
-                str(phase_npz),
-                "--out",
-                str(phase_csv),
-                "--json-out",
-                str(phase_json),
-                "--top",
-                "80",
-                "--min-bars",
-                "1000",
-            ],
-            1800,
-        ),
-        (
-            "monthly_rolling_phase_proxy",
-            [
-                "python3",
-                "obw_platform/monthly_akela_phase_proxybt.py",
-                "--ranker-path",
-                "obw_platform/rank_fast_cache_akela_phase_proxybt.py",
-                "--npz",
-                str(phase_npz),
-                "--mode",
-                "rolling",
-                "--rolling-days",
-                "14",
-                "--rolling-step-days",
-                "7",
-                "--detail-out",
-                str(monthly_detail),
-                "--summary-out",
-                str(monthly_summary),
-                "--json-out",
-                str(monthly_json),
-                "--top-per-period",
-                "10",
-                "--min-bars",
-                "1000",
-            ],
-            2400,
-        ),
-        (
-            "short_leg_rank_no_backtest",
-            [
-                "python3",
-                "obw_platform/rank_short_leg_all_symbols_akela_v2.py",
-                "--db",
-                str(short_db),
-                "--prefer",
-                "db",
-                "--no-backtest",
-                "--top",
-                "120",
-                "--out",
-                str(short_csv),
-                "--json-out",
-                str(short_json),
-                "--min-bars",
-                "1000",
-            ],
-            1800,
-        ),
-    ]
+                (
+                    f"phase_proxy_rank:{profile_name}",
+                    [
+                        "python3",
+                        "obw_platform/rank_fast_cache_akela_phase_proxybt.py",
+                        "--npz",
+                        str(phase_npz),
+                        "--out",
+                        str(phase_csv),
+                        "--json-out",
+                        str(phase_json),
+                        "--top",
+                        "80",
+                        "--min-bars",
+                        "1000",
+                    ]
+                    + profile["ranker_args"],
+                    1800,
+                ),
+                (
+                    f"monthly_rolling_phase_proxy:{profile_name}",
+                    [
+                        "python3",
+                        "obw_platform/monthly_akela_phase_proxybt.py",
+                        "--ranker-path",
+                        "obw_platform/rank_fast_cache_akela_phase_proxybt.py",
+                        "--npz",
+                        str(phase_npz),
+                        "--mode",
+                        "rolling",
+                        "--rolling-days",
+                        "14",
+                        "--rolling-step-days",
+                        "7",
+                        "--detail-out",
+                        str(monthly_detail),
+                        "--summary-out",
+                        str(monthly_summary),
+                        "--json-out",
+                        str(monthly_json),
+                        "--top-per-period",
+                        "10",
+                        "--min-bars",
+                        "1000",
+                    ]
+                    + profile["ranker_args"],
+                    2400,
+                ),
+                (
+                    f"short_leg_rank_no_backtest:{profile_name}",
+                    [
+                        "python3",
+                        "obw_platform/rank_short_leg_all_symbols_akela_v2.py",
+                        "--db",
+                        str(short_db),
+                        "--prefer",
+                        "db",
+                        "--no-backtest",
+                        "--top",
+                        "120",
+                        "--out",
+                        str(short_csv),
+                        "--json-out",
+                        str(short_json),
+                        "--min-bars",
+                        "1000",
+                    ]
+                    + profile["short_args"],
+                    1800,
+                ),
+            ]
+        )
 
     results = []
     for name, cmd, timeout in jobs:
@@ -234,13 +305,12 @@ def main() -> int:
                 }
             )
 
-    rows_by_report = {
-        "phase": read_csv_rows(phase_csv, 20),
-        "monthly": read_csv_rows(monthly_summary, 20),
-        "short_leg": read_csv_rows(short_csv, 20),
-    }
+    rows_by_report: dict[str, list[dict[str, str]]] = {}
+    for profile_name, paths in report_paths.items():
+        for report_name, path in paths.items():
+            rows_by_report[f"{report_name}:{profile_name}"] = read_csv_rows(path, 20)
     mentions = collect_mentions(rows_by_report)
-    repeated = {k: v for k, v in mentions.items() if len(v) >= 2}
+    repeated = {k: v for k, v in mentions.items() if len(v) >= 3}
 
     manifest = {
         "stamp": stamp,
@@ -248,7 +318,8 @@ def main() -> int:
         "short_dataset": str(short_db.relative_to(ROOT)) if short_db else "",
         "raw_report_dir": str(run_dir.relative_to(ROOT)),
         "results": results,
-        "repeated_candidates": repeated,
+        "profiles": [profile["name"] for profile in PROFILES],
+        "repeated_candidates_min_3_reports": repeated,
     }
     (SUMMARY_DIR / "latest_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -283,13 +354,13 @@ def main() -> int:
     summary.extend(
         [
             "",
-            "## Repeated Candidates",
+            "## Repeated Candidates Across Profiles",
             "",
         ]
     )
     if repeated:
         for symbol, reports in list(repeated.items())[:20]:
-            summary.append(f"- `{symbol}` appears in: {', '.join(reports)}")
+            summary.append(f"- `{symbol}` appears in {len(reports)} reports: {', '.join(reports)}")
     else:
         summary.append("_No repeated top candidates across reports yet._")
 
@@ -298,15 +369,15 @@ def main() -> int:
             "",
             "## Phase Proxy Top Rows",
             "",
-            format_table(rows_by_report["phase"], phase_keys),
+            format_table(rows_by_report.get("phase:baseline", []), phase_keys),
             "",
             "## Monthly Stability Top Rows",
             "",
-            format_table(rows_by_report["monthly"], monthly_keys),
+            format_table(rows_by_report.get("monthly:baseline", []), monthly_keys),
             "",
             "## Short Leg Rank Top Rows",
             "",
-            format_table(rows_by_report["short_leg"], short_keys),
+            format_table(rows_by_report.get("short_leg:baseline", []), short_keys),
             "",
             "## Next Research Action",
             "",
