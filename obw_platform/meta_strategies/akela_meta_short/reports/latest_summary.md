@@ -1,17 +1,17 @@
 # Akela Meta Short Latest Summary
 
-Updated: 20260511T215233Z
+Updated: 20260511T215350Z
 Phase dataset: `DB/fast_cache_akela_shortlist_1m_30d.npz`
 Short-leg dataset: `DB/akela_top200_1m_30d.db`
-Raw artifacts: `_reports/akela_meta_short/20260511T215233Z`
+Raw artifacts: `_reports/akela_meta_short/20260511T215350Z`
 
 ## Job Results
 
 | job | returncode | seconds | log |
 | --- | --- | ---: | --- |
-| phase_proxy_rank | 0 | 11.9 | `_reports/akela_meta_short/20260511T215233Z/phase_proxy_rank.log` |
-| monthly_rolling_phase_proxy | 0 | 17.42 | `_reports/akela_meta_short/20260511T215233Z/monthly_rolling_phase_proxy.log` |
-| short_leg_rank_no_backtest | 0 | 14.72 | `_reports/akela_meta_short/20260511T215233Z/short_leg_rank_no_backtest.log` |
+| phase_proxy_rank | 0 | 11.65 | `_reports/akela_meta_short/20260511T215350Z/phase_proxy_rank.log` |
+| monthly_rolling_phase_proxy | 0 | 17.7 | `_reports/akela_meta_short/20260511T215350Z/monthly_rolling_phase_proxy.log` |
+| short_leg_rank_no_backtest | 0 | 14.48 | `_reports/akela_meta_short/20260511T215350Z/short_leg_rank_no_backtest.log` |
 
 ## Repeated Candidates
 
