@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-12T21:32:07Z
+Updated: 2026-05-12T21:41:45Z
 
 ## Objective
 
@@ -14,7 +14,7 @@ All candidates below are experimental YAMLs under `obw_platform/meta_strategies/
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `IDOL/USDT:USDT` | `V21_idol_margin_zero_budget50.yaml` | 9.05 | -10.40 | 2430 | 0 | 0 | -0.4943 | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_full.log` |
 | `MAXXING/USDT:USDT` | `V21_maxxing_margin_zero_budget50.yaml` | 26.23 | -11.60 | 1459 | 0 | 0 | -0.3543 | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget50_full.log` |
-| `SUP/USDT:USDT` | `V21_sup_margin_zero_long35_short50.yaml` | 11.27 | -50.20 | 1303 | 0 | 0 | -0.2744 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full.log` |
+| `SUP/USDT:USDT` | `V21_sup_margin_zero_short_ladder_soft.yaml` | 9.04 | -48.02 | 1329 | 0 | 0 | -0.3140 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_short_ladder_soft_full.log` |
 
 `FREEDOMMONEY/USDT:USDT` already had zero margin calls in the latest baseline basket with `V21_freedommoney_bingx_live_candidate_1m_1y.yaml`: return 64.28%, MDD -24.09%, trades 7583, margin calls 0.
 
@@ -25,9 +25,9 @@ Validated with the three generated margin-zero configs plus the existing FREEDOM
 | metric | value |
 | --- | ---: |
 | symbols | 4 |
-| equal-weight terminal return approximation | 27.71% |
-| worst single-symbol MTM drawdown | -50.20% |
-| total trades | 12775 |
+| equal-weight terminal return approximation | 27.15% |
+| worst single-symbol MTM drawdown | -48.02% |
+| total trades | 12801 |
 | total margin-call events | 0 |
 | total bars in margin call | 0 |
 
@@ -36,7 +36,7 @@ Validated with the three generated margin-zero configs plus the existing FREEDOM
 | `IDOL/USDT:USDT` | `V21_idol_margin_zero_budget50.yaml` | 9.05 | -10.40 | 2430 | 0 | 0 | -0.4943 | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_full.log` |
 | `FREEDOMMONEY/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y.yaml` | 64.28 | -24.09 | 7583 | 0 | 0 | -0.4130 | `_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log` |
 | `MAXXING/USDT:USDT` | `V21_maxxing_margin_zero_budget50.yaml` | 26.23 | -11.60 | 1459 | 0 | 0 | -0.3543 | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget50_full.log` |
-| `SUP/USDT:USDT` | `V21_sup_margin_zero_long35_short50.yaml` | 11.27 | -50.20 | 1303 | 0 | 0 | -0.2744 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full.log` |
+| `SUP/USDT:USDT` | `V21_sup_margin_zero_short_ladder_soft.yaml` | 9.04 | -48.02 | 1329 | 0 | 0 | -0.3140 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_short_ladder_soft_full.log` |
 
 ## Baseline Comparison
 
@@ -44,7 +44,7 @@ Validated with the three generated margin-zero configs plus the existing FREEDOM
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `IDOL/USDT:USDT` | 44.19 | -37.75 | 18 | 9.05 | -10.40 | 0 |
 | `MAXXING/USDT:USDT` | 183.80 | -18.37 | 8 | 26.23 | -11.60 | 0 |
-| `SUP/USDT:USDT` | -1.05 | -219.88 | 35 | 11.27 | -50.20 | 0 |
+| `SUP/USDT:USDT` | -1.05 | -219.88 | 35 | 9.04 | -48.02 | 0 |
 
 ## What Changed
 
@@ -55,6 +55,8 @@ This cycle improved SUP by making the sizing asymmetric around the existing budg
 - `V21_sup_margin_zero_long35_short50.yaml` keeps the short side at budget50.
 - The long side uses `equityForSizingUSDT: 35`, `baseOrderPctEq: 0.35`, `maxLongInvestPct: 0.35`, and `minLongInvestPct: 0.15`.
 - Full-year SUP stayed at `margin_call_events_total: 0`, improved return from 5.34% to 11.27%, and reduced terminal unrealized drag from -21.27 USDT to -8.52 USDT. Full-year MDD remained roughly unchanged near -50%.
+
+Follow-up risk cleanup tested small changes around `V21_sup_margin_zero_long35_short50.yaml`. The useful variant is `V21_sup_margin_zero_short_ladder_soft.yaml`, which keeps the same long35/short50 sizing and softens the short DCA multipliers from `1.5/1.0/1.2/1.5` to `1.2/1.0/1.1/1.2`. Full-year SUP stayed at zero margin calls and improved MDD from -50.20% to -48.02%, at the cost of lower MTM return, 9.04% vs 11.27%, and slightly worse terminal unrealized/realized ratio, -0.3140 vs -0.2744.
 
 ## Attempts
 
@@ -75,6 +77,10 @@ This cycle improved SUP by making the sizing asymmetric around the existing budg
 | `V21_sup_margin_zero_budget75.yaml` | `SUP/USDT:USDT` | 20000 | 10 margin calls, 59 bars in margin call, -12.05% MTM, MDD -103.81% | Rejected immediately; higher sizing restored margin-call risk. |
 | `V21_sup_margin_zero_long35_short50.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 10.95% MTM, MDD -16.21% | Promising slice: zero margin calls, better return than budget50 20k, lower terminal unrealized ratio. |
 | `V21_sup_margin_zero_long35_short50.yaml` | `SUP/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 11.27% MTM, MDD -50.20% | Confirmed full-year: zero margin calls, higher return than budget50 and much smaller terminal unrealized drag; MDD roughly unchanged. |
+| `V21_sup_margin_zero_wider_spacing.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 1.68% MTM, MDD -9.91% | Rejected for now: wider long/short DCA spacing reduced slice drawdown but gave up too much MTM and worsened terminal unrealized ratio to -0.8894. |
+| `V21_sup_margin_zero_wider_soft.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 1.65% MTM, MDD -9.20% | Rejected for now: lowest slice drawdown, but MTM return and terminal unrealized ratio were inferior. |
+| `V21_sup_margin_zero_short_ladder_soft.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 11.00% MTM, MDD -15.17% | Promising slice: zero-margin, similar return to long35_short50 20k, and slightly lower drawdown. |
+| `V21_sup_margin_zero_short_ladder_soft.yaml` | `SUP/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 9.04% MTM, MDD -48.02% | Risk-first SUP replacement: lower return than long35_short50 but better full-year MDD while keeping margin calls at zero. |
 | `V21_sup_margin_zero_long25_short50.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, -0.80% MTM, MDD -18.30% | Rejected: zero-margin but under-sized long side left negative MTM return on the 20k slice. |
 | `V21_sup_margin_zero_long_exit_fast.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 1.55% MTM, MDD -15.88% | Rejected: faster long exits stayed zero-margin but return and terminal unrealized ratio were inferior to long35_short50. |
 | `V21_maxxing_margin_zero_budget50.yaml` | `MAXXING/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 26.23% MTM, MDD -11.60% | Confirmed margin-zero candidate. |
@@ -92,9 +98,9 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget50.yaml --npz DB/fast_cache_1m_maxxing_1y_bingx.npz --symbol MAXXING/USDT:USDT
 ```
 ```bash
-python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
+python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_short_ladder_soft.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
 ```
 
 ## Next Action
 
-The first-basket margin-call cleanup remains satisfied. SUP improved with asymmetric long35/short50 sizing; next useful work is to reduce SUP full-year MTM drawdown near the same sizing, likely through spacing or targeted deleverage rather than higher budget.
+The first-basket margin-call cleanup remains satisfied. The risk-first SUP candidate is now `V21_sup_margin_zero_short_ladder_soft.yaml`; keep `V21_sup_margin_zero_long35_short50.yaml` as the higher-return tradeoff. Next useful work is to look for a SUP variant that keeps the short-ladder-soft drawdown improvement while recovering some of the lost return, likely with modest TP/callback changes rather than higher budget.
