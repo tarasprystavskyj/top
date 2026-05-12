@@ -4,6 +4,8 @@ out/
 .agent/
 _handoff/
 _reports/
+.playwright-mcp/
+continuity/web_worker_param_loop/runtime/
 runs/
 .env*
 .venv*/
