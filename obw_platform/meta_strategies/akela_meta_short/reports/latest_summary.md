@@ -1,23 +1,25 @@
 # Akela Meta Short Latest Summary
 
-Updated: 20260512T045340Z
+Updated: 20260512T045850Z
 Phase dataset: `DB/fast_cache_akela_shortlist_1m_30d.npz`
 Short-leg dataset: `DB/akela_top200_1m_30d.db`
-Raw artifacts: `_reports/akela_meta_short/20260512T045340Z`
+Raw artifacts: `_reports/akela_meta_short/20260512T045850Z`
 
 ## Job Results
 
 | job | returncode | seconds | log |
 | --- | --- | ---: | --- |
-| phase_proxy_rank:baseline | 0 | 11.66 | `_reports/akela_meta_short/20260512T045340Z/phase_proxy_rank:baseline.log` |
-| monthly_rolling_phase_proxy:baseline | 0 | 18.2 | `_reports/akela_meta_short/20260512T045340Z/monthly_rolling_phase_proxy:baseline.log` |
-| short_leg_rank_no_backtest:baseline | 0 | 14.02 | `_reports/akela_meta_short/20260512T045340Z/short_leg_rank_no_backtest:baseline.log` |
-| phase_proxy_rank:sensitive_failed_pump | 0 | 12.05 | `_reports/akela_meta_short/20260512T045340Z/phase_proxy_rank:sensitive_failed_pump.log` |
-| monthly_rolling_phase_proxy:sensitive_failed_pump | 0 | 16.89 | `_reports/akela_meta_short/20260512T045340Z/monthly_rolling_phase_proxy:sensitive_failed_pump.log` |
-| short_leg_rank_no_backtest:sensitive_failed_pump | 0 | 14.42 | `_reports/akela_meta_short/20260512T045340Z/short_leg_rank_no_backtest:sensitive_failed_pump.log` |
-| phase_proxy_rank:strict_late_decay | 0 | 12.66 | `_reports/akela_meta_short/20260512T045340Z/phase_proxy_rank:strict_late_decay.log` |
-| monthly_rolling_phase_proxy:strict_late_decay | 0 | 17.72 | `_reports/akela_meta_short/20260512T045340Z/monthly_rolling_phase_proxy:strict_late_decay.log` |
-| short_leg_rank_no_backtest:strict_late_decay | 0 | 14.14 | `_reports/akela_meta_short/20260512T045340Z/short_leg_rank_no_backtest:strict_late_decay.log` |
+| fetch_1y_data:idol | 0 | 354.16 | `_reports/akela_meta_short/20260512T045850Z/fetch_1y_data:idol.log` |
+| fetch_1y_data:sup | 0 | 167.01 | `_reports/akela_meta_short/20260512T045850Z/fetch_1y_data:sup.log` |
+| phase_proxy_rank:baseline | 0 | 11.9 | `_reports/akela_meta_short/20260512T045850Z/phase_proxy_rank:baseline.log` |
+| monthly_rolling_phase_proxy:baseline | 0 | 18.35 | `_reports/akela_meta_short/20260512T045850Z/monthly_rolling_phase_proxy:baseline.log` |
+| short_leg_rank_no_backtest:baseline | 0 | 14.82 | `_reports/akela_meta_short/20260512T045850Z/short_leg_rank_no_backtest:baseline.log` |
+| phase_proxy_rank:sensitive_failed_pump | 0 | 11.88 | `_reports/akela_meta_short/20260512T045850Z/phase_proxy_rank:sensitive_failed_pump.log` |
+| monthly_rolling_phase_proxy:sensitive_failed_pump | 0 | 17.86 | `_reports/akela_meta_short/20260512T045850Z/monthly_rolling_phase_proxy:sensitive_failed_pump.log` |
+| short_leg_rank_no_backtest:sensitive_failed_pump | 0 | 14.39 | `_reports/akela_meta_short/20260512T045850Z/short_leg_rank_no_backtest:sensitive_failed_pump.log` |
+| phase_proxy_rank:strict_late_decay | 0 | 12.4 | `_reports/akela_meta_short/20260512T045850Z/phase_proxy_rank:strict_late_decay.log` |
+| monthly_rolling_phase_proxy:strict_late_decay | 0 | 17.93 | `_reports/akela_meta_short/20260512T045850Z/monthly_rolling_phase_proxy:strict_late_decay.log` |
+| short_leg_rank_no_backtest:strict_late_decay | 0 | 14.79 | `_reports/akela_meta_short/20260512T045850Z/short_leg_rank_no_backtest:strict_late_decay.log` |
 
 ## Repeated Candidates Across Profiles
 
@@ -41,6 +43,13 @@ Raw artifacts: `_reports/akela_meta_short/20260512T045340Z`
 - `FLOCK/USDT:USDT` appears in 3 reports: short_leg:baseline, short_leg:sensitive_failed_pump, short_leg:strict_late_decay
 - `M/USDT:USDT` appears in 3 reports: short_leg:baseline, short_leg:sensitive_failed_pump, short_leg:strict_late_decay
 - `MEME/USDT:USDT` appears in 3 reports: short_leg:baseline, short_leg:sensitive_failed_pump, short_leg:strict_late_decay
+
+## Yearly Data Plan
+
+- `IDOL`: missing, bars=0, action=fetch_1m_1y_bingx, target=`DB/akela_meta_short_1m_1y_idol_bingx.npz`
+- `FREEDOMMONEY`: present, bars=104184, action=skip, target=`DB/fast_cache_1m_freedommoney_1y_bingx.npz`
+- `MAXXING`: present, bars=108569, action=skip, target=`DB/fast_cache_1m_maxxing_1y_bingx.npz`
+- `SUP`: missing, bars=0, action=fetch_1m_1y_bingx, target=`DB/akela_meta_short_1m_1y_sup_bingx.npz`
 
 ## Phase Proxy Top Rows
 
