@@ -134,6 +134,35 @@ reported outputs from the existing backtester:
 If any symbol fails, record the failure and keep the basket report partial. A
 partial, honest report is better than a silent skip.
 
+## Paper-Live Champion Search
+
+Intermediate goal: find a new champion candidate for paper live.
+
+Sequence to paper live:
+
+1. Confirm yearly data exists for the first basket.
+2. Run yearly backtest matrix across the candidate symbols and V21 configs.
+3. Run overnight tuning on each symbol with the existing V21 1m 1y tuning plan.
+4. Compare tuned configs by MTM return, MTM drawdown, margin-call count, final
+   unrealized/tail exposure, and trade count.
+5. Promote only one or two candidates to paper-live review. Do not edit live
+   configs or deploy automatically.
+
+Use:
+
+```bash
+./obw_platform/meta_strategies/akela_meta_short/run_yearly_champion_search.sh
+```
+
+The runner writes:
+
+- raw logs under `_reports/akela_meta_short/champion_<UTC_STAMP>/`;
+- compact summary under
+  `obw_platform/meta_strategies/akela_meta_short/reports/latest_champion_search.md`.
+
+This is now the next logical step after yearly data collection. More proxy-only
+Akela summaries are secondary until this champion search completes.
+
 ## Evidence Gates
 
 - Prefer rolling-window validation over a single full-period rank.
@@ -146,7 +175,6 @@ partial, honest report is better than a silent skip.
 
 ## Next Steps
 
-- Run basket/portfolio backtests for `IDOL`, `FREEDOMMONEY`, `MAXXING`, and
-  `SUP`.
+- Run yearly champion search for `IDOL`, `FREEDOMMONEY`, `MAXXING`, and `SUP`.
 - Promote only stable selector logic to code.
 - Keep V21 live continuation separate until this router has enough evidence.

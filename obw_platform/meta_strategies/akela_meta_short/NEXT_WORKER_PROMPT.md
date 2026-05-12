@@ -78,7 +78,7 @@ request every cycle is not.
 ## Automatic Next Step Rule
 
 If all four first-basket datasets exist, stop spending the main iteration on
-proxy-only repetition and move to basket validation.
+proxy-only repetition and move to basket validation plus overnight tuning.
 
 Required first basket:
 
@@ -115,6 +115,26 @@ Promotion rule: the selector is interesting only if basket risk-adjusted MTM is
 better than the weakest individual symbol and failures are explainable. Do not
 promote based on one per-symbol winner.
 
+## Paper-Live Champion Search
+
+After the basket data exists, launch or continue the yearly champion search:
+
+```bash
+./obw_platform/meta_strategies/akela_meta_short/run_yearly_champion_search.sh
+```
+
+This performs:
+
+1. yearly backtests for the first basket against known V21 configs;
+2. nightly tuning for each basket symbol using
+   `obw_platform/auto_tuner_dual_fast_pack.py`;
+3. summary output at
+   `obw_platform/meta_strategies/akela_meta_short/reports/latest_champion_search.md`.
+
+Do not create a new tuner. Do not change backtester math. Do not edit production
+YAML. The target is a candidate for paper-live review, not automatic live
+promotion.
+
 ## What Counts As Progress
 
 - Better evidence that a candidate symbol appears across independent windows.
@@ -122,6 +142,8 @@ promote based on one per-symbol winner.
   recorded.
 - A per-symbol or basket backtest report was produced from existing backtester
   outputs.
+- An overnight tuner run produced a candidate config and summary for at least
+  one basket symbol.
 - A selector rule that improves short-leg risk adjusted results out of sample.
 - A cleaner data manifest or reproducible dataset builder for missing windows.
 - A report that falsifies a weak idea and narrows the next search.

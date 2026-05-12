@@ -67,3 +67,15 @@ The basket is interesting only if:
 - MTM risk-adjusted return is better than naive single-winner selection;
 - drawdown/tail exposure is not concentrated in one symbol;
 - the result has enough evidence to justify a focused tuner run.
+
+## Champion Search Runner
+
+Once all first-basket datasets are present, use:
+
+```bash
+./obw_platform/meta_strategies/akela_meta_short/run_yearly_champion_search.sh
+```
+
+This runner performs the yearly backtest matrix first, then launches sequential
+night tuning for all first-basket symbols using the existing V21 1m 1y tuning
+plan. It is the current bridge from Akela research to a paper-live candidate.
