@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12T22:01:46Z",
+  "updated": "2026-05-12T22:27:17Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -500,7 +500,48 @@
       "unrealized_pnl_total": -8.275431468216006,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long_spacing_soft_full.log",
       "reason": "Rejected and config removed: full-year behavior was effectively identical and slightly worse than short_ladder_soft."
+    },
+    {
+      "config": "tuner final_best.yaml from akela_margin_zero_sup_soft_probe_20260512_220933",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 12.381249457543287,
+      "mdd_mtm_%": -8.898343212961265,
+      "trades_total": 325,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.3834306323619196,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_soft_tuner_20k_20260512T220932Z.log",
+      "tuner_session_dir": "_reports/_auto_tuner_dual_fast_pack/tuner_plan_V21_live_candidates_1m_1y/akela_margin_zero_sup_soft_probe_20260512_220933",
+      "reason": "Bounded tuner probe improved the 20k slice, but its final YAML included negative maxLongInvestPct/maxShortInvestPct after delta stages; those cap changes did not improve score and were not promoted."
+    },
+    {
+      "config": "V21_sup_margin_zero_tuner_spacing_exit.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 12.381249457543287,
+      "mdd_mtm_%": -8.898343212961265,
+      "trades_total": 325,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.3834306323619196,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_tuner_spacing_exit_20k.log",
+      "reason": "Cleaned tuner-derived variant kept positive exposure caps and reproduced the 20k tuner result exactly, so it received full-year confirmation."
+    },
+    {
+      "config": "V21_sup_margin_zero_tuner_spacing_exit.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 5.840241709394467,
+      "mdd_mtm_%": -57.89413025101131,
+      "trades_total": 1367,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.5170445857940783,
+      "unrealized_pnl_total": -12.504944625317492,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_tuner_spacing_exit_full.log",
+      "reason": "Rejected and config removed: full-year stayed margin-zero but worsened return, MDD, and terminal drag versus V21_sup_margin_zero_short_ladder_soft.yaml."
     }
   ],
-  "next_action": "First-basket margin-call cleanup remains satisfied. SUP risk-first candidate remains V21_sup_margin_zero_short_ladder_soft.yaml; keep V21_sup_margin_zero_long35_short50.yaml as the higher-return tradeoff. Small long-side budget, ladder, and spacing cleanup did not improve the full-year SUP candidate. Next useful work is either to run the existing V21 tuner from the SUP short_ladder_soft config with the margin-call penalty intact, or to move to IDOL/MAXXING second-pass cleanup for better return at zero margin calls."
+  "next_action": "First-basket margin-call cleanup remains satisfied. SUP risk-first candidate remains V21_sup_margin_zero_short_ladder_soft.yaml; the bounded tuner probe improved the 20k slice but failed full-year confirmation. Next useful work is IDOL/MAXXING second-pass cleanup for better return at zero margin calls, or a SUP tuner plan constrained to non-negative exposure caps."
 }

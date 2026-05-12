@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-12T22:01:46Z
+Updated: 2026-05-12T22:27:17Z
 
 ## Objective
 
@@ -62,6 +62,8 @@ This cycle tested whether a halfway short ladder could recover some lost return 
 
 This cycle tested small long-side risk cleanup around `V21_sup_margin_zero_short_ladder_soft.yaml`. Lowering the long budget to 30 USDT and softening only the long DCA ladder both stayed zero-margin on the 20k slice but worsened the return/drawdown/terminal-drag balance. Widening only long DCA spacing had the best 20k slice drawdown, so it was confirmed full-year, but it was effectively identical and slightly worse than the current SUP winner: 9.03% MTM, -48.02% MDD, 0 margin calls vs 9.04% MTM, -48.02% MDD, 0 margin calls. The three rejected temporary YAMLs were removed after logging the raw results.
 
+This cycle ran the existing V21 tuner from `V21_sup_margin_zero_short_ladder_soft.yaml` on a 20k-bar SUP slice with the margin-call penalty intact. The tuner found a cleaner 20k slice, but its final YAML included negative `maxLongInvestPct` and `maxShortInvestPct` values after delta exposure stages; those cap changes did not improve score and were not promoted. A cleaned variant kept the positive exposure caps and confirmed the 20k result exactly, then failed full-year confirmation: 5.84% MTM, -57.89% MDD, 0 margin calls, and terminal unrealized/realized ratio -0.5170. The cleaned temporary YAML was removed, and the best SUP candidate remains `V21_sup_margin_zero_short_ladder_soft.yaml`.
+
 ## Attempts
 
 | config | symbol/scope | limit | result | reason |
@@ -96,6 +98,9 @@ This cycle tested small long-side risk cleanup around `V21_sup_margin_zero_short
 | `V21_sup_margin_zero_long_spacing_soft.yaml` | `SUP/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 9.03% MTM, MDD -48.02% | Rejected and config removed: full-year behavior was effectively identical and slightly worse than short_ladder_soft. |
 | `V21_maxxing_margin_zero_budget50.yaml` | `MAXXING/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 26.23% MTM, MDD -11.60% | Confirmed margin-zero candidate. |
 | `V21_idol_margin_zero_budget50.yaml` | `IDOL/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 9.05% MTM, MDD -10.40% | Confirmed margin-zero candidate. |
+| `tuner final_best.yaml from akela_margin_zero_sup_soft_probe_20260512_220933` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 12.38% MTM, MDD -8.90% | Bounded tuner probe improved the 20k slice, but final YAML included negative exposure caps after delta stages; those cap changes did not improve score and were not promoted. Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/sup_soft_tuner_20k_20260512T220932Z.log`. |
+| `V21_sup_margin_zero_tuner_spacing_exit.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 12.38% MTM, MDD -8.90% | Cleaned tuner-derived variant kept positive exposure caps and reproduced the 20k tuner result exactly, so it received full-year confirmation. Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/sup_tuner_spacing_exit_20k.log`. |
+| `V21_sup_margin_zero_tuner_spacing_exit.yaml` | `SUP/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 5.84% MTM, MDD -57.89% | Rejected and config removed: full-year worsened return, MDD, and terminal drag versus `V21_sup_margin_zero_short_ladder_soft.yaml`. Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/sup_tuner_spacing_exit_full.log`. |
 
 ## Exact Full-Year Commands
 
@@ -114,4 +119,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-The first-basket margin-call cleanup remains satisfied. The risk-first SUP candidate remains `V21_sup_margin_zero_short_ladder_soft.yaml`; keep `V21_sup_margin_zero_long35_short50.yaml` as the higher-return tradeoff. Small long-side budget, ladder, and spacing cleanup did not improve the full-year SUP candidate. Next useful work is either to run the existing V21 tuner from the SUP short_ladder_soft config with the margin-call penalty intact, or to move to IDOL/MAXXING second-pass cleanup for better return at zero margin calls.
+The first-basket margin-call cleanup remains satisfied. The risk-first SUP candidate remains `V21_sup_margin_zero_short_ladder_soft.yaml`; keep `V21_sup_margin_zero_long35_short50.yaml` as the higher-return tradeoff. The bounded tuner probe from short_ladder_soft improved the 20k slice but failed full-year confirmation. Next useful work is IDOL/MAXXING second-pass cleanup for better return at zero margin calls, or a SUP tuner plan constrained to non-negative exposure caps.
