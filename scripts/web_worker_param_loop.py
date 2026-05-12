@@ -129,6 +129,64 @@ BUILTIN_BACKTEST_IDEAS = [
         },
         "argument": "SUP was ranked as drawdown-repair, not yield-max; compress exposure and widen spacing.",
     },
+    {
+        "id": "fm_h4_c3_long_profit_090_158_30d",
+        "base_cfg": "obw_platform/configs/h4_freedommoney_hybrid_balanced_v3.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "patch": {
+            "strategy_params_long.maxLongInvestPct": 1.0,
+            "strategy_params_long.tpPercent": 0.90,
+            "strategy_params_long.subSellTPPercent": 1.58,
+            "strategy_params_short.maxShortInvestPct": 1.0,
+        },
+        "argument": "Worker_11 cycle-5 long-profit recovery: move long exits slightly toward ratio_best_v2 while keeping long exposure locked at 1.0.",
+    },
+    {
+        "id": "fm_h4_c3_long_profit_095_166_30d",
+        "base_cfg": "obw_platform/configs/h4_freedommoney_hybrid_balanced_v3.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "patch": {
+            "strategy_params_long.maxLongInvestPct": 1.0,
+            "strategy_params_long.tpPercent": 0.95,
+            "strategy_params_long.subSellTPPercent": 1.66,
+            "strategy_params_short.maxShortInvestPct": 1.0,
+        },
+        "argument": "Upper end of Worker_11's cycle-5 long-profit recovery range, bounded by locked exposure to avoid ratio_best_v2 tail.",
+    },
+    {
+        "id": "fm_h4_c3_short_cap_micro_lift_102_30d",
+        "base_cfg": "obw_platform/configs/h4_freedommoney_hybrid_balanced_v3.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "patch": {
+            "strategy_params_short.maxShortInvestPct": 1.02,
+        },
+        "argument": "Isolate whether the tiny DD gain in w11c2_A came from short-cap lift rather than long TP compression.",
+    },
+    {
+        "id": "fm_h4_c3_short_tp_lift_070_30d",
+        "base_cfg": "obw_platform/configs/h4_freedommoney_hybrid_balanced_v3.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "patch": {
+            "strategy_params_short.maxShortInvestPct": 1.0,
+            "strategy_params_short.tpPercent": 0.70,
+        },
+        "argument": "Worker_11 proposed short-TP lift without exposure increase to seek MTM recovery while preserving zero margin calls.",
+    },
+    {
+        "id": "fm_h4_c3_tiny_spacing_widen_30d",
+        "base_cfg": "obw_platform/configs/h4_freedommoney_hybrid_balanced_v3.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "patch": {
+            "strategy_params_long.linearDropPercent": 0.052,
+            "strategy_params_short.linearRisePercent": 0.215,
+        },
+        "argument": "Worker_12 cycle-2 tiny spacing-only retest: widen DCA spacing minimally after TP compression failed to clean tail.",
+    },
 ]
 
 

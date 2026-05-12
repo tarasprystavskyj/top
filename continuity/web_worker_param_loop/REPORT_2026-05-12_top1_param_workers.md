@@ -77,6 +77,36 @@ Dataset: `DB/fast_cache_akela_shortlist_1m_30d.npz`
 
 Result: the worker guesses did not yet beat the FreedomMoney H4 baseline on the available 30d dataset. The useful signal is that `w11c2_A` reduced drawdown slightly but paid too much MTM for it; the next worker task should search for a smaller tail-reduction move or explain why the baseline is already near the local optimum.
 
+## Five-Cycle Follow-Up
+
+After the backtest table was returned to the workers, they converged on a narrower H4 FreedomMoney lane:
+
+- drop SUP V21 from parameter search until margin calls are explained;
+- drop FreedomMoney V21 because the de-tail pass produced negative MTM, toxic unrealized, and margin calls;
+- focus on H4 `h4_freedommoney_hybrid_balanced_v3.yaml`;
+- test long-profit recovery with exposure locked at `maxLongInvestPct: 1.0`.
+
+The next backtest pass confirmed one improvement on `DB/fast_cache_akela_shortlist_1m_30d.npz`:
+
+| rank | candidate | MTM | MDD MTM | unrealized | trades | margin calls | verdict |
+|---:|---|---:|---:|---:|---:|---:|---|
+| 1 | `fm_h4_c3_long_profit_090_158_30d` | 179.57 | -19.10% | -38.58 | 3988 | 0 | new 30d winner |
+| 2 | `fm_h4_c3_long_profit_095_166_30d` | 164.34 | -19.57% | -38.58 | 3823 | 0 | worse MTM than baseline |
+| 3 | `fm_h4_c3_tiny_spacing_widen_30d` | 165.32 | -19.76% | -39.91 | 4056 | 0 | small DD gain, no MTM gain |
+| 4 | `fm_h4_c3_short_cap_micro_lift_102_30d` | 167.47 | -20.37% | -39.94 | 4036 | 0 | tiny MTM gain, not enough |
+| 5 | `h4_freedommoney_hybrid_balanced_v3` baseline | 166.67 | -20.39% | -39.93 | 4042 | 0 | previous best |
+
+Winning patch:
+
+```yaml
+strategy_params_long.maxLongInvestPct: 1.0
+strategy_params_long.tpPercent: 0.90
+strategy_params_long.subSellTPPercent: 1.58
+strategy_params_short.maxShortInvestPct: 1.0
+```
+
+Interpretation: the council's useful move was not tail compression. It was recovering some long-side profit target from the rejected ratio-best family while keeping exposure locked at the safer baseline level. This needs longer-window validation before promotion.
+
 Secondary V21 lane:
 
 Base candidates:
