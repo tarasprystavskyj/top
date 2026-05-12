@@ -53,6 +53,22 @@ The basket mode is still read/report orchestration. It uses
 `--npz` and `--symbol`, writes raw artifacts under `_reports/akela_meta_short/`,
 and commits only compact summaries under this lane.
 
+## Margin-Zero Codex Loop
+
+The optional clean-slate Codex loop searches for V21 parameter variants that
+keep yearly candidate backtests at `margin_call_events_total = 0`.
+
+```bash
+tmux new-session -d -s akela_margin_zero_codex \
+  -c /var/www/vps2.happyuser.info/top/top_1 \
+  './obw_platform/meta_strategies/akela_meta_short/run_margin_zero_codex_loop.sh'
+```
+
+It starts a new `codex exec` each cycle using
+`MARGIN_ZERO_CODEX_PROMPT.md`. Experimental configs stay under
+`generated_configs/margin_zero/`; raw logs stay under
+`_reports/akela_meta_short/margin_zero_codex_loop/`.
+
 ## Research Contract
 
 Every candidate must pass two levels of proof before being treated as useful:
