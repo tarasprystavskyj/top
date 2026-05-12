@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12T22:41:30Z",
+  "updated": "2026-05-12T22:50:16Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -12,15 +12,17 @@
     {
       "symbol": "IDOL/USDT:USDT",
       "npz": "DB/akela_meta_short_1m_1y_idol_bingx.npz",
-      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_idol_margin_zero_budget50.yaml",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_idol_margin_zero_budget125.yaml",
       "limit_bars": "full",
-      "return_mtm_pct_on_start": 9.05382480165288,
-      "mdd_mtm_%": -10.399413225209962,
-      "trades_total": 2430,
+      "return_mtm_pct_on_start": 34.70499499858549,
+      "mdd_mtm_%": -13.402130090476835,
+      "trades_total": 5848,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.4943479678389817,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_full.log"
+      "terminal_unrealized_to_realized_ratio": -0.20545641777245982,
+      "unrealized_pnl_long": -13.44215721404668,
+      "unrealized_pnl_short": -4.506169625949182,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_full.log"
     },
     {
       "symbol": "MAXXING/USDT:USDT",
@@ -55,8 +57,8 @@
   ],
   "baseline_zero_existing": {
     "symbol": "FREEDOMMONEY/USDT:USDT",
-    "config": "obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
     "npz": "DB/fast_cache_1m_freedommoney_1y_bingx.npz",
+    "config": "obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
     "limit_bars": "full",
     "return_mtm_pct_on_start": 64.27761710740924,
     "mdd_mtm_%": -24.087926368998254,
@@ -64,29 +66,33 @@
     "margin_call_events_total": 0,
     "bars_in_margin_call": 0,
     "terminal_unrealized_to_realized_ratio": -0.4129883587938366,
+    "unrealized_pnl_long": -79.64032066261272,
+    "unrealized_pnl_short": -10.803908149689253,
     "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log"
   },
   "basket_validation": {
     "scope": "three generated margin-zero configs plus existing FREEDOMMONEY baseline-zero config",
     "symbols": 4,
-    "equal_weight_terminal_return_pct": 46.76429794675864,
+    "equal_weight_terminal_return_pct": 53.1770904959918,
     "worst_mdd_mtm_%": -48.01991673137992,
-    "total_trades": 15811,
+    "total_trades": 19229,
     "total_margin_call_events": 0,
     "total_bars_in_margin_call": 0,
     "results": [
       {
         "symbol": "IDOL/USDT:USDT",
         "npz": "DB/akela_meta_short_1m_1y_idol_bingx.npz",
-        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_idol_margin_zero_budget50.yaml",
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_idol_margin_zero_budget125.yaml",
         "limit_bars": "full",
-        "return_mtm_pct_on_start": 9.05382480165288,
-        "mdd_mtm_%": -10.399413225209962,
-        "trades_total": 2430,
+        "return_mtm_pct_on_start": 34.70499499858549,
+        "mdd_mtm_%": -13.402130090476835,
+        "trades_total": 5848,
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
-        "terminal_unrealized_to_realized_ratio": -0.4943479678389817,
-        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_full.log"
+        "terminal_unrealized_to_realized_ratio": -0.20545641777245982,
+        "unrealized_pnl_long": -13.44215721404668,
+        "unrealized_pnl_short": -4.506169625949182,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_full.log"
       },
       {
         "symbol": "FREEDOMMONEY/USDT:USDT",
@@ -99,6 +105,8 @@
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
         "terminal_unrealized_to_realized_ratio": -0.4129883587938366,
+        "unrealized_pnl_long": -79.64032066261272,
+        "unrealized_pnl_short": -10.803908149689253,
         "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log"
       },
       {
@@ -651,5 +659,112 @@
       "reason": "New best MAXXING margin-zero candidate: large return recovery at zero margin calls, with drawdown still far below SUP risk and no margin-call bars."
     }
   ],
-  "next_action": "First-basket margin-call cleanup remains satisfied. MAXXING now has a stronger zero-margin candidate, V21_maxxing_margin_zero_budget125.yaml, improving from 26.23% to 104.68% MTM at 0 margin calls. Next useful work is IDOL second-pass cleanup for better return at zero margin calls, or a SUP tuner plan constrained to non-negative exposure caps."
+  "next_action": "The first-basket margin-call cleanup remains satisfied with 0 total margin-call events. Next useful work is either bounded SUP risk cleanup to reduce the -48.02% MDD without losing zero-margin status, or MAXXING tail-drag cleanup around budget125.",
+  "latest_cycle_attempts": [
+    {
+      "config": "V21_idol_margin_zero_budget50.yaml",
+      "symbol": "IDOL/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": -0.5810658338674457,
+      "mdd_mtm_%": -1.2426695395384937,
+      "trades_total": 139,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -2.503106840205297,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_20k.log",
+      "reason": "20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted."
+    },
+    {
+      "config": "V21_idol_margin_zero_budget75.yaml",
+      "symbol": "IDOL/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": -0.6159877366854978,
+      "mdd_mtm_%": -1.488238734805092,
+      "trades_total": 175,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -3.3246994236263663,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget75_20k.log",
+      "reason": "20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted."
+    },
+    {
+      "config": "V21_idol_margin_zero_budget100.yaml",
+      "symbol": "IDOL/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": -0.6256473785788589,
+      "mdd_mtm_%": -2.052740293942584,
+      "trades_total": 212,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -3.3105723844984514,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget100_20k.log",
+      "reason": "20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted."
+    },
+    {
+      "config": "V21_idol_margin_zero_budget125.yaml",
+      "symbol": "IDOL/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": -0.5524666275681843,
+      "mdd_mtm_%": -2.0812142438737538,
+      "trades_total": 247,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -2.3165055700095953,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_20k.log",
+      "reason": "20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted."
+    },
+    {
+      "config": "V21_idol_margin_zero_budget150.yaml",
+      "symbol": "IDOL/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": -0.28374133768996723,
+      "mdd_mtm_%": -1.852888961253567,
+      "trades_total": 350,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -1.425142865932339,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_20k.log",
+      "reason": "20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted."
+    },
+    {
+      "config": "V21_idol_margin_zero_budget175.yaml",
+      "symbol": "IDOL/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 0.012529533383423441,
+      "mdd_mtm_%": -1.8649057617411209,
+      "trades_total": 403,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.9869981510133387,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget175_20k.log",
+      "reason": "20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted."
+    },
+    {
+      "config": "V21_idol_margin_zero_budget125.yaml",
+      "symbol": "IDOL/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 34.70499499858549,
+      "mdd_mtm_%": -13.402130090476835,
+      "trades_total": 5848,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.20545641777245982,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_full.log",
+      "reason": "Promoted as IDOL best."
+    },
+    {
+      "config": "V21_idol_margin_zero_budget175.yaml",
+      "symbol": "IDOL/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 31.10127165057882,
+      "mdd_mtm_%": -17.452304456351385,
+      "trades_total": 7330,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.3939500685472369,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget175_full.log",
+      "reason": "Rejected: zero-margin but worse return, MDD, and terminal unrealized drag than budget125."
+    }
+  ],
+  "latest_cycle_summary": "IDOL budget125 replaced budget50 as the best IDOL margin-zero candidate: 34.70% MTM, -13.40% MDD, 5848 trades, 0 margin calls, and tail ratio -0.2055. Budget175 was rejected after full-year confirmation because it worsened return, MDD, and terminal unrealized drag."
 }
