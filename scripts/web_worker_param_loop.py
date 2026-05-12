@@ -820,7 +820,8 @@ async def read_worker(manager: ChatGPTWorkerManager, worker: dict, state: dict) 
     info["response"] = response
     new_len = len(response)
     old_len = int(state["workers"][wid].get("last_response_len", 0) or 0)
-    info["new"] = new_len != old_len and new_len > 0
+    has_session_task = bool(state["workers"][wid].get("last_task_sent_at", 0) or 0)
+    info["new"] = has_session_task and new_len != old_len and new_len > 0
     state["workers"][wid]["last_response_len"] = new_len
     state["workers"][wid]["status"] = "responded" if new_len else "idle"
     if info["new"]:
