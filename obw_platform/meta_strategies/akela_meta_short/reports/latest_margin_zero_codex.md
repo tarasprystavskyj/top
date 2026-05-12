@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-12T21:52:09Z
+Updated: 2026-05-12T22:01:46Z
 
 ## Objective
 
@@ -60,6 +60,8 @@ Follow-up risk cleanup tested small changes around `V21_sup_margin_zero_long35_s
 
 This cycle tested whether a halfway short ladder could recover some lost return while keeping the soft ladder's drawdown improvement. `V21_sup_margin_zero_short_ladder_mid.yaml` used short multipliers `1.35/1.0/1.15/1.35`. It passed the 20k margin-zero slice, but full-year MDD worsened to -53.81%, so the best SUP candidate remains `V21_sup_margin_zero_short_ladder_soft.yaml`.
 
+This cycle tested small long-side risk cleanup around `V21_sup_margin_zero_short_ladder_soft.yaml`. Lowering the long budget to 30 USDT and softening only the long DCA ladder both stayed zero-margin on the 20k slice but worsened the return/drawdown/terminal-drag balance. Widening only long DCA spacing had the best 20k slice drawdown, so it was confirmed full-year, but it was effectively identical and slightly worse than the current SUP winner: 9.03% MTM, -48.02% MDD, 0 margin calls vs 9.04% MTM, -48.02% MDD, 0 margin calls. The three rejected temporary YAMLs were removed after logging the raw results.
+
 ## Attempts
 
 | config | symbol/scope | limit | result | reason |
@@ -88,6 +90,10 @@ This cycle tested whether a halfway short ladder could recover some lost return 
 | `V21_sup_margin_zero_short_exit_mild.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 11.00% MTM, MDD -15.17% | Rejected and config removed: mild short TP/callback changes were behaviorally identical to short_ladder_soft on the 20k slice. |
 | `V21_sup_margin_zero_long25_short50.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, -0.80% MTM, MDD -18.30% | Rejected: zero-margin but under-sized long side left negative MTM return on the 20k slice. |
 | `V21_sup_margin_zero_long_exit_fast.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 1.55% MTM, MDD -15.88% | Rejected: faster long exits stayed zero-margin but return and terminal unrealized ratio were inferior to long35_short50. |
+| `V21_sup_margin_zero_long30_short50.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 2.86% MTM, MDD -15.72% | Rejected and config removed: lower long budget stayed zero-margin but gave up too much return and worsened terminal unrealized/realized ratio to -0.7550. |
+| `V21_sup_margin_zero_long_ladder_soft.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 9.40% MTM, MDD -15.39% | Rejected and config removed: softening only the long DCA ladder was inferior to short_ladder_soft on return, drawdown, and terminal drag. |
+| `V21_sup_margin_zero_long_spacing_soft.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, 0 bars in margin call, 1.74% MTM, MDD -13.83% | Best 20k drawdown among this long-side cleanup batch, so it received full-year confirmation. |
+| `V21_sup_margin_zero_long_spacing_soft.yaml` | `SUP/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 9.03% MTM, MDD -48.02% | Rejected and config removed: full-year behavior was effectively identical and slightly worse than short_ladder_soft. |
 | `V21_maxxing_margin_zero_budget50.yaml` | `MAXXING/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 26.23% MTM, MDD -11.60% | Confirmed margin-zero candidate. |
 | `V21_idol_margin_zero_budget50.yaml` | `IDOL/USDT:USDT` | full | 0 margin calls, 0 bars in margin call, 9.05% MTM, MDD -10.40% | Confirmed margin-zero candidate. |
 
@@ -108,4 +114,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-The first-basket margin-call cleanup remains satisfied. The risk-first SUP candidate remains `V21_sup_margin_zero_short_ladder_soft.yaml`; keep `V21_sup_margin_zero_long35_short50.yaml` as the higher-return tradeoff. The halfway ladder branch failed full-year drawdown, and mild short TP/callback changes were inert on the 20k slice. Next useful work is to test small long-side risk cleanup for SUP, because the short-side ladder changes now show a return/drawdown tradeoff rather than a free improvement.
+The first-basket margin-call cleanup remains satisfied. The risk-first SUP candidate remains `V21_sup_margin_zero_short_ladder_soft.yaml`; keep `V21_sup_margin_zero_long35_short50.yaml` as the higher-return tradeoff. Small long-side budget, ladder, and spacing cleanup did not improve the full-year SUP candidate. Next useful work is either to run the existing V21 tuner from the SUP short_ladder_soft config with the margin-call penalty intact, or to move to IDOL/MAXXING second-pass cleanup for better return at zero margin calls.

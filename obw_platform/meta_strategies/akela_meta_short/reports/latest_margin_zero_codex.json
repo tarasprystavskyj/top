@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12T21:52:09Z",
+  "updated": "2026-05-12T22:01:46Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -447,7 +447,60 @@
       "terminal_unrealized_to_realized_ratio": -0.45432588232661825,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_short_exit_mild_20k.log",
       "reason": "Rejected and config removed: mild short TP/callback changes were behaviorally identical to short_ladder_soft on the 20k slice."
+    },
+    {
+      "config": "V21_sup_margin_zero_long30_short50.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 2.859547269486825,
+      "mdd_mtm_%": -15.720845765402021,
+      "trades_total": 284,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.7549763240917328,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long30_short50_20k.log",
+      "reason": "Rejected and config removed: lower long budget stayed zero-margin but gave up too much return and worsened terminal unrealized drag."
+    },
+    {
+      "config": "V21_sup_margin_zero_long_ladder_soft.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 9.402056972705102,
+      "mdd_mtm_%": -15.392081683594247,
+      "trades_total": 336,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.5013704520305704,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long_ladder_soft_20k.log",
+      "reason": "Rejected and config removed: softening only the long DCA ladder was inferior to short_ladder_soft on return, drawdown, and terminal drag."
+    },
+    {
+      "config": "V21_sup_margin_zero_long_spacing_soft.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 1.7443954207778258,
+      "mdd_mtm_%": -13.82739421651134,
+      "trades_total": 281,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.8889118903605234,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long_spacing_soft_20k.log",
+      "reason": "Best 20k drawdown among the long-side cleanup batch, so it received full-year confirmation."
+    },
+    {
+      "config": "V21_sup_margin_zero_long_spacing_soft.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 9.032872862168835,
+      "mdd_mtm_%": -48.02395176331684,
+      "trades_total": 1329,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.31416331197815134,
+      "unrealized_pnl_total": -8.275431468216006,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long_spacing_soft_full.log",
+      "reason": "Rejected and config removed: full-year behavior was effectively identical and slightly worse than short_ladder_soft."
     }
   ],
-  "next_action": "First-basket margin-call cleanup remains satisfied. SUP risk-first candidate remains V21_sup_margin_zero_short_ladder_soft.yaml; keep V21_sup_margin_zero_long35_short50.yaml as the higher-return tradeoff. The halfway short-ladder branch failed full-year drawdown, and mild short TP/callback changes were inert on the 20k slice. Next useful work is small long-side risk cleanup for SUP."
+  "next_action": "First-basket margin-call cleanup remains satisfied. SUP risk-first candidate remains V21_sup_margin_zero_short_ladder_soft.yaml; keep V21_sup_margin_zero_long35_short50.yaml as the higher-return tradeoff. Small long-side budget, ladder, and spacing cleanup did not improve the full-year SUP candidate. Next useful work is either to run the existing V21 tuner from the SUP short_ladder_soft config with the margin-call penalty intact, or to move to IDOL/MAXXING second-pass cleanup for better return at zero margin calls."
 }
