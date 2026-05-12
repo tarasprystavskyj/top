@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12T23:09:27Z",
+  "updated": "2026-05-12T23:24:00Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -193,7 +193,7 @@
       "trades_total": 722,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "reason": "Valid but more conservative than budget50."
+      "reason": "Valid but worse drawdown than budget20 for only modest return recovery."
     },
     {
       "config": "V21_sup_margin_zero_budget55.yaml",
@@ -659,7 +659,7 @@
       "reason": "New best MAXXING margin-zero candidate: large return recovery at zero margin calls, with drawdown still far below SUP risk and no margin-call bars."
     }
   ],
-  "next_action": "The first-basket margin-call cleanup remains satisfied with 0 total margin-call events. Next useful work is a more targeted MAXXING short exit/deleverage search, or a SUP search that recovers return while preserving budget20-level drawdown.",
+  "next_action": "The first-basket margin-call cleanup remains satisfied with 0 total margin-call events. Next useful work is a SUP return-recovery search constrained to budget20-level risk: keep full-year margin_call_events_total = 0, bars_in_margin_call = 0, and target MDD no worse than roughly -30% before considering higher-return variants. A secondary path is a targeted MAXXING short exit/deleverage search that improves terminal unrealized drag without giving up the existing zero-margin result.",
   "latest_cycle_attempts": [
     {
       "config": "V21_maxxing_margin_zero_shortcap100.yaml",
@@ -714,5 +714,5 @@
       "reason": "Rejected versus budget125: lower return, no drawdown improvement, worse terminal unrealized ratio."
     }
   ],
-  "latest_cycle_summary": "MAXXING tail-drag cleanup tested short-leg sizing/cap reductions around the current V21_maxxing_margin_zero_budget125.yaml champion. All screened variants kept margin calls at 0, but none improved the full-year risk/return balance: shortcap100 reduced return from 104.68% to 90.06%, left MDD effectively unchanged, and worsened terminal unrealized ratio from -0.2273 to -0.2526. MAXXING best remains budget125."
+  "latest_cycle_summary": "Audit pass after the MAXXING short-cap sweep. The first-basket risk-cleanup target is satisfied: all four selected configs have margin_call_events_total = 0 and bars_in_margin_call = 0 on full-year runs. SUP has higher-return zero-margin variants, but they raise full-year MDD sharply; V21_sup_margin_zero_budget20.yaml remains preferred because this lane prioritizes zero margin calls and drawdown containment over return recovery. MAXXING best remains budget125."
 }

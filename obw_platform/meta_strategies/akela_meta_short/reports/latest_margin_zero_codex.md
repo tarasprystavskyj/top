@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-12T23:09:27Z
+Updated: 2026-05-12T23:24:00Z
 
 ## Objective
 
@@ -29,6 +29,10 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 | total bars in margin call | 0 |
 
 ## Current Cycle
+
+Audit pass after the MAXXING short-cap sweep. The first-basket risk-cleanup target is satisfied: all four selected configs have `margin_call_events_total = 0` and `bars_in_margin_call = 0` on full-year runs.
+
+Selection note: SUP has higher-return zero-margin variants, but they raise full-year MDD sharply. `V21_sup_margin_zero_budget20.yaml` remains the preferred cleanup candidate because this lane prioritizes zero margin calls and drawdown containment over return recovery.
 
 MAXXING tail-drag cleanup tested short-leg sizing/cap reductions around the current `V21_maxxing_margin_zero_budget125.yaml` champion. All screened variants kept margin calls at 0, but none improved the full-year risk/return balance: `shortcap100` reduced return from 104.68% to 90.06%, left MDD effectively unchanged, and worsened terminal unrealized ratio from -0.2273 to -0.2526. MAXXING best remains `budget125`.
 
@@ -67,4 +71,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-The first-basket margin-call cleanup remains satisfied with 0 total margin-call events. Next useful work is a more targeted MAXXING short exit/deleverage search, or a SUP search that recovers return while preserving budget20-level drawdown.
+The first-basket margin-call cleanup remains satisfied with 0 total margin-call events. Next useful work is a SUP return-recovery search constrained to budget20-level risk: keep full-year `margin_call_events_total = 0`, `bars_in_margin_call = 0`, and target MDD no worse than roughly -30% before considering higher-return variants. A secondary path is a targeted MAXXING short exit/deleverage search that improves terminal unrealized drag without giving up the existing zero-margin result.
