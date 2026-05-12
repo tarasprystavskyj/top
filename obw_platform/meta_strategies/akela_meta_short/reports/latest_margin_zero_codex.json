@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12T22:27:17Z",
+  "updated": "2026-05-12T22:41:30Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -25,15 +25,17 @@
     {
       "symbol": "MAXXING/USDT:USDT",
       "npz": "DB/fast_cache_1m_maxxing_1y_bingx.npz",
-      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget50.yaml",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget125.yaml",
       "limit_bars": "full",
-      "return_mtm_pct_on_start": 26.230582326857775,
-      "mdd_mtm_%": -11.604697090675021,
-      "trades_total": 1459,
+      "return_mtm_pct_on_start": 104.68398437478453,
+      "mdd_mtm_%": -21.167855878417598,
+      "trades_total": 4469,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.35434119908124434,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget50_full.log"
+      "terminal_unrealized_to_realized_ratio": -0.227282745897245,
+      "unrealized_pnl_long": -14.220553792660496,
+      "unrealized_pnl_short": -47.36177349157373,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_full.log"
     },
     {
       "symbol": "SUP/USDT:USDT",
@@ -67,9 +69,9 @@
   "basket_validation": {
     "scope": "three generated margin-zero configs plus existing FREEDOMMONEY baseline-zero config",
     "symbols": 4,
-    "equal_weight_terminal_return_pct": 27.150947684778455,
+    "equal_weight_terminal_return_pct": 46.76429794675864,
     "worst_mdd_mtm_%": -48.01991673137992,
-    "total_trades": 12801,
+    "total_trades": 15811,
     "total_margin_call_events": 0,
     "total_bars_in_margin_call": 0,
     "results": [
@@ -102,15 +104,17 @@
       {
         "symbol": "MAXXING/USDT:USDT",
         "npz": "DB/fast_cache_1m_maxxing_1y_bingx.npz",
-        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget50.yaml",
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget125.yaml",
         "limit_bars": "full",
-        "return_mtm_pct_on_start": 26.230582326857775,
-        "mdd_mtm_%": -11.604697090675021,
-        "trades_total": 1459,
+        "return_mtm_pct_on_start": 104.68398437478453,
+        "mdd_mtm_%": -21.167855878417598,
+        "trades_total": 4469,
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
-        "terminal_unrealized_to_realized_ratio": -0.35434119908124434,
-        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget50_full.log"
+        "terminal_unrealized_to_realized_ratio": -0.227282745897245,
+        "unrealized_pnl_long": -14.220553792660496,
+        "unrealized_pnl_short": -47.36177349157373,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_full.log"
       },
       {
         "symbol": "SUP/USDT:USDT",
@@ -541,7 +545,111 @@
       "unrealized_pnl_total": -12.504944625317492,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_tuner_spacing_exit_full.log",
       "reason": "Rejected and config removed: full-year stayed margin-zero but worsened return, MDD, and terminal drag versus V21_sup_margin_zero_short_ladder_soft.yaml."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget75.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 22.71394250120776,
+      "mdd_mtm_%": -6.976135948302545,
+      "trades_total": 1094,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.2679274621456371,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget75_20k.log",
+      "reason": "Clean 20k slice and better return than budget50 20k; promoted to full-year as safer intermediate."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget100.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 20.79008302050457,
+      "mdd_mtm_%": -7.883451312584841,
+      "trades_total": 1233,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.36876691438077286,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget100_20k.log",
+      "reason": "Clean 20k slice, but lower return and worse drawdown than budget125 20k."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget125.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 23.104346402426316,
+      "mdd_mtm_%": -8.313576516345012,
+      "trades_total": 1324,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.3540085430444698,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_20k.log",
+      "reason": "Best budget-lift 20k slice before terminal drag worsened at 150/175; promoted to full-year."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget150.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 3.8821447413925294,
+      "mdd_mtm_%": -23.158950042836114,
+      "trades_total": 1535,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.9073842738535047,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget150_20k.log",
+      "reason": "Rejected despite zero margin calls: terminal unrealized drag and drawdown worsened sharply on the slice."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget175.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 10.303555760479775,
+      "mdd_mtm_%": -17.503551307980548,
+      "trades_total": 1624,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.7632377429447057,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget175_20k.log",
+      "reason": "Rejected despite zero margin calls: terminal unrealized drag stayed materially worse than budget125."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget75.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 47.306354843225535,
+      "mdd_mtm_%": -24.16627333714443,
+      "trades_total": 2660,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.40721424619324753,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget75_full.log",
+      "reason": "Valid zero-margin full-year result, but inferior to budget125 on return and drawdown."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget100.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 84.26190612201106,
+      "mdd_mtm_%": -22.30473320003549,
+      "trades_total": 3693,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.260611687726133,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget100_full.log",
+      "reason": "Valid zero-margin full-year result, but inferior to budget125 on return and drawdown."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget125.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 104.68398437478453,
+      "mdd_mtm_%": -21.167855878417598,
+      "trades_total": 4469,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.227282745897245,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_full.log",
+      "reason": "New best MAXXING margin-zero candidate: large return recovery at zero margin calls, with drawdown still far below SUP risk and no margin-call bars."
     }
   ],
-  "next_action": "First-basket margin-call cleanup remains satisfied. SUP risk-first candidate remains V21_sup_margin_zero_short_ladder_soft.yaml; the bounded tuner probe improved the 20k slice but failed full-year confirmation. Next useful work is IDOL/MAXXING second-pass cleanup for better return at zero margin calls, or a SUP tuner plan constrained to non-negative exposure caps."
+  "next_action": "First-basket margin-call cleanup remains satisfied. MAXXING now has a stronger zero-margin candidate, V21_maxxing_margin_zero_budget125.yaml, improving from 26.23% to 104.68% MTM at 0 margin calls. Next useful work is IDOL second-pass cleanup for better return at zero margin calls, or a SUP tuner plan constrained to non-negative exposure caps."
 }
