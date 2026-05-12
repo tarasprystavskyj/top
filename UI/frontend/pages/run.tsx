@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { apiFetch } from '../utils/api';
 
 type CacheDbOption = {
   name: string;
   path: string;
+  kind?: string;
 };
+
+type BacktesterCapability = Record<string, boolean>;
 
 type JobStatus = {
   status?: string;
@@ -43,6 +46,8 @@ export default function Run() {
   const [logs, setLogs] = useState('');
   const [backtesters, setBacktesters] = useState<string[]>([]);
   const [backtester, setBacktester] = useState('');
+  const [backtesterCaps, setBacktesterCaps] = useState<Record<string, BacktesterCapability>>({});
+  const [backtesterFiles, setBacktesterFiles] = useState<Record<string, { path?: string; url?: string }>>({});
   const [cacheDbs, setCacheDbs] = useState<CacheDbOption[]>([]);
   const [cacheDb, setCacheDb] = useState('');
   const [spinnerIndex, setSpinnerIndex] = useState(0);
@@ -55,6 +60,7 @@ export default function Run() {
   const [configSaveSuccess, setConfigSaveSuccess] = useState<string | null>(null);
   const [configSaving, setConfigSaving] = useState(false);
   const [configReloadKey, setConfigReloadKey] = useState(0);
+  const lastSuggestedCfgRef = useRef('');
 
   const isReadOnly = typeof router.query.id === 'string';
 
@@ -91,6 +97,8 @@ export default function Run() {
       .then(r => r.json())
       .then(data => {
         setBacktesters(data.versions || []);
+        setBacktesterCaps(data.capabilities || {});
+        setBacktesterFiles(data.files || {});
         if (data.current) setBacktester(data.current);
       });
   }, []);
@@ -105,7 +113,7 @@ export default function Run() {
         }
         const normalized: CacheDbOption[] = data
           .filter((item: any) => item && typeof item.name === 'string' && typeof item.path === 'string')
-          .map((item: any) => ({ name: item.name, path: item.path }));
+          .map((item: any) => ({ name: item.name, path: item.path, kind: item.kind }));
         setCacheDbs(normalized);
       })
       .catch(() => setCacheDbs([]));
@@ -163,6 +171,20 @@ export default function Run() {
     };
   }, [cfg, configReloadKey]);
 
+  useEffect(() => {
+    if (!cfg || isReadOnly || lastSuggestedCfgRef.current === cfg) return;
+    const selectedCfg = cfgs.find((item: any) => item?.name === cfg);
+    if (selectedCfg?.backtester_file) {
+      lastSuggestedCfgRef.current = cfg;
+      setBacktester(selectedCfg.backtester_file);
+      setCacheDb(selectedCfg.cache_db || '');
+    } else if (selectedCfg) {
+      lastSuggestedCfgRef.current = cfg;
+      setBacktester('');
+      setCacheDb(selectedCfg.cache_db || '');
+    }
+  }, [cfg, cfgs, isReadOnly]);
+
   async function start() {
     const override: Record<string, any> = {};
     if (universe) {
@@ -174,7 +196,8 @@ export default function Run() {
     const payloadOverride = Object.keys(override).length > 0 ? override : undefined;
     // Trim any stray whitespace. Backend resolves the value relative to the repository.
     const cacheDbPath = cacheDb.trim();
-    const j = await apiFetch('/api/backtest', {
+    setErrMsg(null);
+    const resp = await apiFetch('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -185,12 +208,16 @@ export default function Run() {
         backtester,
         cache_db: cacheDbPath || undefined,
       }),
-    }).then(r => r.json());
+    });
+    const j = await resp.json();
+    if (!resp.ok) {
+      setErrMsg(j?.detail || j?.message || `Failed to start backtest (HTTP ${resp.status})`);
+      return;
+    }
     setJob(j);
     setJobStatus(null);
     setSpinnerIndex(0);
     setRes(null);
-    setErrMsg(null);
     setLogs('');
   }
 
@@ -358,10 +385,18 @@ export default function Run() {
     'returns_hist.png',
     'equity_by_trade.png',
     'drawdown_by_trade.png',
+    'dual_equity_curve.png',
+    'dual_mtm_pnl.png',
+    'dual_pnl_panels_all.png',
+    'dual_margin_call_excess.png',
   ];
-  const plotUrls = plotNames
+  const namedPlotUrls = plotNames
     .map(n => res?.artifacts?.[n])
     .filter(Boolean) as string[];
+  const extraPlotUrls = Object.entries(res?.artifacts || {})
+    .filter(([name, url]) => name.endsWith('.png') && typeof url === 'string')
+    .map(([, url]) => url as string);
+  const plotUrls = Array.from(new Set([...namedPlotUrls, ...extraPlotUrls]));
 
   const vizNames = [
     'viz_equity_vs_trade.png',
@@ -396,6 +431,20 @@ export default function Run() {
   const displayedCacheDbs: CacheDbOption[] = hasCustomCacheDb
     ? [...cacheDbs, { name: `Custom: ${cacheDb}`, path: cacheDb }]
     : cacheDbs;
+  const selectedBacktesterCaps = backtesterCaps[backtester] || {};
+  const selectedCache = displayedCacheDbs.find(opt => opt.path === cacheDb);
+  const selectedCacheKind =
+    selectedCache?.kind || (cacheDb.toLowerCase().endsWith('.npz') ? 'npz' : cacheDb ? 'db' : '');
+  const cacheUnsupported =
+    selectedCacheKind === 'npz'
+      ? !!backtester && !selectedBacktesterCaps.npz
+      : selectedCacheKind === 'db'
+        ? !!backtester && !!selectedBacktesterCaps.npz && !selectedBacktesterCaps.cache_db
+        : false;
+  const cacheRequired =
+    !!backtester && !!selectedBacktesterCaps.npz && !selectedBacktesterCaps.cache_db && !cacheDb;
+  const selectedCfgMeta = cfgs.find((item: any) => item?.name === cfg);
+  const selectedBacktesterFile = backtesterFiles[backtester];
 
   return (
     <div>
@@ -541,13 +590,28 @@ export default function Run() {
               onChange={e => setCacheDb(e.target.value)}
               style={{ width: '300px' }}
             >
-              <option value=''>--select cache db--</option>
+              <option value=''>--select cache DB / NPZ--</option>
               {displayedCacheDbs.map(opt => (
                 <option key={opt.path} value={opt.path}>
                   {opt.name}
                 </option>
               ))}
             </select>
+            {cacheUnsupported && (
+              <span style={{ color: 'red', marginLeft: '6px' }}>
+                selected cache type is unsupported by this backtester
+              </span>
+            )}
+            {cacheRequired && (
+              <span style={{ color: 'red', marginLeft: '6px' }}>
+                this backtester requires selecting an NPZ cache
+              </span>
+            )}
+            {selectedCfgMeta?.cache_db && (
+              <span style={{ color: '#666', marginLeft: '6px' }}>
+                suggested cache: <code>{selectedCfgMeta.cache_db}</code>
+              </span>
+            )}
             <label>
               <input
                 type='checkbox'
@@ -564,16 +628,43 @@ export default function Run() {
               />
               trades
             </label>
-            <button onClick={start}>Start</button>
+            <button onClick={start} disabled={cacheUnsupported || cacheRequired || !cfg || !backtester}>
+              Start
+            </button>
           </div>
           <div>
             <select value={backtester} onChange={e => setBacktester(e.target.value)}>
+              <option value=''>--pick backtester--</option>
               {backtesters.map(b => (
                 <option key={b} value={b}>
                   {b}
                 </option>
               ))}
             </select>
+            {selectedBacktesterFile?.url && (
+              <a
+                href={selectedBacktesterFile.url}
+                target='_blank'
+                rel='noreferrer'
+                style={{ marginLeft: '8px' }}
+              >
+                backtester file
+              </a>
+            )}
+            {selectedCfgMeta && (
+              selectedCfgMeta.backtester_file ? (
+                <span style={{ marginLeft: '8px', color: '#666' }}>
+                  suggested for YAML:{' '}
+                  <a href={selectedCfgMeta.backtester_url} target='_blank' rel='noreferrer'>
+                    {selectedCfgMeta.backtester_file}
+                  </a>
+                </span>
+              ) : (
+                <span style={{ marginLeft: '8px', color: '#a15c00' }}>
+                  suggested for YAML: unknown - pick manually
+                </span>
+              )
+            )}
           </div>
         </div>
       )}
@@ -828,4 +919,3 @@ function extractUniverseName(source: any): string | null {
   }
   return null;
 }
-

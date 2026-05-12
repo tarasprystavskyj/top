@@ -1,6 +1,6 @@
 # FastAPI MVP backend
 import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re, sys
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -67,6 +67,8 @@ LIVE_RESULTS_DIR = os.path.abspath(
 )
 BT_VERSION_FILE = os.path.join(DATA_ROOT, "backtester_version.yaml")
 BACKTESTER_SCRIPTS = [
+    "backtester_dual_long_short_fast_pack_v2.py",
+    "backtester_dual_long_short_fast_pack.py",
     "backtester_dual_long_short_mtm.py",
     "backtester_core_speed3_veto_universe_4_mtm_unrealized_v5.py",
     "backtester_core_speed3_veto_universe_4_mtm_unrealized.py",
@@ -83,11 +85,66 @@ BACKTESTER_SCRIPTS = [
 # us only pass CLI flags that a particular backtester understands to avoid
 # "unrecognized arguments" errors.
 BACKTESTER_CAPABILITIES: Dict[str, Dict[str, bool]] = {
+    "backtester_dual_long_short_fast_pack_v2.py": {"plots": True, "time_range": True, "npz": True, "json_stdout": True, "export_curves": True},
+    "backtester_dual_long_short_fast_pack.py": {"plots": True, "time_range": True, "npz": True, "json_stdout": True},
+    "backtester_dual_long_short_mtm.py": {"plots": True, "time_range": True, "cache_db": True, "json_stdout": True},
     "backtester_core_speed3_veto_universe_2.py": {"plots": True, "time_range": True, "export_csv": True},
     "backtester_core_speed3_veto_universe.py": {"plots": True},
+    "backtester_core_speed2.py": {"cwd_outputs": True},
     "backtester_core_speed3.py": {"plots": True},
     "backtester_core_speed3_veto.py": {"plots": True},
 }
+_BACKTESTER_CAP_CACHE: Dict[str, Dict[str, bool]] = {}
+
+
+def _safe_backtester_path(script: str) -> str:
+    name = os.path.basename(str(script or ""))
+    if not name or name not in BACKTESTER_SCRIPTS:
+        raise HTTPException(404, "backtester not found")
+    path = os.path.abspath(os.path.join(BT_ROOT, name))
+    if not _is_within(path, BT_ROOT) or not os.path.isfile(path):
+        raise HTTPException(404, "backtester not found")
+    return path
+
+
+def get_backtester_capabilities(script: Optional[str]) -> Dict[str, bool]:
+    """Return CLI capabilities for a backtester, detected from --help when possible."""
+
+    name = os.path.basename(str(script or load_backtester_version()))
+    if name in _BACKTESTER_CAP_CACHE:
+        return dict(_BACKTESTER_CAP_CACHE[name])
+    caps = dict(BACKTESTER_CAPABILITIES.get(name, {}))
+    path = os.path.join(BT_ROOT, name)
+    if os.path.isfile(path):
+        try:
+            p = subprocess.run(
+                ["python3", name, "--help"],
+                cwd=BT_ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=8,
+            )
+            help_text = p.stdout or ""
+            flag_map = {
+                "debug": "--debug",
+                "plots": "--plots",
+                "time_range": "--time-from",
+                "cache_db": "--cache_db",
+                "npz": "--npz",
+                "symbol": "--symbol",
+                "symbols_file": "--symbols-file",
+                "allow_symbols": "--allow-symbols",
+                "export_csv": "--export-csv",
+                "export_curves": "--export-curves",
+            }
+            for key, flag in flag_map.items():
+                if flag in help_text:
+                    caps[key] = True
+        except Exception:
+            pass
+    _BACKTESTER_CAP_CACHE[name] = dict(caps)
+    return caps
 
 
 def _timeframe_to_minutes(value: Any) -> Optional[int]:
@@ -156,7 +213,7 @@ def _extract_timeframe_minutes(data: Any) -> Optional[int]:
 
 # --- helpers: cache DB discovery -------------------------------------------
 def _list_cache_db_files() -> List[Dict[str, str]]:
-    """Return available cache DB files under ``CACHE_DB_DIR``.
+    """Return available cache DB/NPZ files under ``CACHE_DB_DIR``.
 
     The deployment keeps cache databases in ``DB/``.  Expose both the display
     name (filename) and the repository-relative path so the frontend can pass a
@@ -176,10 +233,12 @@ def _list_cache_db_files() -> List[Dict[str, str]]:
             continue
         name = entry.name
         lower = name.lower()
-        if not lower.endswith((".db", ".sqlite", ".sqlite3")):
+        if not lower.endswith((".db", ".sqlite", ".sqlite3", ".npz")):
             continue
         rel_path = os.path.relpath(entry.path, REPO_ROOT)
-        entries.append({"name": name, "path": rel_path})
+        kind = "npz" if lower.endswith(".npz") else "db"
+        label = f"[{kind.upper()}] {name}"
+        entries.append({"name": label, "path": rel_path, "kind": kind})
     return entries
 
 
@@ -192,7 +251,7 @@ def _is_within(path: str, root: str) -> bool:
 
 
 def resolve_cache_db(value: Optional[str]) -> Optional[str]:
-    """Resolve a cache DB selector value to an absolute path.
+    """Resolve a cache DB/NPZ selector value to an absolute path.
 
     ``value`` may be an absolute path, a repository-relative path, or just the
     filename present in ``DB/``.  Only paths that stay within the repository
@@ -855,6 +914,7 @@ class BacktestReq(BaseModel):
     label: Optional[str] = None
     branch: Optional[str] = None
     cache_db: Optional[str] = None
+    symbol: Optional[str] = None
     override: Optional[Dict[str, Any]] = None
     backtester: Optional[str] = None
     debug: bool = False
@@ -904,6 +964,7 @@ def cmd_backtester(
     script=None,
     symbols_file=None,
     allow_symbols=None,
+    symbol=None,
     time_from=None,
     time_to=None,
     export_csv=False,
@@ -917,31 +978,61 @@ def cmd_backtester(
     """
     # run inside obw_platform so relative paths in configs resolve correctly
     bt_script = script or load_backtester_version()
+    caps = get_backtester_capabilities(bt_script)
     cmd = ["python3", bt_script, "--cfg", cfg_path]
-    if time_from and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("time_range"):
+    if time_from and caps.get("time_range"):
         cmd += ["--time-from", time_from]
-    if time_to and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("time_range"):
+    if time_to and caps.get("time_range"):
         cmd += ["--time-to", time_to]
     if not (time_from or time_to):
         cmd += ["--limit-bars", str(limit_bars)]
 
     if cache_db:
-        cmd += ["--cache_db", cache_db]
-    if symbols_file:
+        lower_cache = str(cache_db).lower()
+        if lower_cache.endswith(".npz"):
+            if caps.get("npz"):
+                cmd += ["--npz", cache_db]
+            else:
+                raise RuntimeError(f"{bt_script} does not support NPZ input")
+        else:
+            if caps.get("cache_db"):
+                cmd += ["--cache_db", cache_db]
+            elif caps.get("npz"):
+                raise RuntimeError(f"{bt_script} requires NPZ input, got cache DB")
+    if symbols_file and caps.get("symbols_file"):
         cmd += ["--symbols-file", symbols_file]
-    if allow_symbols:
+    if allow_symbols and caps.get("allow_symbols"):
         if isinstance(allow_symbols, (list, tuple)):
             allow_symbols = ",".join(allow_symbols)
         cmd += ["--allow-symbols", allow_symbols]
+    if symbol and caps.get("symbol"):
+        cmd += ["--symbol", str(symbol)]
 
     # Only add --plots if the selected backtester advertises support for it
-    if plots_dir and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("plots"):
+    if plots_dir and caps.get("plots"):
         cmd += ["--plots", plots_dir]
-    if export_csv and BACKTESTER_CAPABILITIES.get(bt_script, {}).get("export_csv"):
+    if export_csv and caps.get("export_csv"):
         cmd += ["--export-csv"]
-    if debug:
+    if export_csv and caps.get("export_curves"):
+        cmd += ["--export-curves", os.path.join(plots_dir or os.path.dirname(cfg_path), "curves.csv")]
+    if debug and caps.get("debug"):
         cmd += ["--debug"]
     return cmd
+
+
+def validate_backtester_input(bt_script: str, cache_path: Optional[str]) -> None:
+    """Fail early for cache formats the selected backtester cannot consume."""
+
+    caps = get_backtester_capabilities(bt_script)
+    if cache_path:
+        lower_cache = str(cache_path).lower()
+        if lower_cache.endswith(".npz") and not caps.get("npz"):
+            raise HTTPException(400, f"{bt_script} does not support NPZ input")
+        if not lower_cache.endswith(".npz") and caps.get("npz") and not caps.get("cache_db"):
+            raise HTTPException(400, f"{bt_script} requires NPZ input, got cache DB")
+    elif caps.get("npz") and not caps.get("cache_db"):
+        raise HTTPException(400, f"{bt_script} requires selecting an NPZ cache")
+
 
 def find_config(name: str) -> Optional[str]:
     for d in CONFIG_DIRS:
@@ -950,6 +1041,225 @@ def find_config(name: str) -> Optional[str]:
             return p
     return None
 
+
+def _repo_relative(path: str) -> str:
+    try:
+        if _is_within(path, REPO_ROOT):
+            return os.path.relpath(path, REPO_ROOT)
+    except Exception:
+        pass
+    return path
+
+
+def _cache_kind(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    return "npz" if str(path).lower().endswith(".npz") else "db"
+
+
+def _load_config_for_inference(path: str) -> Tuple[str, Dict[str, Any]]:
+    raw = open(path, "r", encoding="utf-8", errors="replace").read()
+    cfg = yaml.safe_load(raw) or {}
+    return raw, cfg if isinstance(cfg, dict) else {}
+
+
+def infer_cache_for_config_path(path: str) -> Optional[str]:
+    """Return a project-relative cache DB/NPZ when a config clearly maps to one."""
+
+    try:
+        raw, cfg = _load_config_for_inference(path)
+    except Exception:
+        return None
+    for key in ("npz", "cache_npz", "cache_db", "cache_db_path"):
+        val = cfg.get(key)
+        if isinstance(val, str) and val.strip():
+            resolved = resolve_cache_db(val)
+            if resolved:
+                return _repo_relative(resolved)
+    haystack = f"{os.path.basename(path)}\n{raw}".lower()
+    candidates: List[str] = []
+    if "freedommoney" in haystack:
+        candidates.append("DB/fast_cache_1m_freedommoney_1y_bingx.npz")
+    if "maxxing" in haystack:
+        candidates.append("DB/fast_cache_1m_maxxing_1y_bingx.npz")
+    for rel in candidates:
+        resolved = resolve_cache_db(rel)
+        if resolved:
+            return _repo_relative(resolved)
+    return None
+
+
+def infer_symbol_for_config_path(path: str) -> Optional[str]:
+    try:
+        raw, cfg = _load_config_for_inference(path)
+    except Exception:
+        return None
+    for key in ("symbol", "market_symbol", "backtest_symbol"):
+        val = cfg.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    haystack = f"{os.path.basename(path)}\n{raw}".lower()
+    if "freedommoney" in haystack:
+        return "FREEDOMMONEY/USDT:USDT"
+    if "maxxing" in haystack:
+        return "MAXXING/USDT:USDT"
+    if re.search(r"\bcheck\b", haystack):
+        return "CHECK/USDT:USDT"
+    return None
+
+
+def infer_backtester_for_config_path(path: str) -> Optional[str]:
+    """Return a backtester only when the config contains a reliable signal."""
+
+    try:
+        raw = open(path, "r", encoding="utf-8", errors="replace").read()
+        cfg = yaml.safe_load(raw) or {}
+    except Exception:
+        return None
+    if isinstance(cfg, dict):
+        explicit = cfg.get("backtester_file") or cfg.get("backtester")
+        if isinstance(explicit, str) and os.path.basename(explicit) in BACKTESTER_SCRIPTS:
+            return os.path.basename(explicit)
+    else:
+        return None
+
+    textual_hits = []
+    for match in re.finditer(r"backtester[\w_\-]*\.py", raw):
+        name = os.path.basename(match.group(0))
+        if name in BACKTESTER_SCRIPTS:
+            textual_hits.append(name)
+    if textual_hits and len(set(textual_hits)) == 1:
+        return textual_hits[0]
+    if textual_hits:
+        return None
+
+    if isinstance(cfg, dict):
+        cls_long = str(cfg.get("strategy_class_long") or "")
+        cls_short = str(cfg.get("strategy_class_short") or "")
+        cls_single = str(cfg.get("strategy_class") or "")
+        cls_all = " ".join([cls_single, cls_long, cls_short])
+        if "cryptomine_pack_dual" in cls_long or "cryptomine_pack_dual" in cls_short:
+            return "backtester_dual_long_short_fast_pack_v2.py"
+        if "cryptomine_c_limit14_even_dual" in cls_long or "cryptomine_c_limit14_even_dual" in cls_short:
+            return "backtester_dual_long_short_mtm.py"
+        if "strategy_class_long" in cfg or "strategy_class_short" in cfg:
+            return None
+        if "strategies.breakout_avaai_full.BreakoutAVAAIFull" in cls_all:
+            return "backtester_core_speed2.py"
+    return None
+
+
+def _extract_json_object_from_text(text: str) -> Optional[Dict[str, Any]]:
+    """Extract the last JSON object from a mixed log file."""
+
+    decoder = json.JSONDecoder()
+    candidates = []
+    metric_keys = {
+        "equity_start_total",
+        "equity_end_realized_total",
+        "equity_end_mtm_total",
+        "realized_pnl_total",
+        "total_pnl",
+        "trades_total",
+    }
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, end = decoder.raw_decode(text[i:])
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            candidates.append((bool(metric_keys.intersection(obj.keys())), end, obj))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[-1][2]
+
+
+def _postprocess_backtest_outputs(out_dir: str, logs_path: str, bt_script: str, started_at: Optional[float] = None) -> None:
+    """Normalize outputs from different backtesters for the Run UI."""
+
+    # Some backtesters write JSON to stdout instead of summary.csv/trades.csv.
+    try:
+        text = open(logs_path, "r", encoding="utf-8", errors="replace").read()
+    except Exception:
+        text = ""
+    parsed = _extract_json_object_from_text(text) if text else None
+    if parsed:
+        summary_json = os.path.join(out_dir, "summary.json")
+        with open(summary_json, "w", encoding="utf-8") as f:
+            json.dump(parsed, f, indent=2, ensure_ascii=False, default=str)
+        summary_csv = os.path.join(out_dir, "summary.csv")
+        flat = {k: v for k, v in parsed.items() if isinstance(v, (str, int, float, bool)) or v is None}
+        pd.DataFrame([flat]).to_csv(summary_csv, index=False)
+
+    # Normalize common file names produced by older dual backtesters.
+    aliases = {
+        "dual_summary.csv": "summary.csv",
+        "bt_summary.csv": "summary.csv",
+        "dual_trades.csv": "trades.csv",
+        "bt_trades.csv": "trades.csv",
+    }
+    for src_name, dst_name in aliases.items():
+        src = os.path.join(out_dir, src_name)
+        dst = os.path.join(out_dir, dst_name)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                shutil.copyfile(src, dst)
+            except Exception:
+                pass
+
+    # Older single-leg cores write summary/trades into BT_ROOT instead of the
+    # requested run directory.
+    if get_backtester_capabilities(bt_script).get("cwd_outputs"):
+        for name in ("summary.csv", "trades.csv"):
+            src = os.path.join(BT_ROOT, name)
+            dst = os.path.join(out_dir, name)
+            if not os.path.exists(src) or os.path.exists(dst):
+                continue
+            try:
+                if started_at and os.path.getmtime(src) + 1 < started_at:
+                    continue
+                shutil.copyfile(src, dst)
+            except Exception:
+                pass
+
+    if not glob.glob(os.path.join(out_dir, "*.png")):
+        _make_summary_equity_plot(out_dir)
+
+
+def _make_summary_equity_plot(out_dir: str) -> None:
+    """Create a minimal equity plot for old backtesters that only emit summary.csv."""
+
+    summary_path = os.path.join(out_dir, "summary.csv")
+    if not os.path.exists(summary_path):
+        return
+    try:
+        df = pd.read_csv(summary_path)
+        if df.empty:
+            return
+        row = df.iloc[0].to_dict()
+        start = row.get("equity_start") or row.get("equity_start_total")
+        end = row.get("equity_end") or row.get("equity_end_mtm_total") or row.get("equity_end_realized_total")
+        start = float(start)
+        end = float(end)
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot([0, 1], [start, end], marker="o")
+        ax.set_title("Equity Summary")
+        ax.set_xticks([0, 1], ["start", "end"])
+        ax.set_ylabel("Equity")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(os.path.join(out_dir, "equity_by_trade.png"), dpi=140)
+        plt.close(fig)
+    except Exception:
+        pass
 
 def infer_config_from_session(name: str) -> Optional[str]:
     """Best-effort lookup of a config file based on a live session name.
@@ -982,16 +1292,20 @@ def run_backtest(job):
     cfg_obj = yaml.safe_load(open(src,"r").read())
     merged = apply_overrides(cfg_obj, meta.get("override") or {})
     cfg_path = os.path.join(out_dir, "cfg_merged.yaml")
+    bt_script = meta.get("backtester") or load_backtester_version()
+    bt_caps = get_backtester_capabilities(bt_script)
+    if meta.get("cache_db") and not (bt_caps.get("cache_db") or bt_caps.get("npz")):
+        merged["cache_db"] = meta.get("cache_db")
     with open(cfg_path, "w") as f:
         yaml.safe_dump(merged, f, sort_keys=False)
     logs = os.path.join(out_dir, "logs.txt")
-    bt_script = meta.get("backtester") or load_backtester_version()
     cmd = cmd_backtester(
         cfg_path,
         meta["limit_bars"],
         meta.get("cache_db"),
         out_dir,
         bt_script,
+        symbol=meta.get("symbol"),
         export_csv=True,
         debug=bool(meta.get("debug")),
     )
@@ -1000,6 +1314,7 @@ def run_backtest(job):
         jobs.setdefault(jid, {}).setdefault("meta", {})
         jobs[jid]["cmd"] = cmd_str
         jobs[jid]["meta"].setdefault("cache_db", meta.get("cache_db"))
+    started_at = time.time()
     with open(logs, "w") as lf:
         lf.write(f"[cmd] {cmd_str}\n")
         lf.flush()
@@ -1008,6 +1323,7 @@ def run_backtest(job):
     if p.returncode != 0:
         raise RuntimeError(f"backtester failed with code {p.returncode}")
     save_backtester_version(bt_script)
+    _postprocess_backtest_outputs(out_dir, logs, bt_script, started_at=started_at)
     # Generate extra visualization plots if possible
     if _viz_plot is not None:
         try:
@@ -1073,7 +1389,15 @@ def backtesters():
     return {
         "versions": BACKTESTER_SCRIPTS,
         "current": load_backtester_version(),
-        "capabilities": BACKTESTER_CAPABILITIES,
+        "capabilities": {name: get_backtester_capabilities(name) for name in BACKTESTER_SCRIPTS},
+        "files": {
+            name: {
+                "path": os.path.join(BT_ROOT, name),
+                "url": f"/api/backtesters/{name}/file",
+            }
+            for name in BACKTESTER_SCRIPTS
+            if os.path.isfile(os.path.join(BT_ROOT, name))
+        },
     }
 
 @app.get("/api/configs")
@@ -1083,8 +1407,29 @@ def configs():
         for p in sorted(glob.glob(os.path.join(d, "*.yaml"))):
             st = os.stat(p)
             name = os.path.basename(p)
-            out[name] = {"name": name, "path": p, "updated_at": st.st_mtime}
+            bt_file = infer_backtester_for_config_path(p)
+            suggested_cache = infer_cache_for_config_path(p)
+            suggested_symbol = infer_symbol_for_config_path(p)
+            item = {
+                "name": name,
+                "path": p,
+                "updated_at": st.st_mtime,
+                "backtester_file": bt_file,
+            }
+            if bt_file:
+                item["backtester_url"] = f"/api/backtesters/{bt_file}/file"
+            if suggested_cache:
+                item["cache_db"] = suggested_cache
+                item["cache_db_kind"] = _cache_kind(suggested_cache)
+            if suggested_symbol:
+                item["symbol"] = suggested_symbol
+            out[name] = item
     return list(out.values())
+
+
+@app.get("/api/backtesters/{script}/file")
+def backtester_file(script: str):
+    return FileResponse(_safe_backtester_path(script), media_type="text/x-python", filename=os.path.basename(script))
 
 
 @app.get("/api/cache_dbs")
@@ -1196,10 +1541,19 @@ def live_run(req: LiveRunReq):
 @app.post("/api/backtest")
 def backtest(req: BacktestReq):
     req_meta = req.model_dump()
+    cfg_path_for_req = find_config(req.cfg_name)
+    if not cfg_path_for_req:
+        raise HTTPException(404, f"config not found: {req.cfg_name}")
     cache_label = (req_meta.get("cache_db") or "").strip() or None
+    if not cache_label:
+        cache_label = infer_cache_for_config_path(cfg_path_for_req)
     resolved_cache = resolve_cache_db(cache_label) if cache_label else None
     if cache_label and not resolved_cache:
         raise HTTPException(400, f"cache db not found: {cache_label}")
+    bt_script = req_meta.get("backtester") or load_backtester_version()
+    validate_backtester_input(bt_script, resolved_cache)
+    if not req_meta.get("symbol"):
+        req_meta["symbol"] = infer_symbol_for_config_path(cfg_path_for_req)
     req_meta["cache_db_label"] = cache_label
     req_meta["cache_db"] = resolved_cache
     symbol_count = _estimate_symbol_count(req_meta)
@@ -1226,12 +1580,14 @@ def backtest(req: BacktestReq):
         "cfg_name": req.cfg_name,
         "limit_bars": req.limit_bars,
         "started_at": time.time(),
-        "backtester": req_meta.get("backtester") or load_backtester_version(),
+        "backtester": bt_script,
     }
     if resolved_cache:
         meta["cache_db"] = resolved_cache
     if cache_label and cache_label != resolved_cache:
         meta["cache_db_label"] = cache_label
+    if req_meta.get("symbol"):
+        meta["symbol"] = req_meta.get("symbol")
     if req_meta.get("debug"):
         meta["debug"] = True
     if req_meta.get("override"):
@@ -1330,17 +1686,30 @@ def result(job_id: str):
         "viz_equity_vs_trade.png",
         "viz_dd_vs_trade.png",
         "viz_equity_vs_time.png",
+        "dual_equity_curve.png",
+        "dual_mtm_pnl.png",
+        "dual_pnl_panels_all.png",
+        "dual_margin_call_excess.png",
     ]
-    for fn in ("summary.csv", "trades.csv", "cfg_merged.yaml", "logs.txt", *plot_files):
+    for fn in sorted(set(("summary.csv", "summary.json", "trades.csv", "cfg_merged.yaml", "logs.txt", *plot_files))):
         p = os.path.join(out_dir, fn)
         if os.path.exists(p):
             arts[fn] = f"/api/jobs/{job_id}/artifacts/{fn}"
+    for p in sorted(glob.glob(os.path.join(out_dir, "*.png"))):
+        fn = os.path.basename(p)
+        arts.setdefault(fn, f"/api/jobs/{job_id}/artifacts/{fn}")
     summary = {}
     if "summary.csv" in arts:
         import csv
         with open(os.path.join(out_dir, "summary.csv")) as f:
             rows = list(csv.DictReader(f))
             if rows: summary = rows[0]
+    elif "summary.json" in arts:
+        try:
+            with open(os.path.join(out_dir, "summary.json"), "r", encoding="utf-8") as f:
+                summary = json.load(f)
+        except Exception:
+            summary = {}
     trades = []
     if "trades.csv" in arts:
         import csv
