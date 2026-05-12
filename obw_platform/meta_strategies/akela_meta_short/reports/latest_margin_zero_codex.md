@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-12T21:12:05Z
+Updated: 2026-05-12T21:22:18Z
 
 ## Objective
 
@@ -70,6 +70,12 @@ No portfolio, fee, slippage, liquidation, margin, exchange, or backtester math w
 | `V21_sup_margin_zero_risk_exit_budget50.yaml` | `SUP/USDT:USDT` | 20000 | 6 margin calls | Stale/contrary exits realized losses but did not fully prevent threshold crossings. |
 | `V21_sup_margin_zero_budget25.yaml` | `SUP/USDT:USDT` | full | 0 margin calls, +1.31% MTM | Valid but too conservative versus budget50. |
 | `V21_sup_margin_zero_budget50.yaml` | `SUP/USDT:USDT` | full | 0 margin calls, +5.34% MTM | Best SUP candidate from this cycle. |
+| `V21_sup_margin_zero_budget55.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, +3.33% MTM | Clean slice; full-year confirmation required because SUP behavior is path-sensitive. |
+| `V21_sup_margin_zero_budget55.yaml` | `SUP/USDT:USDT` | full | 0 margin calls, +4.34% MTM, MDD -51.53% | Valid but inferior to budget50 on return and drawdown. |
+| `V21_sup_margin_zero_budget60.yaml` | `SUP/USDT:USDT` | 20000 | 0 margin calls, +4.40% MTM | Clean slice, but showed worse tail unrealized ratio than budget50. |
+| `V21_sup_margin_zero_budget60.yaml` | `SUP/USDT:USDT` | full | 0 margin calls, +3.93% MTM, MDD -62.52% | Valid but inferior to budget50 on return and drawdown. |
+| `V21_sup_margin_zero_budget65.yaml` | `SUP/USDT:USDT` | 20000 | 4 margin calls, -0.97% MTM | Budget increase crossed the risk threshold on the 20k slice. |
+| `V21_sup_margin_zero_budget75.yaml` | `SUP/USDT:USDT` | 20000 | 10 margin calls, -12.05% MTM | Rejected immediately; higher sizing restored margin-call risk. |
 | `V21_maxxing_margin_zero_budget50.yaml` | `MAXXING/USDT:USDT` | full | 0 margin calls, +26.23% MTM | Confirmed margin-zero candidate. |
 | `V21_idol_margin_zero_budget50.yaml` | `IDOL/USDT:USDT` | full | 0 margin calls, +9.05% MTM | Confirmed margin-zero candidate. |
 
@@ -84,4 +90,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-The margin-call cleanup target is satisfied for the first basket. The next useful action is to tune `budget50` upward carefully for SUP only, because SUP is still the basket risk anchor at -49.94% MTM drawdown and the weakest tail unrealized/realized ratio.
+The margin-call cleanup target is satisfied for the first basket. The SUP upward-budget bracket did not improve the current candidate: budget55 and budget60 remained zero-margin but were worse than budget50, while budget65 and budget75 reintroduced margin calls on the 20k slice. The next useful action is to improve SUP by changing fill spacing or exit/deleverage shape around budget50, not by increasing `equityForSizingUSDT`.

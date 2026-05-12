@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12T21:12:05Z",
+  "updated": "2026-05-12T21:22:18Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -164,7 +164,85 @@
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
       "reason": "Valid but more conservative than budget50."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget55.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 3.332702793193917,
+      "mdd_mtm_%": -14.80775472812836,
+      "trades_total": 306,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.8091168755963751,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget55_20k.log",
+      "reason": "Clean slice; full-year confirmation required because SUP behavior is path-sensitive."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget55.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 4.339464157164281,
+      "mdd_mtm_%": -51.52517371122077,
+      "trades_total": 1398,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.7107159403633873,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget55_full.log",
+      "reason": "Valid but inferior to budget50 on return and drawdown."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget60.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 4.403605343349307,
+      "mdd_mtm_%": -14.63793948160666,
+      "trades_total": 317,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.7610822002958848,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget60_20k.log",
+      "reason": "Clean slice, but showed worse tail unrealized ratio than budget50."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget60.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 3.932187528188388,
+      "mdd_mtm_%": -62.51616193715838,
+      "trades_total": 1471,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.7366936696824233,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget60_full.log",
+      "reason": "Valid but inferior to budget50 on return and drawdown."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget65.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": -0.9693088993158518,
+      "mdd_mtm_%": -113.55524577080219,
+      "trades_total": 342,
+      "margin_call_events_total": 4,
+      "bars_in_margin_call": 81,
+      "terminal_unrealized_to_realized_ratio": -1.0520152138154997,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget65_20k.log",
+      "reason": "Budget increase crossed the risk threshold on the 20k slice."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget75.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": -12.050757842432017,
+      "mdd_mtm_%": -103.80966123043764,
+      "trades_total": 339,
+      "margin_call_events_total": 10,
+      "bars_in_margin_call": 59,
+      "terminal_unrealized_to_realized_ratio": -1.6573268659268354,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget75_20k.log",
+      "reason": "Rejected immediately; higher sizing restored margin-call risk."
     }
   ],
-  "next_action": "Tune budget50 upward carefully for SUP only; SUP remains the basket risk anchor by MTM drawdown and tail unrealized/realized ratio."
+  "next_action": "The SUP upward-budget bracket did not improve budget50. Next improve SUP by changing fill spacing or exit/deleverage shape around budget50, not by increasing equityForSizingUSDT."
 }
