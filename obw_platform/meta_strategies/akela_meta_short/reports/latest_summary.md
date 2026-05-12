@@ -1,23 +1,23 @@
 # Akela Meta Short Latest Summary
 
-Updated: 20260512T003432Z
+Updated: 20260512T010643Z
 Phase dataset: `DB/fast_cache_akela_shortlist_1m_30d.npz`
 Short-leg dataset: `DB/akela_top200_1m_30d.db`
-Raw artifacts: `_reports/akela_meta_short/20260512T003432Z`
+Raw artifacts: `_reports/akela_meta_short/20260512T010643Z`
 
 ## Job Results
 
 | job | returncode | seconds | log |
 | --- | --- | ---: | --- |
-| phase_proxy_rank:baseline | 0 | 11.6 | `_reports/akela_meta_short/20260512T003432Z/phase_proxy_rank:baseline.log` |
-| monthly_rolling_phase_proxy:baseline | 0 | 16.92 | `_reports/akela_meta_short/20260512T003432Z/monthly_rolling_phase_proxy:baseline.log` |
-| short_leg_rank_no_backtest:baseline | 0 | 15.18 | `_reports/akela_meta_short/20260512T003432Z/short_leg_rank_no_backtest:baseline.log` |
-| phase_proxy_rank:sensitive_failed_pump | 0 | 12.43 | `_reports/akela_meta_short/20260512T003432Z/phase_proxy_rank:sensitive_failed_pump.log` |
-| monthly_rolling_phase_proxy:sensitive_failed_pump | 0 | 16.56 | `_reports/akela_meta_short/20260512T003432Z/monthly_rolling_phase_proxy:sensitive_failed_pump.log` |
-| short_leg_rank_no_backtest:sensitive_failed_pump | 0 | 14.11 | `_reports/akela_meta_short/20260512T003432Z/short_leg_rank_no_backtest:sensitive_failed_pump.log` |
-| phase_proxy_rank:strict_late_decay | 0 | 12.16 | `_reports/akela_meta_short/20260512T003432Z/phase_proxy_rank:strict_late_decay.log` |
-| monthly_rolling_phase_proxy:strict_late_decay | 0 | 17.63 | `_reports/akela_meta_short/20260512T003432Z/monthly_rolling_phase_proxy:strict_late_decay.log` |
-| short_leg_rank_no_backtest:strict_late_decay | 0 | 14.0 | `_reports/akela_meta_short/20260512T003432Z/short_leg_rank_no_backtest:strict_late_decay.log` |
+| phase_proxy_rank:baseline | 0 | 12.12 | `_reports/akela_meta_short/20260512T010643Z/phase_proxy_rank:baseline.log` |
+| monthly_rolling_phase_proxy:baseline | 0 | 17.27 | `_reports/akela_meta_short/20260512T010643Z/monthly_rolling_phase_proxy:baseline.log` |
+| short_leg_rank_no_backtest:baseline | 0 | 14.4 | `_reports/akela_meta_short/20260512T010643Z/short_leg_rank_no_backtest:baseline.log` |
+| phase_proxy_rank:sensitive_failed_pump | 0 | 11.79 | `_reports/akela_meta_short/20260512T010643Z/phase_proxy_rank:sensitive_failed_pump.log` |
+| monthly_rolling_phase_proxy:sensitive_failed_pump | 0 | 17.13 | `_reports/akela_meta_short/20260512T010643Z/monthly_rolling_phase_proxy:sensitive_failed_pump.log` |
+| short_leg_rank_no_backtest:sensitive_failed_pump | 0 | 14.05 | `_reports/akela_meta_short/20260512T010643Z/short_leg_rank_no_backtest:sensitive_failed_pump.log` |
+| phase_proxy_rank:strict_late_decay | 0 | 11.61 | `_reports/akela_meta_short/20260512T010643Z/phase_proxy_rank:strict_late_decay.log` |
+| monthly_rolling_phase_proxy:strict_late_decay | 0 | 18.09 | `_reports/akela_meta_short/20260512T010643Z/monthly_rolling_phase_proxy:strict_late_decay.log` |
+| short_leg_rank_no_backtest:strict_late_decay | 0 | 13.98 | `_reports/akela_meta_short/20260512T010643Z/short_leg_rank_no_backtest:strict_late_decay.log` |
 
 ## Repeated Candidates Across Profiles
 
