@@ -158,3 +158,4 @@ sharedMargin:
   proTrendCapUSDT: 145
   antiTrendCapUSDT: 65
   firstOrderBasis: free_effective
+backtester_file: backtester_dual_long_short_fast_pack_v2.py

@@ -94,3 +94,4 @@ strategy_params_short:
   minShortInvestPct: 0.4
   maxShortInvestPct: 0.8
   hardBreakevenDeleveragePct: 70.0
+backtester_file: backtester_dual_long_short_fast_pack_v2.py

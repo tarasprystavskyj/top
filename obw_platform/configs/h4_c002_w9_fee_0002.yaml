@@ -100,3 +100,4 @@ strategy_params_short:
   useLiveSyncStart: 0.0
   useTrendAdaptiveSizing: 1.0
 timeframe: 0.5m
+backtester_file: backtester_dual_long_short_fast_pack_v2.py

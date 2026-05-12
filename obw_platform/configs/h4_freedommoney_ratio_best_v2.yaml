@@ -1,0 +1,124 @@
+cache_db: /mnt/data/combined_cache_30s_ENA_2026-02-01_2026-03-01.db
+live: false
+portfolio:
+  fee_rate: 0.0005
+  funding_rate_per_8h_bps: 0.0
+  initial_equity_per_leg: 100.0
+  max_notional_frac: 1.4
+  slippage_per_side: 9.2387
+source: sqlite
+strategy_class_long: strategies.cryptomine_pack_dual_full_compound.CryptomineLongPackAdaptiveEven
+strategy_class_short: strategies.cryptomine_pack_dual_compound.CompoundShortPack
+strategy_params_long:
+  autoMerge: 0.0
+  baseOrderPctEq: 1.5
+  blockDcaOnTpTouch: 0.0
+  callbackPercent: 0.035
+  drop1: 0.38
+  drop2: 0.35
+  drop3: 0.6
+  drop4: 0.8
+  drop5: 0.8
+  equityForSizingUSDT: 335
+  firstBuyQtyCoin: 0.09
+  hardBreakevenDeleveragePct: 50
+  linearDropPercent: 0.049615
+  liveStartTime: 0.0
+  marginCallLimit: 244.0
+  maxFillsPerBar: 6.0
+  maxLongInvestPct: 2.0
+  maxOrdersPer3Min: 14.0
+  maxSubSellsPerBar: 10.0
+  minLongInvestPct: 0.5
+  minOrderQtyCoin: 0.09
+  minOrderUSDT: 2.0
+  mult2: 1.085342
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+  requireCloseAboveFullTP: 1.0
+  requireCloseBelowDcaLevel: 1.0
+  subSellCloseConfirmMode: breakeven
+  subSellTPPercent: 1.815
+  tpPercent: 1.1
+  trendMaLen: 20.0
+  trendMaTf: D
+  trendScoreMaxPct: 85.0
+  trendScoreMinPct: 35.0
+  trendSlopeBars: 3.0
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  useEquityPctBase: 1.0
+  useHighLowTouch: 0.0
+  useLiveSyncStart: 0.0
+  useTrendAdaptiveSizing: 1.0
+  useEvenBars: 0
+strategy_params_short:
+  autoMerge: 0.0
+  baseOrderPctEq: 1.5
+  blockDcaOnTpTouch: 0.0
+  callbackPercent: 0.12
+  compoundCapMult: 2.0
+  compoundFactor: 1.0
+  equityForSizingUSDT: 335
+  firstSellQtyCoin: 0.09
+  hardBreakevenDeleveragePct: 50.0
+  linearRisePercent: 0.208706
+  liveStartTime: 0.0
+  marginCallLimit: 244.0
+  maxFillsPerBar: 11.0
+  maxOrdersPer3Min: 22.0
+  maxShortInvestPct: 1.0
+  maxSubSellsPerBar: 10.0
+  minOrderQtyCoin: 0.09
+  minShortInvestPct: 0.5
+  mult2: 2.6
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+  requireCloseAboveDcaLevel: 0.0
+  requireCloseBelowFullTP: 1.0
+  rise1: 0.158708
+  rise2: 0.4
+  rise3: 0.6
+  rise4: 0.8
+  rise5: 0.8
+  subCoverCloseConfirmMode: breakeven
+  subSellBaseSizing: 1
+  subSellMinFills: 6
+  subSellTPPercent: 1.56
+  tpPercent: 0.65
+  trendMaLen: 20.0
+  trendMaTf: D
+  trendScoreMaxPct: 85.0
+  trendScoreMinPct: 34.5
+  trendSlopeBars: 5.0
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  useEquityPctBase: 1.0
+  useEvenBars: 0
+  useHighLowTouch: 0.0
+  useLiveSyncStart: 0.0
+  useTrendAdaptiveSizing: 1.0
+  minOrderUSDT: 2.0
+  requireCloseAboveFullTP: 1.0
+  requireCloseBelowDcaLevel: 1.0
+  subSellCloseConfirmMode: breakeven
+timeframe: 0.5m
+backtest:
+  fast_no_manage_snapshots: true
+meta:
+  candidate: h4_freedommoney_ratio_best_v2
+  source: FREEDOMMONEY/USDT:USDT on fast_cache_akela_shortlist_1m_30d(1).npz
+  fixed_constraints: fee/slippage/base/minOrder/equity/confirm/highlow/even/live/trend
+    adaptive unchanged
+  optimization: maximize MTM_PnL / abs(MTM_DD) on all available FREEDOMMONEY data
+    in uploaded fast_cache_akela_shortlist_1m_30d
+  best_metrics:
+    risk_ratio: 12.688405972750662
+    total_pnl_mtm_eval: 199.11903887714837
+    mdd_mtm_%: -15.692990853600678
+    realized_pnl_total: 295.2258974928821
+    unrealized_pnl_total: -96.10685861573376
+    trades_total: '4409'
+backtester_file: backtester_dual_long_short_fast_pack_v2.py

@@ -1,0 +1,13 @@
+timestamp,agent,phase,symbol,config,npz,time_window,mtm_pnl,mtm_dd_pct,ratio,realized,unrealized,trades,margin_calls,notes
+2026-05-08,ChatGPT,prior_tune,FREEDOMMONEY,h4_freedommoney_ratio_best_v2.yaml,uploaded Akela data,all available,+199.12,-15.69,12.69,+295.23,-96.11,4409,0,best ratio but tail too large
+2026-05-08,ChatGPT,prior_tune,FREEDOMMONEY,h4_freedommoney_low_tail_expo_l10_s08.yaml,uploaded Akela data,all available,+115.96,-21.33,5.44,unknown,-38.50,unknown,0,lower tail but weaker ratio
+2026-05-08,ChatGPT,transfer_test,ENA,h4_freedommoney_ratio_best_v2.yaml,ENA 30s 1y,Jan and Dec-Feb,negative,negative,negative,unknown,unknown,unknown,0,transfer failed; do not optimize ENA first
+2026-05-08,Claude-Haiku,iter2_revalidate,FREEDOMMONEY,h4_freedommoney_ratio_best_v2.yaml,fast_cache_akela_shortlist_1m_30d,30d,+199.12,-15.69,12.69,+295.23,-96.11,4409,0,revalidated - exceeds -60 constraint
+2026-05-08,Claude-Haiku,iter2_revalidate,FREEDOMMONEY,h4_freedommoney_low_tail_expo_l10_s08.yaml,fast_cache_akela_shortlist_1m_30d,30d,+115.96,-21.33,5.44,+154.46,-38.50,2179,0,revalidated
+2026-05-08,Claude-Haiku,iter2_revalidate,FREEDOMMONEY,h4_c002_w9_fee_0002.yaml,fast_cache_akela_shortlist_1m_30d,30d,+91.43,-11.87,7.70,+139.78,-48.35,5328,0,baseline reference
+2026-05-08,Claude-Haiku,iter2_tune,FREEDOMMONEY,h4_freedommoney_hybrid_balanced_v3.yaml,fast_cache_akela_shortlist_1m_30d,30d,+166.67,-20.39,8.17,+206.60,-39.93,4042,0,WINNER - meets constraint -39.93 vs -60 limit
+2026-05-08,Claude-Haiku,iter2_tune,FREEDOMMONEY,h4_freedommoney_aggressive_short_v4.yaml,fast_cache_akela_shortlist_1m_30d,30d,+68.78,-14.48,4.75,+80.98,-12.20,1588,0,too conservative - limited long to 0.8x
+2026-05-08,Claude-Haiku,iter2_tune,FREEDOMMONEY,h4_freedommoney_capped_long_v5.yaml,fast_cache_akela_shortlist_1m_30d,30d,+184.55,-20.88,8.84,+288.15,-103.60,4428,0,capped long to 1.5x - worse tail than best_v2
+2026-05-11,Codex,resume_revalidate,FREEDOMMONEY,h4_freedommoney_hybrid_balanced_v3.yaml,fast_cache_akela_shortlist_1m_30d,30d,+166.67,-20.39,8.17,+206.60,-39.93,4042,0,winner confirmed; static locks OK; fetch 90d blocked by DNS/network
+2026-05-11,Codex,resume_revalidate,FREEDOMMONEY,h4_freedommoney_ratio_best_v2.yaml,fast_cache_akela_shortlist_1m_30d,30d,+199.12,-15.69,12.69,+295.23,-96.11,4409,0,higher ratio but rejected by -60 unrealized constraint
+2026-05-11,Codex,resume_revalidate,FREEDOMMONEY,h4_c002_w9_fee_0002.yaml,fast_cache_akela_shortlist_1m_30d,30d,+91.43,-11.87,7.70,+139.78,-48.35,5328,0,baseline reference confirmed

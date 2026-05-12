@@ -74,5 +74,5 @@ strategy_params:
   
   slip-window: 100
   slip-floor: 1.0
-  slip-cap: 3.0  
-
+  slip-cap: 3.0
+backtester_file: backtester_core_speed3_veto_universe_2.py

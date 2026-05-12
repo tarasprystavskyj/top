@@ -33,3 +33,4 @@ min_atr_ratio: 0.0
 min_momentum_sum: 0.02
 min_qv_24h: 0.0
 min_qv_1h: 0.0
+backtester_file: backtester_core_speed2.py

@@ -61,3 +61,4 @@ strategy_params_short:
   slEnabled: false
   maxBudgetFrac: 0.6
   stopPercent: 99.0
+backtester_file: backtester_dual_long_short_mtm.py

@@ -1,6 +1,10 @@
 node_modules/
 .next/
 out/
+.agent/
+_handoff/
+_reports/
+runs/
 .env*
 .venv*/
 __pycache__/

@@ -1,0 +1,19 @@
+strategy_class: strategies.telegram_signal_replay_strategy.TelegramSignalReplayStrategy
+cache_db: telegram_signal_standard_bt/telegram_signals_3m_7200b_bingx.db
+report_dir: telegram_signal_standard_bt/reports
+
+strategy_params:
+  signals_csv: telegram_signal_standard_bt/telegram_signals_extracted.csv
+  signal_ttl_hours: 72
+  entry_mode: close_in_zone
+  stop_first_on_same_bar: true
+  allow_late_entry_after_tp1: false
+  tp1_qty_frac: 0.3333333333
+  tp2_qty_frac: 0.5
+
+portfolio:
+  initial_equity: 1000.0
+  position_notional: 100.0
+  fee_rate: 0.0005
+  slippage_per_side: 0.00092387
+  max_notional_frac: 1.2

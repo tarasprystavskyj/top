@@ -141,3 +141,4 @@ runner:
       recent_bars: 60
       baseline_bars: 360
       shift_ratio: 2.0
+backtester_file: backtester_dual_long_short_fast_pack_v2.py

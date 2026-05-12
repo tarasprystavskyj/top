@@ -24,5 +24,4 @@ min_momentum_sum: 0.02
 portfolio:
   position_notional: 80.0
   initial_equity: 100.0
-
-
+backtester_file: backtester_core_speed2.py

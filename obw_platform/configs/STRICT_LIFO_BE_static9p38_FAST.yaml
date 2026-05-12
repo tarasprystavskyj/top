@@ -166,3 +166,4 @@ backtest:
     maker_fee_rate: 0.0002
   primary_metric: total_pnl_mtm
   fast_time_rows: true
+backtester_file: backtester_dual_long_short_fast_pack_v2.py

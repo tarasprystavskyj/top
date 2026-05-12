@@ -71,3 +71,4 @@ strategy_params_short:
   blockDcaOnTpTouch: false
   useHighLowTouch: true
   maxOrdersPer3Min: 14
+backtester_file: backtester_dual_long_short_mtm.py

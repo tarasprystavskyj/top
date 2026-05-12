@@ -246,12 +246,18 @@ def write_rows_csv(path: Path, rows: list):
 
 
 def _run_stage_payloads(executor, payloads, weights):
-    futs = [executor.submit(eval_cfg, (cfg, weights)) for _, cfg in payloads]
     stage_rows = []
-    for (value, _cfg), fut in zip(payloads, futs):
-        r = fut.result()
-        r['value'] = value
-        stage_rows.append(r)
+    if executor is None:
+        for value, cfg in payloads:
+            r = eval_cfg((cfg, weights))
+            r['value'] = value
+            stage_rows.append(r)
+    else:
+        futs = [executor.submit(eval_cfg, (cfg, weights)) for _, cfg in payloads]
+        for (value, _cfg), fut in zip(payloads, futs):
+            r = fut.result()
+            r['value'] = value
+            stage_rows.append(r)
     return stage_rows
 
 
@@ -272,6 +278,8 @@ def main():
     ap.add_argument('--w-realized-mdd', type=float, default=5.0)
     ap.add_argument('--score-mode', choices=['mtm', 'realized'], default='mtm',
                     help='Primary optimization PnL. Default mtm = realized + final unrealized.')
+    ap.add_argument('--max-seconds', type=float, default=0.0,
+                    help='Stop gracefully after this many seconds, checked between stages. 0 = no limit.')
     ap.add_argument('--fresh-executor-per-stage', action='store_true',
                     help='Debug fallback only. Slow: reloads NPZ each stage.')
     ap.add_argument('--debug', action='store_true', help='Verbose progress output')
@@ -386,6 +394,16 @@ def main():
                 initargs=(args.npz, args.symbol, time_from_s, time_to_s, args.limit_bars),
             ) as ex:
                 run_one_stage(ex, mode, params, stage_idx)
+    elif args.jobs <= 1:
+        # Lowest-memory path for small VPS instances: use the SERIES already
+        # loaded in the main process instead of duplicating the NPZ in a worker.
+        for stage_idx, stage in enumerate(plan, start=1):
+            if args.max_seconds and time.time() - t_load0 >= args.max_seconds:
+                if args.debug:
+                    print(f'[stop] max_seconds reached before stage={stage_idx}', flush=True)
+                break
+            mode, params = (stage[0], stage[1]) if isinstance(stage, (list, tuple)) else next(iter(stage.items()))
+            run_one_stage(None, mode, params, stage_idx)
     else:
         # Fast path: persistent worker pool. NPZ is loaded once per worker for the whole tuning run.
         with ProcessPoolExecutor(
@@ -394,6 +412,10 @@ def main():
             initargs=(args.npz, args.symbol, time_from_s, time_to_s, args.limit_bars),
         ) as ex:
             for stage_idx, stage in enumerate(plan, start=1):
+                if args.max_seconds and time.time() - t_load0 >= args.max_seconds:
+                    if args.debug:
+                        print(f'[stop] max_seconds reached before stage={stage_idx}', flush=True)
+                    break
                 mode, params = (stage[0], stage[1]) if isinstance(stage, (list, tuple)) else next(iter(stage.items()))
                 run_one_stage(ex, mode, params, stage_idx)
 

@@ -71,5 +71,4 @@ strategy_params:
   maxBudgetFrac: 0.60
   
   stopPercent: 99.0   # SL на -99% від ціни входу (щоб не заважав DCA)
-  
-
+backtester_file: backtester_core_speed3_veto_universe_2.py

@@ -1,4 +1,4 @@
-cache_db: ../combined_cache_5m_5000.db
+cache_db: ../DB/combined_cache_5m_5000_04.09.db
 strategy_class: strategies.breakout_avaai_full.BreakoutAVAAIFull
 strategy_params:
   side: LONG
@@ -21,3 +21,4 @@ session:
   open_every_bar: true
 side: LONG
 top-n: 8
+backtester_file: backtester_core_speed2.py
