@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="/var/www/vps2.happyuser.info/top/top_1"
 LANE="obw_platform/meta_strategies/akela_meta_short"
 SLEEP_SECONDS="${OBW_AKELA_LOOP_SLEEP:-1800}"
+MODE="${OBW_AKELA_LOOP_MODE:-${1:-proxy}}"
 LOG_DIR="$ROOT/$LANE/logs"
 mkdir -p "$LOG_DIR"
 
@@ -15,8 +16,20 @@ while true; do
 
   {
     echo "[akela-worker] start ${stamp}"
+    echo "[akela-worker] mode ${MODE}"
     git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD
-    python3 "$LANE/akela_meta_iteration.py"
+    case "$MODE" in
+      proxy)
+        python3 "$LANE/akela_meta_iteration.py"
+        ;;
+      basket|basket_validation)
+        python3 "$LANE/akela_basket_validation.py"
+        ;;
+      *)
+        echo "[akela-worker] unknown mode: ${MODE}"
+        exit 2
+        ;;
+    esac
     echo "[akela-worker] iteration exit code $?"
   } >"$log" 2>&1 || true
 

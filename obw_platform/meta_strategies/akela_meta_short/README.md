@@ -13,6 +13,8 @@ stand down, and how much risk to allocate.
 ## Current Architecture
 
 - `akela_meta_iteration.py` runs one deterministic research iteration.
+- `akela_basket_validation.py` runs the first yearly candidate basket through
+  the trusted V21 short-leg backtester.
 - `run_worker_loop.sh` runs iterations in a supervised loop.
 - `NEXT_WORKER_PROMPT.md` documents the evidence gates for a future LLM worker.
 - `AGENT_STATE.md` is the handoff state for humans and agents.
@@ -31,6 +33,25 @@ Each iteration currently runs three selector profiles:
 - `baseline`: current defaults from the existing scripts.
 - `sensitive_failed_pump`: earlier failed-pump detection.
 - `strict_late_decay`: slower, stricter late-decay confirmation.
+
+## Worker Modes
+
+The worker defaults to the legacy proxy/ranking loop:
+
+```bash
+./obw_platform/meta_strategies/akela_meta_short/run_worker_loop.sh
+```
+
+To validate the first candidate basket instead:
+
+```bash
+OBW_AKELA_LOOP_MODE=basket ./obw_platform/meta_strategies/akela_meta_short/run_worker_loop.sh
+```
+
+The basket mode is still read/report orchestration. It uses
+`obw_platform/backtester_dual_long_short_fast_pack_v2.py` with explicit
+`--npz` and `--symbol`, writes raw artifacts under `_reports/akela_meta_short/`,
+and commits only compact summaries under this lane.
 
 ## Research Contract
 
