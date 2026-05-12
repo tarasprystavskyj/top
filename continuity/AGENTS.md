@@ -6,6 +6,7 @@ The continuity layer exists to keep those layers oriented across AI/Codex/ChatGP
 
 ## Working rules
 
+- Read `TEAM.md` and `continuity/AGENT_RULES.md` before agent-driven work.
 - Before work, read `continuity/AGENTS.md`, `continuity/MAP.md`, and only the relevant file from `continuity/lines/`.
 - Do not edit trading code, runner code, YAML configs, or UI code from a continuity-only task.
 - Keep tasks narrow. One task should not mix UI, live runner, trading-core, cache, and deploy changes.
