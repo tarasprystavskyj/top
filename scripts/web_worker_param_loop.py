@@ -627,6 +627,7 @@ def default_state() -> dict:
         "results": [],
         "backtests": [],
         "poll_attempt": 0,
+        "pending_followups": {},
         "ready_for_live": False,
         "next_action": "send_initial_tasks",
     }
@@ -880,6 +881,18 @@ async def run_loop(max_cycles: int, reset: bool = False) -> dict:
                         sent_count += 1
                     await human_sleep(5, 1.0, 2.0)
 
+            pending = dict(state.get("pending_followups", {}) or {})
+            for worker in WORKERS:
+                wid = worker["id"]
+                message = pending.get(wid)
+                if not message:
+                    continue
+                if await send_task(manager, worker, state, message, force_archive=False):
+                    sent_count += 1
+                    pending.pop(wid, None)
+                await human_sleep(5, 1.0, 2.0)
+            state["pending_followups"] = pending
+
             await human_sleep(8, 2.0, 3.0)
 
             for worker in WORKERS:
@@ -891,11 +904,17 @@ async def run_loop(max_cycles: int, reset: bool = False) -> dict:
             local_cycle_result(state, infos, backtest_rows)
 
             if any(info.get("new") for info in infos) or backtest_rows:
+                pending = dict(state.get("pending_followups", {}) or {})
                 for worker in WORKERS:
                     # Send at most one follow-up per completed reasoning cycle and respect cooldown/backoff.
-                    if await send_task(manager, worker, state, make_followup_task(worker, state, infos), force_archive=False):
+                    message = make_followup_task(worker, state, infos)
+                    if await send_task(manager, worker, state, message, force_archive=False):
                         sent_count += 1
+                        pending.pop(worker["id"], None)
+                    else:
+                        pending[worker["id"]] = message
                     await human_sleep(5, 1.0, 2.0)
+                state["pending_followups"] = pending
 
             progressed = bool(sent_count or any(info.get("new") for info in infos) or backtest_rows)
             if progressed:
