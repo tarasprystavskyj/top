@@ -5,6 +5,7 @@ out/
 _handoff/
 _reports/
 runs/
+.env
 .env*
 .venv*/
 __pycache__/

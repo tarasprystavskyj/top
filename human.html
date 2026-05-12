@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>top_1 human entrypoint</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      line-height: 1.5;
+      color: #151515;
+      background: #f6f7f8;
+    }
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 32px 20px 56px;
+      background: #fff;
+      min-height: 100vh;
+    }
+    h1, h2 {
+      line-height: 1.2;
+    }
+    h1 {
+      margin-top: 0;
+    }
+    a {
+      color: #0645ad;
+    }
+    code {
+      background: #f0f1f2;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+    .note {
+      border-left: 4px solid #333;
+      padding-left: 12px;
+      margin: 18px 0;
+    }
+    ul {
+      padding-left: 22px;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>top_1: людський вхід у проект</h1>
+
+  <p class="note">
+    Це коротка стартова сторінка для людей. Деталі можна питати в агентів, але
+    базові межі відповідальності й правила роботи варто прочитати тут.
+  </p>
+
+  <h2>Хто за що відповідає</h2>
+  <ul>
+    <li><strong>Тарас</strong> — CTO і тімлід. Відповідає за технічний напрям, research, live-readiness, merge-рішення.</li>
+    <li><strong>Тетяна</strong> — frontend/design напрям. Має PM/HR досвід і технічну освіту.</li>
+    <li><strong>Агенти</strong> — Codex Pro CLI, Gemini 3 free, Claude CLI. Вони роблять більшість реалізації, але відповідальність лишається за людиною-власником задачі.</li>
+  </ul>
+
+  <h2>Гілки</h2>
+  <ul>
+    <li><code>ui-admin</code> — UI, frontend/design, backend API для UI.</li>
+    <li><code>akela-meta-short-worker</code> — Akela, V21, тюнери, backtests, data/research.</li>
+    <li><code>main</code> — стабільна база, не scratch-гілка.</li>
+  </ul>
+
+  <h2>Що читати</h2>
+  <ul>
+    <li><a href="TEAM.md">TEAM.md</a> — люди, ролі, ownership, як підписувати коміти.</li>
+    <li><a href="continuity/AGENT_RULES.md">continuity/AGENT_RULES.md</a> — правила для агентів.</li>
+    <li><a href="continuity/AGENTS.md">continuity/AGENTS.md</a> — загальні continuity-правила.</li>
+    <li><a href="continuity/MAP.md">continuity/MAP.md</a> — карта напрямків проекту.</li>
+    <li><a href="continuity/lines/ui-admin.md">continuity/lines/ui-admin.md</a> — UI-напрям.</li>
+    <li><a href="continuity/lines/strategy-research.md">continuity/lines/strategy-research.md</a> — research/стратегії.</li>
+    <li><a href="continuity/lines/backtest-integrity.md">continuity/lines/backtest-integrity.md</a> — довіра до backtest/paper/live.</li>
+  </ul>
+
+  <h2>Мінімальний workflow</h2>
+  <ul>
+    <li>Перед роботою: <code>git status -sb</code>.</li>
+    <li>Перевірити, що гілка правильна.</li>
+    <li>Перед ризиковою роботою агента зробити commit або backup branch.</li>
+    <li>Комітити стабільні маленькі checkpoints.</li>
+    <li>Push після стабільного checkpoint.</li>
+    <li>Не комітити <code>.env</code>, <code>DB/</code>, <code>_reports/</code>, <code>_handoff/</code>, <code>runs/</code>.</li>
+  </ul>
+
+  <h2>Як підписувати agent-assisted commit</h2>
+  <pre><code>Human: Taras &lt;role: CTO/team lead&gt;
+Agent: Codex CLI &lt;resume/session: ...&gt;</code></pre>
+
+  <p>
+    Якщо людина не впевнена, правильна дія — попросити агента пояснити поточну гілку,
+    список файлів, ризики і найменший безпечний наступний крок.
+  </p>
+</main>
+</body>
+</html>
