@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12",
+  "updated": "2026-05-12T21:12:05Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -52,10 +52,78 @@
   "baseline_zero_existing": {
     "symbol": "FREEDOMMONEY/USDT:USDT",
     "config": "obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
-    "return_mtm_pct_on_start": 64.28,
-    "mdd_mtm_%": -24.09,
+    "npz": "DB/fast_cache_1m_freedommoney_1y_bingx.npz",
+    "limit_bars": "full",
+    "return_mtm_pct_on_start": 64.27761710740924,
+    "mdd_mtm_%": -24.087926368998254,
     "trades_total": 7583,
-    "margin_call_events_total": 0
+    "margin_call_events_total": 0,
+    "bars_in_margin_call": 0,
+    "terminal_unrealized_to_realized_ratio": -0.4129883587938366,
+    "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log"
+  },
+  "basket_validation": {
+    "scope": "three generated margin-zero configs plus existing FREEDOMMONEY baseline-zero config",
+    "symbols": 4,
+    "equal_weight_terminal_return_pct": 26.224377088818407,
+    "worst_mdd_mtm_%": -49.944508389499035,
+    "total_trades": 12793,
+    "total_margin_call_events": 0,
+    "total_bars_in_margin_call": 0,
+    "results": [
+      {
+        "symbol": "IDOL/USDT:USDT",
+        "npz": "DB/akela_meta_short_1m_1y_idol_bingx.npz",
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_idol_margin_zero_budget50.yaml",
+        "limit_bars": "full",
+        "return_mtm_pct_on_start": 9.05382480165288,
+        "mdd_mtm_%": -10.399413225209962,
+        "trades_total": 2430,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.4943479678389817,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_full.log"
+      },
+      {
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "npz": "DB/fast_cache_1m_freedommoney_1y_bingx.npz",
+        "config": "obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+        "limit_bars": "full",
+        "return_mtm_pct_on_start": 64.27761710740924,
+        "mdd_mtm_%": -24.087926368998254,
+        "trades_total": 7583,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.4129883587938366,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log"
+      },
+      {
+        "symbol": "MAXXING/USDT:USDT",
+        "npz": "DB/fast_cache_1m_maxxing_1y_bingx.npz",
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget50.yaml",
+        "limit_bars": "full",
+        "return_mtm_pct_on_start": 26.230582326857775,
+        "mdd_mtm_%": -11.604697090675021,
+        "trades_total": 1459,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.35434119908124434,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget50_full.log"
+      },
+      {
+        "symbol": "SUP/USDT:USDT",
+        "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget50.yaml",
+        "limit_bars": "full",
+        "return_mtm_pct_on_start": 5.33548411935373,
+        "mdd_mtm_%": -49.944508389499035,
+        "trades_total": 1321,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.6658724891956916,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget50_full.log"
+      }
+    ]
   },
   "failed_or_secondary_attempts": [
     {
@@ -98,5 +166,5 @@
       "reason": "Valid but more conservative than budget50."
     }
   ],
-  "next_action": "Run equal-weight basket validation using the three budget50 generated configs plus the existing FREEDOMMONEY baseline-zero config."
+  "next_action": "Tune budget50 upward carefully for SUP only; SUP remains the basket risk anchor by MTM drawdown and tail unrealized/realized ratio."
 }

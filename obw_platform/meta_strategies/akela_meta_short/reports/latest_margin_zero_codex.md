@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-12
+Updated: 2026-05-12T21:12:05Z
 
 ## Objective
 
@@ -17,6 +17,26 @@ All candidates below are experimental YAMLs under `obw_platform/meta_strategies/
 | `SUP/USDT:USDT` | `V21_sup_margin_zero_budget50.yaml` | 5.34 | -49.94 | 1321 | 0 | 0 | -0.6659 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget50_full.log` |
 
 `FREEDOMMONEY/USDT:USDT` already had zero margin calls in the latest baseline basket with `V21_freedommoney_bingx_live_candidate_1m_1y.yaml`: return 64.28%, MDD -24.09%, trades 7583, margin calls 0.
+
+## Four-Symbol Basket Validation
+
+Validated with the three generated margin-zero configs plus the existing FREEDOMMONEY baseline-zero config.
+
+| metric | value |
+| --- | ---: |
+| symbols | 4 |
+| equal-weight terminal return approximation | 26.22% |
+| worst single-symbol MTM drawdown | -49.94% |
+| total trades | 12793 |
+| total margin-call events | 0 |
+| total bars in margin call | 0 |
+
+| symbol | config | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail unrealized/realized | raw log |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `IDOL/USDT:USDT` | `V21_idol_margin_zero_budget50.yaml` | 9.05 | -10.40 | 2430 | 0 | 0 | -0.4943 | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_full.log` |
+| `FREEDOMMONEY/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y.yaml` | 64.28 | -24.09 | 7583 | 0 | 0 | -0.4130 | `_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log` |
+| `MAXXING/USDT:USDT` | `V21_maxxing_margin_zero_budget50.yaml` | 26.23 | -11.60 | 1459 | 0 | 0 | -0.3543 | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget50_full.log` |
+| `SUP/USDT:USDT` | `V21_sup_margin_zero_budget50.yaml` | 5.34 | -49.94 | 1321 | 0 | 0 | -0.6659 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget50_full.log` |
 
 ## Baseline Comparison
 
@@ -57,10 +77,11 @@ No portfolio, fee, slippage, liquidation, margin, exchange, or backtester math w
 
 ```bash
 python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget50.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
+python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml --npz DB/fast_cache_1m_freedommoney_1y_bingx.npz --symbol FREEDOMMONEY/USDT:USDT
 python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget50.yaml --npz DB/fast_cache_1m_maxxing_1y_bingx.npz --symbol MAXXING/USDT:USDT
 python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_idol_margin_zero_budget50.yaml --npz DB/akela_meta_short_1m_1y_idol_bingx.npz --symbol IDOL/USDT:USDT
 ```
 
 ## Next Action
 
-Run an equal-weight basket validation using the three margin-zero generated configs plus the existing FREEDOMMONEY baseline-zero config, then decide whether to tune `budget50` upward carefully for SUP only.
+The margin-call cleanup target is satisfied for the first basket. The next useful action is to tune `budget50` upward carefully for SUP only, because SUP is still the basket risk anchor at -49.94% MTM drawdown and the weakest tail unrealized/realized ratio.
