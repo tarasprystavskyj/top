@@ -1,91 +1,33 @@
 {
-  "stamp": "20260512T045850Z",
+  "stamp": "20260512T053946Z",
   "phase_dataset": "DB/fast_cache_akela_shortlist_1m_30d.npz",
   "short_dataset": "DB/akela_top200_1m_30d.db",
-  "raw_report_dir": "_reports/akela_meta_short/20260512T045850Z",
+  "raw_report_dir": "_reports/akela_meta_short/20260512T053946Z",
   "results": [
-    {
-      "name": "fetch_1y_data:idol",
-      "returncode": 0,
-      "seconds": 354.16,
-      "cmd": [
-        "python3",
-        "obw_platform/scripts/fetch_backfill_ohlcv_npz_from_now_v1.py",
-        "--input-csv",
-        "/var/www/vps2.happyuser.info/top/top_1/obw_platform/meta_strategies/akela_meta_short/data/universe_idol_1m_1y.txt",
-        "--timeframe",
-        "1m",
-        "--back-bars",
-        "525600",
-        "--exchange",
-        "bingx",
-        "--ccxt-symbol-format",
-        "usdtm",
-        "--limit",
-        "1000",
-        "--sleep-sec",
-        "0.2",
-        "--npz-out",
-        "/var/www/vps2.happyuser.info/top/top_1/DB/akela_meta_short_1m_1y_idol_bingx.npz",
-        "--feature-set",
-        "none",
-        "--cache-pack-trend"
-      ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/fetch_1y_data:idol.log"
-    },
-    {
-      "name": "fetch_1y_data:sup",
-      "returncode": 0,
-      "seconds": 167.01,
-      "cmd": [
-        "python3",
-        "obw_platform/scripts/fetch_backfill_ohlcv_npz_from_now_v1.py",
-        "--input-csv",
-        "/var/www/vps2.happyuser.info/top/top_1/obw_platform/meta_strategies/akela_meta_short/data/universe_sup_1m_1y.txt",
-        "--timeframe",
-        "1m",
-        "--back-bars",
-        "525600",
-        "--exchange",
-        "bingx",
-        "--ccxt-symbol-format",
-        "usdtm",
-        "--limit",
-        "1000",
-        "--sleep-sec",
-        "0.2",
-        "--npz-out",
-        "/var/www/vps2.happyuser.info/top/top_1/DB/akela_meta_short_1m_1y_sup_bingx.npz",
-        "--feature-set",
-        "none",
-        "--cache-pack-trend"
-      ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/fetch_1y_data:sup.log"
-    },
     {
       "name": "phase_proxy_rank:baseline",
       "returncode": 0,
-      "seconds": 11.9,
+      "seconds": 12.07,
       "cmd": [
         "python3",
         "obw_platform/rank_fast_cache_akela_phase_proxybt.py",
         "--npz",
         "/var/www/vps2.happyuser.info/top/top_1/DB/fast_cache_akela_shortlist_1m_30d.npz",
         "--out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/phase_rank_baseline.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/phase_rank_baseline.csv",
         "--json-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/phase_rank_baseline.json",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/phase_rank_baseline.json",
         "--top",
         "80",
         "--min-bars",
         "1000"
       ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/phase_proxy_rank:baseline.log"
+      "log": "_reports/akela_meta_short/20260512T053946Z/phase_proxy_rank:baseline.log"
     },
     {
       "name": "monthly_rolling_phase_proxy:baseline",
       "returncode": 0,
-      "seconds": 18.35,
+      "seconds": 19.38,
       "cmd": [
         "python3",
         "obw_platform/monthly_akela_phase_proxybt.py",
@@ -100,22 +42,22 @@
         "--rolling-step-days",
         "7",
         "--detail-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/monthly_detail_baseline.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/monthly_detail_baseline.csv",
         "--summary-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/monthly_summary_baseline.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/monthly_summary_baseline.csv",
         "--json-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/monthly_baseline.json",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/monthly_baseline.json",
         "--top-per-period",
         "10",
         "--min-bars",
         "1000"
       ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/monthly_rolling_phase_proxy:baseline.log"
+      "log": "_reports/akela_meta_short/20260512T053946Z/monthly_rolling_phase_proxy:baseline.log"
     },
     {
       "name": "short_leg_rank_no_backtest:baseline",
       "returncode": 0,
-      "seconds": 14.82,
+      "seconds": 14.41,
       "cmd": [
         "python3",
         "obw_platform/rank_short_leg_all_symbols_akela_v2.py",
@@ -127,27 +69,27 @@
         "--top",
         "120",
         "--out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/short_leg_rank_baseline.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/short_leg_rank_baseline.csv",
         "--json-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/short_leg_rank_baseline.json",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/short_leg_rank_baseline.json",
         "--min-bars",
         "1000"
       ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/short_leg_rank_no_backtest:baseline.log"
+      "log": "_reports/akela_meta_short/20260512T053946Z/short_leg_rank_no_backtest:baseline.log"
     },
     {
       "name": "phase_proxy_rank:sensitive_failed_pump",
       "returncode": 0,
-      "seconds": 11.88,
+      "seconds": 11.16,
       "cmd": [
         "python3",
         "obw_platform/rank_fast_cache_akela_phase_proxybt.py",
         "--npz",
         "/var/www/vps2.happyuser.info/top/top_1/DB/fast_cache_akela_shortlist_1m_30d.npz",
         "--out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/phase_rank_sensitive_failed_pump.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/phase_rank_sensitive_failed_pump.csv",
         "--json-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/phase_rank_sensitive_failed_pump.json",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/phase_rank_sensitive_failed_pump.json",
         "--top",
         "80",
         "--min-bars",
@@ -161,12 +103,12 @@
         "--late-dd-pct",
         "45"
       ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/phase_proxy_rank:sensitive_failed_pump.log"
+      "log": "_reports/akela_meta_short/20260512T053946Z/phase_proxy_rank:sensitive_failed_pump.log"
     },
     {
       "name": "monthly_rolling_phase_proxy:sensitive_failed_pump",
       "returncode": 0,
-      "seconds": 17.86,
+      "seconds": 17.84,
       "cmd": [
         "python3",
         "obw_platform/monthly_akela_phase_proxybt.py",
@@ -181,11 +123,11 @@
         "--rolling-step-days",
         "7",
         "--detail-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/monthly_detail_sensitive_failed_pump.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/monthly_detail_sensitive_failed_pump.csv",
         "--summary-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/monthly_summary_sensitive_failed_pump.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/monthly_summary_sensitive_failed_pump.csv",
         "--json-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/monthly_sensitive_failed_pump.json",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/monthly_sensitive_failed_pump.json",
         "--top-per-period",
         "10",
         "--min-bars",
@@ -199,12 +141,12 @@
         "--late-dd-pct",
         "45"
       ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/monthly_rolling_phase_proxy:sensitive_failed_pump.log"
+      "log": "_reports/akela_meta_short/20260512T053946Z/monthly_rolling_phase_proxy:sensitive_failed_pump.log"
     },
     {
       "name": "short_leg_rank_no_backtest:sensitive_failed_pump",
       "returncode": 0,
-      "seconds": 14.39,
+      "seconds": 13.97,
       "cmd": [
         "python3",
         "obw_platform/rank_short_leg_all_symbols_akela_v2.py",
@@ -216,9 +158,9 @@
         "--top",
         "120",
         "--out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/short_leg_rank_sensitive_failed_pump.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/short_leg_rank_sensitive_failed_pump.csv",
         "--json-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/short_leg_rank_sensitive_failed_pump.json",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/short_leg_rank_sensitive_failed_pump.json",
         "--min-bars",
         "1000",
         "--pump-pct",
@@ -230,21 +172,21 @@
         "--high-lookback",
         "7200"
       ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/short_leg_rank_no_backtest:sensitive_failed_pump.log"
+      "log": "_reports/akela_meta_short/20260512T053946Z/short_leg_rank_no_backtest:sensitive_failed_pump.log"
     },
     {
       "name": "phase_proxy_rank:strict_late_decay",
       "returncode": 0,
-      "seconds": 12.4,
+      "seconds": 12.72,
       "cmd": [
         "python3",
         "obw_platform/rank_fast_cache_akela_phase_proxybt.py",
         "--npz",
         "/var/www/vps2.happyuser.info/top/top_1/DB/fast_cache_akela_shortlist_1m_30d.npz",
         "--out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/phase_rank_strict_late_decay.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/phase_rank_strict_late_decay.csv",
         "--json-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/phase_rank_strict_late_decay.json",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/phase_rank_strict_late_decay.json",
         "--top",
         "80",
         "--min-bars",
@@ -260,12 +202,12 @@
         "--late-dd-pct",
         "65"
       ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/phase_proxy_rank:strict_late_decay.log"
+      "log": "_reports/akela_meta_short/20260512T053946Z/phase_proxy_rank:strict_late_decay.log"
     },
     {
       "name": "monthly_rolling_phase_proxy:strict_late_decay",
       "returncode": 0,
-      "seconds": 17.93,
+      "seconds": 17.75,
       "cmd": [
         "python3",
         "obw_platform/monthly_akela_phase_proxybt.py",
@@ -280,11 +222,11 @@
         "--rolling-step-days",
         "7",
         "--detail-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/monthly_detail_strict_late_decay.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/monthly_detail_strict_late_decay.csv",
         "--summary-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/monthly_summary_strict_late_decay.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/monthly_summary_strict_late_decay.csv",
         "--json-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/monthly_strict_late_decay.json",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/monthly_strict_late_decay.json",
         "--top-per-period",
         "10",
         "--min-bars",
@@ -300,12 +242,12 @@
         "--late-dd-pct",
         "65"
       ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/monthly_rolling_phase_proxy:strict_late_decay.log"
+      "log": "_reports/akela_meta_short/20260512T053946Z/monthly_rolling_phase_proxy:strict_late_decay.log"
     },
     {
       "name": "short_leg_rank_no_backtest:strict_late_decay",
       "returncode": 0,
-      "seconds": 14.79,
+      "seconds": 14.77,
       "cmd": [
         "python3",
         "obw_platform/rank_short_leg_all_symbols_akela_v2.py",
@@ -317,9 +259,9 @@
         "--top",
         "120",
         "--out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/short_leg_rank_strict_late_decay.csv",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/short_leg_rank_strict_late_decay.csv",
         "--json-out",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T045850Z/short_leg_rank_strict_late_decay.json",
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/20260512T053946Z/short_leg_rank_strict_late_decay.json",
         "--min-bars",
         "1000",
         "--pump-pct",
@@ -331,17 +273,16 @@
         "--high-lookback",
         "7200"
       ],
-      "log": "_reports/akela_meta_short/20260512T045850Z/short_leg_rank_no_backtest:strict_late_decay.log"
+      "log": "_reports/akela_meta_short/20260512T053946Z/short_leg_rank_no_backtest:strict_late_decay.log"
     }
   ],
   "yearly_data_plan": [
     {
       "symbol": "IDOL",
       "target_npz": "DB/akela_meta_short_1m_1y_idol_bingx.npz",
-      "existing_bars": 0,
-      "status": "missing",
-      "action": "fetch_1m_1y_bingx",
-      "universe_file": "obw_platform/meta_strategies/akela_meta_short/data/universe_idol_1m_1y.txt"
+      "existing_bars": 482080,
+      "status": "present",
+      "action": "skip"
     },
     {
       "symbol": "FREEDOMMONEY",
@@ -360,10 +301,9 @@
     {
       "symbol": "SUP",
       "target_npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
-      "existing_bars": 0,
-      "status": "missing",
-      "action": "fetch_1m_1y_bingx",
-      "universe_file": "obw_platform/meta_strategies/akela_meta_short/data/universe_sup_1m_1y.txt"
+      "existing_bars": 251806,
+      "status": "present",
+      "action": "skip"
     }
   ],
   "profiles": [
