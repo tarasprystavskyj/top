@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12T21:22:18Z",
+  "updated": "2026-05-12T21:32:07Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -38,15 +38,17 @@
     {
       "symbol": "SUP/USDT:USDT",
       "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
-      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget50.yaml",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
       "limit_bars": "full",
-      "return_mtm_pct_on_start": 5.33548411935373,
-      "mdd_mtm_%": -49.944508389499035,
-      "trades_total": 1321,
+      "return_mtm_pct_on_start": 11.265457747781666,
+      "mdd_mtm_%": -50.198722228706,
+      "trades_total": 1303,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.6658724891956916,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget50_full.log"
+      "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+      "unrealized_pnl_long": -4.228057405026215,
+      "unrealized_pnl_short": -4.291981956211868,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full.log"
     }
   ],
   "baseline_zero_existing": {
@@ -65,9 +67,9 @@
   "basket_validation": {
     "scope": "three generated margin-zero configs plus existing FREEDOMMONEY baseline-zero config",
     "symbols": 4,
-    "equal_weight_terminal_return_pct": 26.224377088818407,
-    "worst_mdd_mtm_%": -49.944508389499035,
-    "total_trades": 12793,
+    "equal_weight_terminal_return_pct": 27.70687049592539,
+    "worst_mdd_mtm_%": -50.198722228706,
+    "total_trades": 12775,
     "total_margin_call_events": 0,
     "total_bars_in_margin_call": 0,
     "results": [
@@ -113,19 +115,35 @@
       {
         "symbol": "SUP/USDT:USDT",
         "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
-        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget50.yaml",
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
         "limit_bars": "full",
-        "return_mtm_pct_on_start": 5.33548411935373,
-        "mdd_mtm_%": -49.944508389499035,
-        "trades_total": 1321,
+        "return_mtm_pct_on_start": 11.265457747781666,
+        "mdd_mtm_%": -50.198722228706,
+        "trades_total": 1303,
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
-        "terminal_unrealized_to_realized_ratio": -0.6658724891956916,
-        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget50_full.log"
+        "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+        "unrealized_pnl_long": -4.228057405026215,
+        "unrealized_pnl_short": -4.291981956211868,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full.log"
       }
     ]
   },
   "failed_or_secondary_attempts": [
+    {
+      "config": "baseline V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "margin_call_events_total": 23,
+      "reason": "Reproduced the risk problem on a short slice."
+    },
+    {
+      "config": "baseline V21_maxxing_bingx_live_candidate_1m_1y.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "margin_call_events_total": 29,
+      "reason": "Not safer for SUP."
+    },
     {
       "config": "V21_sup_margin_zero_cap075.yaml",
       "symbol": "SUP/USDT:USDT",
@@ -242,7 +260,95 @@
       "terminal_unrealized_to_realized_ratio": -1.6573268659268354,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget75_20k.log",
       "reason": "Rejected immediately; higher sizing restored margin-call risk."
+    },
+    {
+      "symbol": "SUP/USDT:USDT",
+      "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
+      "config": "V21_sup_margin_zero_long35_short50.yaml",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 10.950962340288264,
+      "mdd_mtm_%": -16.20862752704562,
+      "trades_total": 326,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.4586378546638117,
+      "unrealized_pnl_long": -14.263160539519767,
+      "unrealized_pnl_short": -4.291981956211967,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_20k.log",
+      "reason": "Promising slice: zero margin calls, better return than budget50 20k, lower terminal unrealized ratio."
+    },
+    {
+      "symbol": "SUP/USDT:USDT",
+      "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
+      "config": "V21_sup_margin_zero_long35_short50.yaml",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 11.265457747781666,
+      "mdd_mtm_%": -50.198722228706,
+      "trades_total": 1303,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+      "unrealized_pnl_long": -4.228057405026215,
+      "unrealized_pnl_short": -4.291981956211868,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full.log",
+      "reason": "Confirmed full-year: zero margin calls, higher return than budget50 and much smaller terminal unrealized drag; MDD roughly unchanged."
+    },
+    {
+      "symbol": "SUP/USDT:USDT",
+      "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
+      "config": "V21_sup_margin_zero_long25_short50.yaml",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": -0.8024325748791732,
+      "mdd_mtm_%": -18.302130677575168,
+      "trades_total": 235,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -1.1078473954141697,
+      "unrealized_pnl_long": -12.193772468573684,
+      "unrealized_pnl_short": -4.291981956211967,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long25_short50_20k.log",
+      "reason": "Rejected: zero-margin but under-sized long side left negative MTM return on the 20k slice."
+    },
+    {
+      "symbol": "SUP/USDT:USDT",
+      "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
+      "config": "V21_sup_margin_zero_long_exit_fast.yaml",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 1.5487314969901522,
+      "mdd_mtm_%": -15.883197080825267,
+      "trades_total": 294,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.9008891140508125,
+      "unrealized_pnl_long": -23.863055361108785,
+      "unrealized_pnl_short": -4.291981956211967,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long_exit_fast_20k.log",
+      "reason": "Rejected: faster long exits stayed zero-margin but return and terminal unrealized ratio were inferior to long35_short50."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget50.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 26.230582326857775,
+      "mdd_mtm_%": -11.604697090675021,
+      "trades_total": 1459,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget50_full.log",
+      "reason": "Confirmed margin-zero candidate."
+    },
+    {
+      "config": "V21_idol_margin_zero_budget50.yaml",
+      "symbol": "IDOL/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 9.05382480165288,
+      "mdd_mtm_%": -10.399413225209962,
+      "trades_total": 2430,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_full.log",
+      "reason": "Confirmed margin-zero candidate."
     }
   ],
-  "next_action": "The SUP upward-budget bracket did not improve budget50. Next improve SUP by changing fill spacing or exit/deleverage shape around budget50, not by increasing equityForSizingUSDT."
+  "next_action": "The first-basket margin-call cleanup remains satisfied. SUP improved with asymmetric long35/short50 sizing; next useful work is to reduce SUP full-year MTM drawdown near the same sizing, likely through spacing or targeted deleverage rather than higher budget."
 }
