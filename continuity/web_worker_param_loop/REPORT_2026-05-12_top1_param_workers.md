@@ -19,6 +19,11 @@ Observed cycle progress:
 
 Conclusion: the mechanism is usable, but the current loop cadence is too aggressive for a 10-cycle web-worker reasoning run. Future runs should use longer task gaps or treat one "cycle" as one completed response round rather than one polling pass.
 
+Follow-up fix:
+- `scripts/web_worker_param_loop.py` now separates polling attempts from completed reasoning cycles.
+- Rate-limit/backoff waits no longer increment the logical cycle counter.
+- The orchestrator can create runtime-only candidate YAMLs, run bounded local backtests, and include a concise backtest artifact summary in the next context archive.
+
 ## Consensus ranking
 
 1. FREEDOMMONEY H4 hybrid tail-compression, based on `obw_platform/configs/h4_freedommoney_hybrid_balanced_v3.yaml`.
@@ -58,6 +63,20 @@ strategy_params_short.subSellTPPercent: 1.56
 
 Worker rationale: avoid raising long exposure because `ratio_best_v2` already showed that profit-chasing can recreate toxic terminal inventory. Try modest short-side lift and lower long sub-sell TP first.
 
+## First Local Backtest Pass
+
+Dataset: `DB/fast_cache_akela_shortlist_1m_30d.npz`
+
+| rank | candidate | MTM | MDD MTM | unrealized | trades | margin calls | verdict |
+|---:|---|---:|---:|---:|---:|---:|---|
+| 1 | `h4_freedommoney_hybrid_balanced_v3` baseline | 166.67 | -20.39% | -39.93 | 4042 | 0 | still best |
+| 2 | `fm_h4_w11c2_A_tail_safe_30d` | 163.52 | -20.09% | -39.96 | 4208 | 0 | slightly lower DD, worse MTM |
+| 3 | `fm_h4_w11_range_mid_tail_compression_30d` | 152.78 | -20.02% | -39.96 | 3980 | 0 | worse MTM |
+| 4 | `sup_v21_dd_repair_exposure_spacing_30d` | 27.74 | -26.81% | -2.22 | 1641 | 22 | rejected until margin calls fixed |
+| 5 | `fm_v21_det_tail_exposure_compress_30d` | -31.80 | -38.59% | -107.08 | 7740 | 46 | rejected |
+
+Result: the worker guesses did not yet beat the FreedomMoney H4 baseline on the available 30d dataset. The useful signal is that `w11c2_A` reduced drawdown slightly but paid too much MTM for it; the next worker task should search for a smaller tail-reduction move or explain why the baseline is already near the local optimum.
+
 Secondary V21 lane:
 
 Base candidates:
@@ -86,4 +105,3 @@ Runtime artifacts remain local and ignored:
 - `continuity/web_worker_param_loop/runtime/ui_data/web_worker_param_tree.json`
 - `continuity/web_worker_param_loop/runtime/top1_web_worker_context.zip`
 - `.playwright-mcp/`
-

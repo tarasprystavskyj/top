@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Experimental top_1 web-worker parameter loop.
+"""Experimental top_1 web-worker parameter/backtest loop.
 
 This is a local-only bridge for using ChatGPT web workers to generate and
-critique parameter guesses. It does not edit configs, start live trading, or run
-backtests. Outputs are persisted as JSON/log artifacts for later review.
+critique parameter guesses while the local orchestrator validates candidates
+with bounded backtests. It must not deploy or touch live trading.
 """
 from __future__ import annotations
 
@@ -59,10 +59,77 @@ TREE_FILE = RUNTIME_DIR / "ui_data" / "web_worker_param_tree.json"
 ARCHIVE_FILE = RUNTIME_DIR / "top1_web_worker_context.zip"
 ARCHIVE_MANIFEST = RUNTIME_DIR / "top1_web_worker_context.manifest.json"
 WAKEUP_FLAG = RUNTIME_DIR / "web_worker_param_wakeup.flag"
+CONTRACT_FILE = ROOT / "continuity" / "web_worker_param_loop" / "ORCHESTRATOR_PROMPT.md"
+BACKTEST_DIR = RUNTIME_DIR / "backtests"
+BACKTEST_SUMMARY_FILE = BACKTEST_DIR / "backtest_summary.md"
+BACKTEST_RESULTS_FILE = BACKTEST_DIR / "backtest_results.jsonl"
+CANDIDATE_DIR = RUNTIME_DIR / "candidate_configs"
 
 MIN_TASK_GAP_SEC = int(os.environ.get("TOP1_WEB_WORKER_MIN_TASK_GAP_SEC", "240"))
 POLL_SLEEP_SEC = int(os.environ.get("TOP1_WEB_WORKER_POLL_SLEEP_SEC", "90"))
 ARCHIVE_TTL_SEC = int(os.environ.get("TOP1_WEB_WORKER_ARCHIVE_TTL_SEC", "900"))
+BACKTEST_TIMEOUT_SEC = int(os.environ.get("TOP1_WEB_WORKER_BACKTEST_TIMEOUT_SEC", "900"))
+BACKTESTS_PER_CYCLE = int(os.environ.get("TOP1_WEB_WORKER_BACKTESTS_PER_CYCLE", "3"))
+MAX_POLL_ATTEMPTS = int(os.environ.get("TOP1_WEB_WORKER_MAX_POLL_ATTEMPTS", "0"))
+
+
+BUILTIN_BACKTEST_IDEAS = [
+    {
+        "id": "fm_h4_baseline_balanced_v3_30d",
+        "base_cfg": "obw_platform/configs/h4_freedommoney_hybrid_balanced_v3.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "patch": {},
+        "argument": "Baseline for the worker H4 lane; needed before judging guessed deltas.",
+    },
+    {
+        "id": "fm_h4_w11c2_A_tail_safe_30d",
+        "base_cfg": "obw_platform/configs/h4_freedommoney_hybrid_balanced_v3.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "patch": {
+            "strategy_params_long.subSellTPPercent": 1.35,
+            "strategy_params_short.maxShortInvestPct": 1.05,
+        },
+        "argument": "Worker consensus first test: reduce long sub-sell target and add only a modest short-side lift without raising long exposure.",
+    },
+    {
+        "id": "fm_h4_w11_range_mid_tail_compression_30d",
+        "base_cfg": "obw_platform/configs/h4_freedommoney_hybrid_balanced_v3.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "patch": {
+            "strategy_params_long.tpPercent": 0.75,
+            "strategy_params_long.subSellTPPercent": 1.30,
+            "strategy_params_short.maxShortInvestPct": 1.10,
+            "strategy_params_short.tpPercent": 0.60,
+        },
+        "argument": "Midpoint of worker_11's first range, kept as a bolder tail-compression/profit-realization hypothesis for contrast.",
+    },
+    {
+        "id": "fm_v21_det_tail_exposure_compress_30d",
+        "base_cfg": "obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "FREEDOMMONEY/USDT:USDT",
+        "patch": {
+            "strategy_params_long.maxLongInvestPct": 1.6,
+            "strategy_params_long.linearDropPercent": 0.021,
+        },
+        "argument": "Worker_12 flagged V21 FreedomMoney long maxLongInvestPct=2.4 as hidden-tail risk; compress exposure before profit-chasing.",
+    },
+    {
+        "id": "sup_v21_dd_repair_exposure_spacing_30d",
+        "base_cfg": "obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+        "npz": "DB/fast_cache_akela_shortlist_1m_30d.npz",
+        "symbol": "SUP/USDT:USDT",
+        "patch": {
+            "strategy_params_long.maxLongInvestPct": 1.5,
+            "strategy_params_long.linearDropPercent": 0.024,
+            "strategy_params_short.maxShortInvestPct": 1.0,
+        },
+        "argument": "SUP was ranked as drawdown-repair, not yield-max; compress exposure and widen spacing.",
+    },
+]
 
 
 def utc_now() -> str:
@@ -114,6 +181,280 @@ def latest_lines(path: Path, limit: int = 120) -> str:
     return "\n".join(lines[-limit:])
 
 
+def dotted_get(data: dict, path: str):
+    cur = data
+    for part in path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def dotted_set(data: dict, path: str, value) -> None:
+    cur = data
+    parts = path.split(".")
+    for part in parts[:-1]:
+        cur = cur.setdefault(part, {})
+    cur[parts[-1]] = value
+
+
+def score_backtest(result: dict) -> float:
+    mtm = float(result.get("final_total_pnl", result.get("total_pnl_mtm", 0.0)) or 0.0)
+    mdd = abs(float(result.get("mdd_mtm_%", 0.0) or 0.0))
+    unreal = abs(float(result.get("final_unrealized_pnl", result.get("unrealized_pnl_total", 0.0)) or 0.0))
+    margin = int(result.get("margin_call_events_total", 0) or 0)
+    trades = int(result.get("trades_total", 0) or 0)
+    trade_penalty = 25.0 if trades < 50 else 0.0
+    return (mtm / max(mdd, 1.0)) - (0.01 * unreal) - (100.0 * margin) - trade_penalty
+
+
+def parse_backtest_json(text: str) -> dict:
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    best = {}
+    for idx, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text[idx:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            best = obj
+    return best
+
+
+def candidate_path(idea: dict) -> Path:
+    return CANDIDATE_DIR / f"{idea['id']}.yaml"
+
+
+def materialize_candidate_config(idea: dict) -> tuple[Path, dict]:
+    import yaml
+
+    base = ROOT / idea["base_cfg"]
+    cfg = yaml.safe_load(base.read_text(encoding="utf-8"))
+    changes = []
+    for dotted, new_value in idea.get("patch", {}).items():
+        old_value = dotted_get(cfg, dotted)
+        dotted_set(cfg, dotted, new_value)
+        changes.append({"path": dotted, "old": old_value, "new": new_value})
+    cfg.setdefault("meta", {})
+    cfg["meta"]["web_worker_param_idea"] = {
+        "id": idea["id"],
+        "base_cfg": idea["base_cfg"],
+        "argument": idea.get("argument", ""),
+        "changes": changes,
+        "created_at_utc": utc_now(),
+    }
+    CANDIDATE_DIR.mkdir(parents=True, exist_ok=True)
+    out = candidate_path(idea)
+    out.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    return out, {"changes": changes}
+
+
+def load_backtest_results() -> dict[str, dict]:
+    results = {}
+    if not BACKTEST_RESULTS_FILE.exists():
+        return results
+    for line in BACKTEST_RESULTS_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = row.get("result") or {}
+        has_metrics = bool({"total_pnl_mtm", "final_total_pnl"} & set(result.keys()))
+        if row.get("status") == "ok" and not has_metrics:
+            continue
+        if row.get("id"):
+            results[row["id"]] = row
+    return results
+
+
+def append_backtest_result(row: dict) -> None:
+    BACKTEST_RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with BACKTEST_RESULTS_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+
+
+def write_backtest_summary() -> None:
+    results = sorted(
+        load_backtest_results().values(),
+        key=lambda row: float(row.get("score", -10**9) or -10**9),
+        reverse=True,
+    )
+    lines = [
+        "# Web-worker backtest artifacts",
+        "",
+        f"updated_at_utc: {utc_now()}",
+        "",
+        "| rank | id | status | score | mtm | mdd_mtm_% | unrealized | trades | margin_calls | argument |",
+        "|---:|---|---|---:|---:|---:|---:|---:|---:|---|",
+    ]
+    for idx, row in enumerate(results, start=1):
+        result = row.get("result") or {}
+        lines.append(
+            "| {rank} | `{id}` | {status} | {score:.4f} | {mtm:.4f} | {mdd:.4f} | {unreal:.4f} | {trades} | {margin} | {argument} |".format(
+                rank=idx,
+                id=row.get("id", ""),
+                status=row.get("status", ""),
+                score=float(row.get("score", 0.0) or 0.0),
+                mtm=float(result.get("final_total_pnl", result.get("total_pnl_mtm", 0.0)) or 0.0),
+                mdd=float(result.get("mdd_mtm_%", 0.0) or 0.0),
+                unreal=float(result.get("final_unrealized_pnl", result.get("unrealized_pnl_total", 0.0)) or 0.0),
+                trades=int(result.get("trades_total", 0) or 0),
+                margin=int(result.get("margin_call_events_total", 0) or 0),
+                argument=str(row.get("argument", "")).replace("|", "/")[:240],
+            )
+        )
+    if len(lines) == 6:
+        lines.append("|  | no backtests yet |  |  |  |  |  |  |  |  |")
+    BACKTEST_SUMMARY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BACKTEST_SUMMARY_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def run_backtest_idea(idea: dict) -> dict:
+    cfg_path, cfg_info = materialize_candidate_config(idea)
+    out_dir = BACKTEST_DIR / idea["id"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    npz = ROOT / idea["npz"]
+    if not npz.exists():
+        row = {
+            "id": idea["id"],
+            "ts": utc_now(),
+            "status": "missing_data",
+            "argument": idea.get("argument", ""),
+            "base_cfg": idea["base_cfg"],
+            "candidate_cfg": rel(cfg_path),
+            "npz": idea["npz"],
+            "symbol": idea.get("symbol", ""),
+            "config_changes": cfg_info.get("changes", []),
+            "error": f"missing npz: {idea['npz']}",
+            "score": -10**9,
+            "result": {},
+        }
+        append_backtest_result(row)
+        write_backtest_summary()
+        log(f"[backtest] {idea['id']} missing data {idea['npz']}")
+        return row
+
+    cmd = [
+        sys.executable,
+        str(ROOT / "obw_platform" / "backtester_dual_long_short_fast_pack_v2.py"),
+        "--cfg", str(cfg_path),
+        "--npz", str(npz),
+        "--symbol", idea.get("symbol", ""),
+        "--export-curves", str(out_dir / "curves.csv"),
+    ]
+    started = time.time()
+    proc = subprocess.run(
+        cmd,
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=BACKTEST_TIMEOUT_SEC,
+    )
+    (out_dir / "backtest.log").write_text(proc.stdout, encoding="utf-8", errors="replace")
+    result = parse_backtest_json(proc.stdout)
+    status = "ok" if proc.returncode == 0 and result and not result.get("error") else "failed"
+    row = {
+        "id": idea["id"],
+        "ts": utc_now(),
+        "status": status,
+        "argument": idea.get("argument", ""),
+        "base_cfg": idea["base_cfg"],
+        "candidate_cfg": rel(cfg_path),
+        "npz": idea["npz"],
+        "symbol": idea.get("symbol", ""),
+        "command": " ".join(cmd),
+        "log": rel(out_dir / "backtest.log"),
+        "curves": rel(out_dir / "curves.csv"),
+        "elapsed_sec": round(time.time() - started, 3),
+        "config_changes": cfg_info.get("changes", []),
+        "score": score_backtest(result) if status == "ok" else -10**9,
+        "result": result,
+    }
+    append_backtest_result(row)
+    write_backtest_summary()
+    log(
+        "[backtest] {id} {status} score={score:.4f} mtm={mtm} mdd={mdd} unreal={unreal}".format(
+            id=idea["id"],
+            status=status,
+            score=float(row["score"]),
+            mtm=result.get("final_total_pnl", result.get("total_pnl_mtm")),
+            mdd=result.get("mdd_mtm_%"),
+            unreal=result.get("final_unrealized_pnl", result.get("unrealized_pnl_total")),
+        )
+    )
+    return row
+
+
+def run_due_backtests(state: dict) -> list[dict]:
+    done = load_backtest_results()
+    pending = [idea for idea in BUILTIN_BACKTEST_IDEAS if idea["id"] not in done]
+    if not pending:
+        write_backtest_summary()
+        return []
+    rows = []
+    for idea in pending[:max(0, BACKTESTS_PER_CYCLE)]:
+        try:
+            rows.append(run_backtest_idea(idea))
+        except subprocess.TimeoutExpired as exc:
+            row = {
+                "id": idea["id"],
+                "ts": utc_now(),
+                "status": "timeout",
+                "argument": idea.get("argument", ""),
+                "base_cfg": idea["base_cfg"],
+                "npz": idea["npz"],
+                "symbol": idea.get("symbol", ""),
+                "error": f"timeout after {BACKTEST_TIMEOUT_SEC}s",
+                "score": -10**9,
+                "result": {},
+            }
+            append_backtest_result(row)
+            write_backtest_summary()
+            rows.append(row)
+            log(f"[backtest] {idea['id']} timeout: {exc}")
+        except Exception as exc:
+            row = {
+                "id": idea["id"],
+                "ts": utc_now(),
+                "status": "error",
+                "argument": idea.get("argument", ""),
+                "base_cfg": idea["base_cfg"],
+                "npz": idea["npz"],
+                "symbol": idea.get("symbol", ""),
+                "error": f"{type(exc).__name__}: {exc}",
+                "score": -10**9,
+                "result": {},
+            }
+            append_backtest_result(row)
+            write_backtest_summary()
+            rows.append(row)
+            log(f"[backtest] {idea['id']} error: {type(exc).__name__}: {exc}")
+    if rows:
+        state.setdefault("backtests", [])
+        state["backtests"] = (state.get("backtests", []) + [
+            {
+                "id": row.get("id"),
+                "status": row.get("status"),
+                "score": row.get("score"),
+                "result": row.get("result", {}),
+                "argument": row.get("argument", ""),
+            }
+            for row in rows
+        ])[-100:]
+    return rows
+
+
 def write_context_note() -> Path:
     note = RUNTIME_DIR / "TOP1_WEB_WORKER_CONTEXT.md"
     sections = [
@@ -123,7 +464,15 @@ def write_context_note() -> Path:
         "",
         "## Mission",
         "",
-        "Use two web workers to propose and critique better parameter guesses for fresh symbols and current champion configs. Do not edit files, do not deploy, do not touch live trading. Produce ranked testable hypotheses only.",
+        "Use two web workers to propose and critique better parameter guesses for fresh symbols and current champion configs. The local orchestrator may create runtime-only candidate configs and run bounded backtests. Do not deploy, do not touch live trading, and do not edit production configs directly.",
+        "",
+        "## Orchestrator Contract",
+        "",
+        latest_lines(CONTRACT_FILE, 220),
+        "",
+        "## Local Backtest Artifacts From Worker Ideas",
+        "",
+        latest_lines(BACKTEST_SUMMARY_FILE, 220),
         "",
         "## Candidate Symbols",
         "",
@@ -145,7 +494,7 @@ def write_context_note() -> Path:
         "",
         "## Optimization Target",
         "",
-        "Prefer robust MTM improvement with controlled drawdown, low terminal unrealized exposure, zero or low margin calls, and enough trade count to avoid fragile one-off wins. Treat all guesses as candidates for later local backtests.",
+        "Prefer robust MTM improvement with controlled drawdown, low terminal unrealized exposure, zero or low margin calls, and enough trade count to avoid fragile one-off wins. Treat guesses as hypotheses until local backtests confirm them.",
         "",
         "## Current Git Summary",
         "",
@@ -276,6 +625,8 @@ def default_state() -> dict:
         },
         "knowledge": [],
         "results": [],
+        "backtests": [],
+        "poll_attempt": 0,
         "ready_for_live": False,
         "next_action": "send_initial_tasks",
     }
@@ -347,23 +698,24 @@ You are {worker['id']} / {worker['name']}. Parent orchestrator is Marko1. {role_
 
 Use the uploaded context archive only. You cannot run local code. Do not ask for secrets. Do not suggest live trading or deploy.
 
-Goal: infer better parameters for fresh candidate symbols/configs, including current champion/baseline lanes:
+Goal: infer better parameters for fresh candidate symbols/configs, including current champion/baseline lanes. The local orchestrator will run bounded backtests for defensible ideas and send artifacts back to you.
 - IDOL, FREEDOMMONEY, MAXXING, SUP, ENA
 - V21 live baseline/static9p38, V21 candidate configs, h4 FreedomMoney configs, and current champion references.
 
 Output format:
 [RANKING] top 5 parameter experiment candidates
 [PARAM_GUESS] exact config path or config family, parameter names, old value if known, proposed value/range, expected effect
-[TEST_PLAN] smallest local backtest/tuner command shape to validate later
+[TEST_PLAN] smallest local backtest/tuner command shape or yearly dataset need
 [RISK] overfit/liquidity/tail/unrealized/margin-call risks
 [NEXT_TASK] what the other worker or orchestrator should critique next
 
-Optimize for robust MTM improvement, controlled MTM drawdown, low terminal unrealized exposure, zero/low margin calls, and enough trades. Treat guesses as hypotheses, not truth.
+Optimize for robust MTM improvement, controlled MTM drawdown, low terminal unrealized exposure, zero/low margin calls, and enough trades. Treat guesses as hypotheses, not truth. Every idea must include an argument.
 """
 
 
 def make_followup_task(worker: dict, state: dict, response_infos: list[dict]) -> str:
     recent = "\n".join(item["text"] for item in state.get("knowledge", [])[-20:])
+    backtests = latest_lines(BACKTEST_SUMMARY_FILE, 120)
     if worker["id"] == "worker_11":
         instruction = (
             "Refine parameter guesses after the critic's objections. Produce fewer, sharper candidates with exact ranges."
@@ -378,6 +730,9 @@ def make_followup_task(worker: dict, state: dict, response_infos: list[dict]) ->
 
 Recent extracted knowledge:
 {recent or '(none yet)'}
+
+Recent local backtest artifacts:
+{backtests or '(no local backtests completed yet)'}
 
 Return only useful new information:
 [RANKING] ranked candidate experiments
@@ -481,33 +836,47 @@ async def read_worker(manager: ChatGPTWorkerManager, worker: dict, state: dict) 
     return info
 
 
-def local_cycle_result(state: dict, infos: list[dict]) -> None:
+def local_cycle_result(state: dict, infos: list[dict], backtest_rows: list[dict]) -> None:
     fresh = [i for i in infos if i.get("new")]
-    if fresh:
+    if fresh or backtest_rows:
         state["results"].append({
             "ts": utc_now(),
             "cycle": state.get("cycle", 0),
-            "summary": f"new worker outputs from {[i['wid'] for i in fresh]}",
+            "summary": f"new worker outputs from {[i['wid'] for i in fresh]} | backtests={[r.get('id') for r in backtest_rows]}",
             "knowledge_count": len(state.get("knowledge", [])),
         })
     state["results"] = state["results"][-100:]
-    state["next_action"] = "send_followups" if fresh else "wait_or_retry"
+    state["next_action"] = "send_followups" if fresh or backtest_rows else "wait_for_backoff_or_worker"
+
+
+def backoff_wait_seconds(state: dict) -> int:
+    waits = []
+    now = time.time()
+    for ws in state.get("workers", {}).values():
+        until = float(ws.get("backoff_until", 0) or 0)
+        if until > now:
+            waits.append(until - now)
+    if not waits:
+        return POLL_SLEEP_SEC
+    return max(5, min(POLL_SLEEP_SEC, int(min(waits))))
 
 
 async def run_loop(max_cycles: int, reset: bool = False) -> dict:
     state = load_state(reset=reset)
     log(f"top_1 web-worker parameter loop started | max_cycles={max_cycles}")
     async with ChatGPTWorkerManager() as manager:
-        for cycle in range(1, max_cycles + 1):
-            state["cycle"] = int(state.get("cycle", 0) or 0) + 1
+        while int(state.get("cycle", 0) or 0) < max_cycles:
+            state["poll_attempt"] = int(state.get("poll_attempt", 0) or 0) + 1
             log("=" * 58)
-            log(f"TOP1 WEB-WORKER PARAM CYCLE {state['cycle']}")
+            log(f"TOP1 WEB-WORKER PARAM POLL {state['poll_attempt']} | completed_cycles={state.get('cycle', 0)}/{max_cycles}")
             infos = []
+            sent_count = 0
 
             for worker in WORKERS:
                 ws = state["workers"][worker["id"]]
                 if ws.get("status") == "init":
-                    await send_task(manager, worker, state, make_initial_task(worker), force_archive=True)
+                    if await send_task(manager, worker, state, make_initial_task(worker), force_archive=True):
+                        sent_count += 1
                     await human_sleep(5, 1.0, 2.0)
 
             await human_sleep(8, 2.0, 3.0)
@@ -517,17 +886,31 @@ async def run_loop(max_cycles: int, reset: bool = False) -> dict:
                 infos.append(info)
                 await human_sleep(3.0, 1.0, 1.0)
 
-            local_cycle_result(state, infos)
+            backtest_rows = run_due_backtests(state)
+            local_cycle_result(state, infos, backtest_rows)
 
-            for worker in WORKERS:
-                # Send at most one follow-up per cycle and respect cooldown.
-                await send_task(manager, worker, state, make_followup_task(worker, state, infos), force_archive=False)
-                await human_sleep(5, 1.0, 2.0)
+            if any(info.get("new") for info in infos) or backtest_rows:
+                for worker in WORKERS:
+                    # Send at most one follow-up per completed reasoning cycle and respect cooldown/backoff.
+                    if await send_task(manager, worker, state, make_followup_task(worker, state, infos), force_archive=False):
+                        sent_count += 1
+                    await human_sleep(5, 1.0, 2.0)
+
+            progressed = bool(sent_count or any(info.get("new") for info in infos) or backtest_rows)
+            if progressed:
+                state["cycle"] = int(state.get("cycle", 0) or 0) + 1
+                log(f"completed reasoning cycle {state['cycle']}/{max_cycles}")
+            else:
+                wait_s = backoff_wait_seconds(state)
+                log(f"no reasoning progress; waiting {wait_s}s without incrementing cycle")
 
             save_state(state)
             WAKEUP_FLAG.write_text(json.dumps({"ts": utc_now(), "cycle": state["cycle"]}), encoding="utf-8")
-            if cycle < max_cycles:
-                await asyncio.sleep(POLL_SLEEP_SEC)
+            if int(state.get("cycle", 0) or 0) < max_cycles:
+                if MAX_POLL_ATTEMPTS and int(state.get("poll_attempt", 0) or 0) >= MAX_POLL_ATTEMPTS:
+                    log(f"max poll attempts reached ({MAX_POLL_ATTEMPTS}); stopping early")
+                    break
+                await asyncio.sleep(backoff_wait_seconds(state) if not progressed else POLL_SLEEP_SEC)
     return state
 
 
