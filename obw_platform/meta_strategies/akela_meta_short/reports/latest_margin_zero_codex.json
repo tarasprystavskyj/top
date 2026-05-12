@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12T21:41:45Z",
+  "updated": "2026-05-12T21:52:09Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -67,7 +67,7 @@
   "basket_validation": {
     "scope": "three generated margin-zero configs plus existing FREEDOMMONEY baseline-zero config",
     "symbols": 4,
-    "equal_weight_terminal_return_pct": 27.150947684778456,
+    "equal_weight_terminal_return_pct": 27.150947684778455,
     "worst_mdd_mtm_%": -48.01991673137992,
     "total_trades": 12801,
     "total_margin_call_events": 0,
@@ -406,7 +406,48 @@
       "bars_in_margin_call": 0,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_full.log",
       "reason": "Confirmed margin-zero candidate."
+    },
+    {
+      "config": "V21_sup_margin_zero_short_ladder_mid.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 11.043175713221522,
+      "mdd_mtm_%": -15.658477569268756,
+      "trades_total": 328,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.4548577834533742,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_short_ladder_mid_20k.log",
+      "reason": "Clean slice, but already gave up most of the soft-ladder drawdown gain."
+    },
+    {
+      "config": "V21_sup_margin_zero_short_ladder_mid.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 10.825269145058215,
+      "mdd_mtm_%": -53.805101216207355,
+      "trades_total": 1318,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.279370558337497,
+      "unrealized_pnl_long": -4.228057405026215,
+      "unrealized_pnl_short": -4.165331236524639,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_short_ladder_mid_full.log",
+      "reason": "Rejected: recovered some return vs short_ladder_soft but full-year drawdown was worse than both short_ladder_soft and long35_short50."
+    },
+    {
+      "config": "V21_sup_margin_zero_short_exit_mild.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 10.996055036854024,
+      "mdd_mtm_%": -15.166309014912352,
+      "trades_total": 334,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.45432588232661825,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_short_exit_mild_20k.log",
+      "reason": "Rejected and config removed: mild short TP/callback changes were behaviorally identical to short_ladder_soft on the 20k slice."
     }
   ],
-  "next_action": "The first-basket margin-call cleanup remains satisfied. The risk-first SUP candidate is now V21_sup_margin_zero_short_ladder_soft.yaml; keep V21_sup_margin_zero_long35_short50.yaml as the higher-return tradeoff. Next useful work is to look for a SUP variant that keeps the short-ladder-soft drawdown improvement while recovering some of the lost return, likely with modest TP/callback changes rather than higher budget."
+  "next_action": "First-basket margin-call cleanup remains satisfied. SUP risk-first candidate remains V21_sup_margin_zero_short_ladder_soft.yaml; keep V21_sup_margin_zero_long35_short50.yaml as the higher-return tradeoff. The halfway short-ladder branch failed full-year drawdown, and mild short TP/callback changes were inert on the 20k slice. Next useful work is small long-side risk cleanup for SUP."
 }
