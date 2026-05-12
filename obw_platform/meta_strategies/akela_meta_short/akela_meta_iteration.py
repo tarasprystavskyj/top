@@ -22,11 +22,25 @@ ROOT = Path(__file__).resolve().parents[3]
 LANE_DIR = ROOT / "obw_platform" / "meta_strategies" / "akela_meta_short"
 RAW_REPORT_ROOT = ROOT / "_reports" / "akela_meta_short"
 SUMMARY_DIR = LANE_DIR / "reports"
+DATA_DIR = LANE_DIR / "data"
+DATA_STATE_PATH = RAW_REPORT_ROOT / "data_collection_state.json"
 
 PRIMARY_NPZ = ROOT / "DB" / "akela_top200_1m_30d.research_v2_2_no_cross.npz"
 SHORTLIST_NPZ = ROOT / "DB" / "fast_cache_akela_shortlist_1m_30d.npz"
 FIVE_MIN_NPZ = ROOT / "DB" / "combined_cache_5m_5000_04.09.phase0_top100.research_v2_2_no_cross.npz"
 AKELA_TOP200_DB = ROOT / "DB" / "akela_top200_1m_30d.db"
+
+YEARLY_CANDIDATES = [
+    "IDOL",
+    "FREEDOMMONEY",
+    "MAXXING",
+    "SUP",
+]
+
+KNOWN_YEARLY_NPZ = {
+    "FREEDOMMONEY": ROOT / "DB" / "fast_cache_1m_freedommoney_1y_bingx.npz",
+    "MAXXING": ROOT / "DB" / "fast_cache_1m_maxxing_1y_bingx.npz",
+}
 
 PROFILES = [
     {
@@ -109,6 +123,143 @@ def run_cmd(name: str, cmd: list[str], cwd: Path, log_path: Path, timeout: int) 
         "cmd": cmd,
         "log": str(log_path.relative_to(ROOT)),
     }
+
+
+def load_data_state() -> dict:
+    if not DATA_STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(DATA_STATE_PATH.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+
+
+def save_data_state(state: dict) -> None:
+    DATA_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DATA_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def candidate_yearly_npz(symbol: str) -> Path:
+    if symbol in KNOWN_YEARLY_NPZ:
+        return KNOWN_YEARLY_NPZ[symbol]
+    return ROOT / "DB" / f"akela_meta_short_1m_1y_{symbol.lower()}_bingx.npz"
+
+
+def npz_bar_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        import numpy as np
+
+        with np.load(path, allow_pickle=True) as z:
+            if "timestamp_s" in z:
+                return int(len(z["timestamp_s"]))
+            if "close" in z:
+                return int(len(z["close"]))
+    except Exception:
+        return 0
+    return 0
+
+
+def recent_failed_fetch(symbol: str, data_state: dict, max_age_hours: float = 6.0) -> bool:
+    item = data_state.get(symbol, {})
+    if item.get("last_status") != "failed":
+        return False
+    ts = item.get("last_attempt_utc")
+    if not ts:
+        return False
+    try:
+        last = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    age = datetime.now(timezone.utc) - last
+    return age.total_seconds() < max_age_hours * 3600
+
+
+def build_yearly_data_jobs(run_dir: Path) -> tuple[list[tuple[str, list[str], int]], list[dict]]:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    data_state = load_data_state()
+    jobs: list[tuple[str, list[str], int]] = []
+    plan: list[dict] = []
+    for symbol in YEARLY_CANDIDATES:
+        target = candidate_yearly_npz(symbol)
+        bars = npz_bar_count(target)
+        item = {
+            "symbol": symbol,
+            "target_npz": str(target.relative_to(ROOT)),
+            "existing_bars": bars,
+            "status": "present" if bars >= 100000 else "missing",
+            "action": "skip",
+        }
+        if bars >= 100000:
+            plan.append(item)
+            continue
+        if recent_failed_fetch(symbol, data_state):
+            item["status"] = "recent_fetch_failed"
+            item["action"] = "skip_until_failure_cools_down"
+            plan.append(item)
+            continue
+        universe_path = DATA_DIR / f"universe_{symbol.lower()}_1m_1y.txt"
+        universe_path.write_text(symbol + "\n", encoding="utf-8")
+        item["universe_file"] = str(universe_path.relative_to(ROOT))
+        item["action"] = "fetch_1m_1y_bingx"
+        plan.append(item)
+        jobs.append(
+            (
+                f"fetch_1y_data:{symbol.lower()}",
+                [
+                    "python3",
+                    "obw_platform/scripts/fetch_backfill_ohlcv_npz_from_now_v1.py",
+                    "--input-csv",
+                    str(universe_path),
+                    "--timeframe",
+                    "1m",
+                    "--back-bars",
+                    "525600",
+                    "--exchange",
+                    "bingx",
+                    "--ccxt-symbol-format",
+                    "usdtm",
+                    "--limit",
+                    "1000",
+                    "--sleep-sec",
+                    "0.2",
+                    "--npz-out",
+                    str(target),
+                    "--feature-set",
+                    "none",
+                    "--cache-pack-trend",
+                ],
+                7200,
+            )
+        )
+    (run_dir / "yearly_data_plan.json").write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return jobs, plan
+
+
+def update_data_state_from_results(results: list[dict]) -> None:
+    data_state = load_data_state()
+    changed = False
+    for result in results:
+        name = str(result.get("name", ""))
+        if not name.startswith("fetch_1y_data:"):
+            continue
+        symbol = name.split(":", 1)[1].upper()
+        target = candidate_yearly_npz(symbol)
+        status = "succeeded" if result.get("returncode") == 0 and npz_bar_count(target) > 0 else "failed"
+        data_state[symbol] = {
+            "last_attempt_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "last_status": status,
+            "target_npz": str(target.relative_to(ROOT)),
+            "bars": npz_bar_count(target),
+            "log": result.get("log"),
+        }
+        changed = True
+    if changed:
+        save_data_state(data_state)
 
 
 def read_csv_rows(path: Path, limit: int = 10) -> list[dict[str, str]]:
@@ -195,6 +346,8 @@ def main() -> int:
         return 2
 
     jobs = []
+    data_jobs, yearly_data_plan = build_yearly_data_jobs(run_dir)
+    jobs.extend(data_jobs)
     report_paths: dict[str, dict[str, Path]] = {}
     for profile in PROFILES:
         profile_name = profile["name"]
@@ -304,6 +457,7 @@ def main() -> int:
                     "log": str(log_path.relative_to(ROOT)),
                 }
             )
+    update_data_state_from_results(results)
 
     rows_by_report: dict[str, list[dict[str, str]]] = {}
     for profile_name, paths in report_paths.items():
@@ -318,6 +472,7 @@ def main() -> int:
         "short_dataset": str(short_db.relative_to(ROOT)) if short_db else "",
         "raw_report_dir": str(run_dir.relative_to(ROOT)),
         "results": results,
+        "yearly_data_plan": yearly_data_plan,
         "profiles": [profile["name"] for profile in PROFILES],
         "repeated_candidates_min_3_reports": repeated,
     }
@@ -363,6 +518,18 @@ def main() -> int:
             summary.append(f"- `{symbol}` appears in {len(reports)} reports: {', '.join(reports)}")
     else:
         summary.append("_No repeated top candidates across reports yet._")
+
+    summary.extend(
+        [
+            "",
+            "## Yearly Data Plan",
+            "",
+        ]
+    )
+    for item in yearly_data_plan:
+        summary.append(
+            f"- `{item['symbol']}`: {item['status']}, bars={item['existing_bars']}, action={item['action']}, target=`{item['target_npz']}`"
+        )
 
     summary.extend(
         [

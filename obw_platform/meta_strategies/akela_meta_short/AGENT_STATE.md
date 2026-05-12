@@ -1,6 +1,6 @@
 # Akela Meta Short Agent State
 
-Updated: 2026-05-11 UTC
+Updated: 2026-05-12 UTC
 
 ## Objective
 
@@ -49,6 +49,41 @@ Current wiring:
 - structural short-leg rank: `DB/akela_top200_1m_30d.db`
 - selector profiles: `baseline`, `sensitive_failed_pump`, `strict_late_decay`
 
+## New Data Collection Plan
+
+The loop should now try to build missing 1m 1y datasets for the first promoted
+portfolio-router candidates:
+
+- `IDOL`
+- `FREEDOMMONEY`
+- `MAXXING`
+- `SUP`
+
+Known existing 1y files:
+
+- `DB/fast_cache_1m_freedommoney_1y_bingx.npz`
+- `DB/fast_cache_1m_maxxing_1y_bingx.npz`
+
+Missing files should be fetched by the iteration script with the existing,
+trusted fetcher:
+
+```bash
+python3 obw_platform/scripts/fetch_backfill_ohlcv_npz_from_now_v1.py \
+  --input-csv obw_platform/meta_strategies/akela_meta_short/data/universe_<symbol>_1m_1y.txt \
+  --timeframe 1m \
+  --back-bars 525600 \
+  --exchange bingx \
+  --ccxt-symbol-format usdtm \
+  --npz-out DB/akela_meta_short_1m_1y_<symbol>_bingx.npz \
+  --feature-set none \
+  --cache-pack-trend
+```
+
+If a fetch fails, the loop records the failure under
+`_reports/akela_meta_short/data_collection_state.json` and waits before
+retrying. This avoids a sterile retry loop if the exchange or VPS IP blocks the
+request.
+
 ## Evidence Gates
 
 - Prefer rolling-window validation over a single full-period rank.
@@ -61,7 +96,8 @@ Current wiring:
 
 ## Next Steps
 
-- Let the tmux worker produce repeated summaries overnight.
-- Inspect `reports/latest_summary.md` in the morning.
+- Let the tmux worker attempt missing 1y data collection for `IDOL` and `SUP`.
+- Once yearly NPZs exist, run basket/portfolio backtests for `IDOL`,
+  `FREEDOMMONEY`, `MAXXING`, and `SUP`.
 - Promote only stable selector logic to code.
 - Keep V21 live continuation separate until this router has enough evidence.
