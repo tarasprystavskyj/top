@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-12T23:32:00Z
+Updated: 2026-05-12T23:59:00Z
 
 ## Objective
 
@@ -30,9 +30,11 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 
 ## Current Cycle
 
-SUP budget30 recheck promoted a modest return-recovery candidate. The first-basket risk-cleanup target is still satisfied: all four selected configs have `margin_call_events_total = 0` and `bars_in_margin_call = 0` on full-year runs.
+SUP budget35/40/45 gap test found additional full-year zero-margin variants, but none replaced budget30 for risk cleanup. The first-basket risk-cleanup target is still satisfied: all four selected configs have `margin_call_events_total = 0` and `bars_in_margin_call = 0` on full-year runs.
 
 Selection note: `V21_sup_margin_zero_budget30.yaml` improves SUP full-year return versus budget20 and budget25 while staying inside the roughly -30% SUP risk envelope. Budget20 remains a valid lower-drawdown fallback, but budget30 is the better current risk-cleanup balance.
+
+Gap-test note: `V21_sup_margin_zero_budget45.yaml` had the best return in the new gap test at 5.61% with zero margin calls, but its full-year MDD was -45.45%. Budgets 35 and 40 also stayed zero-margin, but drew down -48.87% and -54.22%. This confirms that simply raising the SUP sizing budget recovers return while giving up too much drawdown for the immediate risk-cleanup target.
 
 MAXXING best remains `V21_maxxing_margin_zero_budget125.yaml`; the previous short-cap sweep did not improve its full-year risk/return balance.
 
@@ -40,7 +42,12 @@ MAXXING best remains `V21_maxxing_margin_zero_budget125.yaml`; the previous shor
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| `V21_sup_margin_zero_budget30.yaml` | full | 1.90 | -25.15 | 845 | 0 | 0 | -0.7934 | Promoted: better SUP return than budget20 and budget25 while keeping MDD inside the roughly -30% risk envelope. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_recheck_full.log` |
+| `V21_sup_margin_zero_budget35.yaml` | 20000 | 7.41 | -17.35 | 241 | 0 | 0 | -0.5189 | Passed 20k zero-margin filter; full-year confirmation required. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget35_20k.log` |
+| `V21_sup_margin_zero_budget40.yaml` | 20000 | 5.25 | -20.18 | 239 | 0 | 0 | -0.6470 | Passed 20k zero-margin filter; full-year confirmation required. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget40_20k.log` |
+| `V21_sup_margin_zero_budget45.yaml` | 20000 | 16.25 | -24.70 | 285 | 0 | 0 | -0.3003 | Passed 20k zero-margin filter; best slice return in this gap batch. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget45_20k.log` |
+| `V21_sup_margin_zero_budget35.yaml` | full | 3.36 | -48.87 | 886 | 0 | 0 | -0.6831 | Rejected as primary: zero-margin but drawdown is materially worse than budget30. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget35_full.log` |
+| `V21_sup_margin_zero_budget40.yaml` | full | 5.53 | -54.22 | 997 | 0 | 0 | -0.5267 | Rejected as primary: higher return, but drawdown is outside the risk-cleanup target. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget40_full.log` |
+| `V21_sup_margin_zero_budget45.yaml` | full | 5.61 | -45.45 | 1150 | 0 | 0 | -0.5433 | Rejected as primary: best gap-test return, but budget30 remains the cleaner risk candidate. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget45_full.log` |
 
 ## Baseline Comparison
 
@@ -68,4 +75,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30. Next useful work is either a stricter SUP search for budget30-or-better return with MDD closer to budget20, or a targeted MAXXING terminal-unrealized cleanup that preserves the budget125 zero-margin result.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30. The next useful SUP search should target budget30-or-better return while keeping MDD near the -25% to -30% band; budget35/40/45 show that simply raising sizing budget recovers return but gives up too much drawdown.
