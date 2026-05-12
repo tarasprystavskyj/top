@@ -24,3 +24,20 @@ Find a new candidate champion for paper live using existing V21 backtester/tuner
 | `IDOL/USDT:USDT` | `V21_maxxing_bingx_live_candidate_1m_1y` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/IDOL/V21_maxxing_bingx_live_candidate_1m_1y/backtest.log` |
 | `IDOL/USDT:USDT` | `V21_current_best_tuner_freedommoney_bingx_1m_1y_20260511` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/IDOL/V21_current_best_tuner_freedommoney_bingx_1m_1y_20260511/backtest.log` |
 | `IDOL/USDT:USDT` | `V21_strict_trend_stable_live_static9p38` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/IDOL/V21_strict_trend_stable_live_static9p38/backtest.log` |
+| `FREEDOMMONEY/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/FREEDOMMONEY/V21_freedommoney_bingx_live_candidate_1m_1y/backtest.log` |
+| `FREEDOMMONEY/USDT:USDT` | `V21_maxxing_bingx_live_candidate_1m_1y` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/FREEDOMMONEY/V21_maxxing_bingx_live_candidate_1m_1y/backtest.log` |
+| `FREEDOMMONEY/USDT:USDT` | `V21_current_best_tuner_freedommoney_bingx_1m_1y_20260511` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/FREEDOMMONEY/V21_current_best_tuner_freedommoney_bingx_1m_1y_20260511/backtest.log` |
+| `FREEDOMMONEY/USDT:USDT` | `V21_strict_trend_stable_live_static9p38` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/FREEDOMMONEY/V21_strict_trend_stable_live_static9p38/backtest.log` |
+| `MAXXING/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/MAXXING/V21_freedommoney_bingx_live_candidate_1m_1y/backtest.log` |
+| `MAXXING/USDT:USDT` | `V21_maxxing_bingx_live_candidate_1m_1y` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/MAXXING/V21_maxxing_bingx_live_candidate_1m_1y/backtest.log` |
+| `MAXXING/USDT:USDT` | `V21_current_best_tuner_freedommoney_bingx_1m_1y_20260511` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/MAXXING/V21_current_best_tuner_freedommoney_bingx_1m_1y_20260511/backtest.log` |
+| `MAXXING/USDT:USDT` | `V21_strict_trend_stable_live_static9p38` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/MAXXING/V21_strict_trend_stable_live_static9p38/backtest.log` |
+| `SUP/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/SUP/V21_freedommoney_bingx_live_candidate_1m_1y/backtest.log` |
+| `SUP/USDT:USDT` | `V21_maxxing_bingx_live_candidate_1m_1y` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/SUP/V21_maxxing_bingx_live_candidate_1m_1y/backtest.log` |
+| `SUP/USDT:USDT` | `V21_current_best_tuner_freedommoney_bingx_1m_1y_20260511` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/SUP/V21_current_best_tuner_freedommoney_bingx_1m_1y_20260511/backtest.log` |
+| `SUP/USDT:USDT` | `V21_strict_trend_stable_live_static9p38` | ok | `_reports/akela_meta_short/champion_20260512T133459Z/backtests/SUP/V21_strict_trend_stable_live_static9p38/backtest.log` |
+
+## Night Tuning
+
+| symbol | start cfg | status | tuner summary | log |
+| --- | --- | --- | --- | --- |
