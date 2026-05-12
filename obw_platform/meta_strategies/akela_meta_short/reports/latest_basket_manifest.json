@@ -1,7 +1,7 @@
 {
   "schema": "akela_basket_validation_v1",
-  "stamp": "20260512T203902Z",
-  "raw_dir": "_reports/akela_meta_short/basket_20260512T203902Z",
+  "stamp": "20260512T211309Z",
+  "raw_dir": "_reports/akela_meta_short/basket_20260512T211309Z",
   "config": "obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
   "backtester": "obw_platform/backtester_dual_long_short_fast_pack_v2.py",
   "limit_bars": 0,
@@ -11,10 +11,10 @@
       "symbol": "IDOL/USDT:USDT",
       "npz": "DB/akela_meta_short_1m_1y_idol_bingx.npz",
       "npz_exists": true,
-      "raw_dir": "_reports/akela_meta_short/basket_20260512T203902Z/idol",
+      "raw_dir": "_reports/akela_meta_short/basket_20260512T211309Z/idol",
       "returncode": 0,
       "status": "ok",
-      "seconds": 122.85,
+      "seconds": 98.892,
       "cmd": [
         "python3",
         "obw_platform/backtester_dual_long_short_fast_pack_v2.py",
@@ -25,7 +25,7 @@
         "--symbol",
         "IDOL/USDT:USDT",
         "--export-curves",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/idol/curves.csv"
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/idol/curves.csv"
       ],
       "metrics": {
         "equity_start_total": 200.0,
@@ -94,8 +94,8 @@
         },
         "close_reason_counts_debug_enabled": false,
         "total_order_events": 23820,
-        "elapsed_sec": 101.54904103279114,
-        "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/idol/curves.csv"
+        "elapsed_sec": 80.32200765609741,
+        "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/idol/curves.csv"
       },
       "return_mtm_pct_on_start": 44.18986768601187,
       "mdd_mtm_pct": -37.747075921501896,
@@ -103,17 +103,17 @@
       "margin_call_events_total": 18,
       "bars_in_margin_call": 268,
       "equity_end_mtm_total": 288.3797353720238,
-      "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/idol/curves.csv"
+      "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/idol/curves.csv"
     },
     {
       "name": "FREEDOMMONEY",
       "symbol": "FREEDOMMONEY/USDT:USDT",
       "npz": "DB/fast_cache_1m_freedommoney_1y_bingx.npz",
       "npz_exists": true,
-      "raw_dir": "_reports/akela_meta_short/basket_20260512T203902Z/freedommoney",
+      "raw_dir": "_reports/akela_meta_short/basket_20260512T211309Z/freedommoney",
       "returncode": 0,
       "status": "ok",
-      "seconds": 23.91,
+      "seconds": 24.704,
       "cmd": [
         "python3",
         "obw_platform/backtester_dual_long_short_fast_pack_v2.py",
@@ -124,7 +124,7 @@
         "--symbol",
         "FREEDOMMONEY/USDT:USDT",
         "--export-curves",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/freedommoney/curves.csv"
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/freedommoney/curves.csv"
       ],
       "metrics": {
         "equity_start_total": 200.0,
@@ -193,8 +193,8 @@
         },
         "close_reason_counts_debug_enabled": false,
         "total_order_events": 17340,
-        "elapsed_sec": 19.353721380233765,
-        "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/freedommoney/curves.csv"
+        "elapsed_sec": 19.852948665618896,
+        "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/freedommoney/curves.csv"
       },
       "return_mtm_pct_on_start": 64.27761710740924,
       "mdd_mtm_pct": -24.087926368998254,
@@ -202,17 +202,17 @@
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
       "equity_end_mtm_total": 328.5552342148185,
-      "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/freedommoney/curves.csv"
+      "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/freedommoney/curves.csv"
     },
     {
       "name": "MAXXING",
       "symbol": "MAXXING/USDT:USDT",
       "npz": "DB/fast_cache_1m_maxxing_1y_bingx.npz",
       "npz_exists": true,
-      "raw_dir": "_reports/akela_meta_short/basket_20260512T203902Z/maxxing",
+      "raw_dir": "_reports/akela_meta_short/basket_20260512T211309Z/maxxing",
       "returncode": 0,
       "status": "ok",
-      "seconds": 44.781,
+      "seconds": 45.372,
       "cmd": [
         "python3",
         "obw_platform/backtester_dual_long_short_fast_pack_v2.py",
@@ -223,7 +223,7 @@
         "--symbol",
         "MAXXING/USDT:USDT",
         "--export-curves",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/maxxing/curves.csv"
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/maxxing/curves.csv"
       ],
       "metrics": {
         "equity_start_total": 200.0,
@@ -292,8 +292,8 @@
         },
         "close_reason_counts_debug_enabled": false,
         "total_order_events": 38454,
-        "elapsed_sec": 39.527456521987915,
-        "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/maxxing/curves.csv"
+        "elapsed_sec": 40.51981163024902,
+        "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/maxxing/curves.csv"
       },
       "return_mtm_pct_on_start": 183.80244583900716,
       "mdd_mtm_pct": -18.372260956135815,
@@ -301,17 +301,17 @@
       "margin_call_events_total": 8,
       "bars_in_margin_call": 58,
       "equity_end_mtm_total": 567.6048916780144,
-      "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/maxxing/curves.csv"
+      "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/maxxing/curves.csv"
     },
     {
       "name": "SUP",
       "symbol": "SUP/USDT:USDT",
       "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
       "npz_exists": true,
-      "raw_dir": "_reports/akela_meta_short/basket_20260512T203902Z/sup",
+      "raw_dir": "_reports/akela_meta_short/basket_20260512T211309Z/sup",
       "returncode": 0,
       "status": "ok",
-      "seconds": 55.271,
+      "seconds": 57.431,
       "cmd": [
         "python3",
         "obw_platform/backtester_dual_long_short_fast_pack_v2.py",
@@ -322,7 +322,7 @@
         "--symbol",
         "SUP/USDT:USDT",
         "--export-curves",
-        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/sup/curves.csv"
+        "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/sup/curves.csv"
       ],
       "metrics": {
         "equity_start_total": 200.0,
@@ -391,8 +391,8 @@
         },
         "close_reason_counts_debug_enabled": false,
         "total_order_events": 16899,
-        "elapsed_sec": 45.152618646621704,
-        "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/sup/curves.csv"
+        "elapsed_sec": 47.00765109062195,
+        "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/sup/curves.csv"
       },
       "return_mtm_pct_on_start": -1.0466664009891193,
       "mdd_mtm_pct": -219.8810740441573,
@@ -400,7 +400,7 @@
       "margin_call_events_total": 35,
       "bars_in_margin_call": 986,
       "equity_end_mtm_total": 197.90666719802175,
-      "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T203902Z/sup/curves.csv"
+      "curves_csv": "/var/www/vps2.happyuser.info/top/top_1/_reports/akela_meta_short/basket_20260512T211309Z/sup/curves.csv"
     }
   ]
 }
