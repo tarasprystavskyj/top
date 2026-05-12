@@ -49,7 +49,7 @@ Current wiring:
 - structural short-leg rank: `DB/akela_top200_1m_30d.db`
 - selector profiles: `baseline`, `sensitive_failed_pump`, `strict_late_decay`
 
-## New Data Collection Plan
+## Data Collection Plan
 
 The loop should now try to build missing 1m 1y datasets for the first promoted
 portfolio-router candidates:
@@ -84,6 +84,56 @@ If a fetch fails, the loop records the failure under
 retrying. This avoids a sterile retry loop if the exchange or VPS IP blocks the
 request.
 
+Current data status after the 2026-05-12 morning run:
+
+- `IDOL`: `DB/akela_meta_short_1m_1y_idol_bingx.npz`, 482080 bars.
+- `FREEDOMMONEY`: `DB/fast_cache_1m_freedommoney_1y_bingx.npz`, 104184 bars.
+- `MAXXING`: `DB/fast_cache_1m_maxxing_1y_bingx.npz`, 108569 bars.
+- `SUP`: `DB/akela_meta_short_1m_1y_sup_bingx.npz`, 251806 bars.
+
+Since all first-basket yearly datasets are now present, the loop must treat
+more proxy-only reruns as low-value. The next useful move is basket validation.
+
+## Basket Validation Plan
+
+Goal: prove or falsify that the upper Akela selector improves a lower short leg
+on a small multi-symbol portfolio.
+
+Use only existing backtesters and configs. Do not create new exchange,
+slippage, fee, liquidation, or portfolio accounting math.
+
+Candidate basket:
+
+- `IDOL/USDT:USDT`
+- `FREEDOMMONEY/USDT:USDT`
+- `MAXXING/USDT:USDT`
+- `SUP/USDT:USDT`
+
+Initial baseline config for smoke validation:
+
+- `obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml`
+
+Backtester:
+
+- `obw_platform/backtester_dual_long_short_fast_pack_v2.py`
+
+For each symbol, run a per-symbol backtest using the matching NPZ and explicit
+`--symbol`. Write outputs under `_reports/akela_meta_short/basket_<stamp>/`.
+Export curves with `--export-curves` and save all stdout logs.
+
+After per-symbol backtests succeed, build a basket report that aggregates only
+reported outputs from the existing backtester:
+
+- per-symbol MTM return;
+- per-symbol MTM drawdown;
+- trades;
+- margin calls if present;
+- final unrealized/tail exposure if present;
+- equal-weight basket MTM curve if compatible curves are available.
+
+If any symbol fails, record the failure and keep the basket report partial. A
+partial, honest report is better than a silent skip.
+
 ## Evidence Gates
 
 - Prefer rolling-window validation over a single full-period rank.
@@ -96,8 +146,7 @@ request.
 
 ## Next Steps
 
-- Let the tmux worker attempt missing 1y data collection for `IDOL` and `SUP`.
-- Once yearly NPZs exist, run basket/portfolio backtests for `IDOL`,
-  `FREEDOMMONEY`, `MAXXING`, and `SUP`.
+- Run basket/portfolio backtests for `IDOL`, `FREEDOMMONEY`, `MAXXING`, and
+  `SUP`.
 - Promote only stable selector logic to code.
 - Keep V21 live continuation separate until this router has enough evidence.

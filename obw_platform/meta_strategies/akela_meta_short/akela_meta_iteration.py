@@ -530,6 +530,16 @@ def main() -> int:
         summary.append(
             f"- `{item['symbol']}`: {item['status']}, bars={item['existing_bars']}, action={item['action']}, target=`{item['target_npz']}`"
         )
+    all_yearly_present = all(item.get("status") == "present" for item in yearly_data_plan)
+    if all_yearly_present:
+        next_research_action = (
+            "All first-basket yearly datasets are present. Stop treating proxy reruns as the main work; "
+            "run the basket validation ladder in `obw_platform/meta_strategies/akela_meta_short/BASKET_BACKTEST_PLAN.md`."
+        )
+    else:
+        next_research_action = (
+            "Finish missing yearly data collection first. Record exact exchange/IP failures instead of repeating blocked fetches."
+        )
 
     summary.extend(
         [
@@ -548,7 +558,7 @@ def main() -> int:
             "",
             "## Next Research Action",
             "",
-            "Investigate repeated candidates first. If repeated candidates remain empty, loosen only selector diagnostics, not backtest math.",
+            next_research_action,
         ]
     )
 
