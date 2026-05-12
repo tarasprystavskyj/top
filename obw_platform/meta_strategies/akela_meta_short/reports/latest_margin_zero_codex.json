@@ -1,0 +1,102 @@
+{
+  "updated": "2026-05-12",
+  "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
+  "guardrails_observed": {
+    "changed_backtester_math": false,
+    "changed_exchange_fee_slippage_liquidation_margin": false,
+    "edited_production_configs": false,
+    "experimental_config_dir": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero",
+    "raw_log_dir": "_reports/akela_meta_short/margin_zero_codex_loop"
+  },
+  "best_candidates": [
+    {
+      "symbol": "IDOL/USDT:USDT",
+      "npz": "DB/akela_meta_short_1m_1y_idol_bingx.npz",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_idol_margin_zero_budget50.yaml",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 9.05382480165288,
+      "mdd_mtm_%": -10.399413225209962,
+      "trades_total": 2430,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.4943479678389817,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_full.log"
+    },
+    {
+      "symbol": "MAXXING/USDT:USDT",
+      "npz": "DB/fast_cache_1m_maxxing_1y_bingx.npz",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget50.yaml",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 26.230582326857775,
+      "mdd_mtm_%": -11.604697090675021,
+      "trades_total": 1459,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.35434119908124434,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget50_full.log"
+    },
+    {
+      "symbol": "SUP/USDT:USDT",
+      "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget50.yaml",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 5.33548411935373,
+      "mdd_mtm_%": -49.944508389499035,
+      "trades_total": 1321,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6658724891956916,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget50_full.log"
+    }
+  ],
+  "baseline_zero_existing": {
+    "symbol": "FREEDOMMONEY/USDT:USDT",
+    "config": "obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+    "return_mtm_pct_on_start": 64.28,
+    "mdd_mtm_%": -24.09,
+    "trades_total": 7583,
+    "margin_call_events_total": 0
+  },
+  "failed_or_secondary_attempts": [
+    {
+      "config": "V21_sup_margin_zero_cap075.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "margin_call_events_total": 18,
+      "reason": "Adaptive max-invest caps alone did not cap DCA cycle exposure."
+    },
+    {
+      "config": "V21_sup_margin_zero_cap050.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "margin_call_events_total": 15,
+      "reason": "Improved but still failed margin-zero target."
+    },
+    {
+      "config": "V21_sup_margin_zero_long035_short075.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "margin_call_events_total": 22,
+      "reason": "Terminal MTM improved, but drawdown still crossed margin threshold."
+    },
+    {
+      "config": "V21_sup_margin_zero_risk_exit_budget50.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "margin_call_events_total": 6,
+      "reason": "Stale/contrary exits realized losses but did not fully prevent threshold crossings."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget25.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 1.3084305413924069,
+      "mdd_mtm_%": -29.417491952607776,
+      "trades_total": 722,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "reason": "Valid but more conservative than budget50."
+    }
+  ],
+  "next_action": "Run equal-weight basket validation using the three budget50 generated configs plus the existing FREEDOMMONEY baseline-zero config."
+}
