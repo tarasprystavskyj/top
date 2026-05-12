@@ -137,6 +137,37 @@ The future reference command is
 `scripts/freedom_claude_loop_single_agent_v3.sh`, but this MVP does not execute
 it.
 
+## Optional Web-Worker Bridge
+
+The DEX browser-worker orchestration pattern is preserved as a local-only
+option, but it is not part of the default `top_1` loop. The production-safe
+loop remains single-agent read/report rotation.
+
+Blocked-by-default check:
+
+```bash
+SINGLE_AGENT_RUNTIME_DIR=/tmp/top1_web_worker_bridge_blocked \
+python3 scripts/single_agent_loop.py --init --enqueue web_worker_loop_bridge --once
+```
+
+Dry-run only, without navigating Chrome or sending worker tasks:
+
+```bash
+SINGLE_AGENT_RUNTIME_DIR=/tmp/top1_web_worker_bridge_dry \
+python3 scripts/single_agent_loop.py \
+  --init \
+  --allow-web-workers \
+  --web-worker-dry-run \
+  --enqueue web_worker_loop_bridge \
+  --once
+```
+
+This writes a manifest and prompt that point at the DEX reference contracts and
+worker/watchdog code. Real browser-worker execution must stay explicit and
+local: it requires Chrome remote debugging, `chrome/workers_automate`, known
+worker conversations, and human approval. Do not run browser-worker mode on the
+production UI host by accident.
+
 ## Initial Whitelisted Job Candidates
 
 For `top_1`, start with conservative read/report jobs:

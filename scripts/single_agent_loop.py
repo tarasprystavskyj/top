@@ -279,6 +279,106 @@ def safe_ai_single_turn_bridge():
     )
 
 
+def safe_web_worker_loop_bridge():
+    prompt_path = jobs_dir() / f"web_worker_bridge_prompt_{stamp()}.md"
+    manifest_path = jobs_dir() / f"web_worker_bridge_manifest_{stamp()}.json"
+    allow = env_truthy("SINGLE_AGENT_ALLOW_WEB_WORKERS")
+    dry_run = env_truthy("SINGLE_AGENT_WEB_WORKER_DRY_RUN")
+    prompt = [
+        "# top_1 Optional Web-Worker Loop Bridge",
+        "",
+        "This bridge preserves the DEX browser-worker orchestration option on top of",
+        "the safer default single-agent loop. It is intentionally not part of",
+        "auto-rotation.",
+        "",
+        "Use this mode only on a local workstation with Chrome remote debugging,",
+        "ChatGPT worker conversations, and the `chrome/workers_automate` tooling",
+        "available. Do not run it on the production UI host unless explicitly",
+        "approved.",
+        "",
+        "Reference contracts:",
+        "",
+        "- `continuity/single_agent_loop_from_dex/reference/DEX_AUTONOMOUS_LOOP_PROTOCOL.md`",
+        "- `continuity/single_agent_loop_from_dex/reference/DEX_CLI_AGENT_PROTOCOL.md`",
+        "- `continuity/single_agent_loop_from_dex/reference/dex_orchestrator_reference.py`",
+        "- `continuity/single_agent_loop_from_dex/reference/dex_worker_watchdog_reference.py`",
+        "",
+        "Required safety shape:",
+        "",
+        "- keep the current read/report loop as default;",
+        "- require explicit human approval before using browser workers;",
+        "- use separate runtime state/tree/log files for web-worker mode;",
+        "- upload context before worker tasks;",
+        "- never send live trading, deploy, `.env`, secret, or exchange actions to workers;",
+        "- treat worker outputs as advisory evidence, not authority;",
+        "- convert repeated worker requests into whitelisted local jobs.",
+        "",
+        "Suggested local-only command pattern:",
+        "",
+        "```powershell",
+        "$env:SINGLE_AGENT_ALLOW_WEB_WORKERS='1'",
+        "$env:SINGLE_AGENT_WEB_WORKER_DRY_RUN='1'",
+        "python scripts/single_agent_loop.py --enqueue web_worker_loop_bridge --once",
+        "```",
+    ]
+    prompt_path.write_text("\n".join(prompt) + "\n", encoding="utf-8")
+    manifest = {
+        "schema_version": "single_agent_web_worker_bridge_manifest_v1",
+        "created_at": utc_now(),
+        "allow_web_workers": allow,
+        "dry_run": dry_run,
+        "prompt_path": rel(prompt_path),
+        "reference_files": [
+            "continuity/single_agent_loop_from_dex/reference/DEX_AUTONOMOUS_LOOP_PROTOCOL.md",
+            "continuity/single_agent_loop_from_dex/reference/DEX_CLI_AGENT_PROTOCOL.md",
+            "continuity/single_agent_loop_from_dex/reference/dex_orchestrator_reference.py",
+            "continuity/single_agent_loop_from_dex/reference/dex_worker_watchdog_reference.py",
+            "continuity/single_agent_loop_from_dex/reference/dex_orchestrator_tree_server_reference.py",
+        ],
+        "safety": {
+            "auto_rotation": False,
+            "invokes_browser_workers": False,
+            "requires_local_chrome_debug_port": True,
+            "touches_live_deploy_trading": False,
+            "reads_env": False,
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    if not allow:
+        return 2, json.dumps(
+            {
+                "status": "blocked",
+                "reason": "Web-worker bridge disabled; set SINGLE_AGENT_ALLOW_WEB_WORKERS=1 and SINGLE_AGENT_WEB_WORKER_DRY_RUN=1 for local dry-run preparation.",
+                "manifest": rel(manifest_path),
+                "prompt": rel(prompt_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    if dry_run:
+        return 0, json.dumps(
+            {
+                "status": "dry_run",
+                "reason": "Web-worker bridge manifest and prompt generated; no browser worker or Chrome action invoked.",
+                "manifest": rel(manifest_path),
+                "prompt": rel(prompt_path),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    return 3, json.dumps(
+        {
+            "status": "blocked",
+            "reason": "Real browser-worker invocation is intentionally not implemented in the safe MVP; use the generated manifest and reference files for explicit local orchestration.",
+            "manifest": rel(manifest_path),
+            "prompt": rel(prompt_path),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 WHITELIST = {
     "git_status_summary": {
         "runner": safe_git_status,
@@ -299,6 +399,11 @@ WHITELIST = {
         "runner": safe_ai_single_turn_bridge,
         "command": "prepare guarded AI single-turn bridge manifest",
         "summary": "Optional AI-action bridge, disabled by default and excluded from auto-rotation.",
+    },
+    "web_worker_loop_bridge": {
+        "runner": safe_web_worker_loop_bridge,
+        "command": "prepare guarded browser-worker loop bridge manifest",
+        "summary": "Optional DEX-style browser-worker bridge, disabled by default and excluded from auto-rotation.",
     },
 }
 
@@ -456,12 +561,18 @@ def main() -> int:
     ap.add_argument("--auto-rotate", action="store_true", help="enqueue safe read/report jobs when idle")
     ap.add_argument("--allow-ai-turn", action="store_true", help="allow the optional AI bridge job to prepare dry-run artifacts")
     ap.add_argument("--ai-dry-run", action="store_true", help="make the optional AI bridge generate manifest/prompt without invoking AI")
+    ap.add_argument("--allow-web-workers", action="store_true", help="allow the optional web-worker bridge job to prepare dry-run artifacts")
+    ap.add_argument("--web-worker-dry-run", action="store_true", help="make the optional web-worker bridge generate manifest/prompt without invoking browser workers")
     args = ap.parse_args()
 
     if args.allow_ai_turn:
         os.environ["SINGLE_AGENT_ALLOW_AI_TURN"] = "1"
     if args.ai_dry_run:
         os.environ["SINGLE_AGENT_AI_DRY_RUN"] = "1"
+    if args.allow_web_workers:
+        os.environ["SINGLE_AGENT_ALLOW_WEB_WORKERS"] = "1"
+    if args.web_worker_dry_run:
+        os.environ["SINGLE_AGENT_WEB_WORKER_DRY_RUN"] = "1"
 
     env_max_cycles = int(os.environ.get("SINGLE_AGENT_MAX_CYCLES", "0") or "0")
     if env_max_cycles and not args.max_cycles:

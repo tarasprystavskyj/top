@@ -128,6 +128,46 @@ scripts/freedom_claude_loop_single_agent_v3.sh
 The MVP does not execute that command. Real AI invocation remains intentionally
 blocked even when `SINGLE_AGENT_ALLOW_AI_TURN=1` unless dry-run is enabled.
 
+## Optional Web-Worker Bridge
+
+The DEX browser-worker layer remains available as a deliberately separate
+local-only option. It is useful when a workstation can run Chrome remote
+debugging and known worker conversations, but it must not replace the default
+safe single-agent rotation.
+
+The whitelisted job is:
+
+- `web_worker_loop_bridge`: writes a manifest and prompt for a DEX-style
+  browser-worker loop. It does not navigate Chrome or send worker tasks.
+
+Blocked-by-default check:
+
+```bash
+SINGLE_AGENT_RUNTIME_DIR=/tmp/top1_web_worker_bridge_blocked \
+python3 scripts/single_agent_loop.py --init --enqueue web_worker_loop_bridge --once
+```
+
+Dry-run preparation:
+
+```bash
+SINGLE_AGENT_RUNTIME_DIR=/tmp/top1_web_worker_bridge_dry \
+python3 scripts/single_agent_loop.py \
+  --init \
+  --allow-web-workers \
+  --web-worker-dry-run \
+  --enqueue web_worker_loop_bridge \
+  --once
+```
+
+Required boundaries:
+
+- default `scripts/single_agent_control_room.sh` never auto-enqueues this job;
+- real browser-worker execution requires explicit human approval;
+- use separate runtime/log/tree files for web-worker mode;
+- do not expose `.env`, secrets, live trading, deploy actions, production YAML
+  promotion, DB mutation, or exchange credentials to workers;
+- worker outputs are advisory evidence, not authority.
+
 ## tmux Wrapper
 
 Use `scripts/single_agent_tmux.sh` to manage the read/report loop:
