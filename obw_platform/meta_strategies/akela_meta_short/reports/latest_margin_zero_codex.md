@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-12T22:50:16Z
+Updated: 2026-05-12T23:01:10Z
 
 ## Objective
 
@@ -15,37 +15,36 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 | `IDOL/USDT:USDT` | `V21_idol_margin_zero_budget125.yaml` | 34.70 | -13.40 | 5848 | 0 | 0 | -0.2055 | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_full.log` |
 | `FREEDOMMONEY/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y.yaml` | 64.28 | -24.09 | 7583 | 0 | 0 | -0.4130 | `_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log` |
 | `MAXXING/USDT:USDT` | `V21_maxxing_margin_zero_budget125.yaml` | 104.68 | -21.17 | 4469 | 0 | 0 | -0.2273 | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_full.log` |
-| `SUP/USDT:USDT` | `V21_sup_margin_zero_short_ladder_soft.yaml` | 9.04 | -48.02 | 1329 | 0 | 0 | -0.3140 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_short_ladder_soft_full.log` |
+| `SUP/USDT:USDT` | `V21_sup_margin_zero_budget20.yaml` | 1.08 | -23.31 | 654 | 0 | 0 | -0.8609 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget20_full.log` |
 
 ## Four-Symbol Basket Validation
 
 | metric | value |
 | --- | ---: |
 | symbols | 4 |
-| equal-weight terminal return approximation | 53.18% |
-| worst single-symbol MTM drawdown | -48.02% |
-| total trades | 19229 |
+| equal-weight terminal return approximation | 51.19% |
+| worst single-symbol MTM drawdown | -24.09% |
+| total trades | 18554 |
 | total margin-call events | 0 |
 | total bars in margin call | 0 |
 
 ## Current Cycle
 
-IDOL second-pass cleanup tested budget lifts from the existing `V21_idol_margin_zero_budget50.yaml`. The useful result is `V21_idol_margin_zero_budget125.yaml`: full-year return improved from 9.05% to 34.70%, margin calls stayed at 0, bars in margin call stayed at 0, MDD moved from -10.40% to -13.40%, and terminal unrealized/realized ratio improved from -0.4943 to -0.2055.
-
-Budget175 also passed full-year margin-zero confirmation, but it was rejected because it lowered return to 31.10%, worsened MDD to -17.45%, and increased terminal unrealized drag to -40.43 USDT. Temporary budget75, budget100, budget150, and budget175 YAMLs were removed after logging the raw results.
+SUP risk cleanup promoted V21_sup_margin_zero_budget20.yaml: full-year margin calls stayed at 0, MDD improved from -48.02% on short_ladder_soft to -23.31%, and basket worst drawdown moved to FREEDOMMONEY at -24.09%. Return fell from 9.04% to 1.08%, accepted because this cycle prioritized risk cleanup over maximum return.
 
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| `V21_idol_margin_zero_budget50.yaml` | 20000 | -0.58 | -1.24 | 139 | 0 | 0 | -2.5031 | 20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget50_20k.log` |
-| `V21_idol_margin_zero_budget75.yaml` | 20000 | -0.62 | -1.49 | 175 | 0 | 0 | -3.3247 | 20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget75_20k.log` |
-| `V21_idol_margin_zero_budget100.yaml` | 20000 | -0.63 | -2.05 | 212 | 0 | 0 | -3.3106 | 20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget100_20k.log` |
-| `V21_idol_margin_zero_budget125.yaml` | 20000 | -0.55 | -2.08 | 247 | 0 | 0 | -2.3165 | 20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_20k.log` |
-| `V21_idol_margin_zero_budget150.yaml` | 20000 | -0.28 | -1.85 | 350 | 0 | 0 | -1.4251 | 20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_20k.log` |
-| `V21_idol_margin_zero_budget175.yaml` | 20000 | 0.01 | -1.86 | 403 | 0 | 0 | -0.9870 | 20k IDOL budget-lift screen; budget125 and budget175 earned full-year confirmation, others were not promoted. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget175_20k.log` |
-| `V21_idol_margin_zero_budget125.yaml` | full | 34.70 | -13.40 | 5848 | 0 | 0 | -0.2055 | Promoted as IDOL best. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_full.log` |
-| `V21_idol_margin_zero_budget175.yaml` | full | 31.10 | -17.45 | 7330 | 0 | 0 | -0.3940 | Rejected: zero-margin but worse return, MDD, and terminal unrealized drag than budget125. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget175_full.log` |
+| `V21_sup_margin_zero_budget10.yaml` | 20000 | 0.61 | -23.93 | 80 | 0 | 0 | -0.9022 | SUP conservative sizing screen. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget10_20k.log` |
+| `V21_sup_margin_zero_budget10.yaml` | full | 0.70 | -26.33 | 423 | 0 | 0 | -0.9131 | Full-year SUP conservative sizing confirmation. Rejected versus budget20 on return/MDD balance. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget10_full.log` |
+| `V21_sup_margin_zero_budget15.yaml` | 20000 | 1.06 | -23.71 | 114 | 0 | 0 | -0.8640 | SUP conservative sizing screen. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget15_20k.log` |
+| `V21_sup_margin_zero_budget15.yaml` | full | 0.65 | -28.32 | 525 | 0 | 0 | -0.9222 | Full-year SUP conservative sizing confirmation. Rejected versus budget20 on return/MDD balance. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget15_full.log` |
+| `V21_sup_margin_zero_budget20.yaml` | 20000 | 2.32 | -13.74 | 134 | 0 | 0 | -0.7362 | SUP conservative sizing screen. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget20_20k.log` |
+| `V21_sup_margin_zero_budget20.yaml` | full | 1.08 | -23.31 | 654 | 0 | 0 | -0.8609 | Promoted as lower-risk SUP best: zero margin calls with materially lower MDD than short_ladder_soft. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget20_full.log` |
+| `V21_sup_margin_zero_budget30.yaml` | 20000 | 3.81 | -19.76 | 218 | 0 | 0 | -0.6795 | SUP conservative sizing screen. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_20k.log` |
+| `V21_sup_margin_zero_budget30.yaml` | full | 1.90 | -25.15 | 845 | 0 | 0 | -0.7934 | Full-year SUP conservative sizing confirmation. Rejected versus budget20 on return/MDD balance. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_full.log` |
+| `V21_sup_margin_zero_short_ladder_soft.yaml` | full | 9.04 | -48.02 | 1329 | 0 | 0 | -0.3140 | Demoted as SUP best because budget20 cuts full-year MDD from -48.02% to -23.31%, despite lower return. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_short_ladder_soft_full.log` |
 
 ## Baseline Comparison
 
@@ -54,7 +53,7 @@ Budget175 also passed full-year margin-zero confirmation, but it was rejected be
 | `IDOL/USDT:USDT` | 44.19 | -37.75 | 18 | 34.70 | -13.40 | 0 |
 | `FREEDOMMONEY/USDT:USDT` | 64.28 | -24.09 | 0 | 64.28 | -24.09 | 0 |
 | `MAXXING/USDT:USDT` | 183.80 | -18.37 | 8 | 104.68 | -21.17 | 0 |
-| `SUP/USDT:USDT` | -1.05 | -219.88 | 35 | 9.04 | -48.02 | 0 |
+| `SUP/USDT:USDT` | -1.05 | -219.88 | 35 | 1.08 | -23.31 | 0 |
 
 ## Exact Full-Year Commands
 
@@ -68,9 +67,9 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget125.yaml --npz DB/fast_cache_1m_maxxing_1y_bingx.npz --symbol MAXXING/USDT:USDT
 ```
 ```bash
-python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_short_ladder_soft.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
+python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget20.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
 ```
 
 ## Next Action
 
-The first-basket margin-call cleanup remains satisfied with 0 total margin-call events. The next useful work is either a bounded SUP risk cleanup to reduce the -48.02% MDD without losing zero-margin status, or a MAXXING tail-drag cleanup around budget125.
+The first-basket margin-call cleanup remains satisfied with 0 total margin-call events. Next useful work is MAXXING tail-drag cleanup around budget125, or a SUP search that recovers return while preserving budget20-level drawdown.
