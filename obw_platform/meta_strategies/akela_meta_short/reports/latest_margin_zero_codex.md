@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T01:16:24Z
+Updated: 2026-05-13T01:25:14Z
 
 ## Objective
 
@@ -58,6 +58,8 @@ Latest SUP micro-sweep note: a budget33 fast-exit probe and a budget32 tighter-l
 
 Latest MAXXING short-budget note: a short-side-only budget reduction from 125 to 110 stayed zero-margin on the 20k slice and slightly improved the terminal unrealized/realized ratio from -0.3540 to -0.3530, but it reduced return from 23.10% to 22.93% and worsened MDD from -8.31% to -8.36%. The temporary YAML was removed; the selected MAXXING budget125 config remains unchanged.
 
+MAXXING exit-shape follow-up: isolating the prior tuner exit improvements while restoring the selected budget125 spacing produced a strong 20k slice (31.19% return, -7.83% MDD, zero margin calls), but full-year confirmation rejected it at 94.20% return, -22.09% MDD, and -0.2469 terminal unrealized/realized ratio versus the selected budget125 profile of 104.68%, -21.17%, and -0.2273. A milder midpoint exit variant also stayed zero-margin on the 20k slice, but underperformed the tight variant before full-year promotion. Both temporary YAMLs were removed; raw logs were retained.
+
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
@@ -78,6 +80,9 @@ Latest MAXXING short-budget note: a short-side-only budget reduction from 125 to
 | temporary `V21_sup_margin_zero_budget33_fast_exit.yaml` | 20000 | 4.72 | -17.64 | 232 | 0 | 0 | -0.6252 | Rejected before full-year: stayed zero-margin, but worsened return, MDD, and tail ratio versus selected budget32_fast_exit. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget33_fast_exit_20k.log` |
 | temporary `V21_sup_margin_zero_budget32_long_exit018.yaml` | 20000 | 4.69 | -17.43 | 231 | 0 | 0 | -0.6257 | Rejected before full-year: tighter long exits gave only a tiny MDD improvement while reducing return and worsening tail ratio versus selected budget32_fast_exit. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_long_exit018_20k.log` |
 | temporary `V21_maxxing_margin_zero_short_budget110.yaml` | 20000 | 22.93 | -8.36 | 1318 | 0 | 0 | -0.3530 | Rejected before full-year: short-only budget reduction barely improved tail ratio, while reducing return and worsening MDD versus selected MAXXING budget125. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_short_budget110_20k.log` |
+| temporary `V21_maxxing_margin_zero_exit_tight_nospacing.yaml` | 20000 | 31.19 | -7.83 | 1398 | 0 | 0 | -0.2905 | Promoted to full-year confirmation: exit-only transplant beat selected MAXXING budget125 on 20k return and MDD while staying zero-margin. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_exit_tight_nospacing_20k.log` |
+| temporary `V21_maxxing_margin_zero_exit_tight_nospacing.yaml` | full | 94.20 | -22.09 | 4422 | 0 | 0 | -0.2469 | Rejected after full-year: stayed zero-margin, but worse than selected MAXXING budget125's 104.68% return, -21.17% MDD, and -0.2273 tail ratio. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_exit_tight_nospacing_full.log` |
+| temporary `V21_maxxing_margin_zero_exit_mid.yaml` | 20000 | 28.27 | -8.24 | 1384 | 0 | 0 | -0.3097 | Rejected before full-year: stayed zero-margin and beat selected budget125 on the 20k slice, but underperformed the tighter exit-only variant selected for confirmation. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_exit_mid_20k.log` |
 
 ## Baseline Comparison
 
@@ -105,4 +110,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit. The narrow SUP 31-33/exit-threshold follow-up and the MAXXING short-budget110 probe did not improve the current picks. The next useful search is a MAXXING exit-shape hypothesis rather than another simple short-budget reduction, because lower short budget reduced activity/return while leaving the 20k tail profile almost unchanged.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit and MAXXING budget125. The latest MAXXING exit-only probe confirmed that 20k slice improvements can overfit and fail full-year risk/return. The next useful search is a MAXXING path-window diagnosis around the full-year drawdown/tail region before more parameter sweeps, because simple short-budget and exit-shape changes have not beaten the selected budget125 full-year profile.
