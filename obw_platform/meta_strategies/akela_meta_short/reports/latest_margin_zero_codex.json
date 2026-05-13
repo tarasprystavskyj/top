@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-13T00:03:00Z",
+  "updated": "2026-05-13T00:09:19Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -807,8 +807,38 @@
       "reason": "Rejected as primary: the 20k tuner pass improved the slice, but full-year confirmation was slightly worse than budget30 on both return and MDD."
     }
   ],
-  "next_action": "First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30. Budget32 is a secondary if a slightly higher -30.41% drawdown is acceptable. The next useful search should improve SUP return without increasing sizing budget, for example exit/spacing changes around budget30.",
+  "next_action": "First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30. Budget32 is a secondary if a slightly higher -30.41% drawdown is acceptable. The latest budget30 ladder isolation did not improve the risk/return balance, so the next useful SUP search should avoid simple ladder tightening and instead test exit behavior or a constrained tuner objective around budget30.",
   "latest_cycle_attempts": [
+    {
+      "config": "V21_sup_margin_zero_budget30_ladder_soft.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 3.8642491934121974,
+      "mdd_mtm_%": -20.268959126512815,
+      "trades_total": 218,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6821410751784226,
+      "unrealized_pnl_long": -11.460475436232251,
+      "unrealized_pnl_short": -5.125266814240561,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_ladder_soft_20k.log",
+      "reason": "Rejected before full-year: stayed zero-margin, but the tiny return gain versus budget30 did not justify worse slice MDD."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget30_short_ladder_soft.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 3.703937786736311,
+      "mdd_mtm_%": -20.319248392550435,
+      "trades_total": 218,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6869958419935106,
+      "unrealized_pnl_long": -11.133877311491702,
+      "unrealized_pnl_short": -5.125266814240561,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_short_ladder_soft_20k.log",
+      "reason": "Rejected before full-year: short-ladder-only change reduced return and worsened MDD versus budget30."
+    },
     {
       "config": "V21_sup_margin_zero_budget30.yaml tuner final",
       "symbol": "SUP/USDT:USDT",
@@ -930,5 +960,5 @@
       "reason": "Rejected as primary: zero-margin, but did not pull MDD below budget32 and gave up return versus budget32."
     }
   ],
-  "latest_cycle_summary": "A 180-second 20k-bar tuner pass from SUP budget30 found a zero-margin slice improvement, but full-year confirmation was slightly worse than budget30 on return and MDD. Budget30 remains the primary SUP risk-cleanup selection at 1.90% return and -25.15% MDD; budget32 remains the higher-return secondary at 2.65% and -30.41% MDD."
+  "latest_cycle_summary": "SUP budget30 ladder isolation produced two zero-margin 20k-bar tests, but neither improved the budget30 risk/return balance enough for full-year confirmation. Budget30 remains the primary SUP risk-cleanup selection at 1.90% return and -25.15% MDD; budget32 remains the higher-return secondary at 2.65% and -30.41% MDD."
 }
