@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T00:41:33Z
+Updated: 2026-05-13T00:51:12Z
 
 ## Objective
 
@@ -50,6 +50,8 @@ Latest follow-up note: transplanting the SUP fast-exit profile into IDOL/MAXXING
 
 MAXXING tuner follow-up: a 240-second 20k-bar tuner pass from `V21_maxxing_margin_zero_budget125.yaml` found a zero-margin slice improvement by widening long full TP, tightening long partial exit, tightening long spacing, and making short exits faster. Full-year confirmation stayed zero-margin, but underperformed the current MAXXING pick on return, drawdown, and terminal unrealized ratio, so the tuned YAML was not promoted.
 
+SUP cap follow-up: a fresh 20k-bar check tested mild MAXXING-derived SUP exposure caps and deeper low-exposure/min-budget probes. All variants still failed the margin-zero target with 26-29 margin-call events and were not promoted. The selected SUP `budget30_fast_exit` full-year candidate remains unchanged.
+
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
@@ -60,6 +62,11 @@ MAXXING tuner follow-up: a 240-second 20k-bar tuner pass from `V21_maxxing_margi
 | `V21_idol_margin_zero_budget150.yaml` | full | 29.43 | -15.81 | 6583 | 0 | 0 | -0.3544 | Rejected after full-year: zero-margin, but worse than IDOL budget125's 34.70% return, -13.40% MDD, and -0.2055 tail ratio. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_full.log` |
 | `V21_maxxing_margin_zero_budget125_tuned_exit.yaml` | 20000 | 32.94 | -7.73 | 1316 | 0 | 0 | -0.2794 | Tuner slice candidate from budget125; promoted only to full-year confirmation because it improved 20k return and MDD while staying zero-margin. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_tuner_20k_20260513.log` |
 | `V21_maxxing_margin_zero_budget125_tuned_exit.yaml` | full | 97.71 | -22.12 | 4211 | 0 | 0 | -0.2401 | Rejected after full-year: zero-margin, but worse than MAXXING budget125's 104.68% return, -21.17% MDD, and -0.2273 tail ratio. Temporary generated YAML was removed. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_tuned_exit_full.log` |
+| `V21_sup_margin_zero_cap_l120_s110.yaml` | 20000 | -25.68 | -238.54 | 1052 | 29 | 551 | -1.6004 | Rejected before full-year: mild max-invest caps did not prevent SUP tail exposure or margin calls. | `_reports/akela_meta_short/margin_zero_codex_loop/backtests/SUP_cap_l120_s110_limit20000.log` |
+| `V21_sup_margin_zero_cap_l100_s100.yaml` | 20000 | -25.68 | -238.54 | 1052 | 29 | 551 | -1.6004 | Rejected before full-year: same failed tail profile as cap_l120_s110. | `_reports/akela_meta_short/margin_zero_codex_loop/backtests/SUP_cap_l100_s100_limit20000.log` |
+| `V21_sup_margin_zero_low_base_l090_s090.yaml` | 20000 | -26.02 | -238.17 | 1192 | 26 | 557 | -1.6130 | Rejected before full-year: lower base sizing plus wider spacing still failed the margin-zero target. | `_reports/akela_meta_short/margin_zero_codex_loop/backtests/SUP_low_base_l090_s090_limit20000.log` |
+| temporary SUP low exposure 0.25/0.60 | 20000 | -26.02 | -238.17 | 1192 | 26 | 557 | -1.6130 | Rejected before full-year: lowering min/max exposure floors did not change the failed SUP tail profile enough; temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/backtests/SUP_low_exposure_025_060_limit20000.log` |
+| temporary SUP micro 0.10/0.30 | 20000 | -24.78 | -207.23 | 1226 | 27 | 459 | -1.5988 | Rejected before full-year: drawdown improved but margin calls persisted; temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/backtests/SUP_micro_010_030_limit20000.log` |
 
 ## Baseline Comparison
 
