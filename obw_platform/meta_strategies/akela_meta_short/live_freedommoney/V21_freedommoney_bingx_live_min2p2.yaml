@@ -113,6 +113,22 @@ backtest:
       has no orderbook sweep columns, so use static 9.3802bp.
   stress_slippage_bp: 18.679372060351156
 runner:
+  mode_label: S0_MICRO_TELEMETRY_LIVE
+  s0_micro_telemetry:
+    enabled: true
+    objective: collect_fills_rejects_spread_depth_latency_slippage
+    symbol: FREEDOMMONEY/USDT:USDT
+    fill_observation_target: 30
+    approved_notional_cap_usdt: 35.0
+    approved_loss_budget_usdt: 8.0
+    max_unrealized_to_realized_debt_ratio: -0.5
+    spread_stop_bp: 50.0
+    single_fill_adverse_slippage_stop_bp: 100.0
+    dynamic_min_order_floor:
+      enabled: true
+      configured_min_order_usdt: 2.02
+      buffer: 1.10
+      formula: max(min_cost*buffer, min_amount*current_price*buffer, configured_min_order_usdt)
   debug_console: false
   debug_payload: false
   console:
