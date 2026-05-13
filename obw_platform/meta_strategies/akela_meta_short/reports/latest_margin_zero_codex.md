@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T01:40:38Z
+Updated: 2026-05-13T01:55:44Z
 
 ## Objective
 
@@ -60,6 +60,8 @@ Latest MAXXING short-budget note: a short-side-only budget reduction from 125 to
 
 MAXXING exit-shape follow-up: isolating the prior tuner exit improvements while restoring the selected budget125 spacing produced a strong 20k slice (31.19% return, -7.83% MDD, zero margin calls), but full-year confirmation rejected it at 94.20% return, -22.09% MDD, and -0.2469 terminal unrealized/realized ratio versus the selected budget125 profile of 104.68%, -21.17%, and -0.2273. A milder midpoint exit variant also stayed zero-margin on the 20k slice, but underperformed the tight variant before full-year promotion. Both temporary YAMLs were removed; raw logs were retained.
 
+IDOL stress follow-up: a 25k-bar diagnostic on the selected `V21_idol_margin_zero_budget125.yaml` stayed zero-margin with shallow drawdown, but ended slightly negative because realized PnL was small relative to open loss. A bounded 25k-bar tuner pass improved that slice from -0.60% return, -2.00% MDD, and -2.6446 tail ratio to +0.10% return, -1.53% MDD, and -0.8798 tail ratio, all with zero margin calls. Full-year confirmation rejected the tuned profile: it stayed zero-margin, but worsened return, drawdown, and tail ratio versus the selected IDOL budget125 config. No IDOL YAML was promoted; the selected basket is unchanged.
+
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
@@ -88,6 +90,9 @@ MAXXING exit-shape follow-up: isolating the prior tuner exit improvements while 
 | `V21_maxxing_margin_zero_shortcap085.yaml` | 25000 | -24.96 | -53.78 | 1218 | 0 | 0 | -1.6415 | Rejected before full-year: identical stress-slice result to shortcap100, so the lower cap was not binding in this failure mode. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_shortcap085_25k.log` |
 | tuner final_best from `akela_margin_zero_maxxing_25k_stress_20260513_013417` | 25000 | -12.91 | -40.14 | 1423 | 0 | 0 | -1.2920 | Promoted to full-year confirmation: improved the expanded stress slice by tightening exits while preserving zero margin calls. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_25k_stress_tuner_20260513.log` |
 | `V21_maxxing_margin_zero_budget125_stress_exit.yaml` | full | 119.55 | -13.68 | 4996 | 0 | 0 | -0.2048 | Promoted as current MAXXING pick: full-year zero-margin and better than budget125 on return, drawdown, trades, and terminal unrealized ratio. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_stress_exit_full.log` |
+| `V21_idol_margin_zero_budget125.yaml` | 25000 | -0.60 | -2.00 | 350 | 0 | 0 | -2.6446 | Stress-window diagnosis: selected IDOL stayed zero-margin with shallow drawdown, but the slice ended with weak MTM because realized PnL was too small versus open loss. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_25k.log` |
+| tuner final_best from `akela_margin_zero_idol_25k_20260513_20260513_014913` | 25000 | 0.10 | -1.53 | 548 | 0 | 0 | -0.8798 | Promoted to full-year confirmation: improved the 25k slice return, MDD, and terminal unrealized ratio while preserving zero margin calls. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_25k_tuner_20260513.log` |
+| tuner final_best from `akela_margin_zero_idol_25k_20260513_20260513_014913` | full | 28.71 | -14.55 | 5847 | 0 | 0 | -0.4156 | Rejected after full-year: stayed zero-margin, but underperformed selected IDOL budget125 on return, drawdown, and terminal unrealized ratio. No YAML promoted. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_25k_tuner_final_full.log` |
 
 ## Baseline Comparison
 
@@ -115,4 +120,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit and the new MAXXING budget125_stress_exit config. The next useful search is an IDOL second-pass stress-window diagnosis, because MAXXING now has a stronger zero-margin stress-exit candidate and SUP remains in a risk-first low-return envelope.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP budget32_fast_exit. The next useful search is a second SUP risk/return pass inside the budget32 fast-exit envelope, because the IDOL stress-tuner follow-up did not full-year promote and SUP remains the lowest-return selected leg.

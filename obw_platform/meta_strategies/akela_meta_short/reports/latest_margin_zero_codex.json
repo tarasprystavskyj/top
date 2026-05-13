@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-13T01:40:38Z",
+  "updated": "2026-05-13T01:55:44Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1067,72 +1067,46 @@
       "reason": "Promoted as current MAXXING pick: full-year zero-margin and better than budget125 on return, drawdown, trades, and terminal unrealized ratio."
     }
   ],
-  "latest_cycle_summary": "Diagnosed the MAXXING full-year drawdown window, found the prior 20k screen missed the March 12 short-squeeze stress region, then ran a 25k stress-slice tuner from budget125. The tuned exit profile full-year confirmed with zero margin calls and improved MAXXING return from 104.68% to 119.55%, MDD from -21.17% to -13.68%, and terminal unrealized/realized ratio from -0.2273 to -0.2048.",
+  "latest_cycle_summary": "Ran an IDOL 25k-bar stress diagnostic from the selected budget125 config, then a bounded 25k-bar tuner pass. The tuner improved the diagnostic slice while preserving zero margin calls, but full-year confirmation rejected it: return fell from 34.70% to 28.71%, MDD worsened from -13.40% to -14.55%, and terminal unrealized/realized ratio worsened from -0.2055 to -0.4156. No IDOL YAML was promoted and the selected basket is unchanged.",
   "latest_session_attempts": [
     {
-      "config": "V21_maxxing_margin_zero_budget125.yaml",
-      "symbol": "MAXXING/USDT:USDT",
+      "config": "V21_idol_margin_zero_budget125.yaml",
+      "symbol": "IDOL/USDT:USDT",
       "limit_bars": 25000,
-      "return_mtm_pct_on_start": -22.80966114187658,
-      "mdd_mtm_%": -51.972053703265445,
-      "trades_total": 1321,
+      "return_mtm_pct_on_start": -0.6045352694483562,
+      "mdd_mtm_%": -2.003724884586312,
+      "trades_total": 350,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -1.5507950487688893,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_25k.log",
-      "reason": "Stress-window diagnosis: prior 20k screens missed the March 12 short squeeze; selected budget125 stayed zero-margin but had severe interim MTM/tail drag."
+      "terminal_unrealized_to_realized_ratio": -2.6446466095422285,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_25k.log",
+      "reason": "Stress-window diagnosis: selected IDOL stayed zero-margin with shallow drawdown, but the slice ended with weak MTM because realized PnL was too small versus open loss."
     },
     {
-      "config": "V21_maxxing_margin_zero_shortcap100.yaml",
-      "symbol": "MAXXING/USDT:USDT",
+      "config": "tuner final_best.yaml from akela_margin_zero_idol_25k_20260513_20260513_014913",
+      "symbol": "IDOL/USDT:USDT",
       "limit_bars": 25000,
-      "return_mtm_pct_on_start": -24.96264713266953,
-      "mdd_mtm_%": -53.778490193011976,
-      "trades_total": 1218,
+      "return_mtm_pct_on_start": 0.09652229464094632,
+      "mdd_mtm_%": -1.5260041175568262,
+      "trades_total": 548,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -1.6415210492386878,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_shortcap100_25k.log",
-      "reason": "Rejected: stayed zero-margin but worsened the stress slice versus selected budget125; cap still did not reduce the problematic short unrealized loss."
+      "terminal_unrealized_to_realized_ratio": -0.8797667411171176,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_25k_tuner_20260513.log",
+      "reason": "Promoted to full-year confirmation: improved the 25k slice return, MDD, and terminal unrealized ratio while preserving zero margin calls."
     },
     {
-      "config": "V21_maxxing_margin_zero_shortcap085.yaml",
-      "symbol": "MAXXING/USDT:USDT",
-      "limit_bars": 25000,
-      "return_mtm_pct_on_start": -24.96264713266953,
-      "mdd_mtm_%": -53.778490193011976,
-      "trades_total": 1218,
-      "margin_call_events_total": 0,
-      "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -1.6415210492386878,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_shortcap085_25k.log",
-      "reason": "Rejected: identical stress-slice result to shortcap100, so the lower cap was not binding in this failure mode."
-    },
-    {
-      "config": "tuner final_best.yaml from akela_margin_zero_maxxing_25k_stress_20260513_013417",
-      "symbol": "MAXXING/USDT:USDT",
-      "limit_bars": 25000,
-      "return_mtm_pct_on_start": -12.908269690043582,
-      "mdd_mtm_%": -40.140291396976814,
-      "trades_total": 1423,
-      "margin_call_events_total": 0,
-      "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -1.292020085064394,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_25k_stress_tuner_20260513.log",
-      "reason": "Promoted to full-year confirmation: improved the expanded stress slice by tightening exits while preserving zero margin calls."
-    },
-    {
-      "config": "V21_maxxing_margin_zero_budget125_stress_exit.yaml",
-      "symbol": "MAXXING/USDT:USDT",
+      "config": "tuner final_best.yaml from akela_margin_zero_idol_25k_20260513_20260513_014913",
+      "symbol": "IDOL/USDT:USDT",
       "limit_bars": "full",
-      "return_mtm_pct_on_start": 119.55309748045855,
-      "mdd_mtm_%": -13.677453987301133,
-      "trades_total": 4996,
+      "return_mtm_pct_on_start": 28.708549852688588,
+      "mdd_mtm_%": -14.54575485593648,
+      "trades_total": 5847,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.20480438303536533,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_stress_exit_full.log",
-      "reason": "Promoted as current MAXXING pick: full-year zero-margin and better than budget125 on return, drawdown, trades, and terminal unrealized ratio."
+      "terminal_unrealized_to_realized_ratio": -0.41556850281545127,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_25k_tuner_final_full.log",
+      "reason": "Rejected after full-year: stayed zero-margin, but underperformed selected IDOL budget125 on return, drawdown, and terminal unrealized ratio. No YAML promoted."
     }
   ]
 }
