@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-12T23:59:00Z
+Updated: 2026-05-13T00:03:00Z
 
 ## Objective
 
@@ -30,7 +30,7 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 
 ## Current Cycle
 
-SUP budget31/32 plus two budget30-adjacent variants were tested. The first-basket risk-cleanup target is still satisfied: all four selected configs have `margin_call_events_total = 0` and `bars_in_margin_call = 0` on full-year runs.
+SUP budget30 was used as a tuner seed for a short, 20k-bar exit/spacing search. The first-basket risk-cleanup target is still satisfied: all four selected configs have `margin_call_events_total = 0` and `bars_in_margin_call = 0` on full-year runs.
 
 Selection note: `V21_sup_margin_zero_budget30.yaml` improves SUP full-year return versus budget20 and budget25 while staying inside the roughly -30% SUP risk envelope. Budget20 remains a valid lower-drawdown fallback, but budget30 is the better current risk-cleanup balance.
 
@@ -38,12 +38,16 @@ Gap-test note: `V21_sup_margin_zero_budget45.yaml` had the best return in the ne
 
 Near-budget note: `V21_sup_margin_zero_budget32.yaml` improved SUP full-year return to 2.65% with zero margin calls, but MDD was -30.41%. That makes it a useful secondary if a slightly deeper drawdown is acceptable, but it does not replace budget30 as the primary risk-cleanup pick. `V21_sup_margin_zero_budget31.yaml` also stayed zero-margin, but had slightly worse MDD (-30.46%) and lower return (2.35%) than budget32.
 
+Tuner note: a 180-second 20k-bar tuner pass from `V21_sup_margin_zero_budget30.yaml` improved the slice to 4.91% return, -19.02% MDD, and zero margin calls. Its full-year confirmation stayed zero-margin, but returned 1.86% with -25.38% MDD, slightly worse than budget30's 1.90% and -25.15%. It is rejected as a primary candidate and was not promoted into `generated_configs`.
+
 MAXXING best remains `V21_maxxing_margin_zero_budget125.yaml`; the previous short-cap sweep did not improve its full-year risk/return balance.
 
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `V21_sup_margin_zero_budget30.yaml` tuner final | 20000 | 4.91 | -19.02 | 214 | 0 | 0 | -0.6217 | Passed the 20k zero-margin filter and improved the slice versus budget30. Full-year confirmation required. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_tuner_20k_20260512.log` |
+| `V21_sup_margin_zero_budget30.yaml` tuner final | full | 1.86 | -25.38 | 1015 | 0 | 0 | -0.7968 | Rejected as primary: full-year zero-margin, but slightly worse return and drawdown than budget30. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_tuner_exit_soft_full.log` |
 | `V21_sup_margin_zero_budget32.yaml` | 20000 | 4.75 | -17.47 | 230 | 0 | 0 | -0.6229 | Passed 20k zero-margin filter; best slice return in this near-budget30 batch. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_20k.log` |
 | `V21_sup_margin_zero_long30_short35.yaml` | 20000 | 4.05 | -18.93 | 227 | 0 | 0 | -0.6637 | Passed 20k, but did not beat budget32 on slice return or drawdown. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_long30_short35_20k.log` |
 | `V21_sup_margin_zero_budget30_fast_exit.yaml` | 20000 | 3.91 | -19.73 | 216 | 0 | 0 | -0.6734 | Passed 20k, but faster exits did not improve this slice. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_fast_exit_20k.log` |

@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-12T23:59:00Z",
+  "updated": "2026-05-13T00:03:00Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -790,10 +790,55 @@
       "unrealized_pnl_short": -4.548688202461783,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget31_full.log",
       "reason": "Rejected as primary: zero-margin, but did not pull MDD below budget32 and gave up return versus budget32."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget30.yaml tuner final",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 1.8644225588293981,
+      "mdd_mtm_%": -25.38335039485017,
+      "trades_total": 1015,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.7968384833483159,
+      "unrealized_pnl_long": -9.615197516631323,
+      "unrealized_pnl_short": -5.010049120457989,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_tuner_exit_soft_full.log",
+      "reason": "Rejected as primary: the 20k tuner pass improved the slice, but full-year confirmation was slightly worse than budget30 on both return and MDD."
     }
   ],
   "next_action": "First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30. Budget32 is a secondary if a slightly higher -30.41% drawdown is acceptable. The next useful search should improve SUP return without increasing sizing budget, for example exit/spacing changes around budget30.",
   "latest_cycle_attempts": [
+    {
+      "config": "V21_sup_margin_zero_budget30.yaml tuner final",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 4.911877467441808,
+      "mdd_mtm_%": -19.02026865396294,
+      "trades_total": 214,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6216930269550062,
+      "unrealized_pnl_long": -11.133877311491704,
+      "unrealized_pnl_short": -5.010049120458042,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_tuner_20k_20260512.log",
+      "reason": "Passed the 20k zero-margin tuner filter and improved the slice versus budget30; promoted only to full-year confirmation."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget30.yaml tuner final",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 1.8644225588293981,
+      "mdd_mtm_%": -25.38335039485017,
+      "trades_total": 1015,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.7968384833483159,
+      "unrealized_pnl_long": -9.615197516631323,
+      "unrealized_pnl_short": -5.010049120457989,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_tuner_exit_soft_full.log",
+      "reason": "Rejected as primary: stayed zero-margin, but returned 1.86% with -25.38% MDD, slightly worse than budget30's 1.90% and -25.15%."
+    },
     {
       "config": "V21_sup_margin_zero_budget32.yaml",
       "symbol": "SUP/USDT:USDT",
@@ -885,5 +930,5 @@
       "reason": "Rejected as primary: zero-margin, but did not pull MDD below budget32 and gave up return versus budget32."
     }
   ],
-  "latest_cycle_summary": "SUP budget31/32 and exit/asymmetric 20k tests found another full-year zero-margin secondary. Budget32 improved SUP return to 2.65% with zero margin calls, but MDD was -30.41%, so budget30 remains the primary risk-cleanup selection at 1.90% return and -25.15% MDD."
+  "latest_cycle_summary": "A 180-second 20k-bar tuner pass from SUP budget30 found a zero-margin slice improvement, but full-year confirmation was slightly worse than budget30 on return and MDD. Budget30 remains the primary SUP risk-cleanup selection at 1.90% return and -25.15% MDD; budget32 remains the higher-return secondary at 2.65% and -30.41% MDD."
 }
