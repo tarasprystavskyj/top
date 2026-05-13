@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T00:28:49Z
+Updated: 2026-05-13T00:41:33Z
 
 ## Objective
 
@@ -48,6 +48,8 @@ Fast-exit confirmation note: `V21_sup_margin_zero_budget30_fast_exit.yaml` looke
 
 Latest follow-up note: transplanting the SUP fast-exit profile into IDOL/MAXXING budget125 stayed zero-margin on 20k slices, but worsened risk-adjusted performance. IDOL budget150 was reconstructed from the prior temporary screen and full-year confirmed; it also stayed zero-margin, but underperformed IDOL budget125 on return, drawdown, and terminal unrealized exposure. The selected basket is unchanged.
 
+MAXXING tuner follow-up: a 240-second 20k-bar tuner pass from `V21_maxxing_margin_zero_budget125.yaml` found a zero-margin slice improvement by widening long full TP, tightening long partial exit, tightening long spacing, and making short exits faster. Full-year confirmation stayed zero-margin, but underperformed the current MAXXING pick on return, drawdown, and terminal unrealized ratio, so the tuned YAML was not promoted.
+
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
@@ -56,6 +58,8 @@ Latest follow-up note: transplanting the SUP fast-exit profile into IDOL/MAXXING
 | `V21_maxxing_margin_zero_budget125_fast_exit.yaml` | 20000 | 9.06 | -15.03 | 1498 | 0 | 0 | -0.7675 | Rejected before full-year: stayed zero-margin, but cut return from 23.10% to 9.06% and worsened MDD from -8.31% to -15.03% versus MAXXING budget125. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_fast_exit_20k.log` |
 | `V21_idol_margin_zero_budget150.yaml` | 20000 | -0.28 | -1.85 | 350 | 0 | 0 | -1.4251 | Passed 20k recheck and matched the prior temporary screen exactly; promoted only to full-year confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_recheck_20k.log` |
 | `V21_idol_margin_zero_budget150.yaml` | full | 29.43 | -15.81 | 6583 | 0 | 0 | -0.3544 | Rejected after full-year: zero-margin, but worse than IDOL budget125's 34.70% return, -13.40% MDD, and -0.2055 tail ratio. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_full.log` |
+| `V21_maxxing_margin_zero_budget125_tuned_exit.yaml` | 20000 | 32.94 | -7.73 | 1316 | 0 | 0 | -0.2794 | Tuner slice candidate from budget125; promoted only to full-year confirmation because it improved 20k return and MDD while staying zero-margin. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_tuner_20k_20260513.log` |
+| `V21_maxxing_margin_zero_budget125_tuned_exit.yaml` | full | 97.71 | -22.12 | 4211 | 0 | 0 | -0.2401 | Rejected after full-year: zero-margin, but worse than MAXXING budget125's 104.68% return, -21.17% MDD, and -0.2273 tail ratio. Temporary generated YAML was removed. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_tuned_exit_full.log` |
 
 ## Baseline Comparison
 
@@ -83,4 +87,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30_fast_exit. The SUP fast-exit transplant and IDOL budget150 are rejected, so the next useful search is either a narrow SUP budget30 fast-exit refinement or a different MAXXING exit/spacing hypothesis.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30_fast_exit. The latest MAXXING tuned-exit candidate is rejected after full-year confirmation, so the selected basket is unchanged. The next useful search is a different MAXXING hypothesis focused on reducing short-side terminal exposure without sacrificing the current budget125 full-year profile, or a narrow SUP budget30 fast-exit refinement.

@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-13T00:28:49Z",
+  "updated": "2026-05-13T00:41:33Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -869,9 +869,37 @@
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_full.log",
       "result": "Rejected after full-year",
       "reason": "Full-year stayed zero-margin, but underperformed IDOL budget125 on return, MDD, and terminal unrealized exposure."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget125_tuned_exit.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 32.9397373055057,
+      "mdd_mtm_%": -7.729245561662841,
+      "trades_total": 1316,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.2793764705474775,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_tuner_20k_20260513.log",
+      "reason": "Tuner slice candidate from budget125; improved 20k return and MDD while staying zero-margin, so it was promoted only to full-year confirmation."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget125_tuned_exit.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 97.70781329365899,
+      "mdd_mtm_%": -22.11633270286294,
+      "trades_total": 4211,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.24013833146410232,
+      "unrealized_pnl_long": -14.395233676730115,
+      "unrealized_pnl_short": -47.361773491573544,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_tuned_exit_full.log",
+      "reason": "Rejected after full-year confirmation: zero-margin, but worse than MAXXING budget125 on return, MDD, and terminal unrealized ratio. Temporary generated YAML was removed."
     }
   ],
-  "next_action": "Current four-symbol margin-zero basket remains satisfied. Next useful work is a narrow SUP budget30 fast-exit refinement or a different MAXXING exit/spacing hypothesis; the tested fast-exit transplant and IDOL budget150 are rejected.",
+  "next_action": "First-basket margin-call cleanup remains satisfied with 0 total margin-call events. The latest MAXXING tuned-exit candidate is rejected after full-year confirmation; next search should test a different MAXXING hypothesis focused on reducing short-side terminal exposure without sacrificing budget125 full-year return, or refine SUP budget30 fast-exit narrowly.",
   "latest_cycle_attempts": [
     {
       "return_mtm_pct_on_start": -0.7074235419378644,
@@ -936,6 +964,36 @@
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_full.log",
       "result": "Rejected after full-year",
       "reason": "Full-year stayed zero-margin, but underperformed IDOL budget125 on return, MDD, and terminal unrealized exposure."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget125_tuned_exit.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 32.9397373055057,
+      "mdd_mtm_%": -7.729245561662841,
+      "trades_total": 1316,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.2793764705474775,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_tuner_20k_20260513.log",
+      "result": "Promoted only to full-year confirmation",
+      "reason": "Improved 20k return and MDD while staying zero-margin."
+    },
+    {
+      "config": "V21_maxxing_margin_zero_budget125_tuned_exit.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 97.70781329365899,
+      "mdd_mtm_%": -22.11633270286294,
+      "trades_total": 4211,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.24013833146410232,
+      "unrealized_pnl_long": -14.395233676730115,
+      "unrealized_pnl_short": -47.361773491573544,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_tuned_exit_full.log",
+      "result": "Rejected after full-year",
+      "reason": "Zero-margin, but worse than MAXXING budget125 on return, MDD, and terminal unrealized ratio."
     }
   ],
   "latest_cycle_summary": "Tested the SUP fast-exit profile on IDOL/MAXXING budget125 and reconstructed/full-year confirmed IDOL budget150. All attempts stayed zero-margin, but none improved the selected basket; current best candidates remain unchanged."
