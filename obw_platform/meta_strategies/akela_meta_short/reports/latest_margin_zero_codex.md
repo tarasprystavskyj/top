@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T02:03:33Z
+Updated: 2026-05-13T02:23:43Z
 
 ## Objective
 
@@ -64,6 +64,8 @@ IDOL stress follow-up: a 25k-bar diagnostic on the selected `V21_idol_margin_zer
 
 SUP short-budget follow-up: trimming only SUP short-side budget from 32 to 28, with and without a small long-side increase to 34, stayed zero-margin on the 20k slice. Both probes worsened return, drawdown, and terminal unrealized/realized ratio versus selected `V21_sup_margin_zero_budget32_fast_exit.yaml`, so neither earned full-year confirmation. Temporary generated YAMLs were removed; raw logs were retained.
 
+SUP 25k tuner follow-up: the selected `V21_sup_margin_zero_budget32_fast_exit.yaml` stayed zero-margin on a 25k stress slice at 4.99% return, -17.42% MDD, and -0.6111 terminal unrealized/realized ratio. A 600-second tuner pass found a small zero-margin slice improvement at 5.23% return, -17.36% MDD, and -0.5997 tail ratio, but the raw tuner YAML included nonsensical negative `maxLongInvestPct` and `maxShortInvestPct` values from delta tuning. Full-year confirmation rejected both the exact tuner YAML and a sanitized exit-only copy with 0.4 caps restored: each returned 1.19% with -31.28% MDD and -0.8557 tail ratio. The temporary sanitized YAML was removed; the selected SUP config remains unchanged.
+
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
@@ -97,6 +99,11 @@ SUP short-budget follow-up: trimming only SUP short-side budget from 32 to 28, w
 | tuner final_best from `akela_margin_zero_idol_25k_20260513_20260513_014913` | full | 28.71 | -14.55 | 5847 | 0 | 0 | -0.4156 | Rejected after full-year: stayed zero-margin, but underperformed selected IDOL budget125 on return, drawdown, and terminal unrealized ratio. No YAML promoted. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_25k_tuner_final_full.log` |
 | temporary `V21_sup_margin_zero_l32_s28_fast_exit.yaml` | 20000 | 4.44 | -19.67 | 220 | 0 | 0 | -0.6452 | Rejected before full-year: short-side budget trim stayed zero-margin, but worsened return, MDD, and tail ratio versus selected SUP budget32_fast_exit. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l32_s28_fast_exit_20k.log` |
 | temporary `V21_sup_margin_zero_l34_s28_fast_exit.yaml` | 20000 | 4.46 | -19.46 | 224 | 0 | 0 | -0.6439 | Rejected before full-year: small long-side budget increase plus short trim stayed zero-margin, but still underperformed selected SUP budget32_fast_exit on return, MDD, and tail ratio. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l34_s28_fast_exit_20k.log` |
+| `V21_sup_margin_zero_budget32_fast_exit.yaml` | 25000 | 4.99 | -17.42 | 280 | 0 | 0 | -0.6111 | Stress-slice baseline for the bounded SUP tuner pass; selected config remains zero-margin. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_25k.log` |
+| tuner final_best from `akela_margin_zero_sup_budget32_25k_20260513_021101` | 25000 | 5.23 | -17.36 | 282 | 0 | 0 | -0.5997 | Rejected as promotable YAML because delta tuning pushed maxLongInvestPct/maxShortInvestPct negative; promoted only to full-year evidence check. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_25k_tuner_20260513.log` |
+| tuner final_best from `akela_margin_zero_sup_budget32_25k_20260513_021101` | full | 1.19 | -31.28 | 1154 | 0 | 0 | -0.8557 | Rejected after full-year: stayed zero-margin, but underperformed selected SUP budget32_fast_exit on return, drawdown, and terminal unrealized ratio. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_25k_tuner_final_full.log` |
+| temporary `V21_sup_margin_zero_budget32_tuner_exit_sanitized.yaml` | 25000 | 5.23 | -17.36 | 282 | 0 | 0 | -0.5997 | Sanitized exit-only copy restored 0.4 exposure caps and reproduced the tuner slice result exactly; promoted only to full-year confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_tuner_exit_sanitized_25k.log` |
+| temporary `V21_sup_margin_zero_budget32_tuner_exit_sanitized.yaml` | full | 1.19 | -31.28 | 1154 | 0 | 0 | -0.8557 | Rejected after full-year: same weak full-year profile as exact tuner YAML; temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_tuner_exit_sanitized_full.log` |
 
 ## Baseline Comparison
 
@@ -124,4 +131,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP budget32_fast_exit. The latest SUP short-budget probes did not improve the selected SUP risk/return balance. The next useful search is a bounded SUP tuner pass from `V21_sup_margin_zero_budget32_fast_exit.yaml` on a stress slice longer than 20k bars, because simple sizing changes inside this envelope are no longer producing improvements.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP budget32_fast_exit. The 25k SUP tuner pass found only a small slice improvement and full-year confirmation rejected it. The next useful search is a targeted SUP time-slice diagnosis around the full-year degradation window for the tuner exits, or a constrained tuner plan that excludes exposure-cap deltas when starting from already tiny margin-zero budgets.

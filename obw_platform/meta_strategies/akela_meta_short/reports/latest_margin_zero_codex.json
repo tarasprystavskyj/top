@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-13T02:03:33Z",
+  "updated": "2026-05-13T02:23:43Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1023,9 +1023,74 @@
       "terminal_unrealized_to_realized_ratio": -0.6439064519818828,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l34_s28_fast_exit_20k.log",
       "reason": "Rejected before full-year: stayed zero-margin, but underperformed selected SUP budget32_fast_exit on return, MDD, and tail ratio. Temporary YAML removed."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget32_fast_exit.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 25000,
+      "return_mtm_pct_on_start": 4.989404108137899,
+      "mdd_mtm_%": -17.42397929411113,
+      "trades_total": 280,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6111350732357458,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_25k.log",
+      "result": "Stress-slice baseline for bounded SUP tuner pass; selected config remained zero-margin."
+    },
+    {
+      "config": "tuner final_best.yaml from akela_margin_zero_sup_budget32_25k_20260513_021101",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 25000,
+      "return_mtm_pct_on_start": 5.233152594616664,
+      "mdd_mtm_%": -17.35771991035131,
+      "trades_total": 282,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.5997415984791362,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_25k_tuner_20260513.log",
+      "result": "Rejected as promotable YAML because delta tuning pushed maxLongInvestPct/maxShortInvestPct negative; promoted only to full-year evidence check."
+    },
+    {
+      "config": "tuner final_best.yaml from akela_margin_zero_sup_budget32_25k_20260513_021101",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 1.1942932224914875,
+      "mdd_mtm_%": -31.28299371999357,
+      "trades_total": 1154,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.8556960905110638,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_25k_tuner_final_full.log",
+      "result": "Rejected after full-year: stayed zero-margin, but underperformed selected SUP budget32_fast_exit on return, drawdown, and terminal unrealized ratio."
+    },
+    {
+      "config": "temporary V21_sup_margin_zero_budget32_tuner_exit_sanitized.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 25000,
+      "return_mtm_pct_on_start": 5.233152594616664,
+      "mdd_mtm_%": -17.35771991035131,
+      "trades_total": 282,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.5997415984791362,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_tuner_exit_sanitized_25k.log",
+      "result": "Sanitized exit-only copy restored 0.4 exposure caps and reproduced tuner slice result exactly; promoted only to full-year confirmation."
+    },
+    {
+      "config": "temporary V21_sup_margin_zero_budget32_tuner_exit_sanitized.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 1.1942932224914875,
+      "mdd_mtm_%": -31.28299371999357,
+      "trades_total": 1154,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.8556960905110638,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_tuner_exit_sanitized_full.log",
+      "result": "Rejected after full-year: same weak full-year profile as exact tuner YAML; temporary YAML removed."
     }
   ],
-  "next_action": "First-basket margin-call cleanup remains satisfied. Next useful search is a bounded SUP tuner pass from V21_sup_margin_zero_budget32_fast_exit.yaml on a stress slice longer than 20k bars; simple sizing probes inside this envelope did not improve the selected SUP profile.",
+  "next_action": "First-basket margin-call cleanup remains satisfied. Next useful search: targeted SUP time-slice diagnosis around the full-year degradation window for the tuner exits, or a constrained tuner plan that excludes exposure-cap deltas when starting from tiny margin-zero budgets.",
   "latest_cycle_attempts": [
     {
       "config": "V21_maxxing_margin_zero_budget125.yaml",
@@ -1093,46 +1158,72 @@
       "reason": "Promoted as current MAXXING pick: full-year zero-margin and better than budget125 on return, drawdown, trades, and terminal unrealized ratio."
     }
   ],
-  "latest_cycle_summary": "Ran an IDOL 25k-bar stress diagnostic from the selected budget125 config, then a bounded 25k-bar tuner pass. The tuner improved the diagnostic slice while preserving zero margin calls, but full-year confirmation rejected it: return fell from 34.70% to 28.71%, MDD worsened from -13.40% to -14.55%, and terminal unrealized/realized ratio worsened from -0.2055 to -0.4156. No IDOL YAML was promoted and the selected basket is unchanged.",
+  "latest_cycle_summary": "SUP 25k tuner follow-up: selected budget32_fast_exit stayed zero-margin on the 25k slice at 4.99% return, -17.42% MDD, and -0.6111 tail ratio. The bounded tuner found a small zero-margin slice improvement, but its raw YAML had negative exposure caps from delta tuning. Full-year confirmation rejected both the exact tuner YAML and a sanitized exit-only copy with 0.4 caps restored; both returned 1.19% with -31.28% MDD and -0.8557 tail ratio. Selected SUP budget32_fast_exit remains unchanged.",
   "latest_session_attempts": [
     {
-      "config": "V21_idol_margin_zero_budget125.yaml",
-      "symbol": "IDOL/USDT:USDT",
+      "config": "V21_sup_margin_zero_budget32_fast_exit.yaml",
+      "symbol": "SUP/USDT:USDT",
       "limit_bars": 25000,
-      "return_mtm_pct_on_start": -0.6045352694483562,
-      "mdd_mtm_%": -2.003724884586312,
-      "trades_total": 350,
+      "return_mtm_pct_on_start": 4.989404108137899,
+      "mdd_mtm_%": -17.42397929411113,
+      "trades_total": 280,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -2.6446466095422285,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_25k.log",
-      "reason": "Stress-window diagnosis: selected IDOL stayed zero-margin with shallow drawdown, but the slice ended with weak MTM because realized PnL was too small versus open loss."
+      "terminal_unrealized_to_realized_ratio": -0.6111350732357458,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_25k.log",
+      "result": "Stress-slice baseline for bounded SUP tuner pass; selected config remained zero-margin."
     },
     {
-      "config": "tuner final_best.yaml from akela_margin_zero_idol_25k_20260513_20260513_014913",
-      "symbol": "IDOL/USDT:USDT",
+      "config": "tuner final_best.yaml from akela_margin_zero_sup_budget32_25k_20260513_021101",
+      "symbol": "SUP/USDT:USDT",
       "limit_bars": 25000,
-      "return_mtm_pct_on_start": 0.09652229464094632,
-      "mdd_mtm_%": -1.5260041175568262,
-      "trades_total": 548,
+      "return_mtm_pct_on_start": 5.233152594616664,
+      "mdd_mtm_%": -17.35771991035131,
+      "trades_total": 282,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.8797667411171176,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_25k_tuner_20260513.log",
-      "reason": "Promoted to full-year confirmation: improved the 25k slice return, MDD, and terminal unrealized ratio while preserving zero margin calls."
+      "terminal_unrealized_to_realized_ratio": -0.5997415984791362,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_25k_tuner_20260513.log",
+      "result": "Rejected as promotable YAML because delta tuning pushed maxLongInvestPct/maxShortInvestPct negative; promoted only to full-year evidence check."
     },
     {
-      "config": "tuner final_best.yaml from akela_margin_zero_idol_25k_20260513_20260513_014913",
-      "symbol": "IDOL/USDT:USDT",
+      "config": "tuner final_best.yaml from akela_margin_zero_sup_budget32_25k_20260513_021101",
+      "symbol": "SUP/USDT:USDT",
       "limit_bars": "full",
-      "return_mtm_pct_on_start": 28.708549852688588,
-      "mdd_mtm_%": -14.54575485593648,
-      "trades_total": 5847,
+      "return_mtm_pct_on_start": 1.1942932224914875,
+      "mdd_mtm_%": -31.28299371999357,
+      "trades_total": 1154,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.41556850281545127,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/idol_25k_tuner_final_full.log",
-      "reason": "Rejected after full-year: stayed zero-margin, but underperformed selected IDOL budget125 on return, drawdown, and terminal unrealized ratio. No YAML promoted."
+      "terminal_unrealized_to_realized_ratio": -0.8556960905110638,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_25k_tuner_final_full.log",
+      "result": "Rejected after full-year: stayed zero-margin, but underperformed selected SUP budget32_fast_exit on return, drawdown, and terminal unrealized ratio."
+    },
+    {
+      "config": "temporary V21_sup_margin_zero_budget32_tuner_exit_sanitized.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 25000,
+      "return_mtm_pct_on_start": 5.233152594616664,
+      "mdd_mtm_%": -17.35771991035131,
+      "trades_total": 282,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.5997415984791362,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_tuner_exit_sanitized_25k.log",
+      "result": "Sanitized exit-only copy restored 0.4 exposure caps and reproduced tuner slice result exactly; promoted only to full-year confirmation."
+    },
+    {
+      "config": "temporary V21_sup_margin_zero_budget32_tuner_exit_sanitized.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 1.1942932224914875,
+      "mdd_mtm_%": -31.28299371999357,
+      "trades_total": 1154,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.8556960905110638,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_tuner_exit_sanitized_full.log",
+      "result": "Rejected after full-year: same weak full-year profile as exact tuner YAML; temporary YAML removed."
     }
   ]
 }
