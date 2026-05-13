@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[4]
 LANE = ROOT / "obw_platform" / "meta_strategies" / "akela_meta_short" / "live_freedommoney"
 DEFAULT_CFG = LANE / "V21_freedommoney_bingx_live_min2p2.yaml"
 DEFAULT_LIVE_DIR = ROOT / "obw_platform" / "_reports" / "_live" / "bingx_freedommoney_v21_min2p2"
+STATUS_JSON = ROOT / "_reports" / "akela_meta_short" / "freedommoney_live_prep" / "freedommoney_watchdog_status.json"
 
 
 def utc_now() -> dt.datetime:
@@ -112,7 +113,7 @@ def evaluate(args, cfg: dict) -> dict:
     positions = read_json(live_dir / "live_positions.json", {})
     exec_metrics = read_json(live_dir / "live_execution_metrics.json", {})
     live_dir_display = display_path(live_dir)
-    prev_status = read_json(LANE / "freedommoney_watchdog_status.json", {})
+    prev_status = read_json(STATUS_JSON, {})
     if prev_status.get("live_dir") != live_dir_display:
         prev_status = {}
 
@@ -210,7 +211,7 @@ def evaluate(args, cfg: dict) -> dict:
         "unrealized_pnl": unrealized,
         "heartbeat": heartbeat,
     }
-    write_json(LANE / "freedommoney_watchdog_status.json", status)
+    write_json(STATUS_JSON, status)
     write_json(live_dir / "WATCHDOG_STATUS.json", status)
     return status
 
