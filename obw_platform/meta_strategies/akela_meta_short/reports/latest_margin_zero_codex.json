@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-13T00:09:19Z",
+  "updated": "2026-05-13T00:17:26Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -42,17 +42,17 @@
     {
       "symbol": "SUP/USDT:USDT",
       "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
-      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget30.yaml",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget30_fast_exit.yaml",
       "limit_bars": "full",
-      "return_mtm_pct_on_start": 1.9041438224294378,
-      "mdd_mtm_%": -25.151887415368506,
-      "trades_total": 845,
+      "return_mtm_pct_on_start": 2.8664605574537445,
+      "mdd_mtm_%": -25.054324795692573,
+      "trades_total": 879,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.7934043690911569,
-      "unrealized_pnl_long": -9.615197516631323,
-      "unrealized_pnl_short": -5.0100491204579924,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_recheck_full.log"
+      "terminal_unrealized_to_realized_ratio": -0.6742132963287424,
+      "unrealized_pnl_long": -6.854190883562236,
+      "unrealized_pnl_short": -5.010049120458019,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_fast_exit_full.log"
     }
   ],
   "baseline_zero_existing": {
@@ -73,9 +73,9 @@
   "basket_validation": {
     "scope": "three generated margin-zero configs plus existing FREEDOMMONEY baseline-zero config",
     "symbols": 4,
-    "equal_weight_terminal_return_pct": 51.39268507580218,
-    "worst_mdd_mtm_%": -25.151887415368506,
-    "total_trades": 18745,
+    "equal_weight_terminal_return_pct": 51.63326425955825,
+    "worst_mdd_mtm_%": -25.054324795692573,
+    "total_trades": 18779,
     "total_margin_call_events": 0,
     "total_bars_in_margin_call": 0,
     "results": [
@@ -127,17 +127,17 @@
       {
         "symbol": "SUP/USDT:USDT",
         "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
-        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget30.yaml",
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget30_fast_exit.yaml",
         "limit_bars": "full",
-        "return_mtm_pct_on_start": 1.9041438224294378,
-        "mdd_mtm_%": -25.151887415368506,
-        "trades_total": 845,
+        "return_mtm_pct_on_start": 2.8664605574537445,
+        "mdd_mtm_%": -25.054324795692573,
+        "trades_total": 879,
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
-        "terminal_unrealized_to_realized_ratio": -0.7934043690911569,
-        "unrealized_pnl_long": -9.615197516631323,
-        "unrealized_pnl_short": -5.0100491204579924,
-        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_recheck_full.log"
+        "terminal_unrealized_to_realized_ratio": -0.6742132963287424,
+        "unrealized_pnl_long": -6.854190883562236,
+        "unrealized_pnl_short": -5.010049120458019,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_fast_exit_full.log"
       }
     ]
   },
@@ -958,7 +958,37 @@
       "unrealized_pnl_short": -4.548688202461783,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget31_full.log",
       "reason": "Rejected as primary: zero-margin, but did not pull MDD below budget32 and gave up return versus budget32."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget30.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 1.9041438224294378,
+      "mdd_mtm_%": -25.151887415368506,
+      "trades_total": 845,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.7934043690911569,
+      "unrealized_pnl_long": -9.615197516631323,
+      "unrealized_pnl_short": -5.0100491204579924,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_recheck_full.log",
+      "reason": "Demoted from primary: fast-exit budget30 improved SUP return, MDD, trade count, and terminal unrealized ratio while staying zero-margin."
+    },
+    {
+      "config": "V21_sup_margin_zero_budget30_fast_exit.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 2.8664605574537445,
+      "mdd_mtm_%": -25.054324795692573,
+      "trades_total": 879,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6742132963287424,
+      "unrealized_pnl_long": -6.854190883562236,
+      "unrealized_pnl_short": -5.010049120458019,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_fast_exit_full.log",
+      "reason": "Promoted as primary SUP risk-cleanup candidate: improved full-year return and slightly improved MDD versus budget30, with zero margin calls and better terminal unrealized exposure."
     }
   ],
-  "latest_cycle_summary": "SUP budget30 ladder isolation produced two zero-margin 20k-bar tests, but neither improved the budget30 risk/return balance enough for full-year confirmation. Budget30 remains the primary SUP risk-cleanup selection at 1.90% return and -25.15% MDD; budget32 remains the higher-return secondary at 2.65% and -30.41% MDD."
+  "latest_cycle_summary": "SUP budget30_fast_exit was full-year confirmed after a clean 20k-bar slice. It improved SUP from 1.90% return, -25.15% MDD, and -0.7934 terminal unrealized/realized ratio to 2.87% return, -25.05% MDD, and -0.6742 terminal unrealized/realized ratio, with zero margin calls and zero bars in margin call. It replaces budget30 as the primary SUP risk-cleanup candidate; budget32 remains the higher-return secondary at 2.65% and -30.41% MDD."
 }
