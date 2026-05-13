@@ -44,3 +44,8 @@ Find a new candidate champion for paper live using existing V21 backtester/tuner
 | `IDOL/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y` | ok | `` | `_reports/akela_meta_short/champion_20260512T133459Z/tuner_IDOL.log` |
 | `FREEDOMMONEY/USDT:USDT` | `V21_current_best_tuner_freedommoney_bingx_1m_1y_20260511` | ok | `` | `_reports/akela_meta_short/champion_20260512T133459Z/tuner_FREEDOMMONEY.log` |
 | `MAXXING/USDT:USDT` | `V21_maxxing_bingx_live_candidate_1m_1y` | ok | `` | `_reports/akela_meta_short/champion_20260512T133459Z/tuner_MAXXING.log` |
+| `SUP/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y` | ok | `` | `_reports/akela_meta_short/champion_20260512T133459Z/tuner_SUP.log` |
+
+## Next Decision
+
+Review tuner summaries and yearly backtest logs. A paper-live candidate must have positive MTM score, controlled MTM drawdown, no margin-call events, and no single-symbol tail concentration.
