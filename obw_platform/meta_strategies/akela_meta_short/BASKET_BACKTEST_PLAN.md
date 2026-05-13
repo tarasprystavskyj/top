@@ -50,6 +50,20 @@ obw_platform/meta_strategies/akela_meta_short/reports/latest_basket_summary.md
 obw_platform/meta_strategies/akela_meta_short/reports/latest_basket_manifest.json
 ```
 
+## Worker Mode
+
+The Akela worker can run this plan directly:
+
+```bash
+OBW_AKELA_LOOP_MODE=basket ./obw_platform/meta_strategies/akela_meta_short/run_worker_loop.sh
+```
+
+For a bounded smoke run, set `OBW_AKELA_BASKET_LIMIT_BARS`, for example:
+
+```bash
+OBW_AKELA_LOOP_MODE=basket OBW_AKELA_BASKET_LIMIT_BARS=5000 ./obw_platform/meta_strategies/akela_meta_short/run_worker_loop.sh
+```
+
 ## Safety Rules
 
 - Do not change exchange, fee, slippage, liquidation, or backtest math.

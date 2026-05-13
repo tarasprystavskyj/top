@@ -6,6 +6,8 @@ Short map of living lines in this repository.
 
 ## seed
 
+- `team` — human owners, branch ownership, and commit attribution. Root file: `TEAM.md`
+- `agent-rules` — identity, safety, branch, and reporting rules for AI workers. File: `AGENT_RULES.md`
 - `codex-workflow` — how AI/Codex tasks should be scoped so patches do not mix UI, live runners, and trading-core changes. Line: `lines/codex-workflow.md`
 
 ## sprout
