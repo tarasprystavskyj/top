@@ -65,6 +65,15 @@ obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/
 _reports/akela_meta_short/margin_zero_codex_loop/
 ```
 
+- Keep raw artifacts small. Do not export curves unless the curve is needed for
+  a promoted candidate or a specific diagnosis.
+- When a branch is clearly rejected, write the conclusion into the compact
+  report first, then delete heavy raw artifacts for that rejected branch. Keep
+  generated YAMLs and compact reports until a human confirms they can be
+  removed.
+- If disk free space is low, stop new expensive runs and report the blocker
+  instead of filling the filesystem.
+
 - Commit only stable, compact files under:
 
 ```text

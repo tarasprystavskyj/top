@@ -69,6 +69,18 @@ It starts a new `codex exec` each cycle using
 `generated_configs/margin_zero/`; raw logs stay under
 `_reports/akela_meta_short/margin_zero_codex_loop/`.
 
+Runtime retention is automatic for raw artifacts:
+
+- basket validation keeps the newest raw basket directories and removes older
+  `_reports/akela_meta_short/basket_*` directories after their committed
+  summaries exist;
+- margin-zero Codex keeps only the newest Codex loop logs and skips a cycle
+  when free disk is below `OBW_MARGIN_ZERO_CODEX_MIN_FREE_MB`.
+
+Do not auto-delete generated YAMLs or compact reports just because a branch was
+rejected. Those are decision history and should be removed only after human
+confirmation.
+
 ## Research Contract
 
 Every candidate must pass two levels of proof before being treated as useful:
