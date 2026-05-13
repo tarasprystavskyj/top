@@ -17,11 +17,11 @@ obw_platform/universe/universe_freedommoney_live.txt
 The config starts from `obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml`
 and keeps the ENA live safety style:
 
-- `minOrderUSDT` copied from ENA live baseline, then raised from `2.0` to `2.2`
+- `minOrderUSDT` copied from ENA live baseline, then raised from `2.0` to `2.02`
   after BingX public market metadata showed:
   - `limits.amount.min = 244`
   - `limits.cost.min = 2.0`
-  - current notional at min qty was about `2.0018 USDT`
+  - current notional at min qty was about `1.98-2.01 USDT`
 - limit-maker entry settings remain enabled.
 - no exchange, fee, slippage, liquidation, margin, or backtest math was changed.
 

@@ -34,7 +34,7 @@ strategy_params_long:
   maxSubSellsPerBar: 10.0
   minLongInvestPct: 0.5
   minOrderQtyCoin: 0.0
-  minOrderUSDT: 2.2
+  minOrderUSDT: 2.02
   mult2: 1.2
   mult3: 1.0
   mult4: 1.5
@@ -99,7 +99,7 @@ strategy_params_short:
   useHighLowTouch: 1.0
   useLiveSyncStart: 0.0
   useTrendAdaptiveSizing: 1.0
-  minOrderUSDT: 2.2
+  minOrderUSDT: 2.02
 timeframe: 0.5m
 rollback_label: v21_freedommoney_bingx_live_min2p2
 backtest:
