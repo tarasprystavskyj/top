@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T00:51:12Z
+Updated: 2026-05-13T01:00:02Z
 
 ## Objective
 
@@ -15,16 +15,16 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 | `IDOL/USDT:USDT` | `V21_idol_margin_zero_budget125.yaml` | 34.70 | -13.40 | 5848 | 0 | 0 | -0.2055 | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_full.log` |
 | `FREEDOMMONEY/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y.yaml` | 64.28 | -24.09 | 7583 | 0 | 0 | -0.4130 | `_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log` |
 | `MAXXING/USDT:USDT` | `V21_maxxing_margin_zero_budget125.yaml` | 104.68 | -21.17 | 4469 | 0 | 0 | -0.2273 | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_full.log` |
-| `SUP/USDT:USDT` | `V21_sup_margin_zero_budget30_fast_exit.yaml` | 2.87 | -25.05 | 879 | 0 | 0 | -0.6742 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_fast_exit_full.log` |
+| `SUP/USDT:USDT` | `V21_sup_margin_zero_budget32_fast_exit.yaml` | 3.27 | -25.09 | 911 | 0 | 0 | -0.6354 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log` |
 
 ## Four-Symbol Basket Validation
 
 | metric | value |
 | --- | ---: |
 | symbols | 4 |
-| equal-weight terminal return approximation | 51.63% |
-| worst single-symbol MTM drawdown | -25.05% |
-| total trades | 18779 |
+| equal-weight terminal return approximation | 51.73% |
+| worst single-symbol MTM drawdown | -25.09% |
+| total trades | 18811 |
 | total margin-call events | 0 |
 | total bars in margin call | 0 |
 
@@ -50,7 +50,9 @@ Latest follow-up note: transplanting the SUP fast-exit profile into IDOL/MAXXING
 
 MAXXING tuner follow-up: a 240-second 20k-bar tuner pass from `V21_maxxing_margin_zero_budget125.yaml` found a zero-margin slice improvement by widening long full TP, tightening long partial exit, tightening long spacing, and making short exits faster. Full-year confirmation stayed zero-margin, but underperformed the current MAXXING pick on return, drawdown, and terminal unrealized ratio, so the tuned YAML was not promoted.
 
-SUP cap follow-up: a fresh 20k-bar check tested mild MAXXING-derived SUP exposure caps and deeper low-exposure/min-budget probes. All variants still failed the margin-zero target with 26-29 margin-call events and were not promoted. The selected SUP `budget30_fast_exit` full-year candidate remains unchanged.
+SUP cap follow-up: a fresh 20k-bar check tested mild MAXXING-derived SUP exposure caps and deeper low-exposure/min-budget probes. All variants still failed the margin-zero target with 26-29 margin-call events and were not promoted.
+
+SUP budget32 fast-exit follow-up: `V21_sup_margin_zero_budget32_fast_exit.yaml` changes only the long/short `equityForSizingUSDT` budget from 30 to 32 versus the prior selected fast-exit config. It improved the 20k slice and then full-year confirmed with zero margin calls. Full-year return improved from 2.87% to 3.27% and terminal unrealized/realized ratio improved from -0.6742 to -0.6354. MDD was effectively unchanged but slightly worse at -25.09% versus -25.05%, so this is a narrow return/tail upgrade inside the same risk envelope.
 
 ## Current Cycle Attempts
 
@@ -67,6 +69,8 @@ SUP cap follow-up: a fresh 20k-bar check tested mild MAXXING-derived SUP exposur
 | `V21_sup_margin_zero_low_base_l090_s090.yaml` | 20000 | -26.02 | -238.17 | 1192 | 26 | 557 | -1.6130 | Rejected before full-year: lower base sizing plus wider spacing still failed the margin-zero target. | `_reports/akela_meta_short/margin_zero_codex_loop/backtests/SUP_low_base_l090_s090_limit20000.log` |
 | temporary SUP low exposure 0.25/0.60 | 20000 | -26.02 | -238.17 | 1192 | 26 | 557 | -1.6130 | Rejected before full-year: lowering min/max exposure floors did not change the failed SUP tail profile enough; temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/backtests/SUP_low_exposure_025_060_limit20000.log` |
 | temporary SUP micro 0.10/0.30 | 20000 | -24.78 | -207.23 | 1226 | 27 | 459 | -1.5988 | Rejected before full-year: drawdown improved but margin calls persisted; temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/backtests/SUP_micro_010_030_limit20000.log` |
+| `V21_sup_margin_zero_budget32_fast_exit.yaml` | 20000 | 4.80 | -17.46 | 228 | 0 | 0 | -0.6203 | Promoted to full-year confirmation: improved 20k return, MDD, and terminal unrealized ratio versus SUP budget30_fast_exit while staying zero-margin. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_20k.log` |
+| `V21_sup_margin_zero_budget32_fast_exit.yaml` | full | 3.27 | -25.09 | 911 | 0 | 0 | -0.6354 | Promoted as current SUP pick: full-year zero-margin with better return and tail ratio than budget30_fast_exit; MDD was slightly worse by 0.04 percentage points. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log` |
 
 ## Baseline Comparison
 
@@ -75,7 +79,7 @@ SUP cap follow-up: a fresh 20k-bar check tested mild MAXXING-derived SUP exposur
 | `IDOL/USDT:USDT` | 44.19 | -37.75 | 18 | 34.70 | -13.40 | 0 |
 | `FREEDOMMONEY/USDT:USDT` | 64.28 | -24.09 | 0 | 64.28 | -24.09 | 0 |
 | `MAXXING/USDT:USDT` | 183.80 | -18.37 | 8 | 104.68 | -21.17 | 0 |
-| `SUP/USDT:USDT` | -1.05 | -219.88 | 35 | 2.87 | -25.05 | 0 |
+| `SUP/USDT:USDT` | -1.05 | -219.88 | 35 | 3.27 | -25.09 | 0 |
 
 ## Exact Full-Year Commands
 
@@ -89,9 +93,9 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget125.yaml --npz DB/fast_cache_1m_maxxing_1y_bingx.npz --symbol MAXXING/USDT:USDT
 ```
 ```bash
-python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget30_fast_exit.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
+python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
 ```
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30_fast_exit. The latest MAXXING tuned-exit candidate is rejected after full-year confirmation, so the selected basket is unchanged. The next useful search is a different MAXXING hypothesis focused on reducing short-side terminal exposure without sacrificing the current budget125 full-year profile, or a narrow SUP budget30 fast-exit refinement.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit. The next useful search is a different MAXXING hypothesis focused on reducing short-side terminal exposure without sacrificing the current budget125 full-year profile, or a very narrow SUP 31-33 fast-exit/exit-threshold sweep if preserving the roughly -25% MDD envelope remains acceptable.
