@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T01:25:14Z
+Updated: 2026-05-13T01:40:38Z
 
 ## Objective
 
@@ -14,7 +14,7 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `IDOL/USDT:USDT` | `V21_idol_margin_zero_budget125.yaml` | 34.70 | -13.40 | 5848 | 0 | 0 | -0.2055 | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_full.log` |
 | `FREEDOMMONEY/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y.yaml` | 64.28 | -24.09 | 7583 | 0 | 0 | -0.4130 | `_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log` |
-| `MAXXING/USDT:USDT` | `V21_maxxing_margin_zero_budget125.yaml` | 104.68 | -21.17 | 4469 | 0 | 0 | -0.2273 | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_full.log` |
+| `MAXXING/USDT:USDT` | `V21_maxxing_margin_zero_budget125_stress_exit.yaml` | 119.55 | -13.68 | 4996 | 0 | 0 | -0.2048 | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_stress_exit_full.log` |
 | `SUP/USDT:USDT` | `V21_sup_margin_zero_budget32_fast_exit.yaml` | 3.27 | -25.09 | 911 | 0 | 0 | -0.6354 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log` |
 
 ## Four-Symbol Basket Validation
@@ -22,9 +22,9 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 | metric | value |
 | --- | ---: |
 | symbols | 4 |
-| equal-weight terminal return approximation | 51.73% |
+| equal-weight terminal return approximation | 55.45% |
 | worst single-symbol MTM drawdown | -25.09% |
-| total trades | 18811 |
+| total trades | 19338 |
 | total margin-call events | 0 |
 | total bars in margin call | 0 |
 
@@ -40,7 +40,7 @@ Near-budget note: `V21_sup_margin_zero_budget32.yaml` improved SUP full-year ret
 
 Tuner note: a 180-second 20k-bar tuner pass from `V21_sup_margin_zero_budget30.yaml` improved the slice to 4.91% return, -19.02% MDD, and zero margin calls. Its full-year confirmation stayed zero-margin, but returned 1.86% with -25.38% MDD, slightly worse than budget30's 1.90% and -25.15%. It is rejected as a primary candidate and was not promoted into `generated_configs`.
 
-MAXXING best remains `V21_maxxing_margin_zero_budget125.yaml`; the previous short-cap sweep did not improve its full-year risk/return balance.
+MAXXING best is now `V21_maxxing_margin_zero_budget125_stress_exit.yaml`. A 25k-bar diagnosis showed the prior 20k screens missed the March 12 short-squeeze stress window: selected budget125 stayed zero-margin there, but had -51.97% MTM drawdown and a -1.5508 terminal unrealized/realized ratio on that slice. A bounded 25k-bar tuner pass tightened long and short exits without changing sizing, slippage, margin, exchange, fee, or liquidation settings. Full-year confirmation improved MAXXING from 104.68% return, -21.17% MDD, and -0.2273 tail ratio to 119.55% return, -13.68% MDD, and -0.2048 tail ratio, with zero margin calls.
 
 New SUP ladder note: the rejected higher-return SUP ladder variants had already shown that more active short-side ladders can lift return, but their full-year MDD rose near -50% when paired with larger sizing budgets. This cycle isolated that idea inside the budget30 sizing envelope. Both new 20k-bar tests stayed zero-margin, but neither earned full-year promotion: the combined long/short ladder variant only improved the slice by 0.06 return points while worsening MDD, and the short-only ladder variant underperformed budget30.
 
@@ -83,6 +83,11 @@ MAXXING exit-shape follow-up: isolating the prior tuner exit improvements while 
 | temporary `V21_maxxing_margin_zero_exit_tight_nospacing.yaml` | 20000 | 31.19 | -7.83 | 1398 | 0 | 0 | -0.2905 | Promoted to full-year confirmation: exit-only transplant beat selected MAXXING budget125 on 20k return and MDD while staying zero-margin. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_exit_tight_nospacing_20k.log` |
 | temporary `V21_maxxing_margin_zero_exit_tight_nospacing.yaml` | full | 94.20 | -22.09 | 4422 | 0 | 0 | -0.2469 | Rejected after full-year: stayed zero-margin, but worse than selected MAXXING budget125's 104.68% return, -21.17% MDD, and -0.2273 tail ratio. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_exit_tight_nospacing_full.log` |
 | temporary `V21_maxxing_margin_zero_exit_mid.yaml` | 20000 | 28.27 | -8.24 | 1384 | 0 | 0 | -0.3097 | Rejected before full-year: stayed zero-margin and beat selected budget125 on the 20k slice, but underperformed the tighter exit-only variant selected for confirmation. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_exit_mid_20k.log` |
+| `V21_maxxing_margin_zero_budget125.yaml` | 25000 | -22.81 | -51.97 | 1321 | 0 | 0 | -1.5508 | Stress-window diagnosis: prior 20k screens missed the March 12 short squeeze; selected budget125 stayed zero-margin but had severe interim MTM/tail drag. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_25k.log` |
+| `V21_maxxing_margin_zero_shortcap100.yaml` | 25000 | -24.96 | -53.78 | 1218 | 0 | 0 | -1.6415 | Rejected before full-year: stayed zero-margin but worsened the stress slice; the cap did not reduce the problematic short unrealized loss. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_shortcap100_25k.log` |
+| `V21_maxxing_margin_zero_shortcap085.yaml` | 25000 | -24.96 | -53.78 | 1218 | 0 | 0 | -1.6415 | Rejected before full-year: identical stress-slice result to shortcap100, so the lower cap was not binding in this failure mode. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_shortcap085_25k.log` |
+| tuner final_best from `akela_margin_zero_maxxing_25k_stress_20260513_013417` | 25000 | -12.91 | -40.14 | 1423 | 0 | 0 | -1.2920 | Promoted to full-year confirmation: improved the expanded stress slice by tightening exits while preserving zero margin calls. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_25k_stress_tuner_20260513.log` |
+| `V21_maxxing_margin_zero_budget125_stress_exit.yaml` | full | 119.55 | -13.68 | 4996 | 0 | 0 | -0.2048 | Promoted as current MAXXING pick: full-year zero-margin and better than budget125 on return, drawdown, trades, and terminal unrealized ratio. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_stress_exit_full.log` |
 
 ## Baseline Comparison
 
@@ -90,7 +95,7 @@ MAXXING exit-shape follow-up: isolating the prior tuner exit improvements while 
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `IDOL/USDT:USDT` | 44.19 | -37.75 | 18 | 34.70 | -13.40 | 0 |
 | `FREEDOMMONEY/USDT:USDT` | 64.28 | -24.09 | 0 | 64.28 | -24.09 | 0 |
-| `MAXXING/USDT:USDT` | 183.80 | -18.37 | 8 | 104.68 | -21.17 | 0 |
+| `MAXXING/USDT:USDT` | 183.80 | -18.37 | 8 | 119.55 | -13.68 | 0 |
 | `SUP/USDT:USDT` | -1.05 | -219.88 | 35 | 3.27 | -25.09 | 0 |
 
 ## Exact Full-Year Commands
@@ -102,7 +107,7 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml --npz DB/fast_cache_1m_freedommoney_1y_bingx.npz --symbol FREEDOMMONEY/USDT:USDT
 ```
 ```bash
-python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget125.yaml --npz DB/fast_cache_1m_maxxing_1y_bingx.npz --symbol MAXXING/USDT:USDT
+python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget125_stress_exit.yaml --npz DB/fast_cache_1m_maxxing_1y_bingx.npz --symbol MAXXING/USDT:USDT
 ```
 ```bash
 python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
@@ -110,4 +115,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit and MAXXING budget125. The latest MAXXING exit-only probe confirmed that 20k slice improvements can overfit and fail full-year risk/return. The next useful search is a MAXXING path-window diagnosis around the full-year drawdown/tail region before more parameter sweeps, because simple short-budget and exit-shape changes have not beaten the selected budget125 full-year profile.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit and the new MAXXING budget125_stress_exit config. The next useful search is an IDOL second-pass stress-window diagnosis, because MAXXING now has a stronger zero-margin stress-exit candidate and SUP remains in a risk-first low-return envelope.
