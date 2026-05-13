@@ -7,6 +7,7 @@ _reports/
 .playwright-mcp/
 continuity/web_worker_param_loop/runtime/
 runs/
+.env
 .env*
 .venv*/
 __pycache__/

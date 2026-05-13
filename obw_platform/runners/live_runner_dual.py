@@ -407,6 +407,135 @@ def _market_steps(fetcher_or_ex, symbol):
     return tick_size, lot_step, min_qty
 
 
+def _market_min_cost(fetcher_or_ex, symbol) -> float:
+    ex = getattr(fetcher_or_ex, "ex", fetcher_or_ex)
+    resolver = getattr(fetcher_or_ex, "resolve_symbol", None)
+    ccxt_sym = symbol
+    if callable(resolver):
+        try:
+            resolved = resolver(symbol)
+            if resolved:
+                ccxt_sym = resolved
+        except Exception:
+            pass
+    try:
+        market = ex.market(ccxt_sym)
+    except Exception:
+        market = None
+    if not isinstance(market, dict):
+        market = (getattr(ex, "markets", {}) or {}).get(ccxt_sym) or {}
+    for path in (("limits", "cost", "min"), ("info", "minNotional"), ("info", "minCost")):
+        cur = market
+        ok = True
+        for key in path:
+            if isinstance(cur, dict):
+                cur = cur.get(key)
+            else:
+                ok = False
+                break
+        if not ok or cur in (None, ""):
+            continue
+        try:
+            val = float(cur)
+            if math.isfinite(val) and val > 0:
+                return val
+        except Exception:
+            pass
+    return 0.0
+
+
+def _telemetry_cfg(cfg: dict) -> dict:
+    runner = (cfg or {}).get('runner') or {}
+    return (runner.get('s0_micro_telemetry') or {}) if isinstance(runner, dict) else {}
+
+
+def _stop_guard_paths(results_dir: str):
+    base = Path(results_dir or '.')
+    return (base / 'STOP_NEW_ORDERS', base / 'KILL')
+
+
+def _stop_new_orders_active(results_dir: str) -> Tuple[bool, str]:
+    for path in _stop_guard_paths(results_dir):
+        try:
+            if path.exists():
+                reason = path.read_text(encoding='utf-8', errors='replace').strip()
+                return True, reason or path.name
+        except Exception:
+            return True, str(path)
+    return False, ''
+
+
+def _write_live_heartbeat(results_dir: str, session_db_path: str, run_id: str, *, now, last_bar_ts, positions_count: int, stop_new_orders: bool, stop_reason: str):
+    try:
+        payload = {
+            'schema': 'live_dual_heartbeat_v1',
+            'ts_utc': now.isoformat() if hasattr(now, 'isoformat') else str(now),
+            'run_id': run_id,
+            'session_db': str(session_db_path),
+            'last_bar_ts': last_bar_ts.isoformat() if hasattr(last_bar_ts, 'isoformat') else (str(last_bar_ts) if last_bar_ts else None),
+            'positions_count': int(positions_count or 0),
+            'stop_new_orders': bool(stop_new_orders),
+            'stop_reason': str(stop_reason or ''),
+        }
+        Path(results_dir).mkdir(parents=True, exist_ok=True)
+        (Path(results_dir) / 'live_heartbeat.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+    except Exception:
+        pass
+
+
+def _dynamic_min_order_floor(fetcher, sym: str, cfg: dict, price: float, configured_floor: float) -> Tuple[float, dict]:
+    telemetry = _telemetry_cfg(cfg)
+    floor_cfg = (telemetry.get('dynamic_min_order_floor') or (cfg.get('runner') or {}).get('dynamic_min_order_floor') or {})
+    if not floor_cfg or not bool(floor_cfg.get('enabled', False)):
+        return float(configured_floor or 0.0), {'enabled': False}
+    buffer = float(floor_cfg.get('buffer', 1.10) or 1.10)
+    min_cost = _market_min_cost(fetcher, sym)
+    _tick, _lot_step, min_qty = _market_steps(fetcher, sym)
+    px = float(price or 0.0)
+    configured = max(float(configured_floor or 0.0), float(floor_cfg.get('configured_min_order_usdt', 0.0) or 0.0))
+    from_cost = min_cost * buffer if min_cost > 0 else 0.0
+    from_amount = min_qty * px * buffer if min_qty > 0 and px > 0 else 0.0
+    effective = max(configured, from_cost, from_amount)
+    return effective, {
+        'enabled': True,
+        'symbol': sym,
+        'price': px,
+        'buffer': buffer,
+        'configured_min_order_usdt': configured,
+        'min_cost': min_cost,
+        'min_amount': min_qty,
+        'floor_from_min_cost': from_cost,
+        'floor_from_min_amount': from_amount,
+        'effective_min_order_usdt': effective,
+    }
+
+
+def _apply_dynamic_min_order_floor(fetcher, cfg: dict, sym: str, row: dict, strat_long, strat_short, results_dir: str, session_db_path: str, run_id: str):
+    price = _safe_float((row or {}).get('close'), 0.0) or 0.0
+    if price <= 0:
+        try:
+            price = _choose_requested_price(fetcher, sym, price)
+        except Exception:
+            price = 0.0
+    status = {}
+    for side, strat in (('LONG', strat_long), ('SHORT', strat_short)):
+        current = _safe_float(getattr(strat, 'min_order_usdt', 0.0), 0.0) or 0.0
+        effective, meta = _dynamic_min_order_floor(fetcher, sym, cfg, price, current)
+        if meta.get('enabled') and effective > 0:
+            try:
+                setattr(strat, 'min_order_usdt', float(effective))
+            except Exception:
+                pass
+        status[side.lower()] = {**meta, 'previous_strategy_min_order_usdt': current, 'strategy_min_order_usdt': float(getattr(strat, 'min_order_usdt', effective) or 0.0)}
+    if any((v or {}).get('enabled') for v in status.values()):
+        try:
+            payload = {'schema': 'live_dynamic_min_order_floor_v1', 'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(), 'run_id': run_id, 'symbol': sym, 'sides': status}
+            (Path(results_dir) / 'live_dynamic_min_order_floor.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+            _emit_runtime_debug(session_db_path, run_id, 'dynamic_min_order_floor', payload, level='INFO', fg='cyan')
+        except Exception:
+            pass
+
+
 def _extract_order_id(order_obj: Optional[dict]) -> str:
     if not order_obj:
         return ''
@@ -618,6 +747,12 @@ def place_open_qty_limit(fetcher: CCXTFetcher, sym: str, side: str, qty: float, 
 
 
 def _place_market_fallback_open(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, snapshot=None, pre_snapshot=None, fallback_reason='limit_no_fill', strategy_event='open'):
+    stop_active, stop_reason = _stop_new_orders_active(results_dir)
+    if stop_active:
+        _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'blocked_stop_new_orders', 1.0)
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='SKIPPED', reason=f'stop_new_orders:{stop_reason}', run_id=run_id, extra={'order_type': 'market_fallback', 'fallback_reason': fallback_reason})
+        _emit_runtime_debug(session_db_path, run_id, 'market_fallback_blocked_stop_new_orders', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': stop_reason}, level='WARNING', fg='yellow')
+        return False, {'error': 'stop_new_orders', 'reason': stop_reason}
     _emit_runtime_debug(
         session_db_path, run_id, 'entry_limit_fallback_market',
         {
@@ -2156,6 +2291,15 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
         return _execute_reduce_with_rollback(fetcher, strat, sym=sym, side=side, qty=qty_close, requested_px=requested_px, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, close_reason=reason or action.lower(), rec=rec, positions=positions, results_dir=results_dir, bot_id=bot_id, event_type='partial', partial=True)[0]
     qty_after, entry_after = float(pos_before.qty), float(pos_before.entry)
     if qty_after > qty_before + 1e-12:
+        stop_active, stop_reason = _stop_new_orders_active(results_dir)
+        if stop_active:
+            delta_qty = qty_after - qty_before
+            _strategy_restore(strat, sym, snapshot)
+            _strategy_rejected(strat, sym, 'dca_stop_new_orders', {'reason': stop_reason})
+            _exec_metric_inc(sym, side, 'OPEN', 'dca', 'blocked_stop_new_orders', 1.0)
+            _record_order(session_db_path, bar_time=bar_dt, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=delta_qty, status='SKIPPED', reason=f'stop_new_orders:{stop_reason}', run_id=run_id, extra={'strategy_event': 'dca'})
+            _emit_runtime_debug(session_db_path, run_id, 'dca_blocked_stop_new_orders', {'symbol': sym, 'side': side, 'qty': delta_qty, 'reason': stop_reason}, level='WARNING', fg='yellow')
+            return False
         delta_qty = qty_after - qty_before
         if _pending_entry_order_type(cfg or {}) in {'limit', 'maker', 'maker_limit'}:
             limit_px = _snapshot_limit_price(snapshot, requested_px)
@@ -2189,6 +2333,10 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
 
 def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: dict, results_dir: str, position_mode: str, session_db_path: str, bot_id: str, run_id: str, *, notional_long: float, notional_short: float):
     if pos_key(sym, side) in positions:
+        return False
+    stop_active, stop_reason = _stop_new_orders_active(results_dir)
+    if stop_active:
+        _emit_runtime_debug(session_db_path, run_id, 'entry_blocked_stop_new_orders', {'symbol': sym, 'side': side, 'reason': stop_reason}, level='WARNING', fg='yellow')
         return False
     snapshot = _strategy_snapshot(strat, sym)
     sig = strat.entry_signal(True, sym, row, ctx={})
@@ -2397,6 +2545,8 @@ def run_live(cfg: dict, args):
     while True:
         now = _dt.datetime.now(_dt.timezone.utc)
         bar_close = _align_bar_close(now, tf_sec)
+        stop_active, stop_reason = _stop_new_orders_active(args.results_dir)
+        _write_live_heartbeat(args.results_dir, session_db_path, run_id, now=now, last_bar_ts=last_bar_ts, positions_count=len(positions), stop_new_orders=stop_active, stop_reason=stop_reason)
         allow = []
         try:
             allow_env = os.getenv('RS_UNIVERSE_ALLOW', '')
@@ -2427,6 +2577,8 @@ def run_live(cfg: dict, args):
                         feats = {'close': float(px), 'open': float(px), 'high': float(px), 'low': float(px), 'volume': 0.0, 'atr_ratio': 0.0, 'dp6h': 0.0, 'dp12h': 0.0, 'quote_volume': 0.0, 'qv_24h': 0.0}
                 if feats:
                     feats['datetime_utc'] = bar_close.isoformat(); md[ccxt_sym] = feats
+            for sym, row in md.items():
+                _apply_dynamic_min_order_floor(fetcher, cfg, sym, row, strat_long, strat_short, args.results_dir, session_db_path, run_id)
             _sync_pending_entry_orders(fetcher, pending_entries, positions, args.results_dir, session_db_path, bot_id, strat_long, strat_short, bar_close.isoformat(), run_id=run_id)
             for key, rec in list(positions.items()):
                 sym, side = split_pos_key(key); row = md.get(sym)
