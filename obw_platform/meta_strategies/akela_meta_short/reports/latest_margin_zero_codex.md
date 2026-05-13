@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T00:17:26Z
+Updated: 2026-05-13T00:28:49Z
 
 ## Objective
 
@@ -30,7 +30,7 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 
 ## Current Cycle
 
-SUP `budget30_fast_exit` was full-year confirmed after its clean 20k-bar slice. The first-basket risk-cleanup target is still satisfied: all four selected configs have `margin_call_events_total = 0` and `bars_in_margin_call = 0` on full-year runs.
+The first-basket risk-cleanup target is still satisfied: all four selected configs have `margin_call_events_total = 0` and `bars_in_margin_call = 0` on full-year runs.
 
 Selection note: `V21_sup_margin_zero_budget30_fast_exit.yaml` improves SUP full-year return from 1.90% to 2.87%, slightly improves MDD from -25.15% to -25.05%, and improves terminal unrealized/realized ratio from -0.7934 to -0.6742 versus plain budget30. Budget20 remains a valid lower-drawdown fallback, but fast-exit budget30 is the better current risk-cleanup balance.
 
@@ -46,21 +46,16 @@ New SUP ladder note: the rejected higher-return SUP ladder variants had already 
 
 Fast-exit confirmation note: `V21_sup_margin_zero_budget30_fast_exit.yaml` looked only marginally better than plain budget30 on the 20k slice, but the full-year run confirmed a useful primary upgrade with no margin calls, slightly lower MDD, and materially better terminal unrealized exposure.
 
+Latest follow-up note: transplanting the SUP fast-exit profile into IDOL/MAXXING budget125 stayed zero-margin on 20k slices, but worsened risk-adjusted performance. IDOL budget150 was reconstructed from the prior temporary screen and full-year confirmed; it also stayed zero-margin, but underperformed IDOL budget125 on return, drawdown, and terminal unrealized exposure. The selected basket is unchanged.
+
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| `V21_sup_margin_zero_budget30_ladder_soft.yaml` | 20000 | 3.86 | -20.27 | 218 | 0 | 0 | -0.6821 | Rejected before full-year: stayed zero-margin, but the tiny return gain versus budget30 did not justify worse slice MDD. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_ladder_soft_20k.log` |
-| `V21_sup_margin_zero_budget30_short_ladder_soft.yaml` | 20000 | 3.70 | -20.32 | 218 | 0 | 0 | -0.6870 | Rejected before full-year: short-ladder-only change reduced return and worsened MDD versus budget30. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_short_ladder_soft_20k.log` |
-| `V21_sup_margin_zero_budget30.yaml` tuner final | 20000 | 4.91 | -19.02 | 214 | 0 | 0 | -0.6217 | Passed the 20k zero-margin filter and improved the slice versus budget30. Full-year confirmation required. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_tuner_20k_20260512.log` |
-| `V21_sup_margin_zero_budget30.yaml` tuner final | full | 1.86 | -25.38 | 1015 | 0 | 0 | -0.7968 | Rejected as primary: full-year zero-margin, but slightly worse return and drawdown than budget30. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_tuner_exit_soft_full.log` |
-| `V21_sup_margin_zero_budget32.yaml` | 20000 | 4.75 | -17.47 | 230 | 0 | 0 | -0.6229 | Passed 20k zero-margin filter; best slice return in this near-budget30 batch. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_20k.log` |
-| `V21_sup_margin_zero_long30_short35.yaml` | 20000 | 4.05 | -18.93 | 227 | 0 | 0 | -0.6637 | Passed 20k, but did not beat budget32 on slice return or drawdown. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_long30_short35_20k.log` |
-| `V21_sup_margin_zero_budget30_fast_exit.yaml` | 20000 | 3.91 | -19.73 | 216 | 0 | 0 | -0.6734 | Passed 20k with a small return gain versus budget30 and similar drawdown; promoted to full-year confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_fast_exit_20k.log` |
-| `V21_sup_margin_zero_budget30_fast_exit.yaml` | full | 2.87 | -25.05 | 879 | 0 | 0 | -0.6742 | Promoted as primary SUP risk-cleanup candidate: better return, slightly better MDD, and better terminal unrealized exposure than budget30. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget30_fast_exit_full.log` |
-| `V21_sup_margin_zero_budget32.yaml` | full | 2.65 | -30.41 | 851 | 0 | 0 | -0.7280 | Secondary candidate: better return than budget30, but MDD is just outside the preferred band. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_full.log` |
-| `V21_sup_margin_zero_budget31.yaml` | 20000 | 4.33 | -17.49 | 223 | 0 | 0 | -0.6444 | Passed 20k as a tighter midpoint after budget32 full-year drawdown came in slightly high. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget31_20k.log` |
-| `V21_sup_margin_zero_budget31.yaml` | full | 2.35 | -30.46 | 830 | 0 | 0 | -0.7512 | Rejected as primary: lower return and slightly worse MDD than budget32. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget31_full.log` |
+| `V21_idol_margin_zero_budget125_fast_exit.yaml` | 20000 | -0.71 | -2.10 | 260 | 0 | 0 | -3.5281 | Rejected before full-year: stayed zero-margin, but worsened return, MDD, and terminal unrealized ratio versus IDOL budget125. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_fast_exit_20k.log` |
+| `V21_maxxing_margin_zero_budget125_fast_exit.yaml` | 20000 | 9.06 | -15.03 | 1498 | 0 | 0 | -0.7675 | Rejected before full-year: stayed zero-margin, but cut return from 23.10% to 9.06% and worsened MDD from -8.31% to -15.03% versus MAXXING budget125. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_fast_exit_20k.log` |
+| `V21_idol_margin_zero_budget150.yaml` | 20000 | -0.28 | -1.85 | 350 | 0 | 0 | -1.4251 | Passed 20k recheck and matched the prior temporary screen exactly; promoted only to full-year confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_recheck_20k.log` |
+| `V21_idol_margin_zero_budget150.yaml` | full | 29.43 | -15.81 | 6583 | 0 | 0 | -0.3544 | Rejected after full-year: zero-margin, but worse than IDOL budget125's 34.70% return, -13.40% MDD, and -0.2055 tail ratio. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_full.log` |
 
 ## Baseline Comparison
 
@@ -88,4 +83,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30_fast_exit. Budget32 is still a secondary if a slightly higher -30.41% drawdown is acceptable, but it no longer beats fast-exit budget30 on risk-adjusted cleanup. The next useful SUP search should test modest fast-exit variants around budget30 or confirm whether the same exit profile improves IDOL/MAXXING without creating margin calls.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget30_fast_exit. The SUP fast-exit transplant and IDOL budget150 are rejected, so the next useful search is either a narrow SUP budget30 fast-exit refinement or a different MAXXING exit/spacing hypothesis.
