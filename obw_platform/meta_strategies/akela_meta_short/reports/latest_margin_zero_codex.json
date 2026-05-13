@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-13T01:08:41Z",
+  "updated": "2026-05-13T01:16:24Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1029,8 +1029,24 @@
       "reason": "Full-year stayed zero-margin, improved return from 2.87% to 3.27% and terminal unrealized ratio from -0.6742 to -0.6354, with nearly unchanged MDD (-25.09% versus -25.05%)."
     }
   ],
-  "latest_cycle_summary": "Tested two narrow SUP follow-ups against the selected budget32_fast_exit candidate: budget33_fast_exit and budget32_long_exit018. Both stayed zero-margin on 20k slices, but both were rejected before full-year confirmation because neither improved the selected candidate's return/tail balance.",
+  "latest_cycle_summary": "Tested a MAXXING short-side-only budget reduction from 125 to 110 against the selected budget125 candidate. It stayed zero-margin on the 20k slice and slightly improved terminal unrealized ratio, but reduced return and worsened MDD, so it was rejected before full-year confirmation and the temporary YAML was removed.",
   "latest_session_attempts": [
+    {
+      "return_mtm_pct_on_start": 22.92887116191856,
+      "mdd_mtm_%": -8.361930210958256,
+      "trades_total": 1318,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.35302872494361054,
+      "unrealized_pnl_long": -14.220553792659516,
+      "unrealized_pnl_short": -10.802350508564423,
+      "config": "temporary V21_maxxing_margin_zero_short_budget110.yaml",
+      "symbol": "MAXXING/USDT:USDT",
+      "limit_bars": 20000,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_short_budget110_20k.log",
+      "result": "Rejected before full-year",
+      "reason": "Stayed zero-margin and slightly improved terminal unrealized ratio versus MAXXING budget125 on the 20k slice, but reduced return from 23.10% to 22.93% and worsened MDD from -8.31% to -8.36%. Temporary YAML removed."
+    },
     {
       "return_mtm_pct_on_start": 4.723032158482008,
       "mdd_mtm_%": -17.638682106689735,

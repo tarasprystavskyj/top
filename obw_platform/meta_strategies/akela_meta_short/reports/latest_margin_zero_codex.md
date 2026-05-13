@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T01:08:41Z
+Updated: 2026-05-13T01:16:24Z
 
 ## Objective
 
@@ -56,6 +56,8 @@ SUP budget32 fast-exit follow-up: `V21_sup_margin_zero_budget32_fast_exit.yaml` 
 
 Latest SUP micro-sweep note: a budget33 fast-exit probe and a budget32 tighter-long-exit probe both stayed zero-margin on 20k slices, but neither improved the selected `V21_sup_margin_zero_budget32_fast_exit.yaml`. Budget33 worsened return, MDD, and tail ratio versus budget32. Tightening the long exit from 0.20/0.36 to 0.18/0.34 marginally improved 20k MDD by 0.02 percentage points, but reduced return and worsened terminal unrealized ratio. Both temporary generated YAMLs were removed; raw logs were retained.
 
+Latest MAXXING short-budget note: a short-side-only budget reduction from 125 to 110 stayed zero-margin on the 20k slice and slightly improved the terminal unrealized/realized ratio from -0.3540 to -0.3530, but it reduced return from 23.10% to 22.93% and worsened MDD from -8.31% to -8.36%. The temporary YAML was removed; the selected MAXXING budget125 config remains unchanged.
+
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
@@ -75,6 +77,7 @@ Latest SUP micro-sweep note: a budget33 fast-exit probe and a budget32 tighter-l
 | `V21_sup_margin_zero_budget32_fast_exit.yaml` | full | 3.27 | -25.09 | 911 | 0 | 0 | -0.6354 | Promoted as current SUP pick: full-year zero-margin with better return and tail ratio than budget30_fast_exit; MDD was slightly worse by 0.04 percentage points. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log` |
 | temporary `V21_sup_margin_zero_budget33_fast_exit.yaml` | 20000 | 4.72 | -17.64 | 232 | 0 | 0 | -0.6252 | Rejected before full-year: stayed zero-margin, but worsened return, MDD, and tail ratio versus selected budget32_fast_exit. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget33_fast_exit_20k.log` |
 | temporary `V21_sup_margin_zero_budget32_long_exit018.yaml` | 20000 | 4.69 | -17.43 | 231 | 0 | 0 | -0.6257 | Rejected before full-year: tighter long exits gave only a tiny MDD improvement while reducing return and worsening tail ratio versus selected budget32_fast_exit. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_long_exit018_20k.log` |
+| temporary `V21_maxxing_margin_zero_short_budget110.yaml` | 20000 | 22.93 | -8.36 | 1318 | 0 | 0 | -0.3530 | Rejected before full-year: short-only budget reduction barely improved tail ratio, while reducing return and worsening MDD versus selected MAXXING budget125. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_short_budget110_20k.log` |
 
 ## Baseline Comparison
 
@@ -102,4 +105,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit. The narrow SUP 31-33/exit-threshold follow-up did not improve the current pick. The next useful search is a different MAXXING hypothesis focused on reducing short-side terminal exposure without sacrificing the current budget125 full-year profile.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit. The narrow SUP 31-33/exit-threshold follow-up and the MAXXING short-budget110 probe did not improve the current picks. The next useful search is a MAXXING exit-shape hypothesis rather than another simple short-budget reduction, because lower short budget reduced activity/return while leaving the 20k tail profile almost unchanged.
