@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T01:00:02Z
+Updated: 2026-05-13T01:08:41Z
 
 ## Objective
 
@@ -54,6 +54,8 @@ SUP cap follow-up: a fresh 20k-bar check tested mild MAXXING-derived SUP exposur
 
 SUP budget32 fast-exit follow-up: `V21_sup_margin_zero_budget32_fast_exit.yaml` changes only the long/short `equityForSizingUSDT` budget from 30 to 32 versus the prior selected fast-exit config. It improved the 20k slice and then full-year confirmed with zero margin calls. Full-year return improved from 2.87% to 3.27% and terminal unrealized/realized ratio improved from -0.6742 to -0.6354. MDD was effectively unchanged but slightly worse at -25.09% versus -25.05%, so this is a narrow return/tail upgrade inside the same risk envelope.
 
+Latest SUP micro-sweep note: a budget33 fast-exit probe and a budget32 tighter-long-exit probe both stayed zero-margin on 20k slices, but neither improved the selected `V21_sup_margin_zero_budget32_fast_exit.yaml`. Budget33 worsened return, MDD, and tail ratio versus budget32. Tightening the long exit from 0.20/0.36 to 0.18/0.34 marginally improved 20k MDD by 0.02 percentage points, but reduced return and worsened terminal unrealized ratio. Both temporary generated YAMLs were removed; raw logs were retained.
+
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
@@ -71,6 +73,8 @@ SUP budget32 fast-exit follow-up: `V21_sup_margin_zero_budget32_fast_exit.yaml` 
 | temporary SUP micro 0.10/0.30 | 20000 | -24.78 | -207.23 | 1226 | 27 | 459 | -1.5988 | Rejected before full-year: drawdown improved but margin calls persisted; temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/backtests/SUP_micro_010_030_limit20000.log` |
 | `V21_sup_margin_zero_budget32_fast_exit.yaml` | 20000 | 4.80 | -17.46 | 228 | 0 | 0 | -0.6203 | Promoted to full-year confirmation: improved 20k return, MDD, and terminal unrealized ratio versus SUP budget30_fast_exit while staying zero-margin. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_20k.log` |
 | `V21_sup_margin_zero_budget32_fast_exit.yaml` | full | 3.27 | -25.09 | 911 | 0 | 0 | -0.6354 | Promoted as current SUP pick: full-year zero-margin with better return and tail ratio than budget30_fast_exit; MDD was slightly worse by 0.04 percentage points. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log` |
+| temporary `V21_sup_margin_zero_budget33_fast_exit.yaml` | 20000 | 4.72 | -17.64 | 232 | 0 | 0 | -0.6252 | Rejected before full-year: stayed zero-margin, but worsened return, MDD, and tail ratio versus selected budget32_fast_exit. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget33_fast_exit_20k.log` |
+| temporary `V21_sup_margin_zero_budget32_long_exit018.yaml` | 20000 | 4.69 | -17.43 | 231 | 0 | 0 | -0.6257 | Rejected before full-year: tighter long exits gave only a tiny MDD improvement while reducing return and worsening tail ratio versus selected budget32_fast_exit. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_long_exit018_20k.log` |
 
 ## Baseline Comparison
 
@@ -98,4 +102,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit. The next useful search is a different MAXXING hypothesis focused on reducing short-side terminal exposure without sacrificing the current budget125 full-year profile, or a very narrow SUP 31-33 fast-exit/exit-threshold sweep if preserving the roughly -25% MDD envelope remains acceptable.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using SUP budget32_fast_exit. The narrow SUP 31-33/exit-threshold follow-up did not improve the current pick. The next useful search is a different MAXXING hypothesis focused on reducing short-side terminal exposure without sacrificing the current budget125 full-year profile.

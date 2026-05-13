@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-13T01:00:02Z",
+  "updated": "2026-05-13T01:08:41Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1029,40 +1029,39 @@
       "reason": "Full-year stayed zero-margin, improved return from 2.87% to 3.27% and terminal unrealized ratio from -0.6742 to -0.6354, with nearly unchanged MDD (-25.09% versus -25.05%)."
     }
   ],
-  "latest_cycle_summary": "Tested a narrow SUP budget32 fast-exit variant. It stayed zero-margin on 20k and full-year checks, improved SUP full-year return and terminal unrealized ratio versus budget30_fast_exit, and is now the selected SUP margin-zero candidate despite a negligible MDD increase.",
+  "latest_cycle_summary": "Tested two narrow SUP follow-ups against the selected budget32_fast_exit candidate: budget33_fast_exit and budget32_long_exit018. Both stayed zero-margin on 20k slices, but both were rejected before full-year confirmation because neither improved the selected candidate's return/tail balance.",
   "latest_session_attempts": [
     {
-      "return_mtm_pct_on_start": 4.79970053790647,
-      "mdd_mtm_%": -17.456354580682962,
-      "trades_total": 228,
+      "return_mtm_pct_on_start": 4.723032158482008,
+      "mdd_mtm_%": -17.638682106689735,
+      "trades_total": 232,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.6203063934235821,
-      "unrealized_pnl_long": -11.133877311491702,
-      "unrealized_pnl_short": -4.548688202461845,
-      "config": "V21_sup_margin_zero_budget32_fast_exit.yaml",
+      "terminal_unrealized_to_realized_ratio": -0.6252494915362303,
+      "unrealized_pnl_long": -11.133877311491712,
+      "unrealized_pnl_short": -4.626333222742365,
+      "config": "temporary V21_sup_margin_zero_budget33_fast_exit.yaml",
       "symbol": "SUP/USDT:USDT",
       "limit_bars": 20000,
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_20k.log",
-      "result": "Promoted to full-year confirmation",
-      "reason": "Improved 20k return, MDD, and terminal unrealized ratio versus SUP budget30_fast_exit while staying zero-margin."
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget33_fast_exit_20k.log",
+      "result": "Rejected before full-year",
+      "reason": "Stayed zero-margin, but worsened return, MDD, and terminal unrealized ratio versus selected SUP budget32_fast_exit. Temporary YAML removed."
     },
     {
-      "return_mtm_pct_on_start": 3.2708918655933035,
-      "mdd_mtm_%": -25.093413891547776,
-      "trades_total": 911,
+      "return_mtm_pct_on_start": 4.691517099458493,
+      "mdd_mtm_%": -17.432492374892792,
+      "trades_total": 231,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.6354468290754168,
-      "unrealized_pnl_long": -6.854190883562236,
-      "unrealized_pnl_short": -4.548688202461809,
-      "config": "V21_sup_margin_zero_budget32_fast_exit.yaml",
+      "terminal_unrealized_to_realized_ratio": -0.6256608935592695,
+      "unrealized_pnl_long": -11.133877311491702,
+      "unrealized_pnl_short": -4.548688202461845,
+      "config": "temporary V21_sup_margin_zero_budget32_long_exit018.yaml",
       "symbol": "SUP/USDT:USDT",
-      "limit_bars": "full",
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log",
-      "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
-      "result": "Promoted as current SUP pick",
-      "reason": "Full-year stayed zero-margin, improved return from 2.87% to 3.27% and terminal unrealized ratio from -0.6742 to -0.6354, with nearly unchanged MDD (-25.09% versus -25.05%)."
+      "limit_bars": 20000,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_long_exit018_20k.log",
+      "result": "Rejected before full-year",
+      "reason": "Stayed zero-margin and marginally improved 20k MDD, but reduced return and worsened terminal unrealized ratio versus selected SUP budget32_fast_exit. Temporary YAML removed."
     }
   ]
 }
