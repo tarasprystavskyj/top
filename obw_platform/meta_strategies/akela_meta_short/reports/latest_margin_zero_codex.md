@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T01:55:44Z
+Updated: 2026-05-13T02:03:33Z
 
 ## Objective
 
@@ -62,6 +62,8 @@ MAXXING exit-shape follow-up: isolating the prior tuner exit improvements while 
 
 IDOL stress follow-up: a 25k-bar diagnostic on the selected `V21_idol_margin_zero_budget125.yaml` stayed zero-margin with shallow drawdown, but ended slightly negative because realized PnL was small relative to open loss. A bounded 25k-bar tuner pass improved that slice from -0.60% return, -2.00% MDD, and -2.6446 tail ratio to +0.10% return, -1.53% MDD, and -0.8798 tail ratio, all with zero margin calls. Full-year confirmation rejected the tuned profile: it stayed zero-margin, but worsened return, drawdown, and tail ratio versus the selected IDOL budget125 config. No IDOL YAML was promoted; the selected basket is unchanged.
 
+SUP short-budget follow-up: trimming only SUP short-side budget from 32 to 28, with and without a small long-side increase to 34, stayed zero-margin on the 20k slice. Both probes worsened return, drawdown, and terminal unrealized/realized ratio versus selected `V21_sup_margin_zero_budget32_fast_exit.yaml`, so neither earned full-year confirmation. Temporary generated YAMLs were removed; raw logs were retained.
+
 ## Current Cycle Attempts
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
@@ -93,6 +95,8 @@ IDOL stress follow-up: a 25k-bar diagnostic on the selected `V21_idol_margin_zer
 | `V21_idol_margin_zero_budget125.yaml` | 25000 | -0.60 | -2.00 | 350 | 0 | 0 | -2.6446 | Stress-window diagnosis: selected IDOL stayed zero-margin with shallow drawdown, but the slice ended with weak MTM because realized PnL was too small versus open loss. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_25k.log` |
 | tuner final_best from `akela_margin_zero_idol_25k_20260513_20260513_014913` | 25000 | 0.10 | -1.53 | 548 | 0 | 0 | -0.8798 | Promoted to full-year confirmation: improved the 25k slice return, MDD, and terminal unrealized ratio while preserving zero margin calls. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_25k_tuner_20260513.log` |
 | tuner final_best from `akela_margin_zero_idol_25k_20260513_20260513_014913` | full | 28.71 | -14.55 | 5847 | 0 | 0 | -0.4156 | Rejected after full-year: stayed zero-margin, but underperformed selected IDOL budget125 on return, drawdown, and terminal unrealized ratio. No YAML promoted. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_25k_tuner_final_full.log` |
+| temporary `V21_sup_margin_zero_l32_s28_fast_exit.yaml` | 20000 | 4.44 | -19.67 | 220 | 0 | 0 | -0.6452 | Rejected before full-year: short-side budget trim stayed zero-margin, but worsened return, MDD, and tail ratio versus selected SUP budget32_fast_exit. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l32_s28_fast_exit_20k.log` |
+| temporary `V21_sup_margin_zero_l34_s28_fast_exit.yaml` | 20000 | 4.46 | -19.46 | 224 | 0 | 0 | -0.6439 | Rejected before full-year: small long-side budget increase plus short trim stayed zero-margin, but still underperformed selected SUP budget32_fast_exit on return, MDD, and tail ratio. Temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l34_s28_fast_exit_20k.log` |
 
 ## Baseline Comparison
 
@@ -120,4 +124,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP budget32_fast_exit. The next useful search is a second SUP risk/return pass inside the budget32 fast-exit envelope, because the IDOL stress-tuner follow-up did not full-year promote and SUP remains the lowest-return selected leg.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP budget32_fast_exit. The latest SUP short-budget probes did not improve the selected SUP risk/return balance. The next useful search is a bounded SUP tuner pass from `V21_sup_margin_zero_budget32_fast_exit.yaml` on a stress slice longer than 20k bars, because simple sizing changes inside this envelope are no longer producing improvements.

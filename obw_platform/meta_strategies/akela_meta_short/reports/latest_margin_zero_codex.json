@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-13T01:55:44Z",
+  "updated": "2026-05-13T02:03:33Z",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -997,9 +997,35 @@
       "terminal_unrealized_to_realized_ratio": -1.292020085064394,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_25k_stress_tuner_20260513.log",
       "reason": "Promoted to full-year confirmation: improved the expanded stress slice by tightening exits while preserving zero margin calls."
+    },
+    {
+      "config": "temporary V21_sup_margin_zero_l32_s28_fast_exit.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 4.439551607625832,
+      "mdd_mtm_%": -19.669292933852795,
+      "trades_total": 220,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6451627424641323,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l32_s28_fast_exit_20k.log",
+      "reason": "Rejected before full-year: stayed zero-margin, but worsened return, MDD, and tail ratio versus selected SUP budget32_fast_exit. Temporary YAML removed."
+    },
+    {
+      "config": "temporary V21_sup_margin_zero_l34_s28_fast_exit.yaml",
+      "symbol": "SUP/USDT:USDT",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": 4.463962136427083,
+      "mdd_mtm_%": -19.462734716798114,
+      "trades_total": 224,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6439064519818828,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l34_s28_fast_exit_20k.log",
+      "reason": "Rejected before full-year: stayed zero-margin, but underperformed selected SUP budget32_fast_exit on return, MDD, and tail ratio. Temporary YAML removed."
     }
   ],
-  "next_action": "First-basket margin-call cleanup remains satisfied with 0 total margin-call events. The next useful search is an IDOL second-pass stress-window diagnosis, because MAXXING now has a stronger zero-margin stress-exit candidate and SUP remains in a risk-first low-return envelope.",
+  "next_action": "First-basket margin-call cleanup remains satisfied. Next useful search is a bounded SUP tuner pass from V21_sup_margin_zero_budget32_fast_exit.yaml on a stress slice longer than 20k bars; simple sizing probes inside this envelope did not improve the selected SUP profile.",
   "latest_cycle_attempts": [
     {
       "config": "V21_maxxing_margin_zero_budget125.yaml",
