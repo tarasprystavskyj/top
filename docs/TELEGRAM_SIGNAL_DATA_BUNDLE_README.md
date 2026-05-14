@@ -10,6 +10,13 @@
 - `obw_platform/telegram_signal_tools/fetch_futures_ohlcv_npz_v1.py` — збір futures OHLCV прямо в multi-symbol NPZ.
 - `obw_platform/telegram_signal_tools/build_fast_multi_npz_from_db_safe_v1.py` — безпечна конвертація SQLite DB -> NPZ.
 - `obw_platform/telegram_signal_tools/run_telegram_style_strategy_npz_v1.py` — швидкий бектест signal-style стратегії на NPZ.
+- `obw_platform/telegram_signal_tools/telegram_signal_listener_paper.py` — paper-only Telegram listener, який пише parsed JSONL без ордерів.
+- `obw_platform/telegram_signal_tools/fetch_telegram_channel_signals.py` — backfill останніх повідомлень Telegram-каналу в parsed JSONL.
+- `obw_platform/telegram_signal_tools/telegram_signal_schema.py` — спільний parser/schema validator для Telegram-сигналів.
+- `obw_platform/telegram_signal_tools/normalize_telegram_signal_jsonl.py` — конвертація paper JSONL у CSV для replay strategy.
+- `obw_platform/telegram_signal_tools/validate_telegram_signal_quality.py` — quality report для JSONL/CSV сигналів.
+- `obw_platform/telegram_signal_tools/check_telegram_signal_guardrails.py` — легка перевірка no-live guardrails по summary-файлу.
+- `obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py` — paper-only daemon: на свіжий сигнал відкриває simulated paper position у SQLite.
 
 ## Розгортання поверх проекту
 
@@ -53,7 +60,6 @@ python obw_platform/telegram_signal_tools/fetch_futures_ohlcv_npz_v1.py \
   --universe-file universe/telegram_signal_universe_all.txt \
   --timeframe 3m \
   --bars 7200 \
-  --quotes USDT \
   --quotes USDT \
   --min-bars 5000 \
   --sleep-sec 0.12 \
@@ -113,6 +119,69 @@ cat runs/telegram_signal_bt/bt_3m_7200b_bingx/telegram_style_summary.json
 ls -lh runs/telegram_signal_bt/bt_3m_7200b_bingx/
 ```
 
+## Paper ingestion -> normalized replay CSV
+
+Paper listener не торгує. Він тільки парсить повідомлення Telegram і додає JSONL. Цільовий канал для цієї гілки: `https://t.me/darkknighttrade`.
+
+```bash
+mkdir -p runs/telegram_paper
+export TG_API_ID='YOUR_API_ID'
+export TG_API_HASH='YOUR_API_HASH'
+export TG_CHANNEL='https://t.me/darkknighttrade'
+export TG_SESSION='runs/telegram_paper/darkknighttrade_session'
+export TG_SIGNAL_OUT='runs/telegram_paper/darkknighttrade_signals.jsonl'
+
+python obw_platform/telegram_signal_tools/telegram_signal_listener_paper.py
+```
+
+`TG_CHANNEL` можна задавати як `darkknighttrade`, `@darkknighttrade` або `https://t.me/darkknighttrade`; listener нормалізує це до Telegram entity name.
+
+Для разового backfill останніх повідомлень каналу після авторизації user session:
+
+```bash
+python obw_platform/telegram_signal_tools/fetch_telegram_channel_signals.py \
+  --env-file C:/python_scripts/top_1/.env \
+  --channel https://t.me/darkknighttrade \
+  --limit 500
+```
+
+Важливо: bot token не може читати історію каналу через Telegram `get_messages`; потрібна авторизована user session Telethon.
+
+Для paper-live на свіжих сигналах:
+
+```bash
+python obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py \
+  --env-file /var/www/vps2.happyuser.info/top/top_1/.env \
+  --channel https://t.me/darkknighttrade \
+  --out-jsonl runs/telegram_paper/darkknighttrade_signals.jsonl \
+  --db runs/telegram_paper/paper_live.sqlite \
+  --notional 100 \
+  --entry-policy mid \
+  --monitor-exits
+```
+
+Цей daemon не ставить реальні ордери. Він пише simulated `signals`, `orders`, `positions` у SQLite.
+
+Щоб прогнати ці paper-сигнали через standard replay, нормалізуй JSONL у CSV:
+
+```bash
+python obw_platform/telegram_signal_tools/validate_telegram_signal_quality.py \
+  --signals runs/telegram_paper/darkknighttrade_signals.jsonl \
+  --min-valid-ratio 0.95
+
+python obw_platform/telegram_signal_tools/normalize_telegram_signal_jsonl.py \
+  --jsonl runs/telegram_paper/darkknighttrade_signals.jsonl \
+  --out-csv telegram_signal_standard_bt/telegram_signals_paper.csv
+
+python obw_platform/telegram_signal_tools/validate_telegram_signal_quality.py \
+  --signals telegram_signal_standard_bt/telegram_signals_paper.csv \
+  --fail-on-invalid
+```
+
+За замовчуванням quality CLI тільки друкує report. Додай `--fail-below-threshold`, якщо потрібно non-zero exit при `valid_ratio < --min-valid-ratio`.
+
+Після цього в `telegram_signal_standard_bt/cfg_telegram_signal_replay_3m.yaml` можна тимчасово замінити `signals_csv` на `telegram_signal_standard_bt/telegram_signals_paper.csv`.
+
 ## Конвертація існуючої SQLite DB у NPZ
 
 ```bash
@@ -133,3 +202,12 @@ python obw_platform/telegram_signal_tools/build_fast_multi_npz_from_db_safe_v1.p
 - MTM DD < 20%;
 - тесту на іншій біржі або іншому періоді;
 - paper-перевірки реальних Telegram-сигналів з latency/fill logging.
+
+Легка перевірка summary перед будь-яким live/paper-live wiring:
+
+```bash
+python obw_platform/telegram_signal_tools/check_telegram_signal_guardrails.py \
+  --summary runs/telegram_signal_bt/bt_3m_7200b_bingx/telegram_style_summary.json
+```
+
+Скрипт повертає non-zero exit, якщо не виконані мінімальні пороги `trades >= 100`, `profit_factor >= 1.3`, `mtm_max_dd_pct >= -0.20`.
