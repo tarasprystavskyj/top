@@ -1,12 +1,10 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Fetch recent Telegram channel messages and append parsed signals to JSONL.
 
 Requires an authorized user Telethon session. Bot tokens cannot read channel
 history through get_messages.
 """
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json

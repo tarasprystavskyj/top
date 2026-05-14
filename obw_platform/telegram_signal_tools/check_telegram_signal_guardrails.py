@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Lightweight no-live guardrail check for Telegram signal reports."""
-from __future__ import annotations
-
 import argparse
 import csv
 import json
