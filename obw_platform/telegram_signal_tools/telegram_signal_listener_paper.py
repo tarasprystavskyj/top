@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Paper-mode Telegram signal listener skeleton.
 
 Requires: pip install telethon pyyaml

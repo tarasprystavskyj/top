@@ -1,12 +1,10 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Backtest Telegram-derived multi-asset momentum-pullback strategy on NPZ cache.
 
 This is not a proof-of-edge strategy. It is a fast sanity-check runner derived from
 observed Telegram signal structure: trend impulse -> pullback -> local turn -> TP ladder.
 """
-from __future__ import annotations
-
 import argparse
 import csv
 import datetime as dt

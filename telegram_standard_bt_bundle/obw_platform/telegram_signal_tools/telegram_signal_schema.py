@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Shared Telegram signal parser, normalizer, and validator."""
-from __future__ import annotations
-
 import csv
 import datetime as dt
 import json

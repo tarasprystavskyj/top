@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Validate Telegram signal JSONL/CSV and print a compact quality report."""
-from __future__ import annotations
-
 import argparse
 import json
 

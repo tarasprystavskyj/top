@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Normalize paper Telegram signal JSONL into replay-compatible CSV.
 
@@ -9,8 +9,6 @@ Output rows match TelegramSignalReplayStrategy:
   message_idx,dt_utc,symbol,side,leverage,entry_a,entry_b,sl,tp1,tp2,tp3,
   raw_text,entry_low,entry_high
 """
-from __future__ import annotations
-
 import argparse
 import csv
 from pathlib import Path
