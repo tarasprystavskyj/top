@@ -1,7 +1,8 @@
 # FastAPI MVP backend
-import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re, sys
+import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re, sys, sqlite3
 from typing import Any, Dict, Optional, List, Tuple
 from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import logging
@@ -118,7 +119,7 @@ def get_backtester_capabilities(script: Optional[str]) -> Dict[str, bool]:
     if os.path.isfile(path):
         try:
             p = subprocess.run(
-                ["python3", name, "--help"],
+                [sys.executable or "python3", name, "--help"],
                 cwd=BT_ROOT,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -211,8 +212,22 @@ def _extract_timeframe_minutes(data: Any) -> Optional[int]:
                 return minutes
     return None
 
+def _sqlite_table_names(path: str) -> List[str]:
+    try:
+        con = sqlite3.connect(path)
+        try:
+            rows = con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+            return [str(row[0]) for row in rows if row and row[0]]
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
 # --- helpers: cache DB discovery -------------------------------------------
-def _list_cache_db_files() -> List[Dict[str, str]]:
+def _list_cache_db_files() -> List[Dict[str, Any]]:
     """Return available cache DB/NPZ files under ``CACHE_DB_DIR``.
 
     The deployment keeps cache databases in ``DB/``.  Expose both the display
@@ -238,7 +253,10 @@ def _list_cache_db_files() -> List[Dict[str, str]]:
         rel_path = os.path.relpath(entry.path, REPO_ROOT)
         kind = "npz" if lower.endswith(".npz") else "db"
         label = f"[{kind.upper()}] {name}"
-        entries.append({"name": label, "path": rel_path, "kind": kind})
+        item: Dict[str, Any] = {"name": label, "path": rel_path, "kind": kind}
+        if kind == "db":
+            item["tables"] = _sqlite_table_names(entry.path)
+        entries.append(item)
     return entries
 
 
@@ -979,7 +997,8 @@ def cmd_backtester(
     # run inside obw_platform so relative paths in configs resolve correctly
     bt_script = script or load_backtester_version()
     caps = get_backtester_capabilities(bt_script)
-    cmd = ["python3", bt_script, "--cfg", cfg_path]
+    python_bin = sys.executable or "python3"
+    cmd = [python_bin, bt_script, "--cfg", cfg_path]
     if time_from and caps.get("time_range"):
         cmd += ["--time-from", time_from]
     if time_to and caps.get("time_range"):
@@ -1030,8 +1049,101 @@ def validate_backtester_input(bt_script: str, cache_path: Optional[str]) -> None
             raise HTTPException(400, f"{bt_script} does not support NPZ input")
         if not lower_cache.endswith(".npz") and caps.get("npz") and not caps.get("cache_db"):
             raise HTTPException(400, f"{bt_script} requires NPZ input, got cache DB")
+        required_tables = _required_sqlite_tables_for_backtester(bt_script, lower_cache)
+        if required_tables:
+            missing = [table for table in required_tables if not _sqlite_has_table(cache_path, table)]
+            if missing:
+                missing_text = ", ".join(missing)
+                raise HTTPException(
+                    400,
+                    f"{bt_script} cannot use this DB: missing required table(s): {missing_text}. "
+                    "Choose a compatible cache DB/NPZ for this backtester.",
+                )
     elif caps.get("npz") and not caps.get("cache_db"):
         raise HTTPException(400, f"{bt_script} requires selecting an NPZ cache")
+
+
+def _required_sqlite_tables_for_backtester(bt_script: str, cache_path_lower: str) -> List[str]:
+    if cache_path_lower.endswith(".npz"):
+        return []
+    name = os.path.basename(str(bt_script or ""))
+    if name.startswith("backtester_core_") or name == "backtester_dual_long_short_mtm.py":
+        return ["price_indicators"]
+    return []
+
+
+def _sqlite_has_table(path: str, table: str) -> bool:
+    try:
+        con = sqlite3.connect(path)
+        try:
+            row = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+                (table,),
+            ).fetchone()
+            return bool(row)
+        finally:
+            con.close()
+    except Exception:
+        return False
+
+
+def _tail_text(path: str, max_chars: int = 5000) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        return text[-max_chars:]
+    except Exception:
+        return ""
+
+
+def _diagnose_backtester_failure(log_text: str) -> Dict[str, str]:
+    text = log_text or ""
+    missing_db = re.search(r"DB file '([^']+)' not found", text)
+    if missing_db:
+        filename = missing_db.group(1)
+        return {
+            "kind": "missing_cache_db",
+            "title": "Cache DB file is missing",
+            "message": f"Backtester failed because the config points to missing DB file: {filename}.",
+            "advice": "Select one of the available Cache DB / NPZ files in the form, or copy the required DB file into the project DB folder.",
+        }
+    missing_module = re.search(r"ModuleNotFoundError: No module named '([^']+)'", text)
+    if missing_module:
+        module = missing_module.group(1)
+        return {
+            "kind": "missing_dependency",
+            "title": "Backend dependency is missing",
+            "message": f"Backtester failed because Python module '{module}' is not installed in the backend environment.",
+            "advice": "Install the dependency into UI/backend/.venv and restart the backend. Current backend should use that venv for new runs.",
+        }
+    missing_table = re.search(r"sqlite3\.OperationalError: no such table: ([A-Za-z0-9_]+)", text)
+    if missing_table:
+        table = missing_table.group(1)
+        return {
+            "kind": "incompatible_cache_schema",
+            "title": "Selected DB is not compatible with this backtester",
+            "message": f"Backtester expected table '{table}', but the selected SQLite DB does not contain it.",
+            "advice": "Choose a DB built for this backtester, or use an NPZ-capable backtester with an NPZ cache.",
+        }
+    bad_args = re.search(r"unrecognized arguments?: (.+)", text)
+    if bad_args:
+        return {
+            "kind": "unsupported_backtester_arguments",
+            "title": "Backtester options are incompatible",
+            "message": f"The selected backtester rejected CLI argument(s): {bad_args.group(1).strip()}",
+            "advice": "Select a matching backtester version for this config, or adjust the backend capability map.",
+        }
+    traceback_line = ""
+    for line in reversed(text.splitlines()):
+        if line.strip() and not line.startswith("  "):
+            traceback_line = line.strip()
+            break
+    return {
+        "kind": "backtester_runtime_error",
+        "title": "Backtester runtime error",
+        "message": traceback_line or "Backtester failed during execution.",
+        "advice": "Open the run logs for the full traceback, then check config, selected cache, and selected backtester compatibility.",
+    }
 
 
 def find_config(name: str) -> Optional[str]:
@@ -1321,7 +1433,11 @@ def run_backtest(job):
         p = subprocess.Popen(cmd, cwd=BT_ROOT, stdout=lf, stderr=lf)
         p.wait()
     if p.returncode != 0:
-        raise RuntimeError(f"backtester failed with code {p.returncode}")
+        diagnosis = _diagnose_backtester_failure(_tail_text(logs))
+        diagnosis["exit_code"] = str(p.returncode)
+        with lock:
+            jobs.setdefault(jid, {})["error_detail"] = diagnosis
+        raise RuntimeError(diagnosis.get("message") or f"backtester failed with code {p.returncode}")
     save_backtester_version(bt_script)
     _postprocess_backtest_outputs(out_dir, logs, bt_script, started_at=started_at)
     # Generate extra visualization plots if possible
@@ -1373,6 +1489,12 @@ def run_grid(job):
             raise RuntimeError(f"backtester failed with code {p.returncode}")
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Git deploy endpoints: /api/deploy/status and /api/deploy/pull
 from git_deploy import router as deploy_router
@@ -1421,6 +1543,16 @@ def configs():
             if suggested_cache:
                 item["cache_db"] = suggested_cache
                 item["cache_db_kind"] = _cache_kind(suggested_cache)
+            else:
+                try:
+                    _, cfg_obj = _load_config_for_inference(p)
+                except Exception:
+                    cfg_obj = {}
+                for key in ("npz", "cache_npz", "cache_db", "cache_db_path"):
+                    val = cfg_obj.get(key)
+                    if isinstance(val, str) and val.strip() and not resolve_cache_db(val.strip()):
+                        item["cache_db_missing"] = val.strip()
+                        break
             if suggested_symbol:
                 item["symbol"] = suggested_symbol
             out[name] = item
@@ -1547,6 +1679,23 @@ def backtest(req: BacktestReq):
     cache_label = (req_meta.get("cache_db") or "").strip() or None
     if not cache_label:
         cache_label = infer_cache_for_config_path(cfg_path_for_req)
+        if not cache_label:
+            try:
+                _, cfg_for_cache = _load_config_for_inference(cfg_path_for_req)
+            except Exception:
+                cfg_for_cache = {}
+            embedded_cache = None
+            for key in ("npz", "cache_npz", "cache_db", "cache_db_path"):
+                val = cfg_for_cache.get(key)
+                if isinstance(val, str) and val.strip():
+                    embedded_cache = val.strip()
+                    break
+            if embedded_cache and not resolve_cache_db(embedded_cache):
+                raise HTTPException(
+                    400,
+                    f"Config references cache DB/NPZ that is not available locally: {embedded_cache}. "
+                    "Select an available Cache DB / NPZ from the form or add the missing file.",
+                )
     resolved_cache = resolve_cache_db(cache_label) if cache_label else None
     if cache_label and not resolved_cache:
         raise HTTPException(400, f"cache db not found: {cache_label}")
@@ -1609,6 +1758,8 @@ def status(job_id: str):
         "status": job_info.get("status"),
         "message": job_info.get("message"),
     }
+    if isinstance(job_info.get("error_detail"), dict):
+        resp["error_detail"] = job_info["error_detail"]
     meta = job_info.get("meta") or {}
     if isinstance(meta, dict):
         cfg_name = meta.get("cfg_name")
@@ -1717,6 +1868,12 @@ def result(job_id: str):
             trades = list(csv.DictReader(f))[:500]
     resp: Dict[str, Any] = {"summary": summary, "trades": trades, "artifacts": arts}
     job_info = jobs.get(job_id) or {}
+    if isinstance(job_info.get("error_detail"), dict):
+        resp["error_detail"] = job_info["error_detail"]
+    elif not summary and "logs.txt" in arts:
+        diagnosis = _diagnose_backtester_failure(_tail_text(os.path.join(out_dir, "logs.txt")))
+        if diagnosis:
+            resp["error_detail"] = diagnosis
     job_meta = job_info.get("meta") or {}
     meta_path = os.path.join(out_dir, "meta.json")
     file_meta: Dict[str, Any] = {}
