@@ -7,6 +7,7 @@ RANK_CSV="${AKELA_ROUGH_TUNE_RANK_CSV:-$ROOT/_reports/akela_meta_short/v21_midca
 NPZ="${AKELA_ROUGH_TUNE_NPZ:-$ROOT/_reports/akela_meta_short/v21_midcaps_rank/majors_bingx_5m_1500b.npz}"
 BASE_CFG="${AKELA_ROUGH_TUNE_BASE_CFG:-$ROOT/obw_platform/meta_strategies/akela_meta_short/live_freedommoney/V21_freedommoney_bingx_live_min2p2.yaml}"
 PLAN="${AKELA_ROUGH_TUNE_PLAN:-$ROOT/obw_platform/tuner_plans/tuner_plan_V21_live_candidates_1m_1y.py}"
+PLAN_STEM="$(basename "$PLAN" .py)"
 OUT_ROOT="${AKELA_ROUGH_TUNE_OUT_ROOT:-$ROOT/_reports/akela_meta_short/v21_shortlist_rough_tune}"
 SUMMARY="$LANE/reports/latest_v21_shortlist_rough_tune.md"
 
@@ -15,6 +16,11 @@ MAX_SECONDS_PER_SYMBOL="${AKELA_ROUGH_TUNE_MAX_SECONDS_PER_SYMBOL:-1800}"
 JOBS="${AKELA_ROUGH_TUNE_JOBS:-1}"
 MIN_TRADES="${AKELA_ROUGH_TUNE_MIN_TRADES:-50}"
 SLEEP_SEC="${AKELA_ROUGH_TUNE_SLEEP_SEC:-21600}"
+MIN_PASSIVE_N="${AKELA_ROUGH_TUNE_MIN_PASSIVE_N:-100}"
+MAX_SPREAD_P95_BP="${AKELA_ROUGH_TUNE_MAX_SPREAD_P95_BP:-12}"
+MAX_ROUNDTRIP_FLOOR_P50_BP="${AKELA_ROUGH_TUNE_MAX_ROUNDTRIP_FLOOR_P50_BP:-35}"
+MIN_TOP10_SIDE_USDT="${AKELA_ROUGH_TUNE_MIN_TOP10_SIDE_USDT:-10000}"
+MAX_TAIL_ABS="${AKELA_ROUGH_TUNE_MAX_TAIL_ABS:-2}"
 
 mkdir -p "$OUT_ROOT" "$LANE/reports"
 cd "$ROOT"
@@ -28,7 +34,7 @@ while true; do
   run_dir="$OUT_ROOT/$stamp"
   mkdir -p "$run_dir/cfg" "$run_dir/logs"
 
-  python3 - "$RANK_CSV" "$BASE_CFG" "$run_dir" "$MAX_SYMBOLS" <<'PY'
+  python3 - "$RANK_CSV" "$BASE_CFG" "$run_dir" "$MAX_SYMBOLS" "$MIN_PASSIVE_N" "$MAX_SPREAD_P95_BP" "$MAX_ROUNDTRIP_FLOOR_P50_BP" "$MIN_TOP10_SIDE_USDT" "$MAX_TAIL_ABS" <<'PY'
 import sys
 from pathlib import Path
 
@@ -39,6 +45,11 @@ rank_csv = Path(sys.argv[1])
 base_cfg = Path(sys.argv[2])
 run_dir = Path(sys.argv[3])
 max_symbols = int(sys.argv[4])
+min_passive_n = int(float(sys.argv[5]))
+max_spread_p95_bp = float(sys.argv[6])
+max_roundtrip_floor_p50_bp = float(sys.argv[7])
+min_top10_side_usdt = float(sys.argv[8])
+max_tail_abs = float(sys.argv[9])
 
 df = pd.read_csv(rank_csv)
 scenario_order = {"passive_spread_p95": 0, "passive_spread_p50": 1, "cfg_static": 2}
@@ -48,7 +59,14 @@ df = df[
     & (df["margin_call_events_total"].fillna(999).astype(float) == 0)
 ].copy()
 df["tail_abs"] = df["terminal_unrealized_to_realized_ratio"].fillna(0).astype(float).abs()
-df = df[df["tail_abs"] <= 2.0].copy()
+df = df[
+    (df["tail_abs"] <= max_tail_abs)
+    & (df["passive_n"].fillna(0).astype(float) >= min_passive_n)
+    & (df["spread_p95_bp"].fillna(999).astype(float) <= max_spread_p95_bp)
+    & (df["roundtrip_floor_p50_bp"].fillna(999).astype(float) <= max_roundtrip_floor_p50_bp)
+    & (df["top10_bid_p50_usdt"].fillna(0).astype(float) >= min_top10_side_usdt)
+    & (df["top10_ask_p50_usdt"].fillna(0).astype(float) >= min_top10_side_usdt)
+].copy()
 df = df.sort_values(["score", "return_mtm_pct_on_start"], ascending=[False, False])
 
 base = yaml.safe_load(base_cfg.read_text(encoding="utf-8")) or {}
@@ -80,6 +98,10 @@ for _, row in df.iterrows():
         "static_slippage_bp": slip,
         "spread_p50_bp": row.get("spread_p50_bp"),
         "spread_p95_bp": row.get("spread_p95_bp"),
+        "roundtrip_floor_p50_bp": row.get("roundtrip_floor_p50_bp"),
+        "passive_n": row.get("passive_n"),
+        "top10_bid_p50_usdt": row.get("top10_bid_p50_usdt"),
+        "top10_ask_p50_usdt": row.get("top10_ask_p50_usdt"),
         "terminal_unrealized_to_realized_ratio": row.get("terminal_unrealized_to_realized_ratio"),
     })
     if len(rows) >= max_symbols:
@@ -101,6 +123,7 @@ PY
     echo "- No live/deploy actions."
     echo "- No production YAML edits; generated YAML is under \`_reports\`."
     echo "- Goal: find configs with \`margin_call_events_total = 0\`, controlled MTM MDD, controlled terminal tail."
+    echo "- Pre-tune liquidity gate: passive_n >= $MIN_PASSIVE_N, spread_p95 <= ${MAX_SPREAD_P95_BP}bp, roundtrip_floor_p50 <= ${MAX_ROUNDTRIP_FLOOR_P50_BP}bp, top10 bid/ask >= ${MIN_TOP10_SIDE_USDT} USDT, abs(tail) <= $MAX_TAIL_ABS."
     echo
     echo "## Jobs"
     echo
@@ -128,18 +151,7 @@ PY
         --debug > "$log" 2>&1; then
         status="failed"
       fi
-      summary_path="$(python3 - "$log" <<'PY'
-import json, sys
-text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-start = text.rfind("{")
-if start >= 0:
-    try:
-        obj = json.loads(text[start:])
-        print(obj.get("session_dir", "") + "/tuner_summary.json")
-    except Exception:
-        print("")
-PY
-)"
+      summary_path="$(find "_reports/_auto_tuner_dual_fast_pack/$PLAN_STEM" -maxdepth 1 -type d -name "${prefix}_*" -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR==1{print $2 "/tuner_summary.json"}')"
       printf '| `%s` | %s | %s | %s | `%s` | `%s` |\n' \
         "$symbol" "$score" "$slip" "$status" "$summary_path" "${log#$ROOT/}" >> "$SUMMARY"
     done
