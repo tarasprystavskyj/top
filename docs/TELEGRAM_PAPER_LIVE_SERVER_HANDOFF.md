@@ -117,13 +117,16 @@ Detach: `Ctrl+B`, then `D`.
 
 The daemon:
 
-- listens only to new channel messages;
-- parses fresh signals;
+- listens to all new channel messages;
+- parses fresh full signals;
 - appends JSONL;
 - inserts `signals`, `orders`, and `positions` into `runs/telegram_paper/paper_live.sqlite`;
 - creates a pending paper entry by default and polls BingX ticker every 15 seconds;
 - opens a simulated paper position only when ticker price touches the signal entry zone before the 900 second entry timeout;
 - marks untouched pending entries as `expired` without opening a position;
+- for non-signal messages, detects manual channel close/exit instructions such as `закриваю позицію`, `закрываю позицию`, `close TAO`, `exit TAO`, `close position`, and `позицію закрито`;
+- when a manual channel exit mentions a symbol, closes/cancels only matching open or pending paper positions; without a symbol, closes the most recent open position for this channel, or the most recent pending position if no open position exists;
+- manual channel exits write paper-only `orders` rows with reason `channel_exit`; open positions use current ticker when `ccxt` is available, otherwise they close at the entry-price fallback with `price_source=entry_fallback` in order metadata;
 - if `--monitor-exits` and `ccxt` are available, polls BingX ticker and writes simulated TP/SL close orders.
 
 Compatibility modes are still available for controlled checks: `--entry-policy mid` opens immediately at the entry midpoint, and `--entry-policy ticker` opens immediately at current ticker price if available.

@@ -162,7 +162,7 @@ python obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py \
   --monitor-exits
 ```
 
-Цей daemon не ставить реальні ордери. Він пише simulated `signals`, `orders`, `positions` у SQLite. За замовчуванням `--entry-policy touch` створює pending paper-entry, опитує BingX ticker кожні 15 секунд, відкриває simulated position тільки якщо ціна торкнулась entry zone протягом 900 секунд, інакше позначає pending як `expired`. Для сумісності лишились immediate режими `--entry-policy mid` та `--entry-policy ticker`.
+Цей daemon не ставить реальні ордери. Він пише simulated `signals`, `orders`, `positions` у SQLite. За замовчуванням `--entry-policy touch` створює pending paper-entry, опитує BingX ticker кожні 15 секунд, відкриває simulated position тільки якщо ціна торкнулась entry zone протягом 900 секунд, інакше позначає pending як `expired`. Він також слухає non-signal повідомлення каналу і paper-only обробляє ручні exit/close інструкції автора (`закриваю позицію`, `закрываю позицию`, `close TAO`, `exit TAO`, `close position`, `позицію закрито`): із символом закриває/скасовує тільки відповідний open/pending paper trade, без символу - найсвіжішу open позицію цього каналу або найсвіжішу pending позицію, якщо open немає. Такі дії пишуть `orders.reason='channel_exit'`; якщо ticker недоступний, open позиція закривається по entry fallback з `price_source=entry_fallback` у metadata. Для сумісності лишились immediate режими `--entry-policy mid` та `--entry-policy ticker`.
 
 Щоб прогнати ці paper-сигнали через standard replay, нормалізуй JSONL у CSV:
 

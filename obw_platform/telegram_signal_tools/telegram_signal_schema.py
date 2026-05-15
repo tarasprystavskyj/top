@@ -15,6 +15,21 @@ SIG_RE = re.compile(r"(?:заходжу\s+в|enter(?:ing)?|signal)\s+#?\$?([a-z0
 ENTRY_RE = re.compile(r"(?:точка\s+входу|entry(?:\s+zone)?)\s*[:：]?\s*(" + NUM_RE + r")\s*[-–—]\s*(" + NUM_RE + r")", re.I)
 TP_RE = re.compile(r"(?:тейк[-\s]?профіт|take[-\s]?profit|tp)\s*[:：]?\s*([^\n]+)", re.I)
 SL_RE = re.compile(r"(?:стоп[-\s]?лосс|stop[-\s]?loss|sl)\s*[:：]?\s*(" + NUM_RE + r")", re.I)
+EXIT_SYMBOL_RE = re.compile(r"(?:#|\$)?([a-z][a-z0-9]{1,19})(?:\s*/?\s*(?:usdt|usdc|usd))?", re.I)
+EXIT_TEXT_RE = re.compile(
+    r"("
+    r"закрива(?:ю|ємо|ем|ти|ється)|закрыва(?:ю|ем|ть|ется)|"
+    r"закрит[аоийі]?|закрыт[аоый]?|"
+    r"виходж(?:у|уся|емо|у\s+з)|вийш(?:ов|ла|ли)|"
+    r"выхож(?:у|у\s+с|у\s+из|ем)|выш(?:ел|ла|ли)|"
+    r"close|closing|closed|exit|exiting|exited"
+    r")",
+    re.I,
+)
+EXIT_POSITION_RE = re.compile(
+    r"(позиці|позици|position|trade|угод|сделк)",
+    re.I,
+)
 
 REPLAY_FIELDS = [
     "message_idx",
@@ -92,6 +107,44 @@ def base_symbol(symbol: Any) -> str:
         if s.endswith(q) and len(s) > len(q):
             return s[:-len(q)]
     return s
+
+
+def parse_channel_exit_text(text: str) -> Optional[Dict[str, Any]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    if not EXIT_TEXT_RE.search(raw):
+        return None
+
+    has_position_word = EXIT_POSITION_RE.search(raw) is not None
+    ignored = {
+        "CLOSE", "CLOSING", "CLOSED", "EXIT", "EXITING", "EXITED", "POSITION", "TRADE",
+        "TP", "SL", "STOP", "LOSS", "TAKE", "PROFIT", "LONG", "SHORT", "USDT", "USDC", "USD",
+    }
+    symbol = ""
+    for m in EXIT_SYMBOL_RE.finditer(raw):
+        raw_token = m.group(1)
+        token = raw_token.upper()
+        if token in ignored:
+            continue
+        matched = m.group(0).strip()
+        explicit_symbol = (
+            re.search(r"[A-Z]", raw_token) is not None
+            or matched.startswith(("#", "$"))
+            or re.search(r"/\s*(?:usdt|usdc|usd)", matched, re.I) is not None
+        )
+        if explicit_symbol and not re.search(r"[А-ЯІЇЄҐ]", token):
+            symbol = normalize_symbol(token)
+            break
+
+    if not symbol and not has_position_word:
+        return None
+    return {
+        "symbol": symbol or None,
+        "base_symbol": base_symbol(symbol) if symbol else None,
+        "reason": "channel_exit",
+        "raw_text": raw,
+    }
 
 
 def parse_signal_text(text: str, ts_utc: Optional[str] = None) -> Optional[Dict[str, Any]]:

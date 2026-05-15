@@ -25,9 +25,9 @@ except Exception:
     ccxt = None
 
 try:
-    from .telegram_signal_schema import normalize_telegram_channel, parse_signal_text
+    from .telegram_signal_schema import base_symbol, normalize_telegram_channel, parse_channel_exit_text, parse_signal_text
 except ImportError:
-    from telegram_signal_schema import normalize_telegram_channel, parse_signal_text
+    from telegram_signal_schema import base_symbol, normalize_telegram_channel, parse_channel_exit_text, parse_signal_text
 
 
 def utc_now() -> str:
@@ -430,7 +430,7 @@ def expire_pending_position(db_path: Path, pos: sqlite3.Row) -> None:
     ), flush=True)
 
 
-def close_or_partial(db_path: Path, pos: sqlite3.Row, price: float, reason: str, qty_frac: float) -> None:
+def close_or_partial(db_path: Path, pos: sqlite3.Row, price: float, reason: str, qty_frac: float, extra: Optional[Dict[str, Any]] = None) -> None:
     qty_open = float(pos["qty_open"])
     qty = qty_open * qty_frac
     if qty <= 0:
@@ -457,7 +457,7 @@ def close_or_partial(db_path: Path, pos: sqlite3.Row, price: float, reason: str,
         qty,
         qty * price,
         reason,
-        "{}",
+        json.dumps(extra or {}, ensure_ascii=False),
     ))
     cur.execute("""UPDATE positions
         SET qty_open=?, status=?, updated_at=?, closed_at=CASE WHEN ?='closed' THEN ? ELSE closed_at END,
@@ -481,6 +481,100 @@ def close_or_partial(db_path: Path, pos: sqlite3.Row, price: float, reason: str,
     print("[paper-live %s] msg=%s %s %s price=%.12g qty=%.12g pnl=%.12g status=%s" % (
         reason.upper(), pos["signal_id"], pos["symbol"], side, price, qty, pnl, status,
     ), flush=True)
+
+
+def cancel_pending_for_channel_exit(db_path: Path, pos: sqlite3.Row, exit_message_id: int, raw_text: str) -> None:
+    now = utc_now()
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute("""INSERT INTO orders (
+        order_id, signal_id, ts_utc, mode, symbol, side, action, price, qty,
+        notional, reason, extra
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
+        str(uuid.uuid4()),
+        int(pos["signal_id"]),
+        now,
+        "paper_telegram",
+        pos["symbol"],
+        pos["side"],
+        "cancelled",
+        None,
+        0.0,
+        float(pos["notional"]),
+        "channel_exit",
+        json.dumps({
+            "exit_message_id": exit_message_id,
+            "raw_text": raw_text,
+            "previous_status": "pending",
+        }, ensure_ascii=False),
+    ))
+    cur.execute("""UPDATE positions
+        SET status='expired', updated_at=?, closed_at=?
+        WHERE signal_id=? AND status='pending'""", (
+        now,
+        now,
+        int(pos["signal_id"]),
+    ))
+    con.commit()
+    con.close()
+    print("[paper-live CHANNEL_EXIT] msg=%s exit_msg=%s %s %s pending_cancelled" % (
+        pos["signal_id"], exit_message_id, pos["symbol"], pos["side"],
+    ), flush=True)
+
+
+def select_channel_exit_positions(db_path: Path, channel: str, exit_symbol: Optional[str]) -> List[sqlite3.Row]:
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    rows = list(con.execute("""SELECT p.*
+        FROM positions p
+        JOIN signals s ON s.telegram_message_id=p.signal_id
+        WHERE p.status IN ('open', 'pending') AND s.source_channel=?
+        ORDER BY COALESCE(p.opened_at, p.pending_created_at, p.updated_at, '') DESC""", (channel,)))
+    con.close()
+    if exit_symbol:
+        wanted = base_symbol(exit_symbol)
+        return [row for row in rows if base_symbol(row["symbol"]) == wanted]
+    open_rows = [row for row in rows if row["status"] == "open"]
+    if open_rows:
+        return [open_rows[0]]
+    pending_rows = [row for row in rows if row["status"] == "pending"]
+    return pending_rows[:1]
+
+
+def apply_channel_exit(db_path: Path, channel: str, exit_info: Dict[str, Any], message_id: int, ex: Any) -> int:
+    positions = select_channel_exit_positions(db_path, channel, exit_info.get("symbol"))
+    if not positions:
+        print("[paper-live CHANNEL_EXIT] exit_msg=%s symbol=%s no open/pending position" % (
+            message_id, exit_info.get("symbol") or "",
+        ), flush=True)
+        return 0
+    closed = 0
+    for pos in positions:
+        if pos["status"] == "pending":
+            cancel_pending_for_channel_exit(db_path, pos, message_id, str(exit_info.get("raw_text") or ""))
+            closed += 1
+            continue
+        price = fetch_price(ex, str(pos["symbol"])) if ex is not None else None
+        price_source = "ticker"
+        if price is None:
+            entry_price = pos["entry_price"]
+            price = float(entry_price) if entry_price is not None else 0.0
+            price_source = "entry_fallback"
+            print("[paper-live CHANNEL_EXIT] msg=%s exit_msg=%s %s ticker unavailable; using entry fallback %.12g" % (
+                pos["signal_id"], message_id, pos["symbol"], price,
+            ), flush=True)
+        if price <= 0:
+            print("[paper-live CHANNEL_EXIT] msg=%s exit_msg=%s %s skipped no usable paper price" % (
+                pos["signal_id"], message_id, pos["symbol"],
+            ), flush=True)
+            continue
+        close_or_partial(db_path, pos, float(price), "channel_exit", 1.0, {
+            "exit_message_id": message_id,
+            "raw_text": exit_info.get("raw_text") or "",
+            "price_source": price_source,
+        })
+        closed += 1
+    return closed
 
 
 def build_exchange():
@@ -566,14 +660,19 @@ async def run(args: argparse.Namespace) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     ensure_db(db_path)
     ex = build_exchange() if args.entry_policy == "ticker" else None
+    channel_exit_ex = ex or build_exchange()
     client = TelegramClient(str(session), int(os.environ["TG_API_ID"]), os.environ["TG_API_HASH"])
 
     @client.on(events.NewMessage(chats=channel))
     async def handler(event):
-        sig = parse_signal_text(event.raw_text or "", ts_utc=event.message.date.isoformat() if event.message.date else None)
-        if not sig:
-            return
         message_id = int(event.message.id)
+        raw_text = event.raw_text or ""
+        sig = parse_signal_text(raw_text, ts_utc=event.message.date.isoformat() if event.message.date else None)
+        if not sig:
+            exit_info = parse_channel_exit_text(raw_text)
+            if exit_info:
+                apply_channel_exit(db_path, channel, exit_info, message_id, channel_exit_ex)
+            return
         sig["source_channel"] = channel
         sig["telegram_message_id"] = message_id
         sig["telegram_message_date"] = event.message.date.isoformat() if event.message.date else None
