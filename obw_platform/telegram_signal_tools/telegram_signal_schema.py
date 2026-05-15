@@ -32,6 +32,7 @@ EXIT_POSITION_RE = re.compile(
     r"(позиці|позици|position|trade|угод|сделк)",
     re.I,
 )
+EXIT_LEADING_SYMBOL_RE = re.compile(r"^\s*(?:#|\$)?([a-z][a-z0-9]{1,19})\s*[-–—]", re.I)
 
 REPLAY_FIELDS = [
     "message_idx",
@@ -124,7 +125,14 @@ def parse_channel_exit_text(text: str) -> Optional[Dict[str, Any]]:
         "TP", "SL", "STOP", "LOSS", "TAKE", "PROFIT", "LONG", "SHORT", "USDT", "USDC", "USD",
     }
     symbol = ""
+    leading = EXIT_LEADING_SYMBOL_RE.search(raw)
+    if leading:
+        token = leading.group(1).upper()
+        if token not in ignored:
+            symbol = normalize_symbol(token)
     for m in EXIT_SYMBOL_RE.finditer(raw):
+        if symbol:
+            break
         raw_token = m.group(1)
         token = raw_token.upper()
         if token in ignored:
