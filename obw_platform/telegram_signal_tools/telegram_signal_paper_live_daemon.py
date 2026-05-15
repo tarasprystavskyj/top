@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Paper-live daemon for darkknighttrade Telegram signals.
 
@@ -6,8 +6,6 @@ This script never places real exchange orders. It listens for fresh Telegram
 signals, writes them to JSONL and SQLite, and opens simulated paper positions.
 If ccxt is installed, it can also monitor BingX ticker prices for TP/SL exits.
 """
-from __future__ import annotations
-
 import argparse
 import asyncio
 import datetime as dt

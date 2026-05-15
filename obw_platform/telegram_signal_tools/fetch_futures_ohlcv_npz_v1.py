@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Fetch linear futures OHLCV via CCXT and write compact multi-symbol NPZ.
 
@@ -15,8 +15,6 @@ Example:
     --bars 7200 \
     --out DB/telegram_signals_3m_7200b.npz
 """
-from __future__ import annotations
-
 import argparse
 import math
 import sys
