@@ -18,7 +18,8 @@ SL_RE = re.compile(r"(?:стоп[-\s]?лосс|stop[-\s]?loss|sl)\s*[:：]?\s*("
 EXIT_SYMBOL_RE = re.compile(r"(?:#|\$)?([a-z][a-z0-9]{1,19})(?:\s*/?\s*(?:usdt|usdc|usd))?", re.I)
 EXIT_TEXT_RE = re.compile(
     r"("
-    r"закрива(?:ю|ємо|ем|ти|ється)|закрыва(?:ю|ем|ть|ется)|"
+    r"закрива(?:ю|ємо|ем|ти|ється)|закрив(?:аю|ся|ши)?|"
+    r"закрыва(?:ю|ем|ть|ется)|закрыл(?:ся|и|а)?|"
     r"закрит[аоийі]?|закрыт[аоый]?|"
     r"виходж(?:у|уся|емо|у\s+з)|вийш(?:ов|ла|ли)|"
     r"выхож(?:у|у\s+с|у\s+из|ем)|выш(?:ел|ла|ли)|"
@@ -26,6 +27,7 @@ EXIT_TEXT_RE = re.compile(
     r")",
     re.I,
 )
+EXIT_COMPLETED_RE = re.compile(r"(completed|закрива|закрыв|закрив|закрыл)", re.I)
 EXIT_POSITION_RE = re.compile(
     r"(позиці|позици|position|trade|угод|сделк)",
     re.I,
@@ -137,7 +139,8 @@ def parse_channel_exit_text(text: str) -> Optional[Dict[str, Any]]:
             symbol = normalize_symbol(token)
             break
 
-    if not symbol and not has_position_word:
+    has_completed_close = EXIT_COMPLETED_RE.search(raw) is not None
+    if not symbol and not has_position_word and not has_completed_close:
         return None
     return {
         "symbol": symbol or None,
