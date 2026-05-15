@@ -107,7 +107,9 @@ python obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py \
   --out-jsonl runs/telegram_paper/darkknighttrade_signals.jsonl \
   --db runs/telegram_paper/paper_live.sqlite \
   --notional 100 \
-  --entry-policy mid \
+  --entry-policy touch \
+  --entry-timeout-sec 900 \
+  --poll-sec 15 \
   --monitor-exits
 ```
 
@@ -119,14 +121,21 @@ The daemon:
 - parses fresh signals;
 - appends JSONL;
 - inserts `signals`, `orders`, and `positions` into `runs/telegram_paper/paper_live.sqlite`;
-- opens simulated paper positions immediately at entry midpoint by default;
+- creates a pending paper entry by default and polls BingX ticker every 15 seconds;
+- opens a simulated paper position only when ticker price touches the signal entry zone before the 900 second entry timeout;
+- marks untouched pending entries as `expired` without opening a position;
 - if `--monitor-exits` and `ccxt` are available, polls BingX ticker and writes simulated TP/SL close orders.
+
+Compatibility modes are still available for controlled checks: `--entry-policy mid` opens immediately at the entry midpoint, and `--entry-policy ticker` opens immediately at current ticker price if available.
 
 ## Check paper-live state
 
 ```bash
 sqlite3 runs/telegram_paper/paper_live.sqlite \
   "select signal_id,symbol,side,entry_price,qty_open,status,opened_at,realized_pnl from positions order by opened_at desc limit 20;"
+
+sqlite3 runs/telegram_paper/paper_live.sqlite \
+  "select signal_id,symbol,side,entry_low,entry_high,status,pending_created_at,pending_expires_at from positions where status='pending' order by pending_created_at desc;"
 
 tail -f runs/telegram_paper/darkknighttrade_signals.jsonl
 ```

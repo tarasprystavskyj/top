@@ -3,8 +3,9 @@
 """Paper-live daemon for darkknighttrade Telegram signals.
 
 This script never places real exchange orders. It listens for fresh Telegram
-signals, writes them to JSONL and SQLite, and opens simulated paper positions.
-If ccxt is installed, it can also monitor BingX ticker prices for TP/SL exits.
+signals, writes them to JSONL and SQLite, and tracks simulated paper positions.
+By default, new signals become pending paper entries and are opened only if
+BingX ticker price touches the entry zone before the entry timeout.
 """
 import argparse
 import asyncio
@@ -14,7 +15,7 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from telethon import TelegramClient, events
 
@@ -48,6 +49,15 @@ def load_env_file(path: str) -> Path:
 def resolve_path(raw: str, base: Path) -> Path:
     p = Path(raw)
     return p if p.is_absolute() else base / p
+
+
+def table_columns(cur: sqlite3.Cursor, table: str) -> Dict[str, bool]:
+    return {str(row[1]): True for row in cur.execute("PRAGMA table_info(%s)" % table)}
+
+
+def ensure_column(cur: sqlite3.Cursor, table: str, column: str, ddl: str) -> None:
+    if column not in table_columns(cur, table):
+        cur.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, ddl))
 
 
 def ensure_db(path: Path) -> None:
@@ -104,6 +114,62 @@ def ensure_db(path: Path) -> None:
         exit_price REAL,
         realized_pnl REAL DEFAULT 0
     )""")
+    for table, cols in {
+        "signals": [
+            ("source_channel", "TEXT"),
+            ("ts_utc", "TEXT"),
+            ("symbol", "TEXT"),
+            ("side", "TEXT"),
+            ("leverage", "INTEGER"),
+            ("entry_low", "REAL"),
+            ("entry_high", "REAL"),
+            ("tp1", "REAL"),
+            ("tp2", "REAL"),
+            ("tp3", "REAL"),
+            ("sl", "REAL"),
+            ("raw_text", "TEXT"),
+            ("received_at", "TEXT"),
+        ],
+        "orders": [
+            ("signal_id", "INTEGER"),
+            ("ts_utc", "TEXT"),
+            ("mode", "TEXT"),
+            ("symbol", "TEXT"),
+            ("side", "TEXT"),
+            ("action", "TEXT"),
+            ("price", "REAL"),
+            ("qty", "REAL"),
+            ("notional", "REAL"),
+            ("reason", "TEXT"),
+            ("extra", "TEXT"),
+        ],
+        "positions": [
+            ("symbol", "TEXT"),
+            ("side", "TEXT"),
+            ("entry_price", "REAL"),
+            ("entry_low", "REAL"),
+            ("entry_high", "REAL"),
+            ("qty_initial", "REAL"),
+            ("qty_open", "REAL"),
+            ("notional", "REAL"),
+            ("sl", "REAL"),
+            ("tp1", "REAL"),
+            ("tp2", "REAL"),
+            ("tp3", "REAL"),
+            ("tp_stage", "INTEGER DEFAULT 0"),
+            ("status", "TEXT"),
+            ("opened_at", "TEXT"),
+            ("updated_at", "TEXT"),
+            ("closed_at", "TEXT"),
+            ("exit_price", "REAL"),
+            ("realized_pnl", "REAL DEFAULT 0"),
+            ("entry_policy", "TEXT"),
+            ("pending_created_at", "TEXT"),
+            ("pending_expires_at", "TEXT"),
+        ],
+    }.items():
+        for column, ddl in cols:
+            ensure_column(cur, table, column, ddl)
     con.commit()
     con.close()
 
@@ -117,23 +183,24 @@ def signal_exists(db_path: Path, message_id: int) -> bool:
     return ok
 
 
-def insert_signal_and_position(db_path: Path, sig: Dict[str, Any], message_id: int, notional: float, entry_policy: str, ticker_price: Optional[float]) -> bool:
-    if signal_exists(db_path, message_id):
-        return False
-    entry_mid = (float(sig["entry_low"]) + float(sig["entry_high"])) / 2.0
-    entry_price = float(ticker_price) if entry_policy == "ticker" and ticker_price else entry_mid
-    qty = notional / entry_price if entry_price > 0 else 0.0
-    now = utc_now()
-    side = str(sig["side"]).lower()
+def signal_tps(sig: Dict[str, Any]) -> List[float]:
     tps = [float(x) for x in sig["tp"][:3]]
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("""INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+    if len(tps) < 3:
+        raise ValueError("signal has fewer than three take-profit levels")
+    return tps
+
+
+def insert_signal(cur: sqlite3.Cursor, sig: Dict[str, Any], message_id: int, now: str) -> None:
+    tps = signal_tps(sig)
+    cur.execute("""INSERT INTO signals (
+        telegram_message_id, source_channel, ts_utc, symbol, side, leverage,
+        entry_low, entry_high, tp1, tp2, tp3, sl, raw_text, received_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
         message_id,
         sig.get("source_channel", ""),
         sig.get("ts_utc"),
         sig.get("symbol"),
-        side,
+        str(sig["side"]).lower(),
         int(sig.get("leverage_claimed") or 0),
         float(sig["entry_low"]),
         float(sig["entry_high"]),
@@ -144,7 +211,24 @@ def insert_signal_and_position(db_path: Path, sig: Dict[str, Any], message_id: i
         sig.get("raw_text", ""),
         now,
     ))
-    cur.execute("""INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
+
+
+def insert_signal_and_position(db_path: Path, sig: Dict[str, Any], message_id: int, notional: float, entry_policy: str, ticker_price: Optional[float]) -> str:
+    if signal_exists(db_path, message_id):
+        return "duplicate"
+    entry_mid = (float(sig["entry_low"]) + float(sig["entry_high"])) / 2.0
+    entry_price = float(ticker_price) if entry_policy == "ticker" and ticker_price else entry_mid
+    qty = notional / entry_price if entry_price > 0 else 0.0
+    now = utc_now()
+    side = str(sig["side"]).lower()
+    tps = signal_tps(sig)
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    insert_signal(cur, sig, message_id, now)
+    cur.execute("""INSERT INTO orders (
+        order_id, signal_id, ts_utc, mode, symbol, side, action, price, qty,
+        notional, reason, extra
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
         str(uuid.uuid4()),
         message_id,
         now,
@@ -158,11 +242,18 @@ def insert_signal_and_position(db_path: Path, sig: Dict[str, Any], message_id: i
         f"telegram_signal_{message_id}",
         json.dumps({"entry_policy": entry_policy}, ensure_ascii=False),
     ))
-    cur.execute("""INSERT INTO positions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+    cur.execute("""INSERT INTO positions (
+        signal_id, symbol, side, entry_price, entry_low, entry_high,
+        qty_initial, qty_open, notional, sl, tp1, tp2, tp3, tp_stage, status,
+        opened_at, updated_at, closed_at, exit_price, realized_pnl,
+        entry_policy, pending_created_at, pending_expires_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
         message_id,
         sig.get("symbol"),
         side,
         entry_price,
+        float(sig["entry_low"]),
+        float(sig["entry_high"]),
         qty,
         qty,
         notional,
@@ -177,10 +268,166 @@ def insert_signal_and_position(db_path: Path, sig: Dict[str, Any], message_id: i
         None,
         None,
         0.0,
+        entry_policy,
+        None,
+        None,
     ))
     con.commit()
     con.close()
-    return True
+    return "open"
+
+
+def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: int, notional: float, entry_timeout_sec: float) -> str:
+    if signal_exists(db_path, message_id):
+        return "duplicate"
+    now_dt = dt.datetime.now(dt.timezone.utc)
+    now = now_dt.isoformat()
+    expires_at = (now_dt + dt.timedelta(seconds=float(entry_timeout_sec))).isoformat()
+    side = str(sig["side"]).lower()
+    tps = signal_tps(sig)
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    insert_signal(cur, sig, message_id, now)
+    cur.execute("""INSERT INTO orders (
+        order_id, signal_id, ts_utc, mode, symbol, side, action, price, qty,
+        notional, reason, extra
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
+        str(uuid.uuid4()),
+        message_id,
+        now,
+        "paper_telegram",
+        sig.get("symbol"),
+        side,
+        "pending",
+        None,
+        0.0,
+        notional,
+        f"telegram_signal_{message_id}",
+        json.dumps({
+            "entry_policy": "touch",
+            "entry_low": float(sig["entry_low"]),
+            "entry_high": float(sig["entry_high"]),
+            "pending_expires_at": expires_at,
+        }, ensure_ascii=False),
+    ))
+    cur.execute("""INSERT INTO positions (
+        signal_id, symbol, side, entry_price, entry_low, entry_high,
+        qty_initial, qty_open, notional, sl, tp1, tp2, tp3, tp_stage, status,
+        opened_at, updated_at, closed_at, exit_price, realized_pnl,
+        entry_policy, pending_created_at, pending_expires_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+        message_id,
+        sig.get("symbol"),
+        side,
+        None,
+        float(sig["entry_low"]),
+        float(sig["entry_high"]),
+        0.0,
+        0.0,
+        notional,
+        float(sig["sl"]),
+        tps[0],
+        tps[1],
+        tps[2],
+        0,
+        "pending",
+        None,
+        now,
+        None,
+        None,
+        0.0,
+        "touch",
+        now,
+        expires_at,
+    ))
+    con.commit()
+    con.close()
+    return "pending"
+
+
+def price_touches_entry(pos: sqlite3.Row, price: float) -> bool:
+    low = float(pos["entry_low"])
+    high = float(pos["entry_high"])
+    return low <= float(price) <= high
+
+
+def open_pending_position(db_path: Path, pos: sqlite3.Row, price: float) -> None:
+    now = utc_now()
+    notional = float(pos["notional"])
+    qty = notional / price if price > 0 else 0.0
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute("""INSERT INTO orders (
+        order_id, signal_id, ts_utc, mode, symbol, side, action, price, qty,
+        notional, reason, extra
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
+        str(uuid.uuid4()),
+        int(pos["signal_id"]),
+        now,
+        "paper_telegram",
+        pos["symbol"],
+        pos["side"],
+        "open",
+        price,
+        qty,
+        notional,
+        "entry_touch",
+        json.dumps({
+            "entry_low": float(pos["entry_low"]),
+            "entry_high": float(pos["entry_high"]),
+        }, ensure_ascii=False),
+    ))
+    cur.execute("""UPDATE positions
+        SET entry_price=?, qty_initial=?, qty_open=?, status='open',
+            opened_at=?, updated_at=?
+        WHERE signal_id=? AND status='pending'""", (
+        price,
+        qty,
+        qty,
+        now,
+        now,
+        int(pos["signal_id"]),
+    ))
+    con.commit()
+    con.close()
+    print("[paper-live OPEN] msg=%s %s %s price=%.12g reason=entry_touch" % (
+        pos["signal_id"], pos["symbol"], pos["side"], price,
+    ), flush=True)
+
+
+def expire_pending_position(db_path: Path, pos: sqlite3.Row) -> None:
+    now = utc_now()
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute("""INSERT INTO orders (
+        order_id, signal_id, ts_utc, mode, symbol, side, action, price, qty,
+        notional, reason, extra
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
+        str(uuid.uuid4()),
+        int(pos["signal_id"]),
+        now,
+        "paper_telegram",
+        pos["symbol"],
+        pos["side"],
+        "expired",
+        None,
+        0.0,
+        float(pos["notional"]),
+        "entry_timeout",
+        json.dumps({"pending_expires_at": pos["pending_expires_at"]}, ensure_ascii=False),
+    ))
+    cur.execute("""UPDATE positions
+        SET status='expired', updated_at=?, closed_at=?
+        WHERE signal_id=? AND status='pending'""", (
+        now,
+        now,
+        int(pos["signal_id"]),
+    ))
+    con.commit()
+    con.close()
+    print("[paper-live EXPIRE] msg=%s %s %s entry window elapsed" % (
+        pos["signal_id"], pos["symbol"], pos["side"],
+    ), flush=True)
 
 
 def close_or_partial(db_path: Path, pos: sqlite3.Row, price: float, reason: str, qty_frac: float) -> None:
@@ -195,7 +442,10 @@ def close_or_partial(db_path: Path, pos: sqlite3.Row, price: float, reason: str,
     now = utc_now()
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-    cur.execute("""INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
+    cur.execute("""INSERT INTO orders (
+        order_id, signal_id, ts_utc, mode, symbol, side, action, price, qty,
+        notional, reason, extra
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
         str(uuid.uuid4()),
         int(pos["signal_id"]),
         now,
@@ -228,14 +478,21 @@ def close_or_partial(db_path: Path, pos: sqlite3.Row, price: float, reason: str,
     ))
     con.commit()
     con.close()
+    print("[paper-live %s] msg=%s %s %s price=%.12g qty=%.12g pnl=%.12g status=%s" % (
+        reason.upper(), pos["signal_id"], pos["symbol"], side, price, qty, pnl, status,
+    ), flush=True)
 
 
 def build_exchange():
     if ccxt is None:
         return None
-    ex = ccxt.bingx({"enableRateLimit": True})
-    ex.load_markets()
-    return ex
+    try:
+        ex = ccxt.bingx({"enableRateLimit": True})
+        ex.load_markets()
+        return ex
+    except Exception as exc:
+        print("[paper-live] ccxt BingX init failed: %s" % exc, flush=True)
+        return None
 
 
 def fetch_price(ex: Any, symbol: str) -> Optional[float]:
@@ -249,16 +506,35 @@ def fetch_price(ex: Any, symbol: str) -> Optional[float]:
         return None
 
 
-async def monitor_exits(db_path: Path, poll_sec: float) -> None:
+async def monitor_paper_state(db_path: Path, poll_sec: float, monitor_pending: bool, monitor_exits: bool) -> None:
     ex = build_exchange()
     if ex is None:
-        print("[paper-live] ccxt not installed; TP/SL monitor disabled", flush=True)
-        return
+        print("[paper-live] ccxt not available; entry fills and TP/SL monitor disabled, pending timeouts still active", flush=True)
     while True:
         con = sqlite3.connect(db_path)
         con.row_factory = sqlite3.Row
-        rows = list(con.execute("SELECT * FROM positions WHERE status='open' AND qty_open > 0"))
+        pending = []
+        if monitor_pending:
+            pending = list(con.execute(
+                "SELECT * FROM positions WHERE status='pending' ORDER BY pending_created_at"
+            ))
+        rows = []
+        if monitor_exits:
+            rows = list(con.execute("SELECT * FROM positions WHERE status='open' AND qty_open > 0"))
         con.close()
+        now = utc_now()
+        for pos in pending:
+            expires_at = str(pos["pending_expires_at"] or "")
+            if expires_at and expires_at <= now:
+                expire_pending_position(db_path, pos)
+                continue
+            if ex is None:
+                continue
+            price = fetch_price(ex, str(pos["symbol"]))
+            if price is None:
+                continue
+            if price_touches_entry(pos, price):
+                open_pending_position(db_path, pos, price)
         for pos in rows:
             price = fetch_price(ex, str(pos["symbol"]))
             if price is None:
@@ -302,20 +578,42 @@ async def run(args: argparse.Namespace) -> None:
         sig["telegram_message_id"] = message_id
         sig["telegram_message_date"] = event.message.date.isoformat() if event.message.date else None
         ticker_price = fetch_price(ex, sig["symbol"]) if ex is not None else None
-        opened = insert_signal_and_position(db_path, sig, message_id, args.notional, args.entry_policy, ticker_price)
-        if opened:
+        if args.entry_policy == "touch":
+            state = insert_signal_and_pending(db_path, sig, message_id, args.notional, args.entry_timeout_sec)
+        else:
+            state = insert_signal_and_position(db_path, sig, message_id, args.notional, args.entry_policy, ticker_price)
+        if state != "duplicate":
             with out.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(sig, ensure_ascii=False) + "\n")
-            print(f"[paper-live OPEN] msg={message_id} {sig['symbol']} {sig['side']} notional={args.notional}", flush=True)
+            if state == "pending":
+                print("[paper-live PENDING] msg=%s %s %s entry=[%.12g, %.12g] timeout_sec=%.1f" % (
+                    message_id,
+                    sig["symbol"],
+                    sig["side"],
+                    float(sig["entry_low"]),
+                    float(sig["entry_high"]),
+                    float(args.entry_timeout_sec),
+                ), flush=True)
+            else:
+                print("[paper-live OPEN] msg=%s %s %s notional=%.12g policy=%s" % (
+                    message_id, sig["symbol"], sig["side"], args.notional, args.entry_policy,
+                ), flush=True)
         else:
-            print(f"[paper-live SKIP duplicate] msg={message_id}", flush=True)
+            print("[paper-live SKIP duplicate] msg=%s" % message_id, flush=True)
 
     await client.start()
     if not await client.is_user_authorized():
         raise SystemExit("Telethon user session is not authorized")
-    print(f"[paper-live] listening channel={channel} db={db_path}", flush=True)
-    if args.monitor_exits:
-        asyncio.create_task(monitor_exits(db_path, args.poll_sec))
+    print("[paper-live] listening channel=%s db=%s entry_policy=%s poll_sec=%.1f timeout_sec=%.1f" % (
+        channel, db_path, args.entry_policy, args.poll_sec, args.entry_timeout_sec,
+    ), flush=True)
+    if args.entry_policy == "touch" or args.monitor_exits:
+        asyncio.ensure_future(monitor_paper_state(
+            db_path,
+            args.poll_sec,
+            args.entry_policy == "touch",
+            bool(args.monitor_exits),
+        ))
     await client.run_until_disconnected()
 
 
@@ -327,11 +625,13 @@ def main() -> None:
     ap.add_argument("--out-jsonl", default="runs/telegram_paper/darkknighttrade_signals.jsonl")
     ap.add_argument("--db", default="runs/telegram_paper/paper_live.sqlite")
     ap.add_argument("--notional", type=float, default=100.0)
-    ap.add_argument("--entry-policy", choices=["mid", "ticker"], default="mid")
+    ap.add_argument("--entry-policy", choices=["touch", "mid", "ticker"], default="touch")
+    ap.add_argument("--entry-timeout-sec", type=float, default=900.0)
     ap.add_argument("--monitor-exits", action="store_true")
     ap.add_argument("--poll-sec", type=float, default=15.0)
     args = ap.parse_args()
-    asyncio.run(run(args))
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(run(args))
 
 
 if __name__ == "__main__":

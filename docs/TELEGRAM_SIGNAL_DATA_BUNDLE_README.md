@@ -156,11 +156,13 @@ python obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py \
   --out-jsonl runs/telegram_paper/darkknighttrade_signals.jsonl \
   --db runs/telegram_paper/paper_live.sqlite \
   --notional 100 \
-  --entry-policy mid \
+  --entry-policy touch \
+  --entry-timeout-sec 900 \
+  --poll-sec 15 \
   --monitor-exits
 ```
 
-Цей daemon не ставить реальні ордери. Він пише simulated `signals`, `orders`, `positions` у SQLite.
+Цей daemon не ставить реальні ордери. Він пише simulated `signals`, `orders`, `positions` у SQLite. За замовчуванням `--entry-policy touch` створює pending paper-entry, опитує BingX ticker кожні 15 секунд, відкриває simulated position тільки якщо ціна торкнулась entry zone протягом 900 секунд, інакше позначає pending як `expired`. Для сумісності лишились immediate режими `--entry-policy mid` та `--entry-policy ticker`.
 
 Щоб прогнати ці paper-сигнали через standard replay, нормалізуй JSONL у CSV:
 
