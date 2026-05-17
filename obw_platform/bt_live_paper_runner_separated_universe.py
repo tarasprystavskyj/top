@@ -210,6 +210,15 @@ def main():
     if args.cache_out:  os.environ["RS_CACHE_OUT"]  = args.cache_out
     if args.hour_cache: os.environ["RS_HOUR_CACHE"] = args.hour_cache
 
+    # Ensure session/cache paths exist even if downstream runners don't create them
+    for p in (args.session_db, args.cache_out):
+        if not p:
+            continue
+        # Create parent directories and touch the file so report copies work
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        if not os.path.exists(p):
+            open(p, "a").close()
+
     # Backtest → defer to backtester
     if args.mode == "backtest":
         return _run_backtest(args.cfg, args.limit_bars if args.limit_bars>0 else None)
