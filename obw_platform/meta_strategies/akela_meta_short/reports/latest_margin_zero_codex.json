@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-13T02:23:43Z",
+  "updated": "2026-05-18T02:12:41+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -68,7 +68,8 @@
     "terminal_unrealized_to_realized_ratio": -0.4129883587938366,
     "unrealized_pnl_long": -79.64032066261272,
     "unrealized_pnl_short": -10.803908149689253,
-    "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log"
+    "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log",
+    "risk_adjusted_mtm_score": 171.5221143453923
   },
   "basket_validation": {
     "scope": "three generated margin-zero configs plus existing FREEDOMMONEY baseline-zero config",
@@ -1090,7 +1091,7 @@
       "result": "Rejected after full-year: same weak full-year profile as exact tuner YAML; temporary YAML removed."
     }
   ],
-  "next_action": "First-basket margin-call cleanup remains satisfied. Next useful search: targeted SUP time-slice diagnosis around the full-year degradation window for the tuner exits, or a constrained tuner plan that excludes exposure-cap deltas when starting from tiny margin-zero budgets.",
+  "next_action": "Use an environment with full local DB cache and stable process throughput; first test SUP recent-tail long-side de-risk variants on 5k bars, then promote only if MTM is positive, MDD is negative, and margin calls remain zero.",
   "latest_cycle_attempts": [
     {
       "config": "V21_maxxing_margin_zero_budget125.yaml",
@@ -1224,6 +1225,69 @@
       "terminal_unrealized_to_realized_ratio": -0.8556960905110638,
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_tuner_exit_sanitized_full.log",
       "result": "Rejected after full-year: same weak full-year profile as exact tuner YAML; temporary YAML removed."
+    },
+    {
+      "cycle": "2026-05-18 local SUP recent-tail probe",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml",
+      "npz": "C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz",
+      "symbol": "SUP/USDT:USDT",
+      "command": "python obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml --npz C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT --limit-bars 5000",
+      "limit_bars": 5000,
+      "return_mtm_pct_on_start": -1.5428193102409251,
+      "mdd_mtm_%": -2.7050674436787787,
+      "risk_adjusted_mtm_score": null,
+      "trades_total": 277,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -1.3622080918083086,
+      "unrealized_pnl_long": -10.431546634385812,
+      "unrealized_pnl_short": -1.173058542245931,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/backtests/sup_budget32_fast_exit_limit5000_20260518.log",
+      "result": "Rejected as promotion signal: zero margin calls, but negative MTM return and tail dominated by long-side unrealized loss."
+    },
+    {
+      "cycle": "2026-05-18 execution blocker",
+      "result": "Stopped additional runs after repeated trusted-backtester invocations timed out following one successful 5k SUP run.",
+      "details": "The checkout has no local DB/ directory; only SUP NPZ was found in sibling C:\\python_scripts\\top_1\\DB. Several long-lived python.exe processes were already present. No production configs or backtester math were changed.",
+      "next_action": "Use an environment with full local DB cache and stable process throughput; first test SUP recent-tail long-side de-risk variants on 5k bars, then promote only if MTM is positive, MDD is negative, and margin calls remain zero."
+    }
+  ],
+  "risk_adjusted_mtm_ranking_20260518": [
+    {
+      "symbol": "MAXXING/USDT:USDT",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget125_stress_exit.yaml",
+      "return_mtm_pct_on_start": 119.55309748045855,
+      "mdd_mtm_%": -13.677453987301133,
+      "margin_call_events_total": 0,
+      "risk_adjusted_mtm_score": 1045.0002705505237,
+      "terminal_unrealized_to_realized_ratio": -0.20480438303536533
+    },
+    {
+      "symbol": "FREEDOMMONEY/USDT:USDT",
+      "config": "obw_platform/configs/V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+      "return_mtm_pct_on_start": 64.27761710740924,
+      "mdd_mtm_%": -24.087926368998254,
+      "margin_call_events_total": 0,
+      "risk_adjusted_mtm_score": 171.5221143453923,
+      "terminal_unrealized_to_realized_ratio": -0.4129883587938366
+    },
+    {
+      "symbol": "IDOL/USDT:USDT",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_idol_margin_zero_budget125.yaml",
+      "return_mtm_pct_on_start": 34.70499499858549,
+      "mdd_mtm_%": -13.402130090476835,
+      "margin_call_events_total": 0,
+      "risk_adjusted_mtm_score": 89.86904840654262,
+      "terminal_unrealized_to_realized_ratio": -0.20545641777245982
+    },
+    {
+      "symbol": "SUP/USDT:USDT",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml",
+      "return_mtm_pct_on_start": 3.2708918655933035,
+      "mdd_mtm_%": -25.093413891547776,
+      "margin_call_events_total": 0,
+      "risk_adjusted_mtm_score": 0.42635624003348943,
+      "terminal_unrealized_to_realized_ratio": -0.6354468290754168
     }
   ]
 }

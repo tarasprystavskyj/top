@@ -30,6 +30,14 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 
 ## Current Cycle
 
+2026-05-18 local cycle: no new YAML was promoted. The current margin-zero basket remains unchanged. Re-ranked by the requested risk-adjusted MTM score (`return_mtm_pct_on_start^2 / abs(mdd_mtm_%)`), the current full-year leaders are MAXXING budget125_stress_exit at 1045.0003, FREEDOMMONEY baseline at 171.5221, IDOL budget125 at 89.8690, and SUP budget32_fast_exit at 0.4264.
+
+Fresh SUP recent-tail probe: `V21_sup_margin_zero_budget32_fast_exit.yaml` was re-run on the available sibling NPZ cache at `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz` with `--limit-bars 5000`. It stayed margin-zero, but was rejected as a promotion signal because MTM return was negative: return -1.5428%, MDD -2.7051%, 277 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -1.3622. The tail was mainly long-side unrealized drag (`unrealized_pnl_long = -10.4315`, `unrealized_pnl_short = -1.1731`) against +8.5190 realized PnL. Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/backtests/sup_budget32_fast_exit_limit5000_20260518.log`.
+
+Execution blocker: the documented local `DB/` directory is absent from this checkout; only the SUP NPZ was found in sibling `C:\python_scripts\top_1\DB`. After the first successful 5k SUP run, repeated backtester invocations for the same fast-exit family began timing out, including a repeated selected-config run that produced no output before timeout. Several unrelated long-lived `python.exe` processes were already present, so this cycle stopped new expensive runs rather than consuming more local resources. The empty repeat log was deleted.
+
+Next concrete action: rerun from an environment with the full local `DB/` cache and stable backtester process throughput. For SUP specifically, test recent-tail variants that reduce or force faster exit of the stuck long leg while preserving the selected short-side fast-exit behavior; reject immediately unless `return_mtm_pct_on_start > 0`, `mdd_mtm_% < 0`, and margin calls stay at zero on the 5k slice before any full-year confirmation.
+
 The first-basket risk-cleanup target is still satisfied: all four selected configs have `margin_call_events_total = 0` and `bars_in_margin_call = 0` on full-year runs.
 
 Selection note: `V21_sup_margin_zero_budget30_fast_exit.yaml` improves SUP full-year return from 1.90% to 2.87%, slightly improves MDD from -25.15% to -25.05%, and improves terminal unrealized/realized ratio from -0.7934 to -0.6742 versus plain budget30. Budget20 remains a valid lower-drawdown fallback, but fast-exit budget30 is the better current risk-cleanup balance.
