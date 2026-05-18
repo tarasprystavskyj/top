@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T08:05:00+03:00",
+  "updated": "2026-05-18T07:36:19+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -2692,5 +2692,33 @@
     ],
     "result": "No promotion. High-short continuation beyond s60 destabilized the 20k slice; selected SUP remains V21_sup_margin_zero_long35_short50.yaml, with budget32_fast_exit as conservative fallback.",
     "next_action": "Do not continue simple short-budget escalation for SUP. The next useful SUP search needs an actual tail/exposure guard that passes positive 20k MTM before full-year confirmation."
+  },
+  "sup_l20_s60_full_confirmation_20260518": {
+    "cycle": "2026-05-18 SUP l20_s60 full-year confirmation",
+    "hypothesis": "Because l20_s60 was the best simple high-short 20k survivor, full-year confirm it once as a score-first sanity check despite weaker 20k evidence than the current SUP leader.",
+    "command": "python obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l20_s60.yaml --npz C:/python_scripts/top_1/DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT",
+    "attempt": {
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l20_s60.yaml",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 8.02277190842221,
+      "mdd_mtm_%": -61.924104748052166,
+      "risk_adjusted_mtm_score": 1.03941541595873,
+      "trades_total": 1453,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.4643043418236105,
+      "unrealized_pnl_long": -9.615197516631326,
+      "unrealized_pnl_short": -4.291981956211763,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s60_full_20260518_codex.log"
+    },
+    "comparison": {
+      "current_sup_score_leader": "V21_sup_margin_zero_long35_short50.yaml",
+      "leader_return_mtm_pct_on_start": 11.265457747781666,
+      "leader_mdd_mtm_%": -50.198722228706,
+      "leader_risk_adjusted_mtm_score": 2.5281853243712784,
+      "leader_tail_ratio": -0.27438896486533815
+    },
+    "result": "Rejected after full-year confirmation: l20_s60 stayed zero-margin, but had lower return, deeper MTM drawdown, worse risk-adjusted score, and worse terminal unrealized ratio than SUP long35_short50.",
+    "next_action": "Selection unchanged. Stop simple SUP long/short budget interpolation; only test a new SUP branch if it introduces a real tail guard or exit-shape change and passes positive 20k MTM with zero margin calls."
   }
 }
