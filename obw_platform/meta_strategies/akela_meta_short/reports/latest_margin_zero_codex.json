@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T07:31:00+03:00",
+  "updated": "2026-05-18T07:45:00+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -2476,5 +2476,79 @@
     },
     "result": "No selection change. Existing first-basket zero-margin cleanup remains the current promoted report-level result.",
     "next_action": "Resume only when the full documented NPZ cache is available and disk headroom is healthier; for SUP, require positive 20k MTM before any full-year confirmation."
+  },
+  "sup_dca_damp_probe_20260518": {
+    "cycle": "2026-05-18 local SUP DCA-damp probe",
+    "hypothesis": "Long-side DCA dampening might reduce the score-first SUP open-long tail without changing exchange, fee, slippage, liquidation, margin, or backtester math.",
+    "source_config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
+    "npz_used": "C:/python_scripts/top_1/DB/akela_meta_short_1m_1y_sup_bingx.npz",
+    "attempts": [
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_long_dcadamp60.yaml",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": -2.1065016247975477,
+        "mdd_mtm_%": -3.6810849474791336,
+        "risk_adjusted_mtm_score": null,
+        "trades_total": 322,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -1.3907210853117338,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_dcadamp60_5k_20260518.log",
+        "result": "rejected_before_20k",
+        "reason": "Stayed zero-margin, but failed the positive-MTM guard and reproduced the stuck-long terminal exposure profile."
+      },
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_long_dcadamp45.yaml",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": -2.1065016247975477,
+        "mdd_mtm_%": -3.6810849474791336,
+        "risk_adjusted_mtm_score": null,
+        "trades_total": 322,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -1.3907210853117338,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_dcadamp45_5k_20260518.log",
+        "result": "rejected_before_20k",
+        "reason": "Stronger long-side DCA dampening produced identical failed 5k metrics; no 20k or full-year confirmation launched."
+      }
+    ],
+    "result": "No promotion. Current score-first basket selection unchanged.",
+    "current_best_zero_margin_basket": {
+      "IDOL/USDT:USDT": {
+        "config": "V21_idol_margin_zero_budget125.yaml",
+        "return_mtm_pct_on_start": 34.70499499858549,
+        "mdd_mtm_%": -13.402130090476835,
+        "risk_adjusted_mtm_score": 89.86904840654262,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0
+      },
+      "FREEDOMMONEY/USDT:USDT": {
+        "config": "V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+        "return_mtm_pct_on_start": 64.27761710740924,
+        "mdd_mtm_%": -24.087926368998254,
+        "risk_adjusted_mtm_score": 171.5221143453923,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0
+      },
+      "MAXXING/USDT:USDT": {
+        "config": "V21_maxxing_margin_zero_budget125_stress_exit.yaml",
+        "return_mtm_pct_on_start": 119.55309748045855,
+        "mdd_mtm_%": -13.677453987301133,
+        "risk_adjusted_mtm_score": 1045.0002705505237,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0
+      },
+      "SUP/USDT:USDT": {
+        "config": "V21_sup_margin_zero_long35_short50.yaml",
+        "return_mtm_pct_on_start": 11.265457747781666,
+        "mdd_mtm_%": -50.198722228706,
+        "risk_adjusted_mtm_score": 2.5281853243712784,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+        "fallback_config": "V21_sup_margin_zero_budget32_fast_exit.yaml"
+      }
+    },
+    "next_action": "Do not continue single-knob SUP long-side risk reducers unless the 5k gate is positive and materially cleaner; broader search still requires the full documented NPZ cache and healthier disk headroom."
   }
 }
