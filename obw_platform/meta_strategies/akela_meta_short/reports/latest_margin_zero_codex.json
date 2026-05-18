@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T06:40:31+03:00",
+  "updated": "2026-05-18T07:00:00+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1100,7 +1100,7 @@
       "result": "Rejected after full-year: same weak full-year profile as exact tuner YAML; temporary YAML removed."
     }
   ],
-  "next_action": "Use an environment with full local DB cache and stable process throughput; first test SUP recent-tail long-side de-risk variants on 5k bars, then promote only if MTM is positive, MDD is negative, and margin calls remain zero.",
+  "next_action": "First-basket margin-call cleanup remains satisfied with 0 total margin-call events. Simple SUP budget interpolation did not improve the 20k gate; next test an actual long-leg guard or exit-shape change that preserves long35_short50 short-side contribution while avoiding the recent open-long tail.",
   "latest_cycle_attempts": [
     {
       "config": "V21_maxxing_margin_zero_budget125.yaml",
@@ -1806,8 +1806,101 @@
         "terminal_unrealized_to_realized_ratio": -0.6814938383013769,
         "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s50_20k_20260518.log",
         "result": "Rejected before full-year confirmation: positive and zero-margin, but underperformed budget32_fast_exit's 20k return, MDD, and tail ratio."
+      },
+      {
+        "config": "V21_sup_margin_zero_l25_s50.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": 2.6079509194962496,
+        "mdd_mtm_%": -3.5698161452185206,
+        "risk_adjusted_mtm_score": 1.905254422587356,
+        "trades_total": 329,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.5189190256449688,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l25_s50_5k_20260518.log",
+        "result": "Passed the 5k gate but slightly underperformed l20_s50; promoted only to 20k confirmation."
+      },
+      {
+        "config": "V21_sup_margin_zero_l30_s50.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": -0.5272131254183101,
+        "mdd_mtm_%": -2.7400651248494503,
+        "risk_adjusted_mtm_score": null,
+        "trades_total": 323,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -1.0977199776324509,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l30_s50_5k_20260518.log",
+        "result": "Rejected before 20k: stayed zero-margin, but failed the positive-MTM gate with poor terminal unrealized exposure."
+      },
+      {
+        "config": "V21_sup_margin_zero_l25_s50.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 20000,
+        "return_mtm_pct_on_start": 0.2724587522238604,
+        "mdd_mtm_%": -18.839003875018552,
+        "risk_adjusted_mtm_score": 0.003940429767723579,
+        "trades_total": 272,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.9681785039635358,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l25_s50_20k_20260518.log",
+        "result": "Rejected before full-year: zero-margin and barely positive, but materially worse than both l20_s50 and budget32_fast_exit on the 20k gate."
       }
     ],
-    "next_action": "Do not pursue the same low-long/high-short SUP blend unless it can beat budget32_fast_exit on the 20k gate. Continue only with variants that keep margin_call_events_total = 0 and produce positive 20k MTM before any full-year run."
+    "next_action": "Stop pursuing simple SUP low-long/high-short budget interpolation; it did not improve the 20k gate. Next useful search: test an actual long-leg guard or exit-shape change that keeps long35_short50 short-side contribution but avoids the recent open-long tail; require positive 20k MTM before any full-year run."
+  },
+  "sup_middle_region_continuation_20260518": {
+    "cycle": "2026-05-18 local SUP middle-region continuation",
+    "npz_available": "C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz",
+    "result": "No promoted candidate. Current score-first basket selection unchanged.",
+    "hypothesis": "Interpolate long-side budget between l20_s50 and long35_short50 while keeping short budget 50, looking for a middle region with positive 20k MTM and lower drawdown than the score-first SUP full-year leader.",
+    "attempts": [
+      {
+        "config": "V21_sup_margin_zero_l25_s50.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": 2.6079509194962496,
+        "mdd_mtm_%": -3.5698161452185206,
+        "risk_adjusted_mtm_score": 1.905254422587356,
+        "trades_total": 329,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.5189190256449688,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l25_s50_5k_20260518.log",
+        "result": "Passed the 5k gate but slightly underperformed l20_s50; promoted only to 20k confirmation."
+      },
+      {
+        "config": "V21_sup_margin_zero_l30_s50.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": -0.5272131254183101,
+        "mdd_mtm_%": -2.7400651248494503,
+        "risk_adjusted_mtm_score": null,
+        "trades_total": 323,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -1.0977199776324509,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l30_s50_5k_20260518.log",
+        "result": "Rejected before 20k: stayed zero-margin, but failed the positive-MTM gate with poor terminal unrealized exposure."
+      },
+      {
+        "config": "V21_sup_margin_zero_l25_s50.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 20000,
+        "return_mtm_pct_on_start": 0.2724587522238604,
+        "mdd_mtm_%": -18.839003875018552,
+        "risk_adjusted_mtm_score": 0.003940429767723579,
+        "trades_total": 272,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.9681785039635358,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l25_s50_20k_20260518.log",
+        "result": "Rejected before full-year: zero-margin and barely positive, but materially worse than both l20_s50 and budget32_fast_exit on the 20k gate."
+      }
+    ],
+    "next_action": "Stop pursuing simple SUP low-long/high-short budget interpolation; it did not improve the 20k gate. Next useful search: test an actual long-leg guard or exit-shape change that keeps long35_short50 short-side contribution but avoids the recent open-long tail; require positive 20k MTM before any full-year run."
   }
 }

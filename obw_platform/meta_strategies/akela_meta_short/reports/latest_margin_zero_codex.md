@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T06:40:31+03:00
+Updated: 2026-05-18T07:00:00+03:00
 
 ## Objective
 
@@ -31,6 +31,12 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local SUP middle-region continuation: created `V21_sup_margin_zero_l25_s50.yaml` and `V21_sup_margin_zero_l30_s50.yaml` from the rejected `l20_s50` low-long/high-short branch. The hypothesis was that a long budget between 20 and 35 might recover some full-year contribution from `long35_short50` without immediately entering its -50% drawdown region. Both quick checks used the only available local SUP cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`.
+
+`V21_sup_margin_zero_l30_s50.yaml` stayed zero-margin on the 5k slice but failed the hard positive-MTM gate: return -0.5272%, MDD -2.7401%, 323 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -1.0977. `V21_sup_margin_zero_l25_s50.yaml` passed the 5k gate at +2.6080% return, -3.5698% MDD, 329 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.5189, but the 20k confirmation collapsed to +0.2725% return, -18.8390% MDD, 272 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.9682. It is rejected before full-year confirmation because it is materially worse than `l20_s50` on the same 20k gate and far worse than the conservative `budget32_fast_exit` gate.
+
+Current selection is unchanged. The score-first full-year basket remains IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP long35_short50, with 0 total margin-call events and score-first SUP risk-adjusted MTM score 2.5282. The conservative SUP fallback remains `V21_sup_margin_zero_budget32_fast_exit.yaml`. Next concrete action: stop pursuing simple low-long/high-short budget interpolation; the useful SUP search direction is still an actual long-leg guard or exit-shape change that avoids the recent open-long tail while preserving `long35_short50` full-year return.
 
 2026-05-18 local SUP middle-region probe: created two experimental YAMLs under `generated_configs/margin_zero/` and tested only bounded SUP slices against the only available local SUP cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. `V21_sup_margin_zero_l35_s50_long_guard.yaml` kept the score-leading 35/50 budget shape but borrowed conservative long-leg pacing/exits from the fast-exit profile. It stayed margin-zero on the 5k slice, but failed the positive-MTM gate: return -0.4894%, MDD -3.5999%, 326 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -1.0901. It improved the recent-tail loss versus `long35_short50` but still had too much stuck long unrealized exposure, so it was not promoted to 20k. Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_guard_5k_20260518.log`.
 
@@ -157,6 +163,9 @@ SUP 25k tuner follow-up: the selected `V21_sup_margin_zero_budget32_fast_exit.ya
 | tuner final_best from `akela_margin_zero_sup_budget32_25k_20260513_021101` | full | 1.19 | -31.28 | 1154 | 0 | 0 | -0.8557 | Rejected after full-year: stayed zero-margin, but underperformed selected SUP budget32_fast_exit on return, drawdown, and terminal unrealized ratio. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_25k_tuner_final_full.log` |
 | temporary `V21_sup_margin_zero_budget32_tuner_exit_sanitized.yaml` | 25000 | 5.23 | -17.36 | 282 | 0 | 0 | -0.5997 | Sanitized exit-only copy restored 0.4 exposure caps and reproduced the tuner slice result exactly; promoted only to full-year confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_tuner_exit_sanitized_25k.log` |
 | temporary `V21_sup_margin_zero_budget32_tuner_exit_sanitized.yaml` | full | 1.19 | -31.28 | 1154 | 0 | 0 | -0.8557 | Rejected after full-year: same weak full-year profile as exact tuner YAML; temporary YAML removed. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_tuner_exit_sanitized_full.log` |
+| `V21_sup_margin_zero_l25_s50.yaml` | 5000 | 2.61 | -3.57 | 329 | 0 | 0 | -0.5189 | Passed the 5k gate but slightly underperformed `l20_s50`; promoted only to 20k confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l25_s50_5k_20260518.log` |
+| `V21_sup_margin_zero_l30_s50.yaml` | 5000 | -0.53 | -2.74 | 323 | 0 | 0 | -1.0977 | Rejected before 20k: stayed zero-margin, but failed the positive-MTM gate with poor terminal unrealized exposure. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l30_s50_5k_20260518.log` |
+| `V21_sup_margin_zero_l25_s50.yaml` | 20000 | 0.27 | -18.84 | 272 | 0 | 0 | -0.9682 | Rejected before full-year: zero-margin and barely positive, but materially worse than both `l20_s50` and `budget32_fast_exit` on the 20k gate. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l25_s50_20k_20260518.log` |
 
 ## Baseline Comparison
 
@@ -184,4 +193,4 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP long35_short50. The score-first SUP pick accepts a deeper -50.20% full-year MTM drawdown for a much higher SUP score and cleaner terminal unrealized ratio; keep budget32_fast_exit as the conservative fallback if the drawdown ceiling is closer to -25%. The next useful search is a middle-region SUP probe between these two profiles, but only from an environment with the full `DB/` cache and stable backtester throughput.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP long35_short50. The score-first SUP pick accepts a deeper -50.20% full-year MTM drawdown for a much higher SUP score and cleaner terminal unrealized ratio; keep budget32_fast_exit as the conservative fallback if the drawdown ceiling is closer to -25%. Simple SUP budget interpolation between the low-long/high-short and score-first profiles did not improve the 20k gate. Next useful search: test an actual long-leg guard or exit-shape change that keeps `long35_short50`'s short-side contribution but avoids the recent open-long tail; require positive 20k MTM before any full-year run.
