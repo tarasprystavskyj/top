@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T07:16:20+03:00
+Updated: 2026-05-18T07:16:26+03:00
 
 ## Objective
 
@@ -31,6 +31,16 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local SUP 20k follow-up: ran the previously 5k-only `V21_sup_margin_zero_l35_s50_long_scaleout_dcablock.yaml` against the available sibling cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`, to close the evidence gap on the best recent-tail long guard. Command:
+
+```bash
+python obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_long_scaleout_dcablock.yaml --npz C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT --limit-bars 20000
+```
+
+Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_scaleout_dcablock_20k_20260518.log`. Result: return -0.4233%, MDD -17.1030%, 354 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -1.0348, long unrealized PnL -20.8965, short unrealized PnL -4.2920. This branch is rejected before full-year confirmation because it fails the positive-MTM guard and has worse tail exposure than both `V21_sup_margin_zero_long35_short50.yaml` and the conservative `V21_sup_margin_zero_budget32_fast_exit.yaml` on comparable 20k evidence.
+
+Current selection is unchanged. The score-first full-year basket remains IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP long35_short50, with 0 total margin-call events and score-first SUP risk-adjusted MTM score 2.5282. The conservative SUP fallback remains `V21_sup_margin_zero_budget32_fast_exit.yaml`. Next concrete action: stop promoting one-off SUP long guards from 5k unless they also pass a positive 20k MTM gate; a constrained tuner/microbatch around exit/scale-out ranges is more likely to find a useful shape than another single-knob hand probe.
 
 2026-05-18 local SUP short-budget continuation: created four experimental YAMLs under `generated_configs/margin_zero/` and tested only bounded SUP slices against the available sibling cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. `V21_sup_margin_zero_l35_s50_long_pace.yaml` kept the score-leading 35/50 budget and short side intact, changing only long `maxFillsPerBar` 2 -> 1 and long `maxOrdersPer3Min` 4 -> 3. It stayed margin-zero on the 5k slice, but failed the positive-MTM guard: return -0.5928%, MDD -3.6678%, 326 trades, 0 margin calls, 0 bars in margin call, tail ratio -1.1091. `V21_sup_margin_zero_l35_s50_long_exit_soft.yaml` kept the same score-leading budget while mildly tightening only long exits (`callbackPercent` 0.03 -> 0.0275, `linearDropPercent` 0.08 -> 0.09, `tpPercent` 0.24 -> 0.22, `subSellTPPercent` 0.42 -> 0.39). It reproduced the existing recent-tail failure on 5k: return -2.2771%, MDD -3.7769%, 322 trades, 0 margin calls, 0 bars in margin call, tail ratio -1.4224. Both long-side variants are rejected before 20k.
 
@@ -198,7 +208,7 @@ SUP 25k tuner follow-up: the selected `V21_sup_margin_zero_budget32_fast_exit.ya
 
 Late local SUP long-guard probe: three 5k-only variants were created from the score-leading `V21_sup_margin_zero_long35_short50.yaml`. Exact commands used the trusted backtester with `--npz C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`, symbol `SUP/USDT:USDT`, and `--limit-bars 5000`; raw logs are listed in the table above. All stayed zero-margin, but all failed the positive-MTM gate, so no 20k or full-year confirmation was launched. Current selection is unchanged: SUP score-first remains `V21_sup_margin_zero_long35_short50.yaml`, with `V21_sup_margin_zero_budget32_fast_exit.yaml` retained as the conservative fallback.
 
-Latest local SUP guard/exit probe: five additional 5k-only variants were created from `V21_sup_margin_zero_long35_short50.yaml` to test long-only scale-out, unfavorable-regime sizing, volatility targeting, tighter long DCA blocking, and scale-out plus tighter DCA blocking. All stayed zero-margin. The only positive variants were weak (`0.17%` and `1.22%`) and still had poor terminal unrealized ratios (`-0.9684` and `-0.7791`), while the others reproduced the stuck-long failure. No 20k or full-year confirmation was launched. Current selection is unchanged: SUP score-first remains `V21_sup_margin_zero_long35_short50.yaml`; `V21_sup_margin_zero_budget32_fast_exit.yaml` remains the lower-drawdown fallback. Next concrete action: stop testing single-knob SUP long guards on the recent 5k window unless they can clearly beat the existing `l20_s50`/`budget32_fast_exit` 5k evidence; consider a bounded tuner pass only if constrained to sane exit/scale-out ranges and then manually reject nonsensical exposure caps.
+Latest local SUP guard/exit probe: five additional 5k-only variants were created from `V21_sup_margin_zero_long35_short50.yaml` to test long-only scale-out, unfavorable-regime sizing, volatility targeting, tighter long DCA blocking, and scale-out plus tighter DCA blocking. All stayed zero-margin. The only positive variants were weak (`0.17%` and `1.22%`) and still had poor terminal unrealized ratios (`-0.9684` and `-0.7791`), while the others reproduced the stuck-long failure. A later 20k follow-up for the best of these, `V21_sup_margin_zero_l35_s50_long_scaleout_dcablock.yaml`, stayed zero-margin but failed with -0.4233% MTM and tail ratio -1.0348, so no full-year confirmation was launched. Current selection is unchanged: SUP score-first remains `V21_sup_margin_zero_long35_short50.yaml`; `V21_sup_margin_zero_budget32_fast_exit.yaml` remains the lower-drawdown fallback. Next concrete action: stop testing single-knob SUP long guards unless they first pass positive 20k MTM; consider a bounded tuner pass only if constrained to sane exit/scale-out ranges and then manually reject nonsensical exposure caps.
 
 ## Baseline Comparison
 
