@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T07:45:00+03:00",
+  "updated": "2026-05-18T08:05:00+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1175,7 +1175,7 @@
       "reason": "Scale-out plus tighter DCA guard improved the local tail versus plain long35/short50, but remained weaker than existing 5k alternatives and did not justify a 20k promotion."
     }
   ],
-  "next_action": "Stop testing single-knob SUP long guards on the recent 5k window unless they clearly beat existing l20_s50/budget32_fast_exit 5k evidence; consider a bounded tuner pass only with manual rejection of nonsensical exposure caps.",
+  "next_action": "Do not continue simple short-budget escalation for SUP. The next useful SUP search needs an actual tail/exposure guard that passes positive 20k MTM before full-year confirmation.",
   "latest_cycle_attempts": [
     {
       "config": "V21_sup_margin_zero_l35_s50_long_scaleout.yaml",
@@ -1598,6 +1598,45 @@
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_scaleout_dcablock_5k_20260518.log",
       "result": "rejected_before_20k",
       "reason": "Scale-out plus tighter DCA guard improved the local tail versus plain long35/short50, but remained weaker than existing 5k alternatives and did not justify a 20k promotion."
+    },
+    {
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l20_s65.yaml",
+      "limit_bars": 5000,
+      "return_mtm_pct_on_start": 2.497017487316936,
+      "mdd_mtm_%": -4.0794070681176775,
+      "risk_adjusted_mtm_score": 1.5284320068709365,
+      "trades_total": 387,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.5484020101126826,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s65_5k_20260518.log",
+      "result": "Promoted only to 20k because the 5k score was slightly better than l20_s60, despite lower return and slightly worse tail ratio."
+    },
+    {
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l20_s70.yaml",
+      "limit_bars": 5000,
+      "return_mtm_pct_on_start": 2.1571976945662805,
+      "mdd_mtm_%": -3.7905946065693077,
+      "risk_adjusted_mtm_score": 1.227644308198324,
+      "trades_total": 392,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6076698131211442,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s70_5k_20260518.log",
+      "result": "Rejected at 5k: lower return and worse tail ratio than l20_s60/l20_s65."
+    },
+    {
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l20_s65.yaml",
+      "limit_bars": 20000,
+      "return_mtm_pct_on_start": -2.3067933665032374,
+      "mdd_mtm_%": -120.81642703272509,
+      "risk_adjusted_mtm_score": null,
+      "trades_total": 296,
+      "margin_call_events_total": 6,
+      "bars_in_margin_call": 87,
+      "terminal_unrealized_to_realized_ratio": -1.2228362655845302,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s65_20k_20260518.log",
+      "result": "Rejected before full-year: failed both margin-zero and positive-MTM guards on the 20k confirmation."
     }
   ],
   "risk_adjusted_mtm_ranking_20260518": [
@@ -2604,5 +2643,54 @@
     },
     "result": "No selection change. Basket margin-call events remain 0 using the current score-first margin-zero selection.",
     "next_action": "Resume full-basket validation only after the documented NPZ cache is available and disk headroom is healthier; for SUP, require positive 20k MTM before any full-year confirmation."
+  },
+  "sup_high_short_continuation_20260518": {
+    "cycle": "2026-05-18 SUP high-short continuation",
+    "hypothesis": "Slightly increasing the short-side budget beyond l20_s60 might preserve low long exposure while improving the local MTM/MDD score.",
+    "source_config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l20_s60.yaml",
+    "npz_used": "C:/python_scripts/top_1/DB/akela_meta_short_1m_1y_sup_bingx.npz",
+    "attempts": [
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l20_s65.yaml",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": 2.497017487316936,
+        "mdd_mtm_%": -4.0794070681176775,
+        "risk_adjusted_mtm_score": 1.5284320068709365,
+        "trades_total": 387,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.5484020101126826,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s65_5k_20260518.log",
+        "result": "Promoted only to 20k because the 5k score was slightly better than l20_s60, despite lower return and slightly worse tail ratio."
+      },
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l20_s70.yaml",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": 2.1571976945662805,
+        "mdd_mtm_%": -3.7905946065693077,
+        "risk_adjusted_mtm_score": 1.227644308198324,
+        "trades_total": 392,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.6076698131211442,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s70_5k_20260518.log",
+        "result": "Rejected at 5k: lower return and worse tail ratio than l20_s60/l20_s65."
+      },
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l20_s65.yaml",
+        "limit_bars": 20000,
+        "return_mtm_pct_on_start": -2.3067933665032374,
+        "mdd_mtm_%": -120.81642703272509,
+        "risk_adjusted_mtm_score": null,
+        "trades_total": 296,
+        "margin_call_events_total": 6,
+        "bars_in_margin_call": 87,
+        "terminal_unrealized_to_realized_ratio": -1.2228362655845302,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s65_20k_20260518.log",
+        "result": "Rejected before full-year: failed both margin-zero and positive-MTM guards on the 20k confirmation."
+      }
+    ],
+    "result": "No promotion. High-short continuation beyond s60 destabilized the 20k slice; selected SUP remains V21_sup_margin_zero_long35_short50.yaml, with budget32_fast_exit as conservative fallback.",
+    "next_action": "Do not continue simple short-budget escalation for SUP. The next useful SUP search needs an actual tail/exposure guard that passes positive 20k MTM before full-year confirmation."
   }
 }
