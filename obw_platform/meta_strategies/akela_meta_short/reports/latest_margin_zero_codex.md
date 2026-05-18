@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T07:00:10+03:00
+Updated: 2026-05-18T07:16:20+03:00
 
 ## Objective
 
@@ -147,6 +147,9 @@ SUP 25k tuner follow-up: the selected `V21_sup_margin_zero_budget32_fast_exit.ya
 | `V21_sup_margin_zero_l20_s60.yaml` | 5000 | 2.52 | -4.34 | 384 | 0 | 0 | -0.5329 | Passed the 5k gate with the better return of the two short-budget bumps; promoted only to 20k confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s60_5k_20260518.log` |
 | `V21_sup_margin_zero_l20_s55.yaml` | 20000 | 3.26 | -17.80 | 272 | 0 | 0 | -0.6738 | Rejected before full-year: zero-margin and positive, but worse than budget32_fast_exit on 20k return, MDD, and tail ratio. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s55_20k_20260518.log` |
 | `V21_sup_margin_zero_l20_s60.yaml` | 20000 | 3.33 | -17.79 | 278 | 0 | 0 | -0.6692 | Rejected before full-year: best of this cycle, but still below budget32_fast_exit's 20k evidence and not worth a full-year run. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s60_20k_20260518.log` |
+| `V21_sup_margin_zero_l35_s50_long_contrary08.yaml` | 5000 | -2.28 | -3.78 | 322 | 0 | 0 | -1.4224 | Rejected before 20k: adding long-only `closeOnContraryGainPct: 0.08` produced identical metrics and no long close events versus the recent-tail failure. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_contrary08_5k_20260518.log` |
+| `V21_sup_margin_zero_l35_s50_long_stale5.yaml` | 5000 | -0.68 | -3.78 | 384 | 0 | 0 | -43.2942 | Rejected before 20k: long-only stale close removed the open long tail but realized enough long loss to fail the positive-MTM guard. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_stale5_5k_20260518.log` |
+| `V21_sup_margin_zero_l35_s50_long_entryblock06.yaml` | 5000 | -2.28 | -3.78 | 322 | 0 | 0 | -1.4224 | Rejected before 20k: long-only `entryBlockCounterTrendGainAbs: 0.06` produced identical metrics, so the available slice did not expose a useful gain-regime entry filter signal. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_entryblock06_5k_20260518.log` |
 | `V21_sup_margin_zero_l35_s50_long_gate65.yaml` | 5000 | 4.69 | -4.43 | 322 | 0 | 0 | -0.1309 | Passed the 5k gate: blocked the recent stuck long and kept the score-leading short side active; promoted only to 20k confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_gate65_5k_20260518.log` |
 | `V21_sup_margin_zero_l35_s50_long_gate75.yaml` | 5000 | 4.69 | -4.43 | 322 | 0 | 0 | -0.1309 | Same 5k behavior as gate65 with no long trades; not separately promoted because it added no distinct signal. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_gate75_5k_20260518.log` |
 | `V21_sup_margin_zero_l35_s50_long_gate65.yaml` | 20000 | -0.78 | -24.64 | 173 | 0 | 0 | -1.5696 | Rejected before full-year: stayed zero-margin, but failed the positive-MTM gate and ended with poor short-side terminal exposure. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_gate65_20k_20260518.log` |
@@ -187,6 +190,8 @@ SUP 25k tuner follow-up: the selected `V21_sup_margin_zero_budget32_fast_exit.ya
 | `V21_sup_margin_zero_l25_s50.yaml` | 5000 | 2.61 | -3.57 | 329 | 0 | 0 | -0.5189 | Passed the 5k gate but slightly underperformed `l20_s50`; promoted only to 20k confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l25_s50_5k_20260518.log` |
 | `V21_sup_margin_zero_l30_s50.yaml` | 5000 | -0.53 | -2.74 | 323 | 0 | 0 | -1.0977 | Rejected before 20k: stayed zero-margin, but failed the positive-MTM gate with poor terminal unrealized exposure. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l30_s50_5k_20260518.log` |
 | `V21_sup_margin_zero_l25_s50.yaml` | 20000 | 0.27 | -18.84 | 272 | 0 | 0 | -0.9682 | Rejected before full-year: zero-margin and barely positive, but materially worse than both `l20_s50` and `budget32_fast_exit` on the 20k gate. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l25_s50_20k_20260518.log` |
+
+Late local SUP long-guard probe: three 5k-only variants were created from the score-leading `V21_sup_margin_zero_long35_short50.yaml`. Exact commands used the trusted backtester with `--npz C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`, symbol `SUP/USDT:USDT`, and `--limit-bars 5000`; raw logs are listed in the table above. All stayed zero-margin, but all failed the positive-MTM gate, so no 20k or full-year confirmation was launched. Current selection is unchanged: SUP score-first remains `V21_sup_margin_zero_long35_short50.yaml`, with `V21_sup_margin_zero_budget32_fast_exit.yaml` retained as the conservative fallback.
 
 ## Baseline Comparison
 
