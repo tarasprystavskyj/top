@@ -2786,5 +2786,39 @@
     "tuner_note": "The tuner exceeded the outer timeout and was terminated after stage 10. The sanitized YAML uses only the sane exit/spacing subset and preserves original exposure caps.",
     "result": "No promotion. V21_sup_margin_zero_long35_short50.yaml remains the SUP score-first leader; V21_sup_margin_zero_budget32_fast_exit.yaml remains the conservative lower-drawdown fallback.",
     "next_action": "Avoid promoting 25k-only tuner wins without full-year confirmation. Future SUP work should target the full-year drawdown window directly or wait for broader cache/disk headroom."
+  },
+  "local_cache_disk_stop_20260518": {
+    "cycle": "2026-05-18 local cache/disk stop cycle",
+    "action": "No new backtest or tuner run launched.",
+    "reason": "Repository-local DB directory is absent; sibling cache contains only the SUP NPZ from the requested four symbols; C: free space was about 3.43 GiB.",
+    "available_npz": [
+      "C:/python_scripts/top_1/DB/akela_meta_short_1m_1y_sup_bingx.npz"
+    ],
+    "missing_requested_npz": [
+      "DB/akela_meta_short_1m_1y_idol_bingx.npz",
+      "DB/fast_cache_1m_freedommoney_1y_bingx.npz",
+      "DB/fast_cache_1m_maxxing_1y_bingx.npz"
+    ],
+    "current_selection": {
+      "IDOL/USDT:USDT": {
+        "config": "V21_idol_margin_zero_budget125.yaml",
+        "risk_adjusted_mtm_score": 89.8690
+      },
+      "FREEDOMMONEY/USDT:USDT": {
+        "config": "V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+        "risk_adjusted_mtm_score": 171.5221
+      },
+      "MAXXING/USDT:USDT": {
+        "config": "V21_maxxing_margin_zero_budget125_stress_exit.yaml",
+        "risk_adjusted_mtm_score": 1045.0003
+      },
+      "SUP/USDT:USDT": {
+        "config": "V21_sup_margin_zero_long35_short50.yaml",
+        "risk_adjusted_mtm_score": 2.5282
+      }
+    },
+    "basket_margin_call_events_total": 0,
+    "result": "Selection unchanged; additional broad confirmation is blocked by cache availability and low disk headroom.",
+    "next_action": "Restore the full documented NPZ cache and disk headroom before non-SUP confirmation; for SUP, only run narrow probes that first pass positive 20k MTM with zero margin calls."
   }
 }
