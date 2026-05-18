@@ -1,6 +1,38 @@
 {
-  "updated": "2026-05-18T08:11:59+03:00",
+  "updated": "2026-05-18T08:23:58+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
+  "latest_cycle": {
+    "timestamp": "2026-05-18T08:23:58+03:00",
+    "symbol": "SUP/USDT:USDT",
+    "npz_used": "C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz",
+    "action": "bounded 20k tuner from SUP score leader, then sanitized exit-only validation",
+    "tuner_command": "python obw_platform/auto_tuner_dual_fast_pack.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml --npz C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT --plan obw_platform/tuner_plans/tuner_plan_V21_live_candidates_1m_1y.py --prefix akela_margin_zero_sup_l35s50_20k_codex --jobs 1 --min-trades 50 --score-mode mtm --max-seconds 240 --limit-bars 20000 --debug",
+    "tuner_status": "outer timeout; still-running tuner process was stopped after partial stage-10 evidence",
+    "tuner_raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35s50_20k_tuner_20260518_081506.log",
+    "sanitized_config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_tuner20k_exit_sanitized.yaml",
+    "sanitized_20k": {
+      "return_mtm_pct_on_start": 12.29270318187006,
+      "mdd_mtm_%": -9.71088750097068,
+      "risk_adjusted_mtm_score": 15.56094141781105,
+      "trades_total": 329,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.3888674826973837,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_tuner20k_exit_sanitized_20k_20260518.log"
+    },
+    "sanitized_full": {
+      "return_mtm_pct_on_start": 6.7297909208827615,
+      "mdd_mtm_%": -46.46251045144537,
+      "risk_adjusted_mtm_score": 0.9747662233216059,
+      "trades_total": 1237,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.4864545445555267,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_tuner20k_exit_sanitized_full_20260518.log"
+    },
+    "decision": "rejected after full-year confirmation; current SUP score-first leader remains V21_sup_margin_zero_long35_short50.yaml",
+    "next_concrete_action": "Do not promote 20k-only SUP exit improvements without full-year confirmation; further SUP work should target a path-stable tail guard and avoid unconstrained exposure-cap tuner drift."
+  },
   "guardrails_observed": {
     "changed_backtester_math": false,
     "changed_exchange_fee_slippage_liquidation_margin": false,
