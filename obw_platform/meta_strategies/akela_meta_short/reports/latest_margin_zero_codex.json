@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T03:06:43+03:00",
+  "updated": "2026-05-18T03:11:58+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -16,6 +16,7 @@
       "limit_bars": "full",
       "return_mtm_pct_on_start": 34.70499499858549,
       "mdd_mtm_%": -13.402130090476835,
+      "risk_adjusted_mtm_score": 89.86904840654262,
       "trades_total": 5848,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
@@ -31,6 +32,7 @@
       "limit_bars": "full",
       "return_mtm_pct_on_start": 119.55309748045855,
       "mdd_mtm_%": -13.677453987301133,
+      "risk_adjusted_mtm_score": 1045.0002705505237,
       "trades_total": 4996,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
@@ -40,19 +42,21 @@
       "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_stress_exit_full.log"
     },
     {
-      "return_mtm_pct_on_start": 3.2708918655933035,
-      "mdd_mtm_%": -25.093413891547776,
-      "trades_total": 911,
+      "return_mtm_pct_on_start": 11.265457747781666,
+      "mdd_mtm_%": -50.198722228706,
+      "risk_adjusted_mtm_score": 2.5281853243712785,
+      "trades_total": 1303,
       "margin_call_events_total": 0,
       "bars_in_margin_call": 0,
-      "terminal_unrealized_to_realized_ratio": -0.6354468290754168,
-      "unrealized_pnl_long": -6.854190883562236,
-      "unrealized_pnl_short": -4.548688202461809,
-      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml",
+      "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+      "unrealized_pnl_long": -4.228057405026215,
+      "unrealized_pnl_short": -4.291981956211868,
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
       "symbol": "SUP/USDT:USDT",
       "limit_bars": "full",
-      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log",
-      "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz"
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full.log",
+      "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
+      "selection_note": "Primary-score SUP leader; budget32_fast_exit remains the conservative lower-drawdown fallback."
     }
   ],
   "baseline_zero_existing": {
@@ -72,11 +76,11 @@
     "risk_adjusted_mtm_score": 171.5221143453923
   },
   "basket_validation": {
-    "scope": "three generated margin-zero configs plus existing FREEDOMMONEY baseline-zero config",
+    "scope": "three generated score-first margin-zero configs plus existing FREEDOMMONEY baseline-zero config",
     "symbols": 4,
-    "equal_weight_terminal_return_pct": 55.451650363011645,
-    "worst_mdd_mtm_%": -25.093413891547776,
-    "total_trades": 19338,
+    "equal_weight_terminal_return_pct": 57.450291833558735,
+    "worst_mdd_mtm_%": -50.198722228706,
+    "total_trades": 19730,
     "total_margin_call_events": 0,
     "total_bars_in_margin_call": 0,
     "results": [
@@ -87,6 +91,7 @@
         "limit_bars": "full",
         "return_mtm_pct_on_start": 34.70499499858549,
         "mdd_mtm_%": -13.402130090476835,
+        "risk_adjusted_mtm_score": 89.86904840654262,
         "trades_total": 5848,
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
@@ -102,6 +107,7 @@
         "limit_bars": "full",
         "return_mtm_pct_on_start": 64.27761710740924,
         "mdd_mtm_%": -24.087926368998254,
+        "risk_adjusted_mtm_score": 171.5221143453923,
         "trades_total": 7583,
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
@@ -117,6 +123,7 @@
         "limit_bars": "full",
         "return_mtm_pct_on_start": 119.55309748045855,
         "mdd_mtm_%": -13.677453987301133,
+        "risk_adjusted_mtm_score": 1045.0002705505237,
         "trades_total": 4996,
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
@@ -126,19 +133,21 @@
         "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_stress_exit_full.log"
       },
       {
-        "return_mtm_pct_on_start": 3.2708918655933035,
-        "mdd_mtm_%": -25.093413891547776,
-        "trades_total": 911,
+        "return_mtm_pct_on_start": 11.265457747781666,
+        "mdd_mtm_%": -50.198722228706,
+        "risk_adjusted_mtm_score": 2.5281853243712785,
+        "trades_total": 1303,
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
-        "terminal_unrealized_to_realized_ratio": -0.6354468290754168,
-        "unrealized_pnl_long": -6.854190883562236,
-        "unrealized_pnl_short": -4.548688202461809,
-        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml",
+        "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+        "unrealized_pnl_long": -4.228057405026215,
+        "unrealized_pnl_short": -4.291981956211868,
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
         "symbol": "SUP/USDT:USDT",
         "limit_bars": "full",
-        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log",
-        "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz"
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full.log",
+        "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
+        "selection_note": "Primary-score SUP leader; budget32_fast_exit remains the conservative lower-drawdown fallback."
       }
     ]
   },
@@ -1282,12 +1291,13 @@
     },
     {
       "symbol": "SUP/USDT:USDT",
-      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml",
-      "return_mtm_pct_on_start": 3.2708918655933035,
-      "mdd_mtm_%": -25.093413891547776,
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
+      "return_mtm_pct_on_start": 11.265457747781666,
+      "mdd_mtm_%": -50.198722228706,
       "margin_call_events_total": 0,
-      "risk_adjusted_mtm_score": 0.42635624003348943,
-      "terminal_unrealized_to_realized_ratio": -0.6354468290754168
+      "risk_adjusted_mtm_score": 2.5281853243712785,
+      "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+      "selection_note": "Primary-score SUP leader; budget32_fast_exit remains the conservative lower-drawdown fallback."
     }
   ],
   "risk_adjusted_existing_full_year_review_20260518": {

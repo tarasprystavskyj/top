@@ -1,36 +1,38 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T03:06:43+03:00
+Updated: 2026-05-18T03:11:58+03:00
 
 ## Objective
 
 Find V21-style experimental parameter configurations for the first Akela basket candidates that remove margin-call events without changing exchange, fee, slippage, liquidation, margin, or backtest math.
 
-## Best Current Candidates
+## Best Current Score-First Candidates
 
-All generated candidates below are experimental YAMLs under `obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/`. `FREEDOMMONEY/USDT:USDT` keeps the existing production candidate because it was already zero-margin in the baseline basket.
+All generated candidates below are experimental YAMLs under `obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/`. `FREEDOMMONEY/USDT:USDT` keeps the existing production candidate because it was already zero-margin in the baseline basket. The table is ranked for the requested primary objective after rejecting margin-call candidates; `SUP` uses the primary-score leader, not the lower-drawdown fallback.
 
-| symbol | config | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | terminal_unrealized_to_realized_ratio | raw log |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `IDOL/USDT:USDT` | `V21_idol_margin_zero_budget125.yaml` | 34.70 | -13.40 | 5848 | 0 | 0 | -0.2055 | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_full.log` |
-| `FREEDOMMONEY/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y.yaml` | 64.28 | -24.09 | 7583 | 0 | 0 | -0.4130 | `_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log` |
-| `MAXXING/USDT:USDT` | `V21_maxxing_margin_zero_budget125_stress_exit.yaml` | 119.55 | -13.68 | 4996 | 0 | 0 | -0.2048 | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_stress_exit_full.log` |
-| `SUP/USDT:USDT` | `V21_sup_margin_zero_budget32_fast_exit.yaml` | 3.27 | -25.09 | 911 | 0 | 0 | -0.6354 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log` |
+| symbol | config | return_mtm_% | mdd_mtm_% | risk_adjusted_mtm_score | trades | margin_calls | bars_in_margin_call | terminal_unrealized_to_realized_ratio | raw log |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `IDOL/USDT:USDT` | `V21_idol_margin_zero_budget125.yaml` | 34.70 | -13.40 | 89.8690 | 5848 | 0 | 0 | -0.2055 | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_full.log` |
+| `FREEDOMMONEY/USDT:USDT` | `V21_freedommoney_bingx_live_candidate_1m_1y.yaml` | 64.28 | -24.09 | 171.5221 | 7583 | 0 | 0 | -0.4130 | `_reports/akela_meta_short/margin_zero_codex_loop/freedommoney_baseline_full.log` |
+| `MAXXING/USDT:USDT` | `V21_maxxing_margin_zero_budget125_stress_exit.yaml` | 119.55 | -13.68 | 1045.0003 | 4996 | 0 | 0 | -0.2048 | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_stress_exit_full.log` |
+| `SUP/USDT:USDT` | `V21_sup_margin_zero_long35_short50.yaml` | 11.27 | -50.20 | 2.5282 | 1303 | 0 | 0 | -0.2744 | `_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full.log` |
 
 ## Four-Symbol Basket Validation
 
 | metric | value |
 | --- | ---: |
 | symbols | 4 |
-| equal-weight terminal return approximation | 55.45% |
-| worst single-symbol MTM drawdown | -25.09% |
-| total trades | 19338 |
+| equal-weight terminal return approximation | 57.45% |
+| worst single-symbol MTM drawdown | -50.20% |
+| total trades | 19730 |
 | total margin-call events | 0 |
 | total bars in margin call | 0 |
 
+Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
+
 ## Current Cycle
 
-2026-05-18 local cycle: no new YAML was promoted. The current margin-zero basket remains unchanged. Re-ranked by the requested risk-adjusted MTM score (`return_mtm_pct_on_start^2 / abs(mdd_mtm_%)`), the current full-year leaders are MAXXING budget125_stress_exit at 1045.0003, FREEDOMMONEY baseline at 171.5221, IDOL budget125 at 89.8690, and SUP budget32_fast_exit at 0.4264.
+2026-05-18 local cycle update: no new YAML was created. Existing full-year evidence was re-ranked by the requested risk-adjusted MTM score (`return_mtm_pct_on_start^2 / abs(mdd_mtm_%)`). The current full-year score-first leaders are MAXXING budget125_stress_exit at 1045.0003, FREEDOMMONEY baseline at 171.5221, IDOL budget125 at 89.8690, and SUP long35_short50 at 2.5282.
 
 Risk-adjusted evidence review: the existing full-year evidence also contains higher-scoring SUP zero-margin variants than the lower-drawdown basket cleanup pick. Under the requested primary score alone, `V21_sup_margin_zero_long35_short50.yaml` is the current SUP leader: return 11.27%, MDD -50.20%, score 2.5282, 1303 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -0.2744. It is not a clean low-drawdown replacement for `V21_sup_margin_zero_budget32_fast_exit.yaml` because the drawdown roughly doubles from -25.09% to -50.20%, but its score is not close; if the promotion policy is strictly primary-score-first, long35_short50 should be treated as the SUP score leader and budget32_fast_exit as the conservative drawdown fallback.
 
@@ -141,7 +143,7 @@ SUP 25k tuner follow-up: the selected `V21_sup_margin_zero_budget32_fast_exit.ya
 | `IDOL/USDT:USDT` | 44.19 | -37.75 | 18 | 34.70 | -13.40 | 0 |
 | `FREEDOMMONEY/USDT:USDT` | 64.28 | -24.09 | 0 | 64.28 | -24.09 | 0 |
 | `MAXXING/USDT:USDT` | 183.80 | -18.37 | 8 | 119.55 | -13.68 | 0 |
-| `SUP/USDT:USDT` | -1.05 | -219.88 | 35 | 3.27 | -25.09 | 0 |
+| `SUP/USDT:USDT` | -1.05 | -219.88 | 35 | 11.27 | -50.20 | 0 |
 
 ## Exact Full-Year Commands
 
@@ -155,9 +157,9 @@ python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platfo
 python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_maxxing_margin_zero_budget125_stress_exit.yaml --npz DB/fast_cache_1m_maxxing_1y_bingx.npz --symbol MAXXING/USDT:USDT
 ```
 ```bash
-python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
+python3 obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml --npz DB/akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT
 ```
 
 ## Next Action
 
-First-basket margin-call cleanup remains satisfied with 0 total margin-call events using IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP budget32_fast_exit. The 25k SUP tuner pass found only a small slice improvement and full-year confirmation rejected it. The next useful search is a targeted SUP time-slice diagnosis around the full-year degradation window for the tuner exits, or a constrained tuner plan that excludes exposure-cap deltas when starting from already tiny margin-zero budgets.
+First-basket margin-call cleanup remains satisfied with 0 total margin-call events using IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP long35_short50. The score-first SUP pick accepts a deeper -50.20% full-year MTM drawdown for a much higher SUP score and cleaner terminal unrealized ratio; keep budget32_fast_exit as the conservative fallback if the drawdown ceiling is closer to -25%. The next useful search is a middle-region SUP probe between these two profiles, but only from an environment with the full `DB/` cache and stable backtester throughput.
