@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T03:49:00+03:00
+Updated: 2026-05-18T06:40:31+03:00
 
 ## Objective
 
@@ -31,6 +31,12 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local SUP middle-region probe: created two experimental YAMLs under `generated_configs/margin_zero/` and tested only bounded SUP slices against the only available local SUP cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. `V21_sup_margin_zero_l35_s50_long_guard.yaml` kept the score-leading 35/50 budget shape but borrowed conservative long-leg pacing/exits from the fast-exit profile. It stayed margin-zero on the 5k slice, but failed the positive-MTM gate: return -0.4894%, MDD -3.5999%, 326 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -1.0901. It improved the recent-tail loss versus `long35_short50` but still had too much stuck long unrealized exposure, so it was not promoted to 20k. Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_guard_5k_20260518.log`.
+
+`V21_sup_margin_zero_l20_s50.yaml` combined the low-risk budget20 long leg with the score-leading short50 leg. It passed the 5k gate at +2.6303% return, -3.5690% MDD, 326 trades, 0 margin calls, 0 bars in margin call, and terminal unrealized/realized ratio -0.5168. The 20k confirmation stayed zero-margin and positive at +3.1491% return, -17.8175% MDD, 262 trades, 0 margin calls, 0 bars in margin call, and terminal unrealized/realized ratio -0.6815. It is still rejected before full-year confirmation because it underperforms the existing conservative `V21_sup_margin_zero_budget32_fast_exit.yaml` 20k evidence (+4.80% return, -17.46% MDD, -0.6203 tail ratio). Raw logs: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s50_5k_20260518.log` and `_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s50_20k_20260518.log`.
+
+Current selection is unchanged. The score-first full-year basket remains IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP long35_short50, with 0 total margin-call events. The conservative SUP fallback remains `V21_sup_margin_zero_budget32_fast_exit.yaml`. Next concrete action: if continuing SUP work, do not pursue the same low-long/high-short blend unless it can beat budget32_fast_exit on the 20k gate; the more promising search direction is a long-leg guard that keeps the full-year contribution of `long35_short50` while avoiding the recent open-long tail.
 
 2026-05-18 local SUP recent-tail follow-up: the trusted backtester was responsive again for bounded SUP runs against the only available local sibling cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. The prior middle-region probe `V21_sup_margin_zero_l35_s42_midfast.yaml` was rechecked and rejected on a fresh 5k slice: return -2.7077%, MDD -3.7615%, 300 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -1.5440. The failure mode was the same recent-tail long drag as the selected score-first SUP profiles: long unrealized PnL -13.8087 versus short unrealized PnL -1.5607. Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s42_midfast_5k_20260518_retry.log`.
 

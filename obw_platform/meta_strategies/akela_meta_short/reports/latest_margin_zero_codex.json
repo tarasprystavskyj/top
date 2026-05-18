@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T03:49:00+03:00",
+  "updated": "2026-05-18T06:40:31+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1764,8 +1764,50 @@
         "terminal_unrealized_to_realized_ratio": -7.113522066714558,
         "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_short_only_budget20_20k_20260518.log",
         "result": "Rejected before full-year promotion: zero-margin, but negative 20k MTM and very poor terminal short unrealized exposure."
+      },
+      {
+        "config": "V21_sup_margin_zero_l35_s50_long_guard.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": -0.4894090146401968,
+        "mdd_mtm_%": -3.5999309739656975,
+        "risk_adjusted_mtm_score": null,
+        "trades_total": 326,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -1.0900817038215316,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_guard_5k_20260518.log",
+        "result": "Rejected before 20k: zero-margin, but failed the positive-MTM 5k gate."
+      },
+      {
+        "config": "V21_sup_margin_zero_l20_s50.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": 2.63026715650105,
+        "mdd_mtm_%": -3.5690432404341323,
+        "risk_adjusted_mtm_score": 1.938374591052175,
+        "trades_total": 326,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.5167915961512187,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s50_5k_20260518.log",
+        "result": "Passed the 5k gate; promoted only to 20k confirmation."
+      },
+      {
+        "config": "V21_sup_margin_zero_l20_s50.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 20000,
+        "return_mtm_pct_on_start": 3.149060650442957,
+        "mdd_mtm_%": -17.817508202547877,
+        "risk_adjusted_mtm_score": 0.5565687473733422,
+        "trades_total": 262,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.6814938383013769,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l20_s50_20k_20260518.log",
+        "result": "Rejected before full-year confirmation: positive and zero-margin, but underperformed budget32_fast_exit's 20k return, MDD, and tail ratio."
       }
     ],
-    "next_action": "Do not promote short-only SUP without a full-year pass. Continue only with variants that keep margin_call_events_total = 0 and produce positive 20k MTM before any full-year run."
+    "next_action": "Do not pursue the same low-long/high-short SUP blend unless it can beat budget32_fast_exit on the 20k gate. Continue only with variants that keep margin_call_events_total = 0 and produce positive 20k MTM before any full-year run."
   }
 }
