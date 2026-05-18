@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T03:11:58+03:00",
+  "updated": "2026-05-18T03:20:25+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1375,5 +1375,21 @@
       }
     ],
     "next_action": "If strict score-first promotion is desired for SUP, confirm whether the -50.20% full-year MTM drawdown is acceptable tail risk. If not, keep budget32_fast_exit as the conservative fallback and search for a middle region between 3.27%/-25.09% and 11.27%/-50.20%."
+  },
+  "sup_middle_region_probe_20260518": {
+    "cycle": "2026-05-18 local follow-up",
+    "symbol": "SUP/USDT:USDT",
+    "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s42_midfast.yaml",
+    "npz": "C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz",
+    "limit_bars": 5000,
+    "hypothesis": "Keep the score-leading long35 profile while reducing the long35_short50 short-side budget and modestly tightening short exits to search for a middle region between the 11.27%/-50.20% score leader and the 3.27%/-25.09% conservative fallback.",
+    "command": "python obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s42_midfast.yaml --npz C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT --limit-bars 5000",
+    "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s42_midfast_5k_20260518.log",
+    "status": "timeout",
+    "timeout_seconds": 184,
+    "metrics_available": false,
+    "promotion_status": "not promoted",
+    "reason": "The trusted backtester produced no JSON output before timeout; the raw log is empty. No full-year confirmation was attempted.",
+    "next_action": "Rerun this 5k probe only after the trusted backtester reaches short SUP probes reliably; reject unless return_mtm_pct_on_start > 0, mdd_mtm_% < 0, and margin_call_events_total remains 0."
   }
 }

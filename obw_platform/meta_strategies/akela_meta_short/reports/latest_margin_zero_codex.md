@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T03:11:58+03:00
+Updated: 2026-05-18T03:20:25+03:00
 
 ## Objective
 
@@ -31,6 +31,14 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local follow-up: created an experimental middle-region SUP probe, `V21_sup_margin_zero_l35_s42_midfast.yaml`, under `generated_configs/margin_zero/`. The hypothesis was to keep the score-leading long35 profile while reducing the short-side sizing budget from 50 to 42 and modestly speeding/tightening short exits (`baseOrderPctEq`/`maxShortInvestPct` 0.42, short `mult2`/`mult4`/`mult5` 1.35/1.15/1.35, short TP/sub-cover TP 0.14/0.50). A 5k trusted-backtester probe against the only available local SUP cache timed out after 184 seconds before producing JSON metrics:
+
+```bash
+python obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s42_midfast.yaml --npz C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT --limit-bars 5000
+```
+
+Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s42_midfast_5k_20260518.log`. The log is empty because the process produced no output before timeout. This YAML is unvalidated and is not promoted. No new full-year run was attempted because the checkout still lacks the documented local `DB/` cache for IDOL/FREEDOMMONEY/MAXXING and the trusted backtester is not reaching even short SUP probes reliably in this process environment.
 
 2026-05-18 local cycle update: no new YAML was created. Existing full-year evidence was re-ranked by the requested risk-adjusted MTM score (`return_mtm_pct_on_start^2 / abs(mdd_mtm_%)`). The current full-year score-first leaders are MAXXING budget125_stress_exit at 1045.0003, FREEDOMMONEY baseline at 171.5221, IDOL budget125 at 89.8690, and SUP long35_short50 at 2.5282.
 
