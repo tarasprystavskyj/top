@@ -3,13 +3,13 @@
 You are a fresh Codex agent working in:
 
 ```text
-/var/www/vps2.happyuser.info/top/top_1
+C:\python_scripts\top_1_akela_mtm_loop
 ```
 
 Branch:
 
 ```text
-akela-meta-short-worker
+codex/akela-mtm-codex-loop
 ```
 
 ## Mission
@@ -19,6 +19,28 @@ Find V21 parameter configurations for the first Akela basket candidates with:
 ```text
 margin_call_events_total = 0
 ```
+
+Optimize the promoted candidate by this primary objective:
+
+```text
+risk_adjusted_mtm_score = MTM * (MTM / abs(MTM_MDD))
+```
+
+Use `return_mtm_pct_on_start` as MTM and `mdd_mtm_%` as MTM_MDD when reading
+backtester output. In practical terms, maximize:
+
+```text
+return_mtm_pct_on_start^2 / abs(mdd_mtm_%)
+```
+
+Hard scoring guards:
+
+- reject or heavily penalize candidates with `return_mtm_pct_on_start <= 0`;
+- reject or heavily penalize candidates with missing, zero, or non-negative
+  `mdd_mtm_%`;
+- reject candidates with any margin calls before comparing this score;
+- if two candidates have close scores, prefer lower absolute MTM drawdown and
+  cleaner final/tail unrealized exposure.
 
 Primary candidates:
 
@@ -38,9 +60,9 @@ MAXXING      +183.80%, MDD -18.37%, margin calls 8
 SUP           -1.05%, MDD -219.88%, margin calls 35
 ```
 
-The immediate optimization target is risk cleanup, not maximum return. A lower
-return with zero margin calls is more useful than an impressive result that can
-die in live trading.
+The immediate optimization target is risk-adjusted MTM under zero margin calls,
+not raw return alone. A candidate only matters if it improves the MTM/MDD trade
+off without creating live-kill tail risk.
 
 ## Hard Guardrails
 
@@ -112,6 +134,7 @@ obw_platform/meta_strategies/akela_meta_short/reports/latest_margin_zero_codex.j
 8. If you find a zero-margin candidate, compare it against baseline on:
    - `return_mtm_pct_on_start`
    - `mdd_mtm_%`
+   - `risk_adjusted_mtm_score = return_mtm_pct_on_start^2 / abs(mdd_mtm_%)`
    - `trades_total`
    - `margin_call_events_total`
    - `bars_in_margin_call`
@@ -145,9 +168,12 @@ python3 obw_platform/auto_tuner_dual_fast_pack.py \
   --debug
 ```
 
-If the existing tuner score rejects margin calls with `-1e18`, use that as a
-feature: search for parameter regions that escape that penalty. Do not weaken
-the penalty by changing tuner/backtester math.
+If the existing tuner cannot directly optimize the custom score, use
+`--score-mode mtm` only as a candidate generator, then rank survivors manually
+by `return_mtm_pct_on_start^2 / abs(mdd_mtm_%)`. If the tuner score rejects
+margin calls with `-1e18`, use that as a feature: search for parameter regions
+that escape that penalty. Do not weaken the penalty by changing
+tuner/backtester math.
 
 ## Output Contract
 
@@ -156,6 +182,7 @@ At the end of each cycle, leave a clear report with:
 - what was tried;
 - exact commands or raw log paths;
 - best current zero-margin candidate, if any;
+- the current best `risk_adjusted_mtm_score`;
 - why failed attempts failed;
 - next concrete action.
 
