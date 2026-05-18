@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T08:11:59+03:00
+Updated: 2026-05-18T08:40:00+03:00
 
 ## Objective
 
@@ -31,6 +31,10 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local SUP midpoint sub-sell / breakeven probe: created two 5k-only variants from the score leader, `V21_sup_margin_zero_long35_short50.yaml`, using the only available requested basket cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. `V21_sup_margin_zero_l35_s50_subsell4.yaml` adds long-side `subSellMinFills: 4`, a midpoint between the default fifth-fill behavior and the previously rejected earlier sub-sell variants. `V21_sup_margin_zero_l35_s50_long_hardbe35.yaml` lowers only long-side `hardBreakevenDeleveragePct` from 50 to 35.
+
+Both variants stayed zero-margin on 5k but reproduced the same failed recent-tail profile: return -2.2771%, MDD -3.7769%, 322 trades, 0 margin calls, 0 bars in margin call, and terminal unrealized/realized ratio -1.4224. Raw logs: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_subsell4_5k_20260518.log` and `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_hardbe35_5k_20260518.log`. Both are rejected before 20k confirmation because they fail the positive-MTM guard and do not improve the stuck-long exposure. Current selection is unchanged: SUP score-first remains `V21_sup_margin_zero_long35_short50.yaml`; `V21_sup_margin_zero_budget32_fast_exit.yaml` remains the lower-drawdown fallback. Next concrete action: stop midpoint sub-sell and simple breakeven-threshold probes; require a positive 20k zero-margin gate before any future full-year SUP confirmation, and restore the missing IDOL/FREEDOMMONEY/MAXXING NPZ caches before non-SUP work.
 
 2026-05-18 local SUP 20k tuner-exit rerun: launched a bounded tuner pass from the SUP score leader, `V21_sup_margin_zero_long35_short50.yaml`, against the only available local basket NPZ, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. Command:
 
