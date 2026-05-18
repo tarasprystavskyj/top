@@ -1,28 +1,26 @@
 {
-  "updated": "2026-05-18T08:41:00+03:00",
+  "updated": "2026-05-18T08:42:00+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "latest_cycle": {
-    "timestamp": "2026-05-18T08:41:00+03:00",
-    "symbol": "SUP/USDT:USDT",
+    "timestamp": "2026-05-18T08:42:00+03:00",
+    "symbol": "basket",
     "npz_used": "C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz",
-    "action": "one 5k-only paced-ladder probe from SUP score leader",
-    "attempts": [
-      {
-        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_paced_ladder.yaml",
-        "changed_parameter": "leader 35/50 exposure budget with conservative pacing and lighter late-ladder multipliers",
-        "limit_bars": 5000,
-        "return_mtm_pct_on_start": -1.3586831284061907,
-        "mdd_mtm_%": -2.705323223351748,
-        "trades_total": 314,
-        "margin_call_events_total": 0,
-        "bars_in_margin_call": 0,
-        "terminal_unrealized_to_realized_ratio": -1.2894103458383601,
-        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_paced_ladder_5k_20260518.log",
-        "result": "Rejected before 20k/full-year: zero-margin but failed the positive-MTM gate; pacing and smaller late fills suppressed long realized PnL while leaving open-long drag."
-      }
-    ],
-    "decision": "no promotion; current SUP score-first leader remains V21_sup_margin_zero_long35_short50.yaml and conservative fallback remains V21_sup_margin_zero_budget32_fast_exit.yaml",
-    "next_concrete_action": "Stop transplanting conservative pacing into the 35/50 leader unless paired with a mechanism that keeps long realized contribution positive; restore missing IDOL/FREEDOMMONEY/MAXXING NPZ caches and disk headroom before non-SUP work."
+    "action": "cache/disk guard; no new expensive run launched",
+    "attempts": [],
+    "decision": "no promotion change; current score-first zero-margin basket remains IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP long35_short50",
+    "next_concrete_action": "Restore the full documented NPZ cache and healthier disk headroom before non-SUP work; for SUP, require a materially new path-stable tail/exposure guard before spending another 20k/full-year confirmation.",
+    "blockers": {
+      "repo_local_db_present": false,
+      "available_requested_npz_caches": [
+        "C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz"
+      ],
+      "missing_requested_npz_caches": [
+        "DB/akela_meta_short_1m_1y_idol_bingx.npz",
+        "DB/fast_cache_1m_freedommoney_1y_bingx.npz",
+        "DB/fast_cache_1m_maxxing_1y_bingx.npz"
+      ],
+      "c_drive_free_gib_approx": 3.38
+    }
   },
   "guardrails_observed": {
     "changed_backtester_math": false,

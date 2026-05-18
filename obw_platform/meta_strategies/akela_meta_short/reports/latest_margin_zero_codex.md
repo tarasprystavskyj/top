@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T08:41:00+03:00
+Updated: 2026-05-18T08:42:00+03:00
 
 ## Objective
 
@@ -31,6 +31,10 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 fresh-agent cache/disk guard cycle: no new backtest or tuner run was launched. The worktree was clean at cycle start, the compact margin-zero report and generated YAMLs were already tracked, and the only locally available requested basket cache remains `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`; repository-local `DB/` is absent and the documented IDOL/FREEDOMMONEY/MAXXING NPZs were not present in the sibling cache. `C:` free space was about 3.38 GiB, so broader full-year confirmation or tuner work would risk filling the filesystem without the missing caches.
+
+Current selection is unchanged: IDOL `V21_idol_margin_zero_budget125.yaml`, FREEDOMMONEY baseline `V21_freedommoney_bingx_live_candidate_1m_1y.yaml`, MAXXING `V21_maxxing_margin_zero_budget125_stress_exit.yaml`, and SUP score-first `V21_sup_margin_zero_long35_short50.yaml`. Basket margin-call events remain 0; current best per-symbol risk-adjusted MTM scores remain IDOL 89.8690, FREEDOMMONEY 171.5221, MAXXING 1045.0003, and SUP 2.5282. Next concrete action: restore the full documented NPZ cache and healthier disk headroom before non-SUP work; for SUP, require a materially new path-stable tail/exposure guard before spending another 20k/full-year confirmation.
 
 2026-05-18 local SUP paced-ladder probe: created `V21_sup_margin_zero_l35_s50_paced_ladder.yaml` from the current SUP score leader, `V21_sup_margin_zero_long35_short50.yaml`, using the only available requested basket cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. The hypothesis was to keep the leader's 35/50 exposure budget and score-producing short contribution, but import the conservative survivor's per-bar/order pacing and lighter late-ladder multipliers: long `maxFillsPerBar` 2 -> 1, long `maxOrdersPer3Min` 4 -> 3, long `mult4` 1.1 -> 1.0, long `mult5` 1.5 -> 1.2, short `maxFillsPerBar` 2 -> 1, short `maxOrdersPer3Min` 4 -> 3, short `mult2` 1.5 -> 1.2, short `mult4` 1.2 -> 1.0, and short `mult5` 1.5 -> 1.2.
 
