@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T08:08:26+03:00
+Updated: 2026-05-18T08:11:59+03:00
 
 ## Objective
 
@@ -31,6 +31,10 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local cache/disk guard cycle: no new backtest or tuner run was launched. The repository-local `DB/` directory is still absent for the requested basket NPZs, and the sibling cache at `C:\python_scripts\top_1\DB` still contains only `akela_meta_short_1m_1y_sup_bingx.npz` from the requested four symbols. Current `C:` free space is about 3.41 GiB. A fresh review of the SUP score leader versus the conservative fallback did not identify a cheap, untried single-parameter probe with a strong reason to beat the existing 20k gate; prior report history already rejected simple long/short budget interpolation, early sub-sells, hard long-entry gating, DCA dampening, long pacing, short pacing, and sanitized tuner-exit variants.
+
+Current selection is unchanged: IDOL `V21_idol_margin_zero_budget125.yaml`, FREEDOMMONEY baseline `V21_freedommoney_bingx_live_candidate_1m_1y.yaml`, MAXXING `V21_maxxing_margin_zero_budget125_stress_exit.yaml`, and SUP score-first `V21_sup_margin_zero_long35_short50.yaml`. Basket margin-call events remain 0; current best per-symbol risk-adjusted MTM scores remain IDOL 89.8690, FREEDOMMONEY 171.5221, MAXXING 1045.0003, and SUP 2.5282. Next concrete action: restore the full documented NPZ cache and healthier disk headroom before non-SUP confirmation; for SUP, only run branches with a real tail/exposure guard and require positive 20k MTM with zero margin calls before any full-year run.
 
 2026-05-18 local SUP early sub-sell probe: created two long-side-only variants from the score leader, `V21_sup_margin_zero_l35_s50_subsell3.yaml` and `V21_sup_margin_zero_l35_s50_subsell2.yaml`. The hypothesis was to start LIFO sub-sell exits before the default fifth fill so stuck long tails could be reduced without shrinking the score-leading 35/50 budget or changing short-side behavior. Both used the only available local SUP cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`; repository-local `DB/` and the documented IDOL/FREEDOMMONEY/MAXXING NPZs are still absent.
 

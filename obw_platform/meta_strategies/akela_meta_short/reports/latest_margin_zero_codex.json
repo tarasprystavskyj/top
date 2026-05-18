@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T08:08:26+03:00",
+  "updated": "2026-05-18T08:11:59+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -2954,5 +2954,47 @@
     },
     "result": "No promotion. SUP V21_sup_margin_zero_long35_short50.yaml remains the score-first leader; V21_sup_margin_zero_budget32_fast_exit.yaml remains the lower-drawdown fallback.",
     "next_action": "Do not full-year confirm early-sub-sell variants unless they first beat the score leader on the 20k score and tail gate."
+  },
+  "local_cache_disk_guard_20260518_081159": {
+    "cycle": "2026-05-18 local cache/disk guard cycle",
+    "action": "No new backtest or tuner run launched.",
+    "reason": "Repository-local DB directory is absent for the requested basket NPZs, sibling cache contains only the SUP NPZ from the requested four symbols, and C: free space is about 3.41 GiB.",
+    "available_requested_npz": [
+      "C:/python_scripts/top_1/DB/akela_meta_short_1m_1y_sup_bingx.npz"
+    ],
+    "missing_requested_npz": [
+      "DB/akela_meta_short_1m_1y_idol_bingx.npz",
+      "DB/fast_cache_1m_freedommoney_1y_bingx.npz",
+      "DB/fast_cache_1m_maxxing_1y_bingx.npz"
+    ],
+    "reviewed_context": [
+      "latest_basket_summary.md",
+      "latest_champion_search.md",
+      "V21_sup_margin_zero_long35_short50.yaml",
+      "V21_sup_margin_zero_budget32_fast_exit.yaml"
+    ],
+    "decision": "Do not launch another low-probability SUP single-knob probe under low disk headroom. Prior report history already rejected simple budget interpolation, early sub-sells, hard long-entry gating, DCA dampening, long pacing, short pacing, and sanitized tuner-exit variants.",
+    "current_selection": {
+      "IDOL/USDT:USDT": {
+        "config": "V21_idol_margin_zero_budget125.yaml",
+        "risk_adjusted_mtm_score": 89.8690
+      },
+      "FREEDOMMONEY/USDT:USDT": {
+        "config": "V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+        "risk_adjusted_mtm_score": 171.5221
+      },
+      "MAXXING/USDT:USDT": {
+        "config": "V21_maxxing_margin_zero_budget125_stress_exit.yaml",
+        "risk_adjusted_mtm_score": 1045.0003
+      },
+      "SUP/USDT:USDT": {
+        "config": "V21_sup_margin_zero_long35_short50.yaml",
+        "risk_adjusted_mtm_score": 2.5282,
+        "fallback_config": "V21_sup_margin_zero_budget32_fast_exit.yaml"
+      }
+    },
+    "basket_margin_call_events_total": 0,
+    "result": "Selection unchanged; no new raw artifacts generated.",
+    "next_action": "Restore the full documented NPZ cache and healthier disk headroom before non-SUP confirmation; for SUP, only run branches with a real tail/exposure guard and require positive 20k MTM with zero margin calls before any full-year run."
   }
 }
