@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T07:49:41+03:00
+Updated: 2026-05-18T08:00:35+03:00
 
 ## Objective
 
@@ -31,6 +31,14 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local SUP short-side pace/exit probe: only the SUP NPZ is available locally (`C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`); repository-local `DB/` is absent and the documented IDOL/FREEDOMMONEY/MAXXING NPZs are not present in the sibling cache. Free space was about 3.7 GB, so this cycle stayed narrow and produced only compact JSON logs.
+
+Regenerated compact full-year anchor logs for `V21_sup_margin_zero_long35_short50.yaml` and `V21_sup_margin_zero_budget32_fast_exit.yaml`. Results matched the existing report: `long35_short50` remains the SUP score-first leader at +11.2655% MTM, -50.1987% MDD, score 2.5282, 1303 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.2744. `budget32_fast_exit` remains only the lower-drawdown fallback at +3.2709% MTM, -25.0934% MDD, score 0.4264, 911 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.6354. Raw logs: `_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full_20260518_rerun.log` and `_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full_20260518_rerun.log`.
+
+Created two experimental short-side-only variants from the score leader: `V21_sup_margin_zero_l35_s50_short_pace.yaml` changes only short `maxFillsPerBar` 2 -> 1 and `maxOrdersPer3Min` 4 -> 3; `V21_sup_margin_zero_l35_s50_short_pace_exit.yaml` applies the same short pacing and also changes short exits to `callbackPercent` 0.055, `linearRisePercent` 0.35, `tpPercent` 0.12, and `subSellTPPercent` 0.47. Both were rejected at the 5k gate despite zero margin calls: `short_pace` returned -2.1799% MTM, MDD -3.6361%, 315 trades, 0 margin calls, 0 bars in margin call, tail ratio -1.3938; `short_pace_exit` returned -2.1886% MTM, MDD -3.6693%, 317 trades, 0 margin calls, 0 bars in margin call, tail ratio -1.3960. Raw logs: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_short_pace_5k_20260518.log` and `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_short_pace_exit_5k_20260518.log`.
+
+Current selection is unchanged. The score-first full-year basket remains IDOL `V21_idol_margin_zero_budget125.yaml`, FREEDOMMONEY baseline, MAXXING `V21_maxxing_margin_zero_budget125_stress_exit.yaml`, and SUP `V21_sup_margin_zero_long35_short50.yaml`, with 0 total margin-call events. Next concrete action: stop short-side-only SUP pacing/exit probes unless paired with a demonstrated long-tail fix; the new short-side variants failed the positive-MTM gate and should not receive 20k/full-year confirmation.
 
 2026-05-18 local SUP score-leader gate and tuner-exit check: filled an evidence gap for the current SUP score leader, `V21_sup_margin_zero_long35_short50.yaml`, using the only available local SUP cache at `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. A direct 20k gate passed strongly: return +10.9510%, MDD -16.2086%, risk-adjusted score 7.4002, 326 trades, 0 margin calls, 0 bars in margin call, and terminal unrealized/realized ratio -0.4586. A 25k stress slice also passed: return +11.2191%, MDD -16.1678%, score 7.7850, 372 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.4526. Raw logs: `_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_20k_20260518_codex.log` and `_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_25k_20260518_codex.log`.
 

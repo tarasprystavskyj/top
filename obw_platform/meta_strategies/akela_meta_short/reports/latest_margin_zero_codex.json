@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T07:49:41+03:00",
+  "updated": "2026-05-18T08:00:35+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -2820,5 +2820,70 @@
     "basket_margin_call_events_total": 0,
     "result": "Selection unchanged; additional broad confirmation is blocked by cache availability and low disk headroom.",
     "next_action": "Restore the full documented NPZ cache and disk headroom before non-SUP confirmation; for SUP, only run narrow probes that first pass positive 20k MTM with zero margin calls."
+  },
+  "sup_short_side_pace_exit_probe_20260518": {
+    "cycle": "2026-05-18 local SUP short-side pace/exit probe",
+    "available_npz": "C:/python_scripts/top_1/DB/akela_meta_short_1m_1y_sup_bingx.npz",
+    "missing_requested_npz": [
+      "DB/akela_meta_short_1m_1y_idol_bingx.npz",
+      "DB/fast_cache_1m_freedommoney_1y_bingx.npz",
+      "DB/fast_cache_1m_maxxing_1y_bingx.npz"
+    ],
+    "anchor_reruns": [
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
+        "limit_bars": "full",
+        "return_mtm_pct_on_start": 11.265457747781666,
+        "mdd_mtm_%": -50.198722228706,
+        "risk_adjusted_mtm_score": 2.5281853243712784,
+        "trades_total": 1303,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full_20260518_rerun.log",
+        "result": "Confirmed unchanged SUP score-first leader."
+      },
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml",
+        "limit_bars": "full",
+        "return_mtm_pct_on_start": 3.2708918655933035,
+        "mdd_mtm_%": -25.093413891547776,
+        "risk_adjusted_mtm_score": 0.4263637136733689,
+        "trades_total": 911,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.6354468290754168,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full_20260518_rerun.log",
+        "result": "Confirmed unchanged lower-drawdown fallback, not score-first leader."
+      }
+    ],
+    "attempts": [
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_short_pace.yaml",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": -2.1798933497989426,
+        "mdd_mtm_%": -3.636114557204652,
+        "trades_total": 315,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -1.3938434725816813,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_short_pace_5k_20260518.log",
+        "result": "Rejected before 20k/full-year: zero-margin but failed the positive-MTM guard with poor tail exposure."
+      },
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_short_pace_exit.yaml",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": -2.188594396510851,
+        "mdd_mtm_%": -3.669283512747755,
+        "trades_total": 317,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -1.3960380816581939,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_short_pace_exit_5k_20260518.log",
+        "result": "Rejected before 20k/full-year: short pacing plus safer short exits did not fix the recent positive-MTM gate."
+      }
+    ],
+    "result": "No promotion. SUP V21_sup_margin_zero_long35_short50.yaml remains the score-first leader; V21_sup_margin_zero_budget32_fast_exit.yaml remains the lower-drawdown fallback.",
+    "next_action": "Do not continue short-side-only SUP pacing/exit probes unless paired with a demonstrated long-tail fix; restore missing NPZ caches before non-SUP confirmation."
   }
 }
