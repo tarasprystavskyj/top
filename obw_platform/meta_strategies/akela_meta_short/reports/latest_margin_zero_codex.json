@@ -1,41 +1,28 @@
 {
-  "updated": "2026-05-18T08:40:00+03:00",
+  "updated": "2026-05-18T08:41:00+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "latest_cycle": {
-    "timestamp": "2026-05-18T08:40:00+03:00",
+    "timestamp": "2026-05-18T08:41:00+03:00",
     "symbol": "SUP/USDT:USDT",
     "npz_used": "C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz",
-    "action": "two narrow 5k-only long-tail probes from SUP score leader",
+    "action": "one 5k-only paced-ladder probe from SUP score leader",
     "attempts": [
       {
-        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_subsell4.yaml",
-        "changed_parameter": "strategy_params_long.subSellMinFills = 4",
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_paced_ladder.yaml",
+        "changed_parameter": "leader 35/50 exposure budget with conservative pacing and lighter late-ladder multipliers",
         "limit_bars": 5000,
-        "return_mtm_pct_on_start": -2.2771285666621504,
-        "mdd_mtm_%": -3.776872564443454,
-        "trades_total": 322,
+        "return_mtm_pct_on_start": -1.3586831284061907,
+        "mdd_mtm_%": -2.705323223351748,
+        "trades_total": 314,
         "margin_call_events_total": 0,
         "bars_in_margin_call": 0,
-        "terminal_unrealized_to_realized_ratio": -1.4223857298537312,
-        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_subsell4_5k_20260518.log",
-        "result": "Rejected before 20k/full-year: zero-margin but failed the positive-MTM gate and reproduced the stuck-long tail."
-      },
-      {
-        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_long_hardbe35.yaml",
-        "changed_parameter": "strategy_params_long.hardBreakevenDeleveragePct = 35",
-        "limit_bars": 5000,
-        "return_mtm_pct_on_start": -2.2771285666621504,
-        "mdd_mtm_%": -3.776872564443454,
-        "trades_total": 322,
-        "margin_call_events_total": 0,
-        "bars_in_margin_call": 0,
-        "terminal_unrealized_to_realized_ratio": -1.4223857298537312,
-        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_hardbe35_5k_20260518.log",
-        "result": "Rejected before 20k/full-year: lower breakeven-deleverage threshold did not bind usefully on the failed slice."
+        "terminal_unrealized_to_realized_ratio": -1.2894103458383601,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_paced_ladder_5k_20260518.log",
+        "result": "Rejected before 20k/full-year: zero-margin but failed the positive-MTM gate; pacing and smaller late fills suppressed long realized PnL while leaving open-long drag."
       }
     ],
     "decision": "no promotion; current SUP score-first leader remains V21_sup_margin_zero_long35_short50.yaml and conservative fallback remains V21_sup_margin_zero_budget32_fast_exit.yaml",
-    "next_concrete_action": "Stop midpoint sub-sell and simple breakeven-threshold probes for SUP; require a positive 20k zero-margin gate before any future full-year confirmation, and restore the missing IDOL/FREEDOMMONEY/MAXXING NPZ caches before non-SUP work."
+    "next_concrete_action": "Stop transplanting conservative pacing into the 35/50 leader unless paired with a mechanism that keeps long realized contribution positive; restore missing IDOL/FREEDOMMONEY/MAXXING NPZ caches and disk headroom before non-SUP work."
   },
   "guardrails_observed": {
     "changed_backtester_math": false,

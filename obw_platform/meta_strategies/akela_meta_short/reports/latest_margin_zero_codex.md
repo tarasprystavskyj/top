@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T08:40:00+03:00
+Updated: 2026-05-18T08:41:00+03:00
 
 ## Objective
 
@@ -31,6 +31,10 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local SUP paced-ladder probe: created `V21_sup_margin_zero_l35_s50_paced_ladder.yaml` from the current SUP score leader, `V21_sup_margin_zero_long35_short50.yaml`, using the only available requested basket cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. The hypothesis was to keep the leader's 35/50 exposure budget and score-producing short contribution, but import the conservative survivor's per-bar/order pacing and lighter late-ladder multipliers: long `maxFillsPerBar` 2 -> 1, long `maxOrdersPer3Min` 4 -> 3, long `mult4` 1.1 -> 1.0, long `mult5` 1.5 -> 1.2, short `maxFillsPerBar` 2 -> 1, short `maxOrdersPer3Min` 4 -> 3, short `mult2` 1.5 -> 1.2, short `mult4` 1.2 -> 1.0, and short `mult5` 1.5 -> 1.2.
+
+The 5k gate stayed zero-margin but failed the positive-MTM guard: return -1.3587%, MDD -2.7053%, 314 trades, 0 margin calls, 0 bars in margin call, and terminal unrealized/realized ratio -1.2894. Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_paced_ladder_5k_20260518.log`. This branch is rejected before 20k/full-year confirmation because pacing and smaller late fills suppressed long-side realized PnL while leaving a large open-long drag. Current selection is unchanged: SUP score-first remains `V21_sup_margin_zero_long35_short50.yaml`; `V21_sup_margin_zero_budget32_fast_exit.yaml` remains the lower-drawdown fallback. Next concrete action: stop transplanting conservative pacing into the 35/50 leader unless paired with a mechanism that keeps long realized contribution positive; restore missing IDOL/FREEDOMMONEY/MAXXING NPZ caches and disk headroom before non-SUP work.
 
 2026-05-18 local SUP midpoint sub-sell / breakeven probe: created two 5k-only variants from the score leader, `V21_sup_margin_zero_long35_short50.yaml`, using the only available requested basket cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. `V21_sup_margin_zero_l35_s50_subsell4.yaml` adds long-side `subSellMinFills: 4`, a midpoint between the default fifth-fill behavior and the previously rejected earlier sub-sell variants. `V21_sup_margin_zero_l35_s50_long_hardbe35.yaml` lowers only long-side `hardBreakevenDeleveragePct` from 50 to 35.
 
