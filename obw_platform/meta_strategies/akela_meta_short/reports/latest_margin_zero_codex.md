@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T03:06:00+03:00
+Updated: 2026-05-18T03:06:43+03:00
 
 ## Objective
 
@@ -31,6 +31,19 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 ## Current Cycle
 
 2026-05-18 local cycle: no new YAML was promoted. The current margin-zero basket remains unchanged. Re-ranked by the requested risk-adjusted MTM score (`return_mtm_pct_on_start^2 / abs(mdd_mtm_%)`), the current full-year leaders are MAXXING budget125_stress_exit at 1045.0003, FREEDOMMONEY baseline at 171.5221, IDOL budget125 at 89.8690, and SUP budget32_fast_exit at 0.4264.
+
+Risk-adjusted evidence review: the existing full-year evidence also contains higher-scoring SUP zero-margin variants than the lower-drawdown basket cleanup pick. Under the requested primary score alone, `V21_sup_margin_zero_long35_short50.yaml` is the current SUP leader: return 11.27%, MDD -50.20%, score 2.5282, 1303 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -0.2744. It is not a clean low-drawdown replacement for `V21_sup_margin_zero_budget32_fast_exit.yaml` because the drawdown roughly doubles from -25.09% to -50.20%, but its score is not close; if the promotion policy is strictly primary-score-first, long35_short50 should be treated as the SUP score leader and budget32_fast_exit as the conservative drawdown fallback.
+
+Existing full-year zero-margin SUP ranking by requested score:
+
+| config | return_mtm_% | mdd_mtm_% | risk_adjusted_mtm_score | trades | tail ratio | note |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `V21_sup_margin_zero_long35_short50.yaml` | 11.27 | -50.20 | 2.5282 | 1303 | -0.2744 | primary-score leader; deeper drawdown |
+| `V21_sup_margin_zero_short_ladder_mid.yaml` | 10.83 | -53.81 | 2.1780 | 1318 | -0.2794 | secondary score candidate; deeper drawdown |
+| `V21_sup_margin_zero_short_ladder_soft.yaml` | 9.04 | -48.02 | 1.7025 | 1329 | -0.3140 | lower return than leader |
+| `V21_sup_margin_zero_budget32_fast_exit.yaml` | 3.27 | -25.09 | 0.4264 | 911 | -0.6354 | conservative lower-drawdown fallback |
+
+No fresh backtest was launched for this correction because the checkout still lacks the documented `DB/` cache for IDOL/FREEDOMMONEY/MAXXING, only the sibling SUP NPZ is available, and repeated trusted-backtester invocations had already timed out after one successful 5k SUP probe. This cycle therefore promotes a report-level selection correction, not a new YAML.
 
 Fresh SUP recent-tail probe: `V21_sup_margin_zero_budget32_fast_exit.yaml` was re-run on the available sibling NPZ cache at `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz` with `--limit-bars 5000`. It stayed margin-zero, but was rejected as a promotion signal because MTM return was negative: return -1.5428%, MDD -2.7051%, 277 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -1.3622. The tail was mainly long-side unrealized drag (`unrealized_pnl_long = -10.4315`, `unrealized_pnl_short = -1.1731`) against +8.5190 realized PnL. Raw log: `_reports/akela_meta_short/margin_zero_codex_loop/backtests/sup_budget32_fast_exit_limit5000_20260518.log`.
 

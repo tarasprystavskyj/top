@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T03:06:00+03:00",
+  "updated": "2026-05-18T03:06:43+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1289,5 +1289,81 @@
       "risk_adjusted_mtm_score": 0.42635624003348943,
       "terminal_unrealized_to_realized_ratio": -0.6354468290754168
     }
-  ]
+  ],
+  "risk_adjusted_existing_full_year_review_20260518": {
+    "cycle": "2026-05-18 report-level risk-adjusted evidence review",
+    "result": "No new YAML promoted. Existing full-year zero-margin evidence shows the selected low-drawdown SUP cleanup pick is not the SUP leader under the requested primary score.",
+    "backtest_execution": "No fresh backtest was launched for this correction because the checkout has no local DB/ cache for IDOL/FREEDOMMONEY/MAXXING, only the sibling SUP NPZ is available, and repeated trusted-backtester invocations had already timed out after one successful 5k SUP probe.",
+    "sup_primary_score_leader": {
+      "symbol": "SUP/USDT:USDT",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 11.265457747781666,
+      "mdd_mtm_%": -50.198722228706,
+      "risk_adjusted_mtm_score": 2.5281853243712785,
+      "trades_total": 1303,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_full.log",
+      "selection_note": "Primary-score leader for SUP, but drawdown is much deeper than the conservative budget32_fast_exit fallback."
+    },
+    "sup_conservative_fallback": {
+      "symbol": "SUP/USDT:USDT",
+      "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml",
+      "limit_bars": "full",
+      "return_mtm_pct_on_start": 3.2708918655933035,
+      "mdd_mtm_%": -25.093413891547776,
+      "risk_adjusted_mtm_score": 0.42635624003348943,
+      "trades_total": 911,
+      "margin_call_events_total": 0,
+      "bars_in_margin_call": 0,
+      "terminal_unrealized_to_realized_ratio": -0.6354468290754168,
+      "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_budget32_fast_exit_full.log",
+      "selection_note": "Lower-drawdown fallback; not the requested primary-score leader."
+    },
+    "sup_full_year_zero_margin_score_ranking_top4": [
+      {
+        "config": "V21_sup_margin_zero_long35_short50.yaml",
+        "return_mtm_pct_on_start": 11.265457747781666,
+        "mdd_mtm_%": -50.198722228706,
+        "risk_adjusted_mtm_score": 2.5281853243712785,
+        "trades_total": 1303,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.27438896486533815
+      },
+      {
+        "config": "V21_sup_margin_zero_short_ladder_mid.yaml",
+        "return_mtm_pct_on_start": 10.825269145058215,
+        "mdd_mtm_%": -53.805101216207355,
+        "risk_adjusted_mtm_score": 2.17798032926384,
+        "trades_total": 1318,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.279370558337497
+      },
+      {
+        "config": "V21_sup_margin_zero_short_ladder_soft.yaml",
+        "return_mtm_pct_on_start": 9.04176550318793,
+        "mdd_mtm_%": -48.01991673137992,
+        "risk_adjusted_mtm_score": 1.702523105965073,
+        "trades_total": 1329,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.3139513353832846
+      },
+      {
+        "config": "V21_sup_margin_zero_budget32_fast_exit.yaml",
+        "return_mtm_pct_on_start": 3.2708918655933035,
+        "mdd_mtm_%": -25.093413891547776,
+        "risk_adjusted_mtm_score": 0.42635624003348943,
+        "trades_total": 911,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.6354468290754168
+      }
+    ],
+    "next_action": "If strict score-first promotion is desired for SUP, confirm whether the -50.20% full-year MTM drawdown is acceptable tail risk. If not, keep budget32_fast_exit as the conservative fallback and search for a middle region between 3.27%/-25.09% and 11.27%/-50.20%."
+  }
 }
