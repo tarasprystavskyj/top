@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T08:00:35+03:00
+Updated: 2026-05-18T08:08:26+03:00
 
 ## Objective
 
@@ -31,6 +31,12 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local SUP early sub-sell probe: created two long-side-only variants from the score leader, `V21_sup_margin_zero_l35_s50_subsell3.yaml` and `V21_sup_margin_zero_l35_s50_subsell2.yaml`. The hypothesis was to start LIFO sub-sell exits before the default fifth fill so stuck long tails could be reduced without shrinking the score-leading 35/50 budget or changing short-side behavior. Both used the only available local SUP cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`; repository-local `DB/` and the documented IDOL/FREEDOMMONEY/MAXXING NPZs are still absent.
+
+`subsell3` was rejected at the 5k gate because it reproduced the score-leader recent-tail failure: return -2.2771%, MDD -3.7769%, 322 trades, 0 margin calls, 0 bars in margin call, and tail ratio -1.4224. `subsell2` passed the 5k gate at +1.2242% return, -2.4671% MDD, score 0.6074, 376 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.8123, so it received one 20k check. The 20k run stayed zero-margin and positive at +5.7520% return, -16.3896% MDD, score 2.0187, 314 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.6650. It is still rejected before full-year confirmation because it is materially below the existing score leader's comparable 20k evidence (+10.9510% return, -16.2086% MDD, score 7.4002, tail ratio -0.4586) and does not improve tail cleanliness.
+
+Raw logs: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_subsell3_5k_20260518.log`, `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_subsell2_5k_20260518.log`, and `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_subsell2_20k_20260518.log`. Current selection is unchanged: SUP score-first remains `V21_sup_margin_zero_long35_short50.yaml`; `V21_sup_margin_zero_budget32_fast_exit.yaml` remains the lower-drawdown fallback. Next concrete action: do not full-year confirm early-sub-sell variants unless they first beat the score leader on the 20k score and tail gate; the remaining useful SUP search needs a long-tail guard that preserves the current leader's 20k return.
 
 2026-05-18 local SUP short-side pace/exit probe: only the SUP NPZ is available locally (`C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`); repository-local `DB/` is absent and the documented IDOL/FREEDOMMONEY/MAXXING NPZs are not present in the sibling cache. Free space was about 3.7 GB, so this cycle stayed narrow and produced only compact JSON logs.
 
