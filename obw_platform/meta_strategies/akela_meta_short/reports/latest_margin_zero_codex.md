@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T07:16:26+03:00
+Updated: 2026-05-18T07:49:41+03:00
 
 ## Objective
 
@@ -31,6 +31,18 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local SUP score-leader gate and tuner-exit check: filled an evidence gap for the current SUP score leader, `V21_sup_margin_zero_long35_short50.yaml`, using the only available local SUP cache at `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`. A direct 20k gate passed strongly: return +10.9510%, MDD -16.2086%, risk-adjusted score 7.4002, 326 trades, 0 margin calls, 0 bars in margin call, and terminal unrealized/realized ratio -0.4586. A 25k stress slice also passed: return +11.2191%, MDD -16.1678%, score 7.7850, 372 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.4526. Raw logs: `_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_20k_20260518_codex.log` and `_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_25k_20260518_codex.log`.
+
+A bounded 25k tuner pass from `long35_short50` was launched only as a candidate generator:
+
+```bash
+python obw_platform/auto_tuner_dual_fast_pack.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml --npz C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT --plan obw_platform/tuner_plans/tuner_plan_V21_live_candidates_1m_1y.py --prefix akela_margin_zero_sup_l35s50_25k_20260518_codex --jobs 1 --min-trades 50 --score-mode mtm --max-seconds 300 --limit-bars 25000 --debug
+```
+
+The tuner exceeded the outer command timeout and was terminated after stage 10. Its partial evidence still identified a sane exit/spacing subset before nonsensical negative exposure-cap deltas: long TP 0.19, long sub-sell TP 0.28, long callback 0.05, long linear drop 0.10, short TP 0.175, short sub-cover TP 0.57, short callback 0.0225, and short linear rise 0.335, with original exposure caps preserved. That subset was materialized as `V21_sup_margin_zero_l35_s50_tuner_exit_sanitized.yaml`. On 25k it improved the leader slice to return +12.4822%, MDD -9.6937%, score 16.0750, 377 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.3852. Full-year confirmation rejected it: return +6.7298%, MDD -46.4625%, score 0.9745, 1237 trades, 0 margin calls, 0 bars in margin call, and tail ratio -0.4865. Raw logs: `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35s50_25k_tuner_20260518_codex.log`, `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_tuner_exit_sanitized_25k_20260518.log`, and `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_tuner_exit_sanitized_full_20260518.log`.
+
+Current selection is unchanged. `V21_sup_margin_zero_long35_short50.yaml` remains the SUP score-first leader at full-year score 2.5282, and `V21_sup_margin_zero_budget32_fast_exit.yaml` remains the conservative lower-drawdown fallback. The sanitized tuner-exit YAML is not promoted because the full-year score is materially worse despite the strong 25k slice.
 
 2026-05-18 local SUP 20k follow-up: ran the previously 5k-only `V21_sup_margin_zero_l35_s50_long_scaleout_dcablock.yaml` against the available sibling cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`, to close the evidence gap on the best recent-tail long guard. Command:
 

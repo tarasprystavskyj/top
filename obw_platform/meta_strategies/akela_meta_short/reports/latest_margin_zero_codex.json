@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T07:36:19+03:00",
+  "updated": "2026-05-18T07:49:41+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -2720,5 +2720,71 @@
     },
     "result": "Rejected after full-year confirmation: l20_s60 stayed zero-margin, but had lower return, deeper MTM drawdown, worse risk-adjusted score, and worse terminal unrealized ratio than SUP long35_short50.",
     "next_action": "Selection unchanged. Stop simple SUP long/short budget interpolation; only test a new SUP branch if it introduces a real tail guard or exit-shape change and passes positive 20k MTM with zero margin calls."
+  },
+  "sup_l35s50_tuner_exit_sanitized_20260518": {
+    "cycle": "2026-05-18 SUP score-leader gate and tuner-exit check",
+    "hypothesis": "Confirm the current SUP score leader on 20k/25k gates, then use a bounded tuner pass as a candidate generator for exit/spacing changes while preserving sane exposure caps.",
+    "npz_used": "C:/python_scripts/top_1/DB/akela_meta_short_1m_1y_sup_bingx.npz",
+    "source_config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
+    "attempts": [
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
+        "limit_bars": 20000,
+        "return_mtm_pct_on_start": 10.950962340288264,
+        "mdd_mtm_%": -16.20862752704562,
+        "risk_adjusted_mtm_score": 7.400155057761737,
+        "trades_total": 326,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.4586378546638117,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_20k_20260518_codex.log",
+        "result": "Direct 20k gate passed; this closes the evidence gap for the current SUP score leader."
+      },
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_long35_short50.yaml",
+        "limit_bars": 25000,
+        "return_mtm_pct_on_start": 11.219066517126018,
+        "mdd_mtm_%": -16.167753773837134,
+        "risk_adjusted_mtm_score": 7.784974004088226,
+        "trades_total": 372,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.4526386890493759,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_long35_short50_25k_20260518_codex.log",
+        "result": "25k stress slice stayed zero-margin and positive."
+      },
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_tuner_exit_sanitized.yaml",
+        "limit_bars": 25000,
+        "return_mtm_pct_on_start": 12.482163355933963,
+        "mdd_mtm_%": -9.693681903204093,
+        "risk_adjusted_mtm_score": 16.07534977141695,
+        "trades_total": 377,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.3852389079641382,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_tuner_exit_sanitized_25k_20260518.log",
+        "result": "Promoted only to full-year confirmation: improved 25k return, MDD, score, and terminal exposure while staying zero-margin."
+      },
+      {
+        "config": "obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_l35_s50_tuner_exit_sanitized.yaml",
+        "limit_bars": "full",
+        "return_mtm_pct_on_start": 6.7297909208827615,
+        "mdd_mtm_%": -46.46251045144537,
+        "risk_adjusted_mtm_score": 0.9745424243852102,
+        "trades_total": 1237,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.4864545445555267,
+        "unrealized_pnl_long": -9.596091525753977,
+        "unrealized_pnl_short": -3.153460992585515,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_tuner_exit_sanitized_full_20260518.log",
+        "result": "Rejected after full-year: stayed zero-margin but materially underperformed the current SUP score leader on return, drawdown, score, and tail ratio."
+      }
+    ],
+    "tuner_partial_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35s50_25k_tuner_20260518_codex.log",
+    "tuner_note": "The tuner exceeded the outer timeout and was terminated after stage 10. The sanitized YAML uses only the sane exit/spacing subset and preserves original exposure caps.",
+    "result": "No promotion. V21_sup_margin_zero_long35_short50.yaml remains the SUP score-first leader; V21_sup_margin_zero_budget32_fast_exit.yaml remains the conservative lower-drawdown fallback.",
+    "next_action": "Avoid promoting 25k-only tuner wins without full-year confirmation. Future SUP work should target the full-year drawdown window directly or wait for broader cache/disk headroom."
   }
 }
