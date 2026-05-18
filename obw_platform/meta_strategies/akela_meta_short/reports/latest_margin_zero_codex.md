@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-18T07:00:00+03:00
+Updated: 2026-05-18T07:05:00+03:00
 
 ## Objective
 
@@ -31,6 +31,12 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 
 ## Current Cycle
+
+2026-05-18 local SUP long-entry gate probe: created `V21_sup_margin_zero_l35_s50_long_gate65.yaml` and `V21_sup_margin_zero_l35_s50_long_gate75.yaml` from the score-leading `long35_short50` SUP profile. The hypothesis was to preserve the 35/50 budget and short-side contribution while blocking the recent stuck long tail by raising only long `entryTrendStrengthMin` from 50 to 65/75. Both 5k probes used `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`.
+
+Both gate variants were identical on the 5k recent slice because neither opened long trades: return +4.6932%, MDD -4.4271%, 322 trades, 0 margin calls, 0 bars in margin call, terminal unrealized/realized ratio -0.1309. Only the less restrictive gate65 variant was promoted to the 20k check. It stayed zero-margin but failed the hard positive-MTM gate: return -0.7788%, MDD -24.6415%, 173 trades, 0 margin calls, 0 bars in margin call, tail ratio -1.5696. This branch is rejected before full-year confirmation because blocking long entries fixed the 5k stuck-long symptom but left a weak short-only 20k tail, similar in spirit to the prior short-only rejection.
+
+Current selection is unchanged. The score-first full-year basket remains IDOL budget125, FREEDOMMONEY baseline, MAXXING budget125_stress_exit, and SUP long35_short50, with 0 total margin-call events and score-first SUP risk-adjusted MTM score 2.5282. The conservative SUP fallback remains `V21_sup_margin_zero_budget32_fast_exit.yaml`. Next concrete action: do not pursue hard long-entry blocking by itself; if continuing SUP work, test a softer long exit/guard that still permits profitable long cycles on the 20k gate.
 
 2026-05-18 local SUP middle-region continuation: created `V21_sup_margin_zero_l25_s50.yaml` and `V21_sup_margin_zero_l30_s50.yaml` from the rejected `l20_s50` low-long/high-short branch. The hypothesis was that a long budget between 20 and 35 might recover some full-year contribution from `long35_short50` without immediately entering its -50% drawdown region. Both quick checks used the only available local SUP cache, `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`.
 
@@ -129,6 +135,9 @@ SUP 25k tuner follow-up: the selected `V21_sup_margin_zero_budget32_fast_exit.ya
 
 | config | limit | return_mtm_% | mdd_mtm_% | trades | margin_calls | bars_in_margin_call | tail ratio | result | raw log |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `V21_sup_margin_zero_l35_s50_long_gate65.yaml` | 5000 | 4.69 | -4.43 | 322 | 0 | 0 | -0.1309 | Passed the 5k gate: blocked the recent stuck long and kept the score-leading short side active; promoted only to 20k confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_gate65_5k_20260518.log` |
+| `V21_sup_margin_zero_l35_s50_long_gate75.yaml` | 5000 | 4.69 | -4.43 | 322 | 0 | 0 | -0.1309 | Same 5k behavior as gate65 with no long trades; not separately promoted because it added no distinct signal. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_gate75_5k_20260518.log` |
+| `V21_sup_margin_zero_l35_s50_long_gate65.yaml` | 20000 | -0.78 | -24.64 | 173 | 0 | 0 | -1.5696 | Rejected before full-year: stayed zero-margin, but failed the positive-MTM gate and ended with poor short-side terminal exposure. | `_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_gate65_20k_20260518.log` |
 | `V21_idol_margin_zero_budget125_fast_exit.yaml` | 20000 | -0.71 | -2.10 | 260 | 0 | 0 | -3.5281 | Rejected before full-year: stayed zero-margin, but worsened return, MDD, and terminal unrealized ratio versus IDOL budget125. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget125_fast_exit_20k.log` |
 | `V21_maxxing_margin_zero_budget125_fast_exit.yaml` | 20000 | 9.06 | -15.03 | 1498 | 0 | 0 | -0.7675 | Rejected before full-year: stayed zero-margin, but cut return from 23.10% to 9.06% and worsened MDD from -8.31% to -15.03% versus MAXXING budget125. | `_reports/akela_meta_short/margin_zero_codex_loop/maxxing_budget125_fast_exit_20k.log` |
 | `V21_idol_margin_zero_budget150.yaml` | 20000 | -0.28 | -1.85 | 350 | 0 | 0 | -1.4251 | Passed 20k recheck and matched the prior temporary screen exactly; promoted only to full-year confirmation. | `_reports/akela_meta_short/margin_zero_codex_loop/idol_budget150_recheck_20k.log` |

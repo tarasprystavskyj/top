@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T07:00:00+03:00",
+  "updated": "2026-05-18T07:05:00+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1902,5 +1902,62 @@
       }
     ],
     "next_action": "Stop pursuing simple SUP low-long/high-short budget interpolation; it did not improve the 20k gate. Next useful search: test an actual long-leg guard or exit-shape change that keeps long35_short50 short-side contribution but avoids the recent open-long tail; require positive 20k MTM before any full-year run."
+  },
+  "sup_long_gate_probe_20260518": {
+    "cycle": "2026-05-18 local SUP long-entry gate probe",
+    "npz_available": "C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz",
+    "result": "No promoted candidate. Current score-first basket selection unchanged.",
+    "hypothesis": "Raise only SUP long entryTrendStrengthMin on the score-leading long35_short50 profile to block the recent stuck long tail while preserving the 35/50 budget and short-side contribution.",
+    "attempts": [
+      {
+        "config": "V21_sup_margin_zero_l35_s50_long_gate65.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": 4.693244485173396,
+        "mdd_mtm_%": -4.427140002279688,
+        "risk_adjusted_mtm_score": 4.977017181723756,
+        "trades_total": 322,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.13085264260562723,
+        "unrealized_pnl_long": 0.0,
+        "unrealized_pnl_short": -1.4131629994718349,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_gate65_5k_20260518.log",
+        "result": "Passed the 5k gate; no long trades opened, so the recent stuck-long symptom was removed."
+      },
+      {
+        "config": "V21_sup_margin_zero_l35_s50_long_gate75.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 5000,
+        "return_mtm_pct_on_start": 4.693244485173396,
+        "mdd_mtm_%": -4.427140002279688,
+        "risk_adjusted_mtm_score": 4.977017181723756,
+        "trades_total": 322,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.13085264260562723,
+        "unrealized_pnl_long": 0.0,
+        "unrealized_pnl_short": -1.4131629994718349,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_gate75_5k_20260518.log",
+        "result": "Same 5k behavior as gate65; not separately promoted because it added no distinct signal."
+      },
+      {
+        "config": "V21_sup_margin_zero_l35_s50_long_gate65.yaml",
+        "symbol": "SUP/USDT:USDT",
+        "limit_bars": 20000,
+        "return_mtm_pct_on_start": -0.7787860332486257,
+        "mdd_mtm_%": -24.641462419414832,
+        "risk_adjusted_mtm_score": null,
+        "trades_total": 173,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -1.5696190875976368,
+        "unrealized_pnl_long": 0.0,
+        "unrealized_pnl_short": -4.291981956211967,
+        "raw_log": "_reports/akela_meta_short/margin_zero_codex_loop/sup_l35_s50_long_gate65_20k_20260518.log",
+        "result": "Rejected before full-year confirmation: stayed zero-margin, but failed the positive-MTM gate and ended with poor short-side terminal exposure."
+      }
+    ],
+    "next_action": "Do not pursue hard long-entry blocking by itself; if continuing SUP work, test a softer long exit/guard that still permits profitable long cycles on the 20k gate."
   }
 }
