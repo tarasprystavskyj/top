@@ -2421,5 +2421,60 @@
       "terminal_unrealized_to_realized_ratio": -0.27438896486533815
     },
     "next_action": "Stop promoting one-off SUP long guards from 5k unless they also pass positive 20k MTM; prefer a constrained tuner/microbatch around exit and scale-out ranges, followed by manual ranking with the requested score."
+  },
+  "environment_check_20260518": {
+    "cycle": "2026-05-18 local environment-check cycle",
+    "new_backtests_launched": 0,
+    "new_tuner_runs_launched": 0,
+    "reason": "No new run launched because the checkout has no local DB directory, the sibling cache only contains the SUP basket NPZ among the requested symbols, and free space on C: was about 4.8 GB.",
+    "local_db_present": false,
+    "available_requested_npz": [
+      "C:/python_scripts/top_1/DB/akela_meta_short_1m_1y_sup_bingx.npz"
+    ],
+    "missing_requested_npz": [
+      "DB/akela_meta_short_1m_1y_idol_bingx.npz",
+      "DB/fast_cache_1m_freedommoney_1y_bingx.npz",
+      "DB/fast_cache_1m_maxxing_1y_bingx.npz",
+      "DB/akela_meta_short_1m_1y_sup_bingx.npz"
+    ],
+    "free_space_bytes": 4803211264,
+    "current_best_zero_margin_basket": {
+      "IDOL/USDT:USDT": {
+        "config": "V21_idol_margin_zero_budget125.yaml",
+        "return_mtm_pct_on_start": 34.70499499858549,
+        "mdd_mtm_%": -13.402130090476835,
+        "risk_adjusted_mtm_score": 89.86904840654262,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0
+      },
+      "FREEDOMMONEY/USDT:USDT": {
+        "config": "V21_freedommoney_bingx_live_candidate_1m_1y.yaml",
+        "return_mtm_pct_on_start": 64.27761710740924,
+        "mdd_mtm_%": -24.087926368998254,
+        "risk_adjusted_mtm_score": 171.5221143453923,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0
+      },
+      "MAXXING/USDT:USDT": {
+        "config": "V21_maxxing_margin_zero_budget125_stress_exit.yaml",
+        "return_mtm_pct_on_start": 119.55309748045855,
+        "mdd_mtm_%": -13.677453987301133,
+        "risk_adjusted_mtm_score": 1045.0002705505237,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0
+      },
+      "SUP/USDT:USDT": {
+        "config": "V21_sup_margin_zero_long35_short50.yaml",
+        "return_mtm_pct_on_start": 11.265457747781666,
+        "mdd_mtm_%": -50.198722228706,
+        "risk_adjusted_mtm_score": 2.5281853243712784,
+        "margin_call_events_total": 0,
+        "bars_in_margin_call": 0,
+        "terminal_unrealized_to_realized_ratio": -0.27438896486533815,
+        "fallback_config": "V21_sup_margin_zero_budget32_fast_exit.yaml"
+      }
+    },
+    "result": "No selection change. Existing first-basket zero-margin cleanup remains the current promoted report-level result.",
+    "next_action": "Resume only when the full documented NPZ cache is available and disk headroom is healthier; for SUP, require positive 20k MTM before any full-year confirmation."
   }
 }
