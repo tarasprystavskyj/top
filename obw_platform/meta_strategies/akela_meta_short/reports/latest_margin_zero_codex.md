@@ -1,6 +1,6 @@
 # Akela Margin-Zero Codex Report
 
-Updated: 2026-05-13T02:23:43Z
+Updated: 2026-05-18T03:06:00+03:00
 
 ## Objective
 
@@ -37,6 +37,14 @@ Fresh SUP recent-tail probe: `V21_sup_margin_zero_budget32_fast_exit.yaml` was r
 Execution blocker: the documented local `DB/` directory is absent from this checkout; only the SUP NPZ was found in sibling `C:\python_scripts\top_1\DB`. After the first successful 5k SUP run, repeated backtester invocations for the same fast-exit family began timing out, including a repeated selected-config run that produced no output before timeout. Several unrelated long-lived `python.exe` processes were already present, so this cycle stopped new expensive runs rather than consuming more local resources. The empty repeat log was deleted.
 
 Next concrete action: rerun from an environment with the full local `DB/` cache and stable backtester process throughput. For SUP specifically, test recent-tail variants that reduce or force faster exit of the stuck long leg while preserving the selected short-side fast-exit behavior; reject immediately unless `return_mtm_pct_on_start > 0`, `mdd_mtm_% < 0`, and margin calls stay at zero on the 5k slice before any full-year confirmation.
+
+Follow-up execution check: a repeat 5k SUP baseline command was attempted against the selected `V21_sup_margin_zero_budget32_fast_exit.yaml` and sibling NPZ path `C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz`:
+
+```bash
+python obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml --npz C:\python_scripts\top_1\DB\akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT --limit-bars 5000
+```
+
+It timed out after 184 seconds without producing JSON output. The spawned Python process was terminated; older pre-existing `python.exe` processes were left untouched. No new candidate was promoted and no strategy YAML was changed.
 
 The first-basket risk-cleanup target is still satisfied: all four selected configs have `margin_call_events_total = 0` and `bars_in_margin_call = 0` on full-year runs.
 

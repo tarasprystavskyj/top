@@ -1,5 +1,5 @@
 {
-  "updated": "2026-05-18T02:12:41+03:00",
+  "updated": "2026-05-18T03:06:00+03:00",
   "objective": "Find V21 experimental configurations with margin_call_events_total = 0 for Akela basket candidates.",
   "guardrails_observed": {
     "changed_backtester_math": false,
@@ -1247,8 +1247,8 @@
     },
     {
       "cycle": "2026-05-18 execution blocker",
-      "result": "Stopped additional runs after repeated trusted-backtester invocations timed out following one successful 5k SUP run.",
-      "details": "The checkout has no local DB/ directory; only SUP NPZ was found in sibling C:\\python_scripts\\top_1\\DB. Several long-lived python.exe processes were already present. No production configs or backtester math were changed.",
+      "result": "Stopped additional runs after repeated trusted-backtester invocations timed out following one successful 5k SUP run. A follow-up 5k baseline repeat on 2026-05-18T03:00+03:00 also timed out after 184 seconds without JSON output.",
+      "details": "The checkout has no local DB/ directory; only SUP NPZ was found in sibling C:\\python_scripts\\top_1\\DB. Several long-lived python.exe processes were already present. The latest attempted command was: python obw_platform/backtester_dual_long_short_fast_pack_v2.py --cfg obw_platform/meta_strategies/akela_meta_short/generated_configs/margin_zero/V21_sup_margin_zero_budget32_fast_exit.yaml --npz C:\\python_scripts\\top_1\\DB\\akela_meta_short_1m_1y_sup_bingx.npz --symbol SUP/USDT:USDT --limit-bars 5000. The spawned Python process from this attempt was terminated; older pre-existing python.exe processes were left untouched. No production configs, generated strategy YAMLs, or backtester math were changed.",
       "next_action": "Use an environment with full local DB cache and stable process throughput; first test SUP recent-tail long-side de-risk variants on 5k bars, then promote only if MTM is positive, MDD is negative, and margin calls remain zero."
     }
   ],
