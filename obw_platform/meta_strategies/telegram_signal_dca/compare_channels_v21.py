@@ -16,6 +16,7 @@ from telegram_signal_dca_compare import (
     Signal,
     load_price_rows,
     load_v21_policy,
+    policy_for_capital_mode,
     read_signals,
     simulate,
     write_csv,
@@ -46,19 +47,29 @@ def run_variants(
     counts: List[int],
     out_dir: Path,
     initial_equity: float,
+    target_notional: float,
+    capital_mode: str,
+    entry_mode: str,
 ) -> List[Dict[str, Any]]:
     summaries: List[Dict[str, Any]] = []
     out_dir.mkdir(parents=True, exist_ok=True)
     for count in counts:
         label = "plain" if count == 0 else f"v21_dca{count}"
+        run_policy = policy if capital_mode == "v21_config" else policy_for_capital_mode(
+            policy,
+            count,
+            target_notional,
+            capital_mode,
+        )
         summary, trades, equity, sym = simulate(
             rows,
             signals,
             initial_equity=initial_equity,
             dca_count=count,
-            policy=policy,
+            policy=run_policy,
             tp1_frac=1.0 / 3.0,
             tp2_frac=0.5,
+            entry_mode=entry_mode,
         )
         summaries.append({"variant": label, **summary})
         write_csv(out_dir / f"{label}_trades.csv", trades)
@@ -84,6 +95,7 @@ def profitable_bases_from_train(
         policy=policy,
         tp1_frac=1.0 / 3.0,
         tp2_frac=0.5,
+        entry_mode="close_in_zone",
     )
     bases = [
         str(row["base"])
@@ -107,7 +119,10 @@ def main() -> None:
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--dca-counts", default="0,1,2,3,4,5")
     ap.add_argument("--initial-equity", type=float, default=1000.0)
+    ap.add_argument("--target-notional", type=float, default=100.0)
+    ap.add_argument("--capital-mode", choices=["v21_config", "same_initial", "same_max"], default="same_max")
     ap.add_argument("--ttl-hours", type=float, default=72.0)
+    ap.add_argument("--entry-mode", choices=["first_bar", "close_in_zone", "touch_zone"], default="first_bar")
     ap.add_argument("--side", choices=["both", "long", "short"], default="both")
     ap.add_argument("--train-frac", type=float, default=0.7)
     ap.add_argument("--min-profitable-trade-rows", type=int, default=1)
@@ -136,6 +151,9 @@ def main() -> None:
             counts=counts,
             out_dir=channel_dir,
             initial_equity=args.initial_equity,
+            target_notional=args.target_notional,
+            capital_mode=args.capital_mode,
+            entry_mode=args.entry_mode,
         )
         for row in summaries:
             all_summaries.append(
@@ -168,6 +186,9 @@ def main() -> None:
             counts=counts,
             out_dir=causal_dir,
             initial_equity=args.initial_equity,
+            target_notional=args.target_notional,
+            capital_mode=args.capital_mode,
+            entry_mode=args.entry_mode,
         )
         selector_meta = {
             "source_channel": causal_channel,

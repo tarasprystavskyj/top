@@ -16,6 +16,7 @@ import csv
 import json
 import math
 import sqlite3
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -209,6 +210,32 @@ def load_v21_policy(path: str, max_dca_count: int) -> Dict[str, Any]:
     }
 
 
+def policy_for_capital_mode(policy: Dict[str, Any], dca_count: int, target_notional: float, capital_mode: str) -> Dict[str, Any]:
+    """Return a policy copy scaled for apples-to-apples capital comparison.
+
+    - same_initial: every variant starts with target_notional; DCA can use more
+      total exposure if levels fill.
+    - same_max: every variant has the same planned max notional. For DCA this
+      scales initial + add legs so sum(initial, adds[:N]) == target_notional.
+    """
+    p = copy.deepcopy(policy)
+    target = float(target_notional)
+    for side_key in ("long", "short"):
+        side = p[side_key]
+        if dca_count <= 0 or capital_mode == "same_initial":
+            base_scale = target / max(float(side["base_notional"]), 1e-12)
+            side["base_notional"] = target
+            side["adds"] = [float(x) * base_scale for x in side["adds"]]
+            continue
+        planned = [float(side["base_notional"])] + [float(x) for x in side["adds"][:dca_count]]
+        scale = target / max(sum(planned), 1e-12)
+        side["base_notional"] = planned[0] * scale
+        side["adds"] = [float(x) * scale for x in side["adds"]]
+    p["capital_mode"] = capital_mode
+    p["target_notional"] = target
+    return p
+
+
 def v21_dca_plan(sig: Signal, entry_px: float, policy: Dict[str, Any], count: int) -> Tuple[List[float], List[float]]:
     side_policy = policy["long"] if sig.side == "LONG" else policy["short"]
     levels: List[float] = []
@@ -232,6 +259,14 @@ def sl_hit(side: str, row: Dict[str, Any], sl: float) -> bool:
 
 def dca_hit(side: str, row: Dict[str, Any], level: float) -> bool:
     return row["low"] <= level if side == "LONG" else row["high"] >= level
+
+
+def entry_hit(row: Dict[str, Any], sig: Signal, mode: str) -> bool:
+    if mode == "first_bar":
+        return True
+    if mode == "touch_zone":
+        return bool(float(row["low"]) <= sig.entry_high and float(row["high"]) >= sig.entry_low)
+    return bool(sig.entry_low <= float(row["close"]) <= sig.entry_high)
 
 
 def ret_for(side: str, entry: float, exit_px: float) -> float:
@@ -302,6 +337,7 @@ def simulate(
     policy: Dict[str, Any],
     tp1_frac: float,
     tp2_frac: float,
+    entry_mode: str,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     by_time: Dict[datetime, List[Dict[str, Any]]] = {}
     for row in rows:
@@ -401,7 +437,7 @@ def simulate(
                 break
             for row in by_base.get(sig.base, []):
                 close = float(row["close"])
-                if sig.entry_low <= close <= sig.entry_high:
+                if entry_hit(row, sig, entry_mode):
                     qty = entry_notional / max(close, 1e-12)
                     levels, adds = v21_dca_plan(sig, close, policy, dca_count)
                     positions[row["symbol"]] = Position(
@@ -457,6 +493,9 @@ def simulate(
         "fee": fee,
         "slippage_per_side": slippage,
         "max_notional_frac": policy["max_notional_frac"],
+        "capital_mode": policy.get("capital_mode", "v21_config"),
+        "target_notional": policy.get("target_notional", None),
+        "entry_mode": entry_mode,
         "v21_config": policy["config_path"],
         "rollback_label": policy["rollback_label"],
         "long_base_notional": policy["long"]["base_notional"],
@@ -513,7 +552,10 @@ def main() -> None:
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--dca-counts", default="0,1,2,3,4,5")
     ap.add_argument("--initial-equity", type=float, default=1000.0)
+    ap.add_argument("--target-notional", type=float, default=100.0)
+    ap.add_argument("--capital-mode", choices=["v21_config", "same_initial", "same_max"], default="v21_config")
     ap.add_argument("--ttl-hours", type=float, default=72.0)
+    ap.add_argument("--entry-mode", choices=["first_bar", "close_in_zone", "touch_zone"], default="close_in_zone")
     ap.add_argument("--side", choices=["both", "long", "short"], default="both")
     ap.add_argument("--source-channel", default="", help="Optional exact source_channel filter from the signal CSV.")
     args = ap.parse_args()
@@ -525,11 +567,12 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     rows = load_price_rows(args.price_db)
     signals = read_signals(args.signals_csv, args.ttl_hours, args.side, args.source_channel)
-    policy = load_v21_policy(args.v21_config, max(counts))
+    base_policy = load_v21_policy(args.v21_config, max(counts))
 
     summaries = []
     for count in counts:
         label = "plain" if count == 0 else f"v21_dca{count}"
+        policy = base_policy if args.capital_mode == "v21_config" else policy_for_capital_mode(base_policy, count, args.target_notional, args.capital_mode)
         summary, trades, equity, sym = simulate(
             rows,
             signals,
@@ -538,6 +581,7 @@ def main() -> None:
             policy=policy,
             tp1_frac=1.0 / 3.0,
             tp2_frac=0.5,
+            entry_mode=args.entry_mode,
         )
         summaries.append({"variant": label, **summary})
         write_csv(out_dir / f"{label}_trades.csv", trades)
