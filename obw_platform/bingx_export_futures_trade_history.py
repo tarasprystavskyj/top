@@ -528,6 +528,68 @@ def build_browser_rows(fills: List[Dict[str, Any]], orders: List[Dict[str, Any]]
     return out
 
 
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def build_browser_rows_from_filled_orders(orders: List[Dict[str, Any]], cfg: Config) -> List[Dict[str, Any]]:
+    """Fallback for old windows where fillHistory is unavailable but allOrders remains."""
+    out = []
+
+    for o in orders:
+        status = str(o.get("status") or "").upper()
+        qty = _float_or_zero(o.get("executedQty"))
+        price = _float_or_zero(o.get("avgPrice"))
+        if status not in {"FILLED", "CLOSED"} or qty <= 0 or price <= 0:
+            continue
+
+        side = str(o.get("side") or "").upper()
+        position_side = str(o.get("positionSide") or "").upper()
+
+        if position_side == "SHORT":
+            direction = "Р’С–РґРєСЂРёС‚Рё РєРѕСЂРѕС‚РєСѓ" if side == "SELL" else "Р—Р°РєСЂРёС‚Рё РєРѕСЂ."
+        elif position_side == "LONG":
+            direction = "Р’С–РґРєСЂРёС‚Рё Р»РѕРЅРі" if side == "BUY" else "Р—Р°РєСЂРёС‚Рё Р»РѕРЅРі"
+        else:
+            direction = f"{side} {position_side}".strip() or "РќРµРІС–РґРѕРјРѕ"
+
+        t_ms = None
+        for key in ("updateTime", "time"):
+            try:
+                raw = o.get(key)
+                if raw is not None and str(raw).strip():
+                    t_ms = int(float(raw))
+                    break
+            except Exception:
+                pass
+        if t_ms is None:
+            t_ms = cfg.start_ms
+
+        oid = str(o.get("orderId") or "")
+        out.append({
+            "tradeId": "",
+            "orderId": oid,
+            "symbol": str(o.get("symbol") or cfg.symbol),
+            "time": t_ms,
+            "side": side,
+            "positionSide": position_side,
+            "price": price,
+            "qty": qty,
+            "realizedPnl": o.get("profit", "0"),
+            "fee": o.get("commission", "0"),
+            "ua_time": ms_to_local(t_ms, cfg.tz_name),
+            "ua_direction": direction,
+            "source": "allOrders_filled_fallback",
+        })
+
+    out.sort(key=lambda r: (r["time"], r["orderId"]))
+    dbg(cfg, "build_browser_rows_from_filled_orders", "orders=", len(orders), "out=", len(out), force=True)
+    return out
+
+
 def export_browser_like_csv(rows: List[Dict[str, Any]], out_path: Path) -> None:
     with out_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=UA_HEADERS)
@@ -607,6 +669,11 @@ def main() -> int:
     orders = fetch_all_orders(session, cfg)
     fills = fetch_fill_history(session, cfg)
     rows = build_browser_rows(fills, orders, cfg)
+    fill_fallback = ""
+    if not rows and orders:
+        rows = build_browser_rows_from_filled_orders(orders, cfg)
+        if rows:
+            fill_fallback = "allOrders_filled"
 
     export_browser_like_csv(rows, out_path)
     if fills_csv_path:
@@ -619,6 +686,8 @@ def main() -> int:
     print(f"orders={len(orders)}")
     print(f"fills={len(fills)}")
     print(f"joined={len(rows)}")
+    if fill_fallback:
+        print(f"fill_fallback={fill_fallback}")
     print(f"out={out_path}")
     if raw_json_path:
         print(f"raw_json={raw_json_path}")
