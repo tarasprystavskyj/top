@@ -346,7 +346,7 @@ def apply_follow_open(
         if key in state["open_positions"]:
             state["open_positions"][key]["last_seen_utc"] = iso(now)
             continue
-        mark, source = mark_provider.mark(session, pos["symbol"], pos.get("entry_price") or pos.get("mark_price"))
+        mark, source = mark_provider.mark(session, pos["symbol"], pos.get("mark_price") or pos.get("entry_price"))
         if not mark:
             events.append({"type": "missing_mark", "strategy": lead["name"], "symbol": pos["symbol"]})
             continue
