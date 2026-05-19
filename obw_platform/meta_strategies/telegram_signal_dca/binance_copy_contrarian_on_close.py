@@ -285,6 +285,49 @@ def load_or_fetch_candles(
     return rows
 
 
+def find_reversal_exit(
+    pos: Position,
+    positions_by_symbol: Dict[str, List[Position]],
+    candles: List[Dict[str, float]],
+    *,
+    ttl_hours: float,
+) -> Dict[str, Any] | None:
+    ttl_end_ms = pos.closed_ms + int(ttl_hours * 3600_000)
+    next_pos = None
+    for cand in positions_by_symbol.get(pos.symbol, []):
+        if cand.id == pos.id:
+            continue
+        if cand.closed_ms <= pos.closed_ms:
+            continue
+        next_pos = cand
+        break
+    if next_pos is None or next_pos.closed_ms > ttl_end_ms:
+        return None
+    if next_pos.lead_side != pos.contra_side:
+        return None
+    exit_ms = next_pos.closed_ms
+    exit_px = next_pos.avg_close
+    source = "position_avgClosePrice"
+    candle = min(candles, key=lambda row: abs(int(row["t"]) - exit_ms)) if candles else None
+    if not math.isfinite(exit_px) or exit_px <= 0:
+        if candle is None:
+            return None
+        exit_px = float(candle["close"])
+        exit_ms = int(candle["t"])
+        source = "nearest_1m_candle_close"
+    return {
+        "exit_ms": exit_ms,
+        "exit_px": exit_px,
+        "source": source,
+        "reversal_position_id": next_pos.id,
+        "reversal_lead_side": next_pos.lead_side,
+        "reversal_closed_utc": iso_ms(next_pos.closed_ms),
+        "reversal_avg_close": next_pos.avg_close,
+        "nearest_candle_utc": iso_ms(int(candle["t"])) if candle else "",
+        "nearest_candle_close": float(candle["close"]) if candle else math.nan,
+    }
+
+
 def dca_plan(side: str, entry_px: float, policy: Dict[str, Any], count: int) -> Tuple[List[float], List[float]]:
     side_policy = policy["long"] if side == "LONG" else policy["short"]
     levels: List[float] = []
@@ -305,6 +348,7 @@ def simulate(
     *,
     policy: Dict[str, Any],
     dca_count: int,
+    reversal_exit: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     side_policy = policy["long"] if pos.contra_side == "LONG" else policy["short"]
     fee = float(policy["fee"])
@@ -315,7 +359,15 @@ def simulate(
     fills = 0
     fill_rows: List[Dict[str, Any]] = []
     levels, adds = dca_plan(pos.contra_side, entry, policy, dca_count)
-    for candle in candles:
+    exit_reason = "ttl_or_final_candle"
+    exit_px = float(candles[-1]["close"])
+    exit_ms = int(candles[-1]["t"])
+    if reversal_exit is not None:
+        exit_reason = "reversal"
+        exit_px = float(reversal_exit["exit_px"])
+        exit_ms = int(reversal_exit["exit_ms"])
+    sim_candles = [candle for candle in candles if int(candle["t"]) <= exit_ms]
+    for candle in sim_candles:
         while fills < len(levels) and touched(pos.contra_side, candle, levels[fills]):
             add_notional = adds[fills]
             old_qty = notional / max(avg_entry, 1e-12)
@@ -331,8 +383,6 @@ def simulate(
                 }
             )
             fills += 1
-    exit_row = candles[-1]
-    exit_px = float(exit_row["close"])
     gross_ret = ret_for(pos.contra_side, avg_entry, exit_px)
     net_ret = gross_ret - 2 * fee - 2 * slippage
     pnl = net_ret * notional
@@ -343,8 +393,14 @@ def simulate(
         "side": pos.contra_side,
         "lead_opened_utc": pos.opened.isoformat().replace("+00:00", "Z"),
         "entry_utc": pos.closed.isoformat().replace("+00:00", "Z"),
-        "exit_utc": iso_ms(int(exit_row["t"])),
-        "hold_h": (int(exit_row["t"]) - pos.closed_ms) / 3600_000.0,
+        "exit_utc": iso_ms(exit_ms),
+        "hold_h": (exit_ms - pos.closed_ms) / 3600_000.0,
+        "exit_reason": exit_reason,
+        "exit_source": str((reversal_exit or {}).get("source") or "candle_close"),
+        "reversal_position_id": str((reversal_exit or {}).get("reversal_position_id") or ""),
+        "reversal_lead_side": str((reversal_exit or {}).get("reversal_lead_side") or ""),
+        "reversal_closed_utc": str((reversal_exit or {}).get("reversal_closed_utc") or ""),
+        "reversal_avg_close": (reversal_exit or {}).get("reversal_avg_close", ""),
         "entry": entry,
         "exit": exit_px,
         "avg_entry": avg_entry,
@@ -428,18 +484,23 @@ def render_report(
     skipped: List[Dict[str, Any]],
     summaries: Dict[str, Dict[str, Any]],
     ttl_hours: float,
+    exit_on_reversal: bool,
 ) -> None:
     md = [f"# Binance Copy Contrarian-On-Close: {portfolio_id}", ""]
     md.append(f"Positions normalized: {positions_count}; tested: {tested_count}; skipped: {len(skipped)}.")
-    md.append(f"Entry is opposite side at lead avgClosePrice/closed time. Exit is TTL {ttl_hours:g}h or final available 1m candle.")
+    exit_rule = f"TTL {ttl_hours:g}h or final available 1m candle"
+    if exit_on_reversal:
+        exit_rule += "; earlier on next same-symbol lead position row when its lead side matches the contrarian side"
+    md.append(f"Entry is opposite side at lead avgClosePrice/closed time. Exit is {exit_rule}.")
     md.append("Plain notional is 100 USDT; DCA variants use V21 same_max 100.")
     md.append("`net %` is sum PnL divided by one 100 USDT unit; `net % max-cap` divides by max concurrent positions * 100 USDT.")
     md.append("")
-    md.append("| variant | count | max conc | period days | net % | net % max-cap | /30d max-cap % | win % | PF | maxDD % | avg DCA fills |")
-    md.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    md.append("| variant | count | reversal exits | max conc | period days | net % | net % max-cap | /30d max-cap % | win % | PF | maxDD % | avg DCA fills |")
+    md.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for label, s in summaries.items():
         md.append(
-            f"| {label} | {s.get('count', 0)} | {s.get('max_concurrent_positions', 0)} | "
+            f"| {label} | {s.get('count', 0)} | {s.get('reversal_exits', 0)} | "
+            f"{s.get('max_concurrent_positions', 0)} | "
             f"{s.get('period_days', 0.0):.2f} | {s.get('net_pct', 0.0):.2f} | "
             f"{s.get('net_pct_on_max_concurrent_capital', 0.0):.2f} | "
             f"{s.get('net_pct_per_30d_on_max_concurrent_capital', 0.0):.2f} | "
@@ -467,6 +528,7 @@ def main() -> None:
     ap.add_argument("--ttl-hours", type=float, default=72.0)
     ap.add_argument("--target-notional", type=float, default=100.0)
     ap.add_argument("--dca-counts", default="0,1,2,3")
+    ap.add_argument("--exit-on-reversal", action="store_true")
     ap.add_argument("--v21-config", default="obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml")
     ap.add_argument("--sleep-sec", type=float, default=0.08)
     ap.add_argument("--max-retries", type=int, default=5)
@@ -494,6 +556,11 @@ def main() -> None:
     positions = read_positions(positions_csv)
     if not positions:
         raise SystemExit("No positions loaded")
+    positions_by_symbol: Dict[str, List[Position]] = {}
+    for pos in positions:
+        positions_by_symbol.setdefault(pos.symbol, []).append(pos)
+    for symbol in positions_by_symbol:
+        positions_by_symbol[symbol].sort(key=lambda p: p.closed_ms)
 
     max_dca_count = max(int(x.strip()) for x in args.dca_counts.split(",") if x.strip())
     policy0 = load_v21_policy(args.v21_config, max_dca_count)
@@ -525,7 +592,17 @@ def main() -> None:
     for raw_count in args.dca_counts.split(","):
         count = int(raw_count.strip())
         policy = policy_for_capital_mode(policy0, count, args.target_notional, "same_max")
-        rows = [simulate(pos, candles, policy=policy, dca_count=count) for pos, candles in eligible]
+        rows = []
+        for pos, candles in eligible:
+            reversal_exit = None
+            if args.exit_on_reversal:
+                reversal_exit = find_reversal_exit(
+                    pos,
+                    positions_by_symbol,
+                    candles,
+                    ttl_hours=args.ttl_hours,
+                )
+            rows.append(simulate(pos, candles, policy=policy, dca_count=count, reversal_exit=reversal_exit))
         label = "plain" if count == 0 else f"dca{count}"
         write_csv(out_dir / f"{label}_trades.csv", rows)
         summary = summarize(rows, target_notional=args.target_notional)
@@ -534,6 +611,8 @@ def main() -> None:
                 "label": label,
                 "dca_count": count,
                 "capital_mode": "same_max",
+                "exit_on_reversal": bool(args.exit_on_reversal),
+                "reversal_exits": sum(1 for row in rows if row.get("exit_reason") == "reversal"),
                 "fee": policy["fee"],
                 "slippage_per_side": policy["slippage"],
             }
@@ -550,6 +629,7 @@ def main() -> None:
         skipped=skipped,
         summaries=summaries,
         ttl_hours=args.ttl_hours,
+        exit_on_reversal=bool(args.exit_on_reversal),
     )
     print(json.dumps(summaries, ensure_ascii=False, indent=2))
     print(f"[done] {out_dir / 'REPORT.md'}")
