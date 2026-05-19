@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import datetime as dt
 import json
+import math
 import os
 import sqlite3
 import uuid
@@ -23,11 +24,17 @@ try:
     import ccxt  # type: ignore
 except Exception:
     ccxt = None
+try:
+    import yaml  # type: ignore
+except Exception:
+    yaml = None
 
 try:
     from .telegram_signal_schema import base_symbol, normalize_telegram_channel, parse_channel_exit_text, parse_signal_text
 except ImportError:
     from telegram_signal_schema import base_symbol, normalize_telegram_channel, parse_channel_exit_text, parse_signal_text
+
+DEFAULT_DCA_CONFIG = "obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml"
 
 
 def utc_now() -> str:
@@ -166,6 +173,10 @@ def ensure_db(path: Path) -> None:
             ("entry_policy", "TEXT"),
             ("pending_created_at", "TEXT"),
             ("pending_expires_at", "TEXT"),
+            ("dca_count", "INTEGER DEFAULT 0"),
+            ("dca_filled", "INTEGER DEFAULT 0"),
+            ("dca_levels_json", "TEXT"),
+            ("dca_adds_json", "TEXT"),
         ],
     }.items():
         for column, ddl in cols:
@@ -188,6 +199,53 @@ def signal_tps(sig: Dict[str, Any]) -> List[float]:
     if len(tps) < 3:
         raise ValueError("signal has fewer than three take-profit levels")
     return tps
+
+
+def load_dca_policy(path: str, side: str, dca_count: int) -> Dict[str, Any]:
+    if dca_count <= 0:
+        return {"steps": [], "adds": [], "base_weight": 1.0}
+    default_steps = [0.3, 0.35, 0.6, 0.8, 0.8] if side == "long" else [0.1, 0.4, 0.6, 0.8, 0.8]
+    default_mults = [1.2, 1.0, 1.5, 3.5]
+    if yaml is not None and path and Path(path).exists():
+        try:
+            cfg = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+            params = cfg.get("strategy_params_%s" % side, {}) or {}
+            if side == "long":
+                default_steps = [float(params.get(k, v)) for k, v in zip(["drop1", "drop2", "drop3", "drop4", "drop5"], default_steps)]
+            else:
+                default_steps = [float(params.get(k, v)) for k, v in zip(["rise1", "rise2", "rise3", "rise4", "rise5"], default_steps)]
+            default_mults = [
+                float(params.get("mult2", default_mults[0])),
+                float(params.get("mult3", default_mults[1])),
+                float(params.get("mult4", default_mults[2])),
+                float(params.get("mult5", default_mults[3])),
+            ]
+        except Exception as exc:
+            print("[paper-live] DCA config load failed, using defaults: %s" % exc, flush=True)
+    steps = list(default_steps[:dca_count])
+    while len(steps) < dca_count:
+        steps.append(steps[-1] if steps else 0.5)
+    mults = list(default_mults[:dca_count])
+    while len(mults) < dca_count:
+        mults.append(1.0)
+    return {"steps": steps, "adds": mults, "base_weight": 1.0}
+
+
+def build_dca_plan(side: str, entry_price: float, max_notional: float, dca_count: int, cfg_path: str) -> Dict[str, Any]:
+    policy = load_dca_policy(cfg_path, side, dca_count)
+    weights = [float(policy["base_weight"])] + [float(x) for x in policy["adds"][:dca_count]]
+    scale = float(max_notional) / max(sum(weights), 1e-12)
+    base_notional = weights[0] * scale
+    add_notionals = [w * scale for w in weights[1:]]
+    levels: List[float] = []
+    last = float(entry_price)
+    for step in policy["steps"][:dca_count]:
+        if side == "long":
+            last *= 1.0 - float(step) / 100.0
+        else:
+            last *= 1.0 + float(step) / 100.0
+        levels.append(last)
+    return {"base_notional": base_notional, "levels": levels, "adds": add_notionals}
 
 
 def insert_signal(cur: sqlite3.Cursor, sig: Dict[str, Any], message_id: int, now: str) -> None:
@@ -213,14 +271,25 @@ def insert_signal(cur: sqlite3.Cursor, sig: Dict[str, Any], message_id: int, now
     ))
 
 
-def insert_signal_and_position(db_path: Path, sig: Dict[str, Any], message_id: int, notional: float, entry_policy: str, ticker_price: Optional[float]) -> str:
+def insert_signal_and_position(
+    db_path: Path,
+    sig: Dict[str, Any],
+    message_id: int,
+    notional: float,
+    entry_policy: str,
+    ticker_price: Optional[float],
+    dca_count: int,
+    dca_config: str,
+) -> str:
     if signal_exists(db_path, message_id):
         return "duplicate"
     entry_mid = (float(sig["entry_low"]) + float(sig["entry_high"])) / 2.0
     entry_price = float(ticker_price) if entry_policy == "ticker" and ticker_price else entry_mid
-    qty = notional / entry_price if entry_price > 0 else 0.0
-    now = utc_now()
     side = str(sig["side"]).lower()
+    dca_plan = build_dca_plan(side, entry_price, notional, dca_count, dca_config)
+    entry_notional = float(dca_plan["base_notional"])
+    qty = entry_notional / entry_price if entry_price > 0 else 0.0
+    now = utc_now()
     tps = signal_tps(sig)
     con = sqlite3.connect(db_path)
     cur = con.cursor()
@@ -238,16 +307,17 @@ def insert_signal_and_position(db_path: Path, sig: Dict[str, Any], message_id: i
         "open",
         entry_price,
         qty,
-        notional,
+        entry_notional,
         f"telegram_signal_{message_id}",
-        json.dumps({"entry_policy": entry_policy}, ensure_ascii=False),
+        json.dumps({"entry_policy": entry_policy, "max_notional": notional, "dca_count": dca_count}, ensure_ascii=False),
     ))
     cur.execute("""INSERT INTO positions (
         signal_id, symbol, side, entry_price, entry_low, entry_high,
         qty_initial, qty_open, notional, sl, tp1, tp2, tp3, tp_stage, status,
         opened_at, updated_at, closed_at, exit_price, realized_pnl,
-        entry_policy, pending_created_at, pending_expires_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+        entry_policy, pending_created_at, pending_expires_at,
+        dca_count, dca_filled, dca_levels_json, dca_adds_json
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
         message_id,
         sig.get("symbol"),
         side,
@@ -256,7 +326,7 @@ def insert_signal_and_position(db_path: Path, sig: Dict[str, Any], message_id: i
         float(sig["entry_high"]),
         qty,
         qty,
-        notional,
+        entry_notional,
         float(sig["sl"]),
         tps[0],
         tps[1],
@@ -271,13 +341,17 @@ def insert_signal_and_position(db_path: Path, sig: Dict[str, Any], message_id: i
         entry_policy,
         None,
         None,
+        int(dca_count),
+        0,
+        json.dumps(dca_plan["levels"], ensure_ascii=False),
+        json.dumps(dca_plan["adds"], ensure_ascii=False),
     ))
     con.commit()
     con.close()
     return "open"
 
 
-def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: int, notional: float, entry_timeout_sec: float) -> str:
+def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: int, notional: float, entry_timeout_sec: float, dca_count: int) -> str:
     if signal_exists(db_path, message_id):
         return "duplicate"
     now_dt = dt.datetime.now(dt.timezone.utc)
@@ -308,14 +382,17 @@ def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: in
             "entry_low": float(sig["entry_low"]),
             "entry_high": float(sig["entry_high"]),
             "pending_expires_at": expires_at,
+            "max_notional": notional,
+            "dca_count": dca_count,
         }, ensure_ascii=False),
     ))
     cur.execute("""INSERT INTO positions (
         signal_id, symbol, side, entry_price, entry_low, entry_high,
         qty_initial, qty_open, notional, sl, tp1, tp2, tp3, tp_stage, status,
         opened_at, updated_at, closed_at, exit_price, realized_pnl,
-        entry_policy, pending_created_at, pending_expires_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+        entry_policy, pending_created_at, pending_expires_at,
+        dca_count, dca_filled, dca_levels_json, dca_adds_json
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
         message_id,
         sig.get("symbol"),
         side,
@@ -339,6 +416,10 @@ def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: in
         "touch",
         now,
         expires_at,
+        int(dca_count),
+        0,
+        "[]",
+        "[]",
     ))
     con.commit()
     con.close()
@@ -351,9 +432,12 @@ def price_touches_entry(pos: sqlite3.Row, price: float) -> bool:
     return low <= float(price) <= high
 
 
-def open_pending_position(db_path: Path, pos: sqlite3.Row, price: float) -> None:
+def open_pending_position(db_path: Path, pos: sqlite3.Row, price: float, dca_config: str) -> None:
     now = utc_now()
-    notional = float(pos["notional"])
+    max_notional = float(pos["notional"])
+    dca_count = int(pos["dca_count"] or 0)
+    dca_plan = build_dca_plan(str(pos["side"]), price, max_notional, dca_count, dca_config)
+    notional = float(dca_plan["base_notional"])
     qty = notional / price if price > 0 else 0.0
     con = sqlite3.connect(db_path)
     cur = con.cursor()
@@ -375,17 +459,22 @@ def open_pending_position(db_path: Path, pos: sqlite3.Row, price: float) -> None
         json.dumps({
             "entry_low": float(pos["entry_low"]),
             "entry_high": float(pos["entry_high"]),
+            "max_notional": max_notional,
+            "dca_count": dca_count,
         }, ensure_ascii=False),
     ))
     cur.execute("""UPDATE positions
-        SET entry_price=?, qty_initial=?, qty_open=?, status='open',
-            opened_at=?, updated_at=?
+        SET entry_price=?, qty_initial=?, qty_open=?, notional=?, status='open',
+            opened_at=?, updated_at=?, dca_levels_json=?, dca_adds_json=?
         WHERE signal_id=? AND status='pending'""", (
         price,
         qty,
         qty,
+        notional,
         now,
         now,
+        json.dumps(dca_plan["levels"], ensure_ascii=False),
+        json.dumps(dca_plan["adds"], ensure_ascii=False),
         int(pos["signal_id"]),
     ))
     con.commit()
@@ -428,6 +517,77 @@ def expire_pending_position(db_path: Path, pos: sqlite3.Row) -> None:
     print("[paper-live EXPIRE] msg=%s %s %s entry window elapsed" % (
         pos["signal_id"], pos["symbol"], pos["side"],
     ), flush=True)
+
+
+def dca_level_touched(pos: sqlite3.Row, price: float, level: float) -> bool:
+    side = str(pos["side"])
+    return float(price) <= float(level) if side == "long" else float(price) >= float(level)
+
+
+def apply_dca_fills(db_path: Path, pos: sqlite3.Row, price: float) -> None:
+    dca_count = int(pos["dca_count"] or 0)
+    filled = int(pos["dca_filled"] or 0)
+    if dca_count <= 0 or filled >= dca_count:
+        return
+    try:
+        levels = json.loads(pos["dca_levels_json"] or "[]")
+        adds = json.loads(pos["dca_adds_json"] or "[]")
+    except Exception:
+        return
+    entry_price = float(pos["entry_price"] or 0.0)
+    qty_open = float(pos["qty_open"] or 0.0)
+    current_notional = float(pos["notional"] or 0.0)
+    if entry_price <= 0 or qty_open <= 0:
+        return
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    now = utc_now()
+    changed = False
+    while filled < min(dca_count, len(levels), len(adds)):
+        level = float(levels[filled])
+        if not dca_level_touched(pos, price, level):
+            break
+        add_notional = float(adds[filled])
+        add_qty = add_notional / max(level, 1e-12)
+        old_qty = qty_open
+        qty_open += add_qty
+        current_notional += add_notional
+        entry_price = current_notional / max(qty_open, 1e-12)
+        filled += 1
+        changed = True
+        cur.execute("""INSERT INTO orders (
+            order_id, signal_id, ts_utc, mode, symbol, side, action, price, qty,
+            notional, reason, extra
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
+            str(uuid.uuid4()),
+            int(pos["signal_id"]),
+            now,
+            "paper_telegram_dca",
+            pos["symbol"],
+            pos["side"],
+            "dca",
+            level,
+            add_qty,
+            add_notional,
+            "dca_touch",
+            json.dumps({"dca_filled": filled, "trigger_price": price, "old_qty": old_qty}, ensure_ascii=False),
+        ))
+        print("[paper-live DCA] msg=%s %s %s fill=%s level=%.12g add=%.12g avg=%.12g" % (
+            pos["signal_id"], pos["symbol"], pos["side"], filled, level, add_notional, entry_price,
+        ), flush=True)
+    if changed:
+        cur.execute("""UPDATE positions
+            SET entry_price=?, qty_open=?, notional=?, dca_filled=?, updated_at=?
+            WHERE signal_id=?""", (
+            entry_price,
+            qty_open,
+            current_notional,
+            filled,
+            now,
+            int(pos["signal_id"]),
+        ))
+    con.commit()
+    con.close()
 
 
 def close_or_partial(db_path: Path, pos: sqlite3.Row, price: float, reason: str, qty_frac: float, extra: Optional[Dict[str, Any]] = None) -> None:
@@ -600,7 +760,7 @@ def fetch_price(ex: Any, symbol: str) -> Optional[float]:
         return None
 
 
-async def monitor_paper_state(db_path: Path, poll_sec: float, monitor_pending: bool, monitor_exits: bool) -> None:
+async def monitor_paper_state(db_path: Path, poll_sec: float, monitor_pending: bool, monitor_exits: bool, dca_config: str) -> None:
     ex = build_exchange()
     if ex is None:
         print("[paper-live] ccxt not available; entry fills and TP/SL monitor disabled, pending timeouts still active", flush=True)
@@ -628,7 +788,7 @@ async def monitor_paper_state(db_path: Path, poll_sec: float, monitor_pending: b
             if price is None:
                 continue
             if price_touches_entry(pos, price):
-                open_pending_position(db_path, pos, price)
+                open_pending_position(db_path, pos, price, dca_config)
         for pos in rows:
             price = fetch_price(ex, str(pos["symbol"]))
             if price is None:
@@ -639,6 +799,7 @@ async def monitor_paper_state(db_path: Path, poll_sec: float, monitor_pending: b
             elif side == "short" and price >= float(pos["sl"]):
                 close_or_partial(db_path, pos, price, "sl", 1.0)
             else:
+                apply_dca_fills(db_path, pos, price)
                 stage = int(pos["tp_stage"])
                 if stage >= 3:
                     continue
@@ -678,9 +839,18 @@ async def run(args: argparse.Namespace) -> None:
         sig["telegram_message_date"] = event.message.date.isoformat() if event.message.date else None
         ticker_price = fetch_price(ex, sig["symbol"]) if ex is not None else None
         if args.entry_policy == "touch":
-            state = insert_signal_and_pending(db_path, sig, message_id, args.notional, args.entry_timeout_sec)
+            state = insert_signal_and_pending(db_path, sig, message_id, args.notional, args.entry_timeout_sec, args.dca_count)
         else:
-            state = insert_signal_and_position(db_path, sig, message_id, args.notional, args.entry_policy, ticker_price)
+            state = insert_signal_and_position(
+                db_path,
+                sig,
+                message_id,
+                args.notional,
+                args.entry_policy,
+                ticker_price,
+                args.dca_count,
+                args.dca_config,
+            )
         if state != "duplicate":
             with out.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(sig, ensure_ascii=False) + "\n")
@@ -712,6 +882,7 @@ async def run(args: argparse.Namespace) -> None:
             args.poll_sec,
             args.entry_policy == "touch",
             bool(args.monitor_exits),
+            args.dca_config,
         ))
     await client.run_until_disconnected()
 
@@ -726,6 +897,8 @@ def main() -> None:
     ap.add_argument("--notional", type=float, default=100.0)
     ap.add_argument("--entry-policy", choices=["touch", "mid", "ticker"], default="touch")
     ap.add_argument("--entry-timeout-sec", type=float, default=900.0)
+    ap.add_argument("--dca-count", type=int, default=0, help="Paper DCA levels to enable. --notional remains planned max notional.")
+    ap.add_argument("--dca-config", default=DEFAULT_DCA_CONFIG)
     ap.add_argument("--monitor-exits", action="store_true")
     ap.add_argument("--poll-sec", type=float, default=15.0)
     args = ap.parse_args()

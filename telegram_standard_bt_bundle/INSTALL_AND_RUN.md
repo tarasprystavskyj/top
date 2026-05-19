@@ -106,6 +106,20 @@ python obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py \
 ```
 
 This is paper-only. It writes simulated `signals`, `orders`, and `positions` to SQLite and does not place exchange orders.
+`--dca-count N` enables V21-style paper DCA. `--notional` remains the planned
+maximum position notional, so initial entry is scaled down when DCA is enabled:
+
+```bash
+python obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py \
+  --env-file /var/www/vps2.happyuser.info/top/top_1/.env \
+  --channel https://t.me/Nevskiyh \
+  --out-jsonl runs/telegram_paper/Nevskiyh_signals.jsonl \
+  --db runs/telegram_paper/Nevskiyh_paper_live.sqlite \
+  --notional 100 \
+  --entry-policy touch \
+  --dca-count 3 \
+  --monitor-exits
+```
 
 ## Validate signal quality
 
