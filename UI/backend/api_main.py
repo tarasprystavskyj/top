@@ -2359,6 +2359,9 @@ def _parse_bingx_datetime_series(series: pd.Series) -> pd.Series:
         out.loc[mask] = pd.to_datetime(s.loc[mask], format="%d/%m/%y %H:%M", errors="coerce", utc=True)
     mask = out.isna()
     if mask.any():
+        out.loc[mask] = pd.to_datetime(s.loc[mask], format="%Y-%m-%d %H:%M:%S", errors="coerce", utc=True)
+    mask = out.isna()
+    if mask.any():
         out.loc[mask] = pd.to_datetime(s.loc[mask], errors="coerce", dayfirst=True, utc=True)
     return out
 
@@ -2674,6 +2677,13 @@ def _coerce_point(ts: Any, value: Any) -> Optional[Dict[str, Any]]:
     return {"ts": iso, "value": float(v)}
 
 
+def _point_value_from_row(row: Dict[str, Any], keys: List[str]) -> Any:
+    for key in keys:
+        if key in row and row.get(key) is not None:
+            return row.get(key)
+    return None
+
+
 def _series_from_df(df: pd.DataFrame) -> List[Dict[str, Any]]:
     if df.empty:
         return []
@@ -2698,7 +2708,9 @@ def _load_series_file(session_dir: str, candidates: List[str]) -> List[Dict[str,
         ext = os.path.splitext(full)[1].lower()
         try:
             if ext == ".csv":
-                return _series_from_df(pd.read_csv(full))
+                out = _series_from_df(pd.read_csv(full))
+                if out:
+                    return out
             if ext in {".json", ".js"}:
                 data = _safe_read_json(full)
                 rows = data.get("rows") if isinstance(data, dict) else data
@@ -2707,14 +2719,81 @@ def _load_series_file(session_dir: str, candidates: List[str]) -> List[Dict[str,
                     for row in rows:
                         if not isinstance(row, dict):
                             continue
-                        p = _coerce_point(row.get("ts") or row.get("timestamp"), row.get("value") or row.get("equity") or row.get("pnl"))
+                        p = _coerce_point(
+                            row.get("ts") or row.get("timestamp"),
+                            _point_value_from_row(row, ["value", "equity", "pnl"]),
+                        )
                         if p:
                             out.append(p)
                     out.sort(key=lambda x: x["ts"])
-                    return out
+                    if out:
+                        return out
         except Exception:
             continue
     return []
+
+
+def _backtest_series_from_tv_path(tv_path: str) -> List[Dict[str, Any]]:
+    if not tv_path:
+        return []
+    abs_path = os.path.abspath(tv_path)
+    if not _is_allowed_validation_path(abs_path) or not os.path.isfile(abs_path):
+        raise HTTPException(400, "tv_path is outside allowed roots or missing")
+    df = _read_tv_csv(abs_path).sort_values("dt")
+    if "Type" in df.columns:
+        df = df[df["Type"].astype(str).str.contains("Exit", case=False, na=False)].copy()
+    if df.empty:
+        return []
+    pnl_col = "Net P&L USDT" if "Net P&L USDT" in df.columns else None
+    if not pnl_col:
+        pnl_col = next((c for c in df.columns if "p&l" in c.lower() or "pnl" in c.lower()), None)
+    if not pnl_col:
+        return []
+    df["value"] = pd.to_numeric(df[pnl_col], errors="coerce").fillna(0.0).cumsum()
+    return [{"ts": row["dt"].isoformat(), "value": float(row["value"])} for _, row in df.iterrows() if pd.notna(row.get("dt"))]
+
+
+def _live_series_from_session_sqlite(session_dir: str) -> List[Dict[str, Any]]:
+    session_db = os.path.join(session_dir, "session.sqlite")
+    try:
+        df = _session_equity_df(session_db)
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+    out = df.copy()
+    if "ts" not in out.columns or "equity" not in out.columns:
+        return []
+    out["ts"] = pd.to_datetime(out["ts"], errors="coerce", utc=True)
+    out["equity"] = pd.to_numeric(out["equity"], errors="coerce")
+    out = out.dropna(subset=["ts", "equity"]).sort_values("ts")
+    if out.empty:
+        return []
+    base = out.attrs.get("initial_equity")
+    try:
+        base = float(base)
+    except Exception:
+        base = float(out["equity"].iloc[0])
+    out["value"] = out["equity"] - base
+    return [{"ts": row["ts"].isoformat(), "value": float(row["value"])} for _, row in out.iterrows()]
+
+
+def _filter_series_window(series: List[Dict[str, Any]], start_iso: Optional[str], end_iso: Optional[str]) -> List[Dict[str, Any]]:
+    if not series or not (start_iso or end_iso):
+        return series
+    start = pd.to_datetime(start_iso, utc=True, errors="coerce") if start_iso else None
+    end = pd.to_datetime(end_iso, utc=True, errors="coerce") if end_iso else None
+    out: List[Dict[str, Any]] = []
+    for row in series:
+        ts = pd.to_datetime(row.get("ts"), utc=True, errors="coerce")
+        if pd.isna(ts):
+            continue
+        if start is not None and pd.notna(start) and ts < start:
+            continue
+        if end is not None and pd.notna(end) and ts > end:
+            continue
+        out.append(row)
+    return out
 
 
 def _resolve_live_session_path(raw_path: str) -> str:
@@ -3069,12 +3148,23 @@ def backtest_live_validation_live_session_status(path: str = Query(default="")):
 
 
 @app.get("/api/backtest_live_validation/live_session/chart")
-def backtest_live_validation_live_session_chart(path: str = Query(default="")):
+def backtest_live_validation_live_session_chart(path: str = Query(default=""), tv_path: str = Query(default="")):
     if not path:
         raise HTTPException(400, "path is required")
     session_dir = _resolve_live_session_path(path)
     live = _load_series_file(session_dir, ["equity.csv", "live_equity.csv", "equity_curve.csv", "live_pnl.csv"])
+    if not live:
+        live = _live_series_from_session_sqlite(session_dir)
     backtest = _load_series_file(session_dir, ["backtest_equity.csv", "backtest_pnl.csv", "equity_backtest.csv"])
+    tv_window: Optional[Dict[str, Any]] = None
+    if tv_path:
+        tv_abs_path = os.path.abspath(tv_path)
+        if not _is_allowed_validation_path(tv_abs_path) or not os.path.isfile(tv_abs_path):
+            raise HTTPException(400, "tv_path is outside allowed roots or missing")
+        tv_window = _inspect_tv_path(tv_abs_path)
+        backtest = _backtest_series_from_tv_path(tv_abs_path)
+    if tv_window:
+        live = _filter_series_window(live, tv_window.get("start"), tv_window.get("end"))
     distance = _load_series_file(session_dir, ["distance.csv", "absolute_distance.csv"])
     if not distance and live and backtest:
         bt_map = {row["ts"]: row["value"] for row in backtest}
