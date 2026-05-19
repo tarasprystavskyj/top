@@ -1,0 +1,223 @@
+{
+  "contract_version": "telegram_autonomous_discovery_v1",
+  "branch": "telegram_signal_execution_research",
+  "workspace": "C:\\python_scripts\\top_1",
+  "ready_for_live": false,
+  "safety_invariants": {
+    "paper_only": true,
+    "signed_transactions": false,
+    "broadcast_enabled": false,
+    "private_key_loaded": false,
+    "human_approval_required_for_live": true,
+    "no_dca_first": true
+  },
+  "forbidden_paths": [
+    "live",
+    "daemon",
+    "broker",
+    "order_execution",
+    "signed_transactions",
+    "api_keys",
+    "private_keys"
+  ],
+  "baseline_metrics": {
+    "selected_edge_min5_tp3_720h_channel_close": {
+      "scope": "selected_subset_not_full_universe",
+      "signals_csv": "obw_platform/meta_strategies/telegram_dca_mvp/reports/telegram_signals_raw_edge_min5.csv",
+      "signals_total": 83,
+      "opened_signals": 68,
+      "pnl_pct": 9.227603868801504,
+      "mdd_pct": -1.1122047025057924,
+      "pnl_to_mdd": 8.296677624192517,
+      "runner": "run_telegram_simple_baseline_npz.py",
+      "npz": "DB/telegram_signals_1m_event_windows_720h_bingx.npz",
+      "params": {
+        "entry_mode": "close_in_zone",
+        "signal_ttl_hours": 72,
+        "signal_hard_ttl_sec": 3600,
+        "allow_late_if_not_left_zone": true,
+        "reject_if_sl_before_entry": true,
+        "exit_at_tp": 3,
+        "tp_margin_weights": "edge_in_zone",
+        "move_meta_stop_after_tp": true,
+        "stop_first": true
+      },
+      "verdict": "reproduced_from_2026_05_16_handoff_but_requires_causal_selector_validation"
+    },
+    "full_universe_tp3_720h_channel_close_same_params": {
+      "scope": "full_universe",
+      "signals_total": 312,
+      "opened_signals": 251,
+      "pnl_pct": -16.125677517029213,
+      "mdd_pct": -20.1266996090686,
+      "pnl_to_mdd": -0.8012082373288553,
+      "verdict": "same_execution_loses_on_full_universe_selector_is_the_main_problem"
+    },
+    "fixed_thirds_tp3_channel_close": {
+      "pnl_pct": -26.70,
+      "mdd_pct": -27.64
+    },
+    "tp2_50_50_channel_close": {
+      "pnl_pct": -26.22,
+      "mdd_pct": -27.21
+    },
+    "tp2_50_50_no_channel_close": {
+      "pnl_pct": -21.00,
+      "mdd_pct": -25.66
+    },
+    "edge_min5_tp3_edge_in_zone_move_stop_720h": {
+      "scope": "filtered_edge_min5_not_full_universe",
+      "signals_total": 83,
+      "opened_signals": 68,
+      "trades": 68,
+      "pnl_pct": 9.227603868801504,
+      "mdd_pct": -1.1122047025057924,
+      "pnl_to_mdd": 8.296677624192517,
+      "report_dir": "obw_platform/meta_strategies/telegram_dca_mvp/reports/edge68_reproduce_720h_tp3"
+    },
+    "all_signals_tp3_edge_in_zone_move_stop_720h": {
+      "scope": "full_static_telegram_universe",
+      "signals_total": 312,
+      "opened_signals": 251,
+      "trades": 251,
+      "pnl_pct": -16.125677517029213,
+      "mdd_pct": -20.1266996090686,
+      "pnl_to_mdd": -0.8012082373288553,
+      "report_dir": "obw_platform/meta_strategies/telegram_dca_mvp/reports/all_signals_720h_tp3_edge_in_zone_events"
+    }
+  },
+  "external_handoffs": [
+    {
+      "id": "telegram_dca_handoff_2026-05-16",
+      "path": "obw_platform/meta_strategies/telegram_dca_mvp/external_handoffs/telegram_dca_handoff_2026-05-16/handoff_package",
+      "validated_locally": true,
+      "validated_claim": "TP3 + edge_in_zone + move_meta_stop_after_tp reproduces +9.2276% PnL on the 68 opened edge_min5 trades.",
+      "caution": "The positive result is a filtered 68-trade subset. The same execution rule on the full 312-signal universe is -16.1257% PnL, so the next loop must discover a non-leaky selector before DCA tuning."
+    }
+  ],
+  "edge_summary": {
+    "signals_total": 312,
+    "signals_with_market": 305,
+    "tp1_hit_1h": 0.20655737704918034,
+    "tp1_hit_24h": 0.6622950819672131,
+    "tp1_hit_72h": 0.780327868852459,
+    "tp1_hit_full": 0.9344262295081968,
+    "median_mfe_vs_tp1_24h_pct": 116.4461247637052,
+    "median_mfe_vs_tp1_72h_pct": 147.16981132075483
+  },
+  "confirmed_subset_results": {
+    "edge_min5_tp3_edge_in_zone_move_stop": {
+      "status": "locally_reproduced",
+      "signals_rows": 83,
+      "opened_trades": 68,
+      "rejected": 15,
+      "npz_old_event_windows": "DB\\telegram_signals_1m_event_windows_bingx.npz",
+      "npz_720h_event_windows": "DB\\telegram_signals_1m_event_windows_720h_bingx.npz",
+      "pnl_pct": 9.227603868801504,
+      "mdd_pct": -1.1122047025057924,
+      "pnl_to_mdd": 8.296677624192517,
+      "warning": "This is a filtered edge_min5 subset, not a full-universe strategy. Any selector must be proven non-leaky and walk-forward."
+    },
+    "all_signals_720h_same_tp3_profile": {
+      "status": "locally_reproduced_control",
+      "signals_total": 312,
+      "opened_trades": 251,
+      "missing_market_data": 7,
+      "rejected": 54,
+      "pnl_pct": -16.125677517029213,
+      "mdd_pct": -20.1266996090686,
+      "pnl_to_mdd": -0.8012082373288553
+    }
+  },
+  "required_artifacts_per_run": [
+    "artifact_manifest.json",
+    "summary.json",
+    "equity_curve.csv",
+    "trades.csv",
+    "per_signal_lifecycle.csv",
+    "mfe_mae_by_signal.csv",
+    "rejected_signals.csv",
+    "ambiguous_same_bar.csv",
+    "cohort_breakdown.csv"
+  ],
+  "promotion_gate_no_dca": {
+    "pnl_improvement_vs_tp2_50_50_baseline_pct_points_min": 10.0,
+    "mdd_abs_ratio_vs_tp2_50_50_baseline_max": 0.75,
+    "opened_signals_min_full_branch": 150,
+    "opened_signals_min_filter_branch": 50,
+    "ambiguous_same_bar_rate_max": 0.02,
+    "liquidation_count_required": 0,
+    "dca_used_required": false,
+    "artifact_manifest_valid_required": true,
+    "continuous_ohlcv_required_before_forward_paper": true
+  },
+  "stale_loop_rules": {
+    "same_failed_test_repeated_count_replace_at": 3,
+    "cycles_without_new_artifact_or_metric_replace_at": 3,
+    "cycles_without_clear_branch_state_replace_at": 2,
+    "event_window_npz_cannot_prove_long_hold": true,
+    "dca_cannot_promote_before_no_dca_exhaustion": true
+  },
+  "branch_states": [
+    "ACTIVE",
+    "BLOCKED_BY_DATA",
+    "EXHAUSTED_FOR_NOW",
+    "FAILED_SAFETY"
+  ],
+  "next_no_dca_hypothesis_queue": [
+    {
+      "id": "H0_causal_selector_for_edge_min5",
+      "goal": "reproduce edge_min5 quality using only information available at or before entry time",
+      "reference_subset": "telegram_signals_raw_edge_min5.csv",
+      "reference_result": "selected_edge_min5_tp3_720h_channel_close",
+      "tests": [
+        "compare raw signal text features",
+        "compare entry geometry and RR before entry",
+        "compare symbol/side/regime cohorts",
+        "walk-forward split selector before any promotion"
+      ],
+      "promotion_warning": "edge_min5 itself may be in-sample or derived from future MFE; do not promote unless selector is causal"
+    },
+    {
+      "id": "H1_small_tp1_fraction",
+      "target_fraction_of_tp1": [0.25, 0.35, 0.50],
+      "max_hold_hours": [24, 48],
+      "stop": ["zone_stop", "original_sl"],
+      "expected_effect": "reduce large losses while preserving signal impulse"
+    },
+    {
+      "id": "H0_edge_min5_selector_validation",
+      "rule": "explain and rederive raw_edge_min5 using only information available at or before signal entry",
+      "target": "preserve most of the 68-trade +9.23pct edge while rejecting the toxic full-universe tail",
+      "required_checks": ["walk_forward_or_time_split", "no_mfe_future_leakage", "symbol_side_cohort_breakdown"]
+    },
+    {
+      "id": "H2_progress_timeout",
+      "rule": "exit_if_price_fails_to_reach_50pct_of_tp1_by_6h",
+      "max_hold_hours": 48,
+      "expected_effect": "cut dead signals before SL tail dominates"
+    },
+    {
+      "id": "H3_rr_filter",
+      "rule": "tp1_to_sl_rr_ge_1_0",
+      "expected_effect": "improve tail quality",
+      "warning": "small sample risk"
+    },
+    {
+      "id": "H4_side_split",
+      "rule": "test_long_only_and_short_only",
+      "expected_effect": "identify whether one side destroys expectancy"
+    },
+    {
+      "id": "H5_close_event_ablation",
+      "variants": ["with_close_events", "no_close_events", "symbol_only_close_events"],
+      "expected_effect": "measure damage or value of Telegram manual close events"
+    },
+    {
+      "id": "H6_edge_min5_selector_audit",
+      "rule": "reconstruct edge_min5 selection and split features into signal_time_known vs future_outcome_leaky",
+      "expected_effect": "turn the reproduced +9.23pct subset into a defensible selector or reject it as in-sample leakage",
+      "required_validation": "walk_forward_or_time_split"
+    }
+  ]
+}
