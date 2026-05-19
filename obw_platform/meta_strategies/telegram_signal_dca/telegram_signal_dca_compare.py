@@ -69,6 +69,7 @@ class Signal:
     expires: datetime
     symbol: str
     base: str
+    source_channel: str
     side: str
     entry_low: float
     entry_high: float
@@ -93,8 +94,14 @@ class Position:
     notional_opened: float = 0.0
 
 
-def read_signals(path: str, ttl_hours: float, side_filter: str) -> List[Signal]:
+def read_signals(
+    path: str,
+    ttl_hours: float,
+    side_filter: str,
+    source_channel_filter: str = "",
+) -> List[Signal]:
     out: List[Signal] = []
+    source_channel_filter = source_channel_filter.strip().lower()
     with open(path, "r", encoding="utf-8", newline="") as fp:
         for i, row in enumerate(csv.DictReader(fp)):
             try:
@@ -118,6 +125,9 @@ def read_signals(path: str, ttl_hours: float, side_filter: str) -> List[Signal]:
             symbol = str(row.get("symbol") or "").strip()
             if not symbol:
                 continue
+            source_channel = str(row.get("source_channel") or row.get("channel") or "").strip()
+            if source_channel_filter and source_channel.lower() != source_channel_filter:
+                continue
             out.append(
                 Signal(
                     idx=i,
@@ -125,6 +135,7 @@ def read_signals(path: str, ttl_hours: float, side_filter: str) -> List[Signal]:
                     expires=dt + timedelta(hours=ttl_hours),
                     symbol=symbol,
                     base=base_symbol(symbol),
+                    source_channel=source_channel,
                     side=side,
                     entry_low=lo,
                     entry_high=hi,
@@ -504,6 +515,7 @@ def main() -> None:
     ap.add_argument("--initial-equity", type=float, default=1000.0)
     ap.add_argument("--ttl-hours", type=float, default=72.0)
     ap.add_argument("--side", choices=["both", "long", "short"], default="both")
+    ap.add_argument("--source-channel", default="", help="Optional exact source_channel filter from the signal CSV.")
     args = ap.parse_args()
 
     counts = [int(x.strip()) for x in args.dca_counts.split(",") if x.strip()]
@@ -512,7 +524,7 @@ def main() -> None:
 
     out_dir = Path(args.out_dir)
     rows = load_price_rows(args.price_db)
-    signals = read_signals(args.signals_csv, args.ttl_hours, args.side)
+    signals = read_signals(args.signals_csv, args.ttl_hours, args.side, args.source_channel)
     policy = load_v21_policy(args.v21_config, max(counts))
 
     summaries = []
