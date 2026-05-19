@@ -113,6 +113,7 @@ const navLinkStyle: CSSProperties = {
   color: colors.muted,
   fontSize: 13,
   fontWeight: 700,
+  textDecoration: 'none',
 };
 
 const activeNavLinkStyle: CSSProperties = {
@@ -878,8 +879,8 @@ export default function Run() {
           </span>
           <span style={{ color: colors.text, fontWeight: 950, fontSize: 15 }}>Step</span>
         </div>
-        <span style={navLinkStyle}>Dashboard</span>
-        <span style={activeNavLinkStyle}>Backtests</span>
+        <a href="/run" style={activeNavLinkStyle}>Run Backtest</a>
+        <a href="/backtest_live_validation" style={navLinkStyle}>Backtest vs Live</a>
         <span style={navLinkStyle}>Circulators</span>
         <span style={navLinkStyle}>Product</span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 18, alignItems: 'center', color: colors.muted }}>
