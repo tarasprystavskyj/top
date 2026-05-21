@@ -23,10 +23,18 @@ All generated candidates below are experimental YAMLs under `obw_platform/meta_s
 | --- | ---: |
 | symbols | 4 |
 | equal-weight terminal return approximation | 57.45% |
+| extrapolated monthly basket profitability | 3.86% |
+| extrapolated yearly basket profitability | 57.45% |
 | worst single-symbol MTM drawdown | -50.20% |
 | total trades | 19730 |
 | total margin-call events | 0 |
 | total bars in margin call | 0 |
+
+Profitability extrapolation note: using the existing equal-weight terminal return approximation `R = 57.45029183355874%` and the report's full-year context, yearly profitability is `R`; monthly profitability is compounded as `(1 + R)^(1/12) - 1 = 3.8553%`.
+
+Basket MTM chart: ![Four-symbol basket MTM endpoint summary](basket_mtm_endpoint_summary.png)
+
+Chart limitation: no full-interval per-symbol MTM curve files were present in `reports/` or `_reports/`, and the non-SUP NPZ caches needed to regenerate exact curves are missing in this checkout. The PNG is therefore an explicitly summary-derived endpoint placeholder, not an actual per-bar MTM time-series.
 
 Conservative fallback basket: replacing `SUP` with `V21_sup_margin_zero_budget32_fast_exit.yaml` lowers equal-weight return to 55.45%, improves worst MTM drawdown to -25.09%, and lowers total trades to 19338. Its SUP score is only 0.4264 versus 2.5282 for `long35_short50`, so it is a risk-cleanup fallback rather than the primary-score pick.
 

@@ -170,7 +170,15 @@
         "npz": "DB/akela_meta_short_1m_1y_sup_bingx.npz",
         "selection_note": "Primary-score SUP leader; budget32_fast_exit remains the conservative lower-drawdown fallback."
       }
-    ]
+    ],
+    "extrapolated_monthly_basket_profitability_pct": 3.8552899339431512,
+    "extrapolated_yearly_basket_profitability_pct": 57.45029183355874,
+    "profitability_extrapolation_interval_assumption": "full-year report context; exact timestamps unavailable in summary artifacts",
+    "profitability_extrapolation_formula": "monthly=(1+equal_weight_terminal_return_pct/100)^(1/12)-1; yearly=equal_weight_terminal_return_pct/100",
+    "basket_mtm_chart": "basket_mtm_endpoint_summary.png",
+    "basket_mtm_chart_type": "summary-derived endpoint placeholder",
+    "basket_mtm_chart_limitation": "No full-interval per-symbol MTM curve files were present in reports/_reports, and non-SUP NPZ caches required to regenerate exact curves are missing.",
+    "source_curve_files_found": false
   },
   "failed_or_secondary_attempts": [
     {
