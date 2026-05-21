@@ -380,7 +380,9 @@ export default function BacktestLiveValidationPage() {
     setLiveChartLoading(true);
     setLiveChartError(null);
     try {
-      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?path=${encodeURIComponent(path)}`);
+      const query = new URLSearchParams({ path });
+      if (selectedPath) query.set('tv_path', selectedPath);
+      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?${query.toString()}`);
       if (!r.ok) throw new Error('Live chart failed');
       setLiveCharts(normalizeLiveChartPayload(await r.json()));
       setLiveLastRefreshTs(new Date().toISOString());

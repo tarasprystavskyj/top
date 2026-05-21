@@ -1,5 +1,6 @@
 import sys
 import json
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -270,6 +271,47 @@ def test_live_session_endpoints_with_valid_session(monkeypatch, tmp_path):
         table = client.get("/api/backtest_live_validation/live_session/table", params={"path": str(session), "kind": kind})
         assert table.status_code == 200
         assert isinstance(table.json().get("rows"), list)
+
+
+def test_live_chart_uses_selected_tv_and_session_sqlite(monkeypatch, tmp_path):
+    src = tmp_path / "TV_backtest_source"
+    src.mkdir()
+    tv = src / "C_-_SHORT_-_MA_driven_BINGX_ENAUSDT.P_2026-04-16_c2859.csv"
+    _sample_tv_csv(tv)
+
+    live_root = tmp_path / "_reports" / "_live"
+    session = live_root / "sqlite_only_session"
+    session.mkdir(parents=True)
+    con = sqlite3.connect(session / "session.sqlite")
+    con.execute("CREATE TABLE config_snapshots (run_id TEXT, ts_utc TEXT, cfg_json TEXT)")
+    con.execute(
+        "INSERT INTO config_snapshots VALUES (?, ?, ?)",
+        ("r1", "2026-04-10T00:00:00Z", json.dumps({"initial_equity": 10000})),
+    )
+    con.execute(
+        "CREATE TABLE equity (run_id TEXT, ts_utc TEXT, equity_usdt REAL, cash_usdt REAL, position_value_usdt REAL, realized_pnl_cum REAL, unrealized_pnl REAL)"
+    )
+    con.executemany(
+        "INSERT INTO equity VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("r1", "2026-04-10T00:00:00Z", 10000, 10000, 0, 0, 0),
+            ("r1", "2026-04-10T00:05:00Z", 10005, 10005, 0, 5, 0),
+            ("r1", "2026-04-10T00:10:00Z", 10008, 10008, 0, 8, 0),
+        ],
+    )
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(api_main, "TV_BACKTEST_SOURCE_DIR", str(src))
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+
+    client = TestClient(api_main.app)
+    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session), "tv_path": str(tv)})
+    assert chart.status_code == 200
+    body = chart.json()
+    assert [p["value"] for p in body["live"]] == [0.0, 5.0, 8.0]
+    assert len(body["backtest"]) == 1
+    assert body["backtest"][0]["value"] == 5.0
 
 
 def test_live_session_endpoint_validation(monkeypatch, tmp_path):

@@ -31,8 +31,26 @@ except Exception:
 
 try:
     from .telegram_signal_schema import base_symbol, normalize_telegram_channel, parse_channel_exit_text, parse_signal_text
+    from .telegram_v21_one_leg_wrapper import (
+        dumps_state as v21_dumps_state,
+        load_one_leg_config,
+        loads_state as v21_loads_state,
+        make_bar as v21_make_bar,
+        make_strategy as v21_make_strategy,
+        manage_existing_position as v21_manage_existing_position,
+        open_external_signal as v21_open_external_signal,
+    )
 except ImportError:
     from telegram_signal_schema import base_symbol, normalize_telegram_channel, parse_channel_exit_text, parse_signal_text
+    from telegram_v21_one_leg_wrapper import (
+        dumps_state as v21_dumps_state,
+        load_one_leg_config,
+        loads_state as v21_loads_state,
+        make_bar as v21_make_bar,
+        make_strategy as v21_make_strategy,
+        manage_existing_position as v21_manage_existing_position,
+        open_external_signal as v21_open_external_signal,
+    )
 
 DEFAULT_DCA_CONFIG = "obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml"
 
@@ -177,6 +195,12 @@ def ensure_db(path: Path) -> None:
             ("dca_filled", "INTEGER DEFAULT 0"),
             ("dca_levels_json", "TEXT"),
             ("dca_adds_json", "TEXT"),
+            ("strategy_mode", "TEXT"),
+            ("v21_enabled", "INTEGER DEFAULT 0"),
+            ("v21_config_path", "TEXT"),
+            ("v21_strategy_class", "TEXT"),
+            ("v21_state_json", "TEXT"),
+            ("delegated_capital", "REAL"),
         ],
     }.items():
         for column, ddl in cols:
@@ -248,6 +272,24 @@ def build_dca_plan(side: str, entry_price: float, max_notional: float, dca_count
     return {"base_notional": base_notional, "levels": levels, "adds": add_notionals}
 
 
+def build_v21_entry(symbol: str, side: str, price: float, delegated_capital: float, cfg_path: str) -> Dict[str, Any]:
+    cfg = load_one_leg_config(cfg_path, side, delegated_capital)
+    strategy = v21_make_strategy(cfg, side)
+    row = v21_make_bar(symbol, price, utc_now())
+    opened = v21_open_external_signal(strategy, symbol, row)
+    meta = cfg["telegram_v21_wrapper"]
+    return {
+        "cfg": cfg,
+        "strategy_class": meta["active_strategy_class"],
+        "entry_price": float(opened["entry_price"]),
+        "qty": float(opened["qty"]),
+        "notional": float(opened["qty"]) * float(opened["entry_price"]),
+        "state_json": v21_dumps_state(opened["state"]),
+        "tp": opened.get("tp"),
+        "reason": opened.get("reason"),
+    }
+
+
 def insert_signal(cur: sqlite3.Cursor, sig: Dict[str, Any], message_id: int, now: str) -> None:
     tps = signal_tps(sig)
     cur.execute("""INSERT INTO signals (
@@ -280,15 +322,24 @@ def insert_signal_and_position(
     ticker_price: Optional[float],
     dca_count: int,
     dca_config: str,
+    strategy_mode: str,
 ) -> str:
     if signal_exists(db_path, message_id):
         return "duplicate"
     entry_mid = (float(sig["entry_low"]) + float(sig["entry_high"])) / 2.0
     entry_price = float(ticker_price) if entry_policy == "ticker" and ticker_price else entry_mid
     side = str(sig["side"]).lower()
-    dca_plan = build_dca_plan(side, entry_price, notional, dca_count, dca_config)
-    entry_notional = float(dca_plan["base_notional"])
-    qty = entry_notional / entry_price if entry_price > 0 else 0.0
+    v21_entry: Optional[Dict[str, Any]] = None
+    if strategy_mode == "v21":
+        v21_entry = build_v21_entry(str(sig.get("symbol")), side, entry_price, notional, dca_config)
+        entry_price = float(v21_entry["entry_price"])
+        entry_notional = float(v21_entry["notional"])
+        qty = float(v21_entry["qty"])
+        dca_plan = {"levels": [], "adds": []}
+    else:
+        dca_plan = build_dca_plan(side, entry_price, notional, dca_count, dca_config)
+        entry_notional = float(dca_plan["base_notional"])
+        qty = entry_notional / entry_price if entry_price > 0 else 0.0
     now = utc_now()
     tps = signal_tps(sig)
     con = sqlite3.connect(db_path)
@@ -309,15 +360,17 @@ def insert_signal_and_position(
         qty,
         entry_notional,
         f"telegram_signal_{message_id}",
-        json.dumps({"entry_policy": entry_policy, "max_notional": notional, "dca_count": dca_count}, ensure_ascii=False),
+        json.dumps({"entry_policy": entry_policy, "delegated_capital": notional, "dca_count": dca_count, "strategy_mode": strategy_mode}, ensure_ascii=False),
     ))
     cur.execute("""INSERT INTO positions (
         signal_id, symbol, side, entry_price, entry_low, entry_high,
         qty_initial, qty_open, notional, sl, tp1, tp2, tp3, tp_stage, status,
         opened_at, updated_at, closed_at, exit_price, realized_pnl,
         entry_policy, pending_created_at, pending_expires_at,
-        dca_count, dca_filled, dca_levels_json, dca_adds_json
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+        dca_count, dca_filled, dca_levels_json, dca_adds_json,
+        strategy_mode, v21_enabled, v21_config_path, v21_strategy_class, v21_state_json,
+        delegated_capital
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
         message_id,
         sig.get("symbol"),
         side,
@@ -345,13 +398,19 @@ def insert_signal_and_position(
         0,
         json.dumps(dca_plan["levels"], ensure_ascii=False),
         json.dumps(dca_plan["adds"], ensure_ascii=False),
+        strategy_mode,
+        1 if strategy_mode == "v21" else 0,
+        dca_config if strategy_mode == "v21" else None,
+        v21_entry["strategy_class"] if v21_entry else None,
+        v21_entry["state_json"] if v21_entry else None,
+        float(notional),
     ))
     con.commit()
     con.close()
     return "open"
 
 
-def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: int, notional: float, entry_timeout_sec: float, dca_count: int) -> str:
+def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: int, notional: float, entry_timeout_sec: float, dca_count: int, strategy_mode: str, dca_config: str) -> str:
     if signal_exists(db_path, message_id):
         return "duplicate"
     now_dt = dt.datetime.now(dt.timezone.utc)
@@ -384,6 +443,7 @@ def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: in
             "pending_expires_at": expires_at,
             "max_notional": notional,
             "dca_count": dca_count,
+            "strategy_mode": strategy_mode,
         }, ensure_ascii=False),
     ))
     cur.execute("""INSERT INTO positions (
@@ -391,8 +451,10 @@ def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: in
         qty_initial, qty_open, notional, sl, tp1, tp2, tp3, tp_stage, status,
         opened_at, updated_at, closed_at, exit_price, realized_pnl,
         entry_policy, pending_created_at, pending_expires_at,
-        dca_count, dca_filled, dca_levels_json, dca_adds_json
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+        dca_count, dca_filled, dca_levels_json, dca_adds_json,
+        strategy_mode, v21_enabled, v21_config_path, v21_strategy_class, v21_state_json,
+        delegated_capital
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
         message_id,
         sig.get("symbol"),
         side,
@@ -420,6 +482,12 @@ def insert_signal_and_pending(db_path: Path, sig: Dict[str, Any], message_id: in
         0,
         "[]",
         "[]",
+        strategy_mode,
+        0,
+        dca_config if strategy_mode == "v21" else None,
+        None,
+        None,
+        float(notional),
     ))
     con.commit()
     con.close()
@@ -436,9 +504,17 @@ def open_pending_position(db_path: Path, pos: sqlite3.Row, price: float, dca_con
     now = utc_now()
     max_notional = float(pos["notional"])
     dca_count = int(pos["dca_count"] or 0)
-    dca_plan = build_dca_plan(str(pos["side"]), price, max_notional, dca_count, dca_config)
-    notional = float(dca_plan["base_notional"])
-    qty = notional / price if price > 0 else 0.0
+    strategy_mode = str(pos["strategy_mode"] or "legacy_dca")
+    v21_entry: Optional[Dict[str, Any]] = None
+    if strategy_mode == "v21":
+        v21_entry = build_v21_entry(str(pos["symbol"]), str(pos["side"]), price, max_notional, dca_config)
+        notional = float(v21_entry["notional"])
+        qty = float(v21_entry["qty"])
+        dca_plan = {"levels": [], "adds": []}
+    else:
+        dca_plan = build_dca_plan(str(pos["side"]), price, max_notional, dca_count, dca_config)
+        notional = float(dca_plan["base_notional"])
+        qty = notional / price if price > 0 else 0.0
     con = sqlite3.connect(db_path)
     cur = con.cursor()
     cur.execute("""INSERT INTO orders (
@@ -461,11 +537,13 @@ def open_pending_position(db_path: Path, pos: sqlite3.Row, price: float, dca_con
             "entry_high": float(pos["entry_high"]),
             "max_notional": max_notional,
             "dca_count": dca_count,
+            "strategy_mode": strategy_mode,
         }, ensure_ascii=False),
     ))
     cur.execute("""UPDATE positions
         SET entry_price=?, qty_initial=?, qty_open=?, notional=?, status='open',
-            opened_at=?, updated_at=?, dca_levels_json=?, dca_adds_json=?
+            opened_at=?, updated_at=?, dca_levels_json=?, dca_adds_json=?,
+            v21_enabled=?, v21_strategy_class=?, v21_state_json=?
         WHERE signal_id=? AND status='pending'""", (
         price,
         qty,
@@ -475,6 +553,9 @@ def open_pending_position(db_path: Path, pos: sqlite3.Row, price: float, dca_con
         now,
         json.dumps(dca_plan["levels"], ensure_ascii=False),
         json.dumps(dca_plan["adds"], ensure_ascii=False),
+        1 if strategy_mode == "v21" else 0,
+        v21_entry["strategy_class"] if v21_entry else None,
+        v21_entry["state_json"] if v21_entry else None,
         int(pos["signal_id"]),
     ))
     con.commit()
@@ -643,6 +724,93 @@ def close_or_partial(db_path: Path, pos: sqlite3.Row, price: float, reason: str,
     ), flush=True)
 
 
+def update_v21_state(db_path: Path, signal_id: int, state_json: str, entry_price: Optional[float], qty_open: Optional[float], notional: Optional[float]) -> None:
+    now = utc_now()
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute("""UPDATE positions
+        SET v21_state_json=?, entry_price=COALESCE(?, entry_price),
+            qty_open=COALESCE(?, qty_open), notional=COALESCE(?, notional), updated_at=?
+        WHERE signal_id=?""", (
+        state_json,
+        entry_price,
+        qty_open,
+        notional,
+        now,
+        int(signal_id),
+    ))
+    con.commit()
+    con.close()
+
+
+def apply_v21_manage(db_path: Path, pos: sqlite3.Row, price: float, dca_config: str) -> None:
+    side = str(pos["side"])
+    cfg_path = str(pos["v21_config_path"] or dca_config)
+    delegated = float(pos["delegated_capital"] or pos["notional"] or 0.0)
+    cfg = load_one_leg_config(cfg_path, side, delegated)
+    strategy = v21_make_strategy(cfg, side)
+    row = v21_make_bar(str(pos["symbol"]), price, utc_now())
+    before_qty = float(pos["qty_open"] or 0.0)
+    before_notional = float(pos["notional"] or 0.0)
+    result = v21_manage_existing_position(strategy, str(pos["symbol"]), row, v21_loads_state(pos["v21_state_json"]))
+    event = result.get("event")
+    state_json = v21_dumps_state(result["state"])
+    if not event:
+        update_v21_state(db_path, int(pos["signal_id"]), state_json, None, None, None)
+        return
+    action = str(event.get("action") or "")
+    if action == "DCA":
+        qty_added = float(event.get("qty_added") or 0.0)
+        notional_added = float(event.get("notional_added") or 0.0)
+        if qty_added > 0:
+            now = utc_now()
+            con = sqlite3.connect(db_path)
+            cur = con.cursor()
+            cur.execute("""INSERT INTO orders (
+                order_id, signal_id, ts_utc, mode, symbol, side, action, price, qty,
+                notional, reason, extra
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                str(uuid.uuid4()),
+                int(pos["signal_id"]),
+                now,
+                "paper_telegram_v21",
+                pos["symbol"],
+                side,
+                "dca",
+                price,
+                qty_added,
+                notional_added,
+                "v21_manage_position",
+                json.dumps(event, ensure_ascii=False),
+            ))
+            cur.execute("""UPDATE positions
+                SET entry_price=?, qty_open=?, notional=?, dca_filled=?, updated_at=?, v21_state_json=?
+                WHERE signal_id=?""", (
+                float(result["state"].get("avg_price") or pos["entry_price"]),
+                before_qty + qty_added,
+                before_notional + notional_added,
+                int(result["state"].get("num_fills") or 1) - 1,
+                now,
+                state_json,
+                int(pos["signal_id"]),
+            ))
+            con.commit()
+            con.close()
+            print("[paper-live V21 DCA] msg=%s %s %s qty=%.12g notional=%.12g" % (
+                pos["signal_id"], pos["symbol"], side, qty_added, notional_added,
+            ), flush=True)
+        return
+    close_or_partial(db_path, pos, float(event["exit_price"]), "v21_" + str(event.get("reason") or action).lower().replace(" ", "_"), float(event.get("qty_frac") or 1.0), event)
+    update_v21_state(
+        db_path,
+        int(pos["signal_id"]),
+        state_json,
+        float(result["state"].get("avg_price") or pos["entry_price"]) if result["state"].get("avg_price") else None,
+        float(result["state"].get("pos_size") or 0.0),
+        float(result["state"].get("pos_value_usdt") or 0.0),
+    )
+
+
 def cancel_pending_for_channel_exit(db_path: Path, pos: sqlite3.Row, exit_message_id: int, raw_text: str) -> None:
     now = utc_now()
     con = sqlite3.connect(db_path)
@@ -793,6 +961,9 @@ async def monitor_paper_state(db_path: Path, poll_sec: float, monitor_pending: b
             price = fetch_price(ex, str(pos["symbol"]))
             if price is None:
                 continue
+            if int(pos["v21_enabled"] or 0) and pos["v21_state_json"]:
+                apply_v21_manage(db_path, pos, price, dca_config)
+                continue
             side = str(pos["side"])
             if side == "long" and price <= float(pos["sl"]):
                 close_or_partial(db_path, pos, price, "sl", 1.0)
@@ -839,7 +1010,7 @@ async def run(args: argparse.Namespace) -> None:
         sig["telegram_message_date"] = event.message.date.isoformat() if event.message.date else None
         ticker_price = fetch_price(ex, sig["symbol"]) if ex is not None else None
         if args.entry_policy == "touch":
-            state = insert_signal_and_pending(db_path, sig, message_id, args.notional, args.entry_timeout_sec, args.dca_count)
+            state = insert_signal_and_pending(db_path, sig, message_id, args.notional, args.entry_timeout_sec, args.dca_count, args.strategy_mode, args.dca_config)
         else:
             state = insert_signal_and_position(
                 db_path,
@@ -850,6 +1021,7 @@ async def run(args: argparse.Namespace) -> None:
                 ticker_price,
                 args.dca_count,
                 args.dca_config,
+                args.strategy_mode,
             )
         if state != "duplicate":
             with out.open("a", encoding="utf-8") as f:
@@ -864,8 +1036,8 @@ async def run(args: argparse.Namespace) -> None:
                     float(args.entry_timeout_sec),
                 ), flush=True)
             else:
-                print("[paper-live OPEN] msg=%s %s %s notional=%.12g policy=%s" % (
-                    message_id, sig["symbol"], sig["side"], args.notional, args.entry_policy,
+                print("[paper-live OPEN] msg=%s %s %s delegated=%.12g policy=%s strategy_mode=%s" % (
+                    message_id, sig["symbol"], sig["side"], args.notional, args.entry_policy, args.strategy_mode,
                 ), flush=True)
         else:
             print("[paper-live SKIP duplicate] msg=%s" % message_id, flush=True)
@@ -873,8 +1045,8 @@ async def run(args: argparse.Namespace) -> None:
     await client.start()
     if not await client.is_user_authorized():
         raise SystemExit("Telethon user session is not authorized")
-    print("[paper-live] listening channel=%s db=%s entry_policy=%s poll_sec=%.1f timeout_sec=%.1f" % (
-        channel, db_path, args.entry_policy, args.poll_sec, args.entry_timeout_sec,
+    print("[paper-live] listening channel=%s db=%s entry_policy=%s strategy_mode=%s poll_sec=%.1f timeout_sec=%.1f" % (
+        channel, db_path, args.entry_policy, args.strategy_mode, args.poll_sec, args.entry_timeout_sec,
     ), flush=True)
     if args.entry_policy == "touch" or args.monitor_exits:
         asyncio.ensure_future(monitor_paper_state(
@@ -899,6 +1071,7 @@ def main() -> None:
     ap.add_argument("--entry-timeout-sec", type=float, default=900.0)
     ap.add_argument("--dca-count", type=int, default=0, help="Paper DCA levels to enable. --notional remains planned max notional.")
     ap.add_argument("--dca-config", default=DEFAULT_DCA_CONFIG)
+    ap.add_argument("--strategy-mode", choices=["v21", "legacy_dca"], default="v21")
     ap.add_argument("--monitor-exits", action="store_true")
     ap.add_argument("--poll-sec", type=float, default=15.0)
     args = ap.parse_args()

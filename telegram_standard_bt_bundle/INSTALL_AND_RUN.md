@@ -121,6 +121,22 @@ python obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py \
   --monitor-exits
 ```
 
+## Paper-live status/equity snapshot
+
+For a runner-style status/equity snapshot without touching Telegram sessions or
+placing orders:
+
+```bash
+python obw_platform/telegram_signal_tools/telegram_paper_live_status.py \
+  --db runs/telegram_paper/paper_live.sqlite \
+  --initial-equity 1000 \
+  --out-json runs/telegram_paper/paper_live_status.json \
+  --write-session-db runs/telegram_paper/session.sqlite
+```
+
+Add `--fetch-marks` only when current BingX MTM marks are needed. Without it,
+open positions use entry-price fallback, so unrealized PnL is conservative zero.
+
 ## Validate signal quality
 
 ```bash

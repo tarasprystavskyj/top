@@ -67,6 +67,32 @@ BINGX_REQUIRED_COLS = {
 }
 
 
+MATCHED_ORDER_COLUMNS = [
+    "side",
+    "real_time",
+    "tv_time",
+    "time_diff_min",
+    "real_qty",
+    "tv_qty",
+    "qty_diff",
+    "real_price",
+    "tv_price",
+    "price_diff",
+    "signed_slippage_pct",
+    "abs_slippage_pct",
+    "signed_slippage_bps",
+    "abs_slippage_bps",
+    "real_closed_pnl",
+    "real_fee",
+    "real_net_pnl",
+    "tv_net_pnl",
+    "tv_signal",
+    "tv_trade_ids",
+    "confidence",
+    "real_order_no",
+]
+
+
 @dataclass
 class MatchConfig:
     tolerance_min: float = 10.0
