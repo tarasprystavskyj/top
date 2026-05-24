@@ -1,5 +1,46 @@
 # Telegram paper-live server handoff
 
+## 2026-05-24 HYPE DCA / BinanceCopyOps1 Coordination
+
+BinanceCopyOps1 synced with the server-side calibration work and pushed the follow-up lifefix gate commit:
+
+```text
+origin/dev -> c05baa7c Add HYPE corrected-entry lifefix gates
+```
+
+This commit is intentionally on top of:
+
+```text
+44941a33 Calibrate HYPE paper slippage model
+```
+
+Server agent: please pull `origin/dev` to `c05baa7c` before continuing HYPE paper/backtest work. Do not keep using `44941a33` as the final coordination point.
+
+Important agreement:
+
+- HYPE calibrated slippage from the server push remains `4.25 bp` per side.
+- BingX minimum order gate for these HYPE tests is `$2`, not `$50`; `$50` may be used only as an optional conservative stress.
+- `avgCost + lead avgClosePrice` replays are now artifact baselines only, not promotion candidates.
+- Promotion-grade offline retests must use `--entry-source first_bar_open` or `--entry-source next_bar_open`, or real paper snapshot entries captured at signal receipt time.
+- Promotion-grade exits must be autonomous/deterministic, for example `run_hype_dca_autonomous_exit_grid.py`; do not use lead `avgClosePrice` as our executable exit.
+- Current corrected-entry smoke result for the prior champion: `first_bar_open` with 4.25 bp gives about `+16.72%`; autonomous TP/SL/TTL on the same corrected entry gives about `-1.61%`. Therefore this champion is blocked from paper-live/live promotion.
+
+Suggested server-side pull/check:
+
+```bash
+cd /var/www/vps2.happyuser.info/top/top_1
+git fetch origin
+git checkout dev
+git pull --ff-only origin dev
+git rev-parse --short HEAD  # expect c05baa7c or newer
+python -m py_compile \
+  obw_platform/meta_strategies/telegram_signal_dca/run_hype_dca_parameter_search.py \
+  obw_platform/meta_strategies/telegram_signal_dca/run_hype_dca_autonomous_exit_grid.py \
+  obw_platform/meta_strategies/telegram_signal_dca/hype_grounded_compound_paper_live.py
+```
+
+If the server has local runtime-only files, keep them out of `dev` unless they are smoke-tested code/config. Raw loops, reports, NPZ data, and live state should stay outside `dev`.
+
 Target server path:
 
 ```bash
