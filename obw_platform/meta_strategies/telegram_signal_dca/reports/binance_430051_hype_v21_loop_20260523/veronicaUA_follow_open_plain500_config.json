@@ -1,0 +1,15 @@
+{
+  "paper_notional_usdt": 500.0,
+  "slippage_bp": 4.25,
+  "ttl_hours": 72.0,
+  "exit_on_reversal": false,
+  "comparison_note": "Apples-to-apples plain follow-open baseline for HYPE grounded compound champion initial equity 500. Slippage updated from ENA fallback 9.38 bp to HYPE telemetry model 4.25 bp per side on 2026-05-24.",
+  "leads": [
+    {
+      "name": "veronicaUA_follow_open_plain500",
+      "portfolio_id": "4300516091842181632",
+      "mode": "follow_open",
+      "enabled": true
+    }
+  ]
+}
