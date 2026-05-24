@@ -1,0 +1,15 @@
+{
+  "lead_id": "4300516091842181632",
+  "source_url": "https://www.binance.com/uk-UA/copy-trading/lead-details/4300516091842181632?timeRange=7D",
+  "position_start_utc": "2026-01-09T19:16:26.280000Z",
+  "position_end_utc": "2026-05-24T01:01:12.362000Z",
+  "warmup_days": 21,
+  "window_start_utc": "2025-05-24T02:54:37.350151Z",
+  "window_end_utc": "2026-05-24T02:54:37.350151Z",
+  "symbols": [
+    "HYPEUSDT"
+  ],
+  "side_counts": {
+    "LONG": 122
+  }
+}
