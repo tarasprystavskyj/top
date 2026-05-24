@@ -64,6 +64,9 @@ These are the task-specific rules to apply on top of the consilium docs.
 - No live exchange orders in these loops; paper/backtest only.
 - Reject any candidate with margin calls.
 - Reject candidates with min unrealized PnL below `-50%`; flag high risk if below `-40%`.
+- For HYPE DCA consilium, also reject candidates unless `min_trade_mtm_pct_equity >= -50%`.
+  This gate is measured from the worst intratrade mark-to-market excursion of any single replayed trade versus starting equity.
+  Portfolio-level MTM drawdown alone is not sufficient for promotion.
 - Reject candidates with implausible order frequency or impossible logic.
 - Prefer robust multi-window performance over a single lucky segment.
 - Record limitations when Telegram/Binance metrics are not directly comparable.
