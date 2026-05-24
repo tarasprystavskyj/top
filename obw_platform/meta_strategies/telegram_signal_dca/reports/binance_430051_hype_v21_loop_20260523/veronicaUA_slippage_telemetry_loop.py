@@ -27,6 +27,7 @@ SLIPPAGE_REPORT_MD = REPORT_DIR / "SLIPPAGE_MODEL_REPORT_20260524.md"
 LOOP_STRUCTURE_MD = REPORT_DIR / "LOOP_STRUCTURE_20260524.md"
 V21_PLAIN_MD = REPORT_DIR / "V21_VS_PLAIN_20260524.md"
 IE100_MANIFEST = REPORT_DIR / "wave_002_initial_equity_100_no_warmup_no_trend" / "MANIFEST.json"
+HYPE_SLIPPAGE_CALIBRATION = REPORT_DIR / "HYPE_SLIPPAGE_CALIBRATION_20260524.json"
 
 BINANCE_MARK_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
 
@@ -143,6 +144,33 @@ def market_snapshot(symbol: str) -> Dict[str, Any]:
     return {"mark": mark, "mark_source": source, "orderbook": orderbook}
 
 
+def calibrated_slippage_bp(notional: float, orderbook: Dict[str, Any], fallback_bp: float) -> Dict[str, Any]:
+    calibration = read_json(HYPE_SLIPPAGE_CALIBRATION, {})
+    model = calibration.get("model") or {}
+    calibrated_bp = finite(model.get("slippage_bp_per_side")) or fallback_bp
+    spread_bp = finite(orderbook.get("spread_bp"))
+    half_spread_bp = spread_bp / 2.0 if spread_bp is not None else None
+    bid_depth = finite(orderbook.get("bid_depth_top5_usdt"))
+    ask_depth = finite(orderbook.get("ask_depth_top5_usdt"))
+    depth = min([x for x in (bid_depth, ask_depth) if x is not None], default=None)
+    depth_impact_bp = 0.0
+    if depth is not None and notional > depth:
+        depth_impact_bp = min(50.0, 10_000.0 * (notional - depth) / max(notional, 1e-12))
+    raw_bp = (half_spread_bp if half_spread_bp is not None else calibrated_bp) + depth_impact_bp + 0.25
+    suggested = max(0.5, calibrated_bp, raw_bp)
+    return {
+        "status": "hype_telemetry_calibrated_v1",
+        "calibration_file": str(HYPE_SLIPPAGE_CALIBRATION),
+        "previous_ena_fallback_bp": fallback_bp,
+        "calibrated_floor_bp": calibrated_bp,
+        "spread_half_bp": half_spread_bp,
+        "depth_impact_bp": depth_impact_bp,
+        "suggested_entry_slippage_bp": suggested,
+        "suggested_exit_slippage_bp": suggested,
+        "notional_usdt": notional,
+    }
+
+
 def closed_trade_metrics(trade: Dict[str, Any]) -> Dict[str, Any]:
     entry = finite(trade.get("entry_exec_price"))
     exit_px = finite(trade.get("exit_exec_price"))
@@ -182,10 +210,7 @@ def build_position_records(state: Dict[str, Any], cfg: Dict[str, Any], now: date
         raw_inner = raw_signal.get("raw") or {}
         orderbook = snap.get("orderbook") or {}
         spread_bp = orderbook.get("spread_bp")
-        configured_slip = slippage_bp
-        dynamic_slip_bp = configured_slip
-        if isinstance(spread_bp, (int, float)) and math.isfinite(float(spread_bp)):
-            dynamic_slip_bp = max(configured_slip, float(spread_bp) / 2.0)
+        dynamic_model = calibrated_slippage_bp(notional, orderbook, slippage_bp)
         records.append(
             {
                 "utc": iso(now),
@@ -216,11 +241,7 @@ def build_position_records(state: Dict[str, Any], cfg: Dict[str, Any], now: date
                 "unrealized_return_pct_after_configured_exit_slippage": (100.0 * pnl / notional if pnl is not None and notional else None),
                 "orderbook_proxy": orderbook,
                 "dynamic_slippage_model": {
-                    "status": "fallback_until_more_telemetry",
-                    "fallback_slippage_bp": configured_slip,
-                    "spread_half_bp": (float(spread_bp) / 2.0 if isinstance(spread_bp, (int, float)) else None),
-                    "suggested_entry_slippage_bp": dynamic_slip_bp,
-                    "suggested_exit_slippage_bp": dynamic_slip_bp,
+                    **dynamic_model,
                 },
             }
         )
@@ -451,11 +472,22 @@ def poll_once() -> Dict[str, Any]:
 
 
 def main() -> None:
+    global STATE_PATH, CONFIG_PATH, TELEMETRY_JSONL, PAPER_STATUS_JSON, PAPER_STATUS_MD
     ap = argparse.ArgumentParser(description="Paper-only VeronicaUA HYPE slippage telemetry sidecar.")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--interval-sec", type=float, default=60.0)
+    ap.add_argument("--state-path", default=str(STATE_PATH))
+    ap.add_argument("--config-path", default=str(CONFIG_PATH))
+    ap.add_argument("--telemetry-jsonl", default=str(TELEMETRY_JSONL))
+    ap.add_argument("--status-json", default=str(PAPER_STATUS_JSON))
+    ap.add_argument("--status-md", default=str(PAPER_STATUS_MD))
     args = ap.parse_args()
+    STATE_PATH = Path(args.state_path)
+    CONFIG_PATH = Path(args.config_path)
+    TELEMETRY_JSONL = Path(args.telemetry_jsonl)
+    PAPER_STATUS_JSON = Path(args.status_json)
+    PAPER_STATUS_MD = Path(args.status_md)
     while True:
         print(json.dumps(poll_once(), ensure_ascii=False, indent=2), flush=True)
         if args.once or not args.loop:
