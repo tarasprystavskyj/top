@@ -65,11 +65,54 @@ def load_npz_arrays(path: Path) -> Dict[str, np.ndarray]:
     z = np.load(path, allow_pickle=True)
     return {
         "t": z["timestamp_s"].astype(np.int64) * 1000,
+        "open": z["open"].astype(float),
         "high": z["high"].astype(float),
         "low": z["low"].astype(float),
         "close": z["close"].astype(float),
     }
 
+
+
+
+def apply_entry_source(
+    positions: Sequence[Any],
+    arrays: Dict[str, np.ndarray],
+    entry_source: str,
+) -> List[Any]:
+    """Return positions with entry anchored to data available at/after signal time.
+
+    avgCost is the historical Binance-copy average cost and may be a hindsight
+    artifact for copy execution. The bar-based sources are offline approximations
+    using local 1m OHLC only; they do not call private pages or live APIs.
+    """
+    if entry_source == "avgCost":
+        return list(positions)
+    t = arrays["t"]
+    field_by_source = {
+        "first_bar_open": "open",
+        "first_bar_close": "close",
+        "first_bar_high": "high",
+        "first_bar_low": "low",
+        "next_bar_open": "open",
+    }
+    if entry_source not in field_by_source:
+        raise ValueError(f"unknown entry_source={entry_source!r}")
+    out: List[Any] = []
+    for pos in positions:
+        i = int(np.searchsorted(t, ms(pos.opened), side="left"))
+        if entry_source == "next_bar_open":
+            i += 1
+        i = min(max(i, 0), len(t) - 1)
+        entry = float(arrays[field_by_source[entry_source]][i])
+        out.append(replace(pos, entry=entry))
+    return out
+
+
+def apply_candidate_slippage(candidates: Sequence[Candidate], slippage_bp: float | None) -> List[Candidate]:
+    if slippage_bp is None:
+        return list(candidates)
+    slip = float(slippage_bp) / 10000.0
+    return [replace(c, slippage=slip) for c in candidates]
 
 def allocations(candidate: Candidate) -> tuple[float, List[float]]:
     base = candidate.target_notional * candidate.base_frac
@@ -220,6 +263,27 @@ def grounding_stats(rows: Sequence[Dict[str, Any]], *, fill_mode: str, min_trade
     }
 
 
+def leverage_stats(rows: Sequence[Dict[str, Any]], *, leverage: float, min_trade_mtm_pct: float) -> Dict[str, Any]:
+    margin_calls = [r for r in rows if str(r.get("margin_call", "False")) == "True"]
+    margin_over = [
+        r
+        for r in rows
+        if float(r.get("margin_used", 0.0)) - float(r.get("equity_before", float("inf"))) > GROUNDING_TOL
+    ]
+    min_mtm_margin = min((float(r.get("min_mtm_pct_margin", 0.0)) for r in rows), default=0.0)
+    min_trade = min((float(r.get("min_mtm_pct_equity", 0.0)) for r in rows), default=0.0)
+    return {
+        "leverage": leverage,
+        "margin_call_count": len(margin_calls),
+        "margin_call_rate_pct": 100.0 * len(margin_calls) / max(1, len(rows)),
+        "margin_used_gt_equity_before_count": len(margin_over),
+        "max_margin_used": max((float(r.get("margin_used", 0.0)) for r in rows), default=0.0),
+        "avg_margin_used": sum(float(r.get("margin_used", 0.0)) for r in rows) / max(1, len(rows)),
+        "min_trade_mtm_pct_margin": min_mtm_margin,
+        "leveraged_margin_gate_ok": len(margin_calls) == 0 and len(margin_over) == 0 and min_trade >= min_trade_mtm_pct,
+    }
+
+
 def summarize(rows: Sequence[Dict[str, Any]], initial_equity: float) -> Dict[str, Any]:
     equity = initial_equity
     curve = [equity]
@@ -363,15 +427,17 @@ def simulate_candidate_rows(
     fill_mode: str,
     initial_equity: float,
     position_sizing_mode: str,
+    leverage: float = 1.0,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     equity = float(initial_equity)
     initial_target = float(candidate.target_notional)
     target_frac = initial_target / max(initial_equity, 1e-12)
+    leverage = max(float(leverage), 1.0)
     for pos in positions:
         effective = candidate
         if position_sizing_mode == "compound":
-            effective_target = min(equity, equity * target_frac)
+            effective_target = min(equity * leverage, equity * target_frac)
             effective = replace(candidate, target_notional=max(effective_target, 0.0))
         row = simulate_position(pos, effective, arrays, fill_mode=fill_mode)
         if row is None:
@@ -379,7 +445,13 @@ def simulate_candidate_rows(
         row["initial_target_notional"] = initial_target
         row["effective_target_notional"] = effective.target_notional
         row["equity_before"] = equity
+        margin_used = float(row["notional"]) / leverage
+        row["leverage"] = leverage
+        row["margin_used"] = margin_used
+        row["min_mtm_pct_margin"] = 100.0 * float(row["min_mtm"]) / max(margin_used, 1e-12)
+        row["margin_call"] = abs(float(row["min_mtm"])) >= margin_used - GROUNDING_TOL
         row["notional_gt_equity_before"] = float(row["notional"]) - equity > GROUNDING_TOL
+        row["margin_used_gt_equity_before"] = margin_used - equity > GROUNDING_TOL
         equity += float(row["pnl"])
         row["equity_after"] = equity
         rows.append(row)
@@ -392,9 +464,18 @@ def main() -> None:
     ap.add_argument("--npz", default=str(DEFAULT_NPZ))
     ap.add_argument("--out-dir", default=str(DEFAULT_REPORT_DIR / "dca_parameter_search_wave_001"))
     ap.add_argument("--initial-equity", type=float, default=500.0)
+    ap.add_argument("--slippage-bp", type=float, default=None, help="Override per-side slippage in basis points, e.g. 4.25 for HYPE calibrated p95+buffer.")
+    ap.add_argument(
+        "--entry-source",
+        default="avgCost",
+        choices=("avgCost", "first_bar_open", "first_bar_close", "first_bar_high", "first_bar_low", "next_bar_open"),
+        help="Entry anchor. avgCost is historical lead average cost; bar anchors are public OHLC approximations.",
+    )
+    ap.add_argument("--min-order-usd", type=float, default=MIN_ORDER_USD, help="Minimum allowed base/add leg notional for eligibility gates.")
     ap.add_argument("--target-scale", type=float, default=1.0)
     ap.add_argument("--max-target-notional", type=float, default=500.0)
     ap.add_argument("--position-sizing-mode", choices=("fixed", "compound"), default="compound")
+    ap.add_argument("--leverage", type=float, default=1.0)
     ap.add_argument("--candidate-filter", default="")
     ap.add_argument("--random-candidates", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1)
@@ -413,16 +494,22 @@ def main() -> None:
     ap.add_argument("--topn", type=int, default=25)
     args = ap.parse_args()
 
+    globals()["MIN_ORDER_USD"] = float(args.min_order_usd)
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     positions = read_positions(Path(args.positions_csv))
     arrays = load_npz_arrays(Path(args.npz))
+    positions = apply_entry_source(positions, arrays, args.entry_source)
     summaries: List[Dict[str, Any]] = []
     strict_summaries: List[Dict[str, Any]] = []
     row_cache: Dict[str, List[Dict[str, Any]]] = {}
     strict_row_cache: Dict[str, List[Dict[str, Any]]] = {}
 
-    candidates = candidate_grid(args.target_scale, args.random_candidates, args.seed, args.max_target_notional)
+    candidates = apply_candidate_slippage(
+        candidate_grid(args.target_scale, args.random_candidates, args.seed, args.max_target_notional),
+        args.slippage_bp,
+    )
     if args.candidate_filter:
         wanted = {x.strip() for x in args.candidate_filter.split(",") if x.strip()}
         candidates = [c for c in candidates if c.name in wanted]
@@ -438,15 +525,20 @@ def main() -> None:
             fill_mode=args.fill_mode,
             initial_equity=args.initial_equity,
             position_sizing_mode=args.position_sizing_mode,
+            leverage=args.leverage,
         )
-        strict_rows = simulate_candidate_rows(
-            positions,
-            candidate,
-            arrays,
-            fill_mode=args.strict_fill_mode,
-            initial_equity=args.initial_equity,
-            position_sizing_mode=args.position_sizing_mode,
-        )
+        if args.strict_fill_mode == args.fill_mode:
+            strict_rows = [dict(r) for r in rows]
+        else:
+            strict_rows = simulate_candidate_rows(
+                positions,
+                candidate,
+                arrays,
+                fill_mode=args.strict_fill_mode,
+                initial_equity=args.initial_equity,
+                position_sizing_mode=args.position_sizing_mode,
+                leverage=args.leverage,
+            )
         annotate_trade_equity_metrics(rows, args.initial_equity)
         annotate_trade_equity_metrics(strict_rows, args.initial_equity)
         s = summarize(rows, args.initial_equity)
@@ -459,6 +551,9 @@ def main() -> None:
                 "add_weights": json.dumps(candidate.add_weights),
                 "fill_mode": args.fill_mode,
                 "position_sizing_mode": args.position_sizing_mode,
+                "entry_source": args.entry_source,
+                "slippage_bp_per_side": (candidate.slippage * 10000.0),
+                "min_order_gate_usd": MIN_ORDER_USD,
                 "mtm_gate_ok": float(s["max_mtm_dd_pct"]) >= -abs(args.max_mtm_dd_pct),
                 "strict_trade_mtm_gate_ok": float(s["min_trade_mtm_pct_equity"]) >= float(args.min_trade_mtm_pct),
                 "min_order_gate_ok": bool(s["min_order_ok"]),
@@ -469,6 +564,7 @@ def main() -> None:
                 ),
                 "target_double_hit": float(s["net_pct"]) >= 285.0,
                 **grounding_stats(rows, fill_mode=args.fill_mode, min_trade_mtm_pct=args.min_trade_mtm_pct),
+                **leverage_stats(rows, leverage=args.leverage, min_trade_mtm_pct=args.min_trade_mtm_pct),
             }
         )
         strict_s = summarize(strict_rows, args.initial_equity)
@@ -481,6 +577,9 @@ def main() -> None:
                 "add_weights": json.dumps(candidate.add_weights),
                 "fill_mode": args.strict_fill_mode,
                 "position_sizing_mode": args.position_sizing_mode,
+                "entry_source": args.entry_source,
+                "slippage_bp_per_side": (candidate.slippage * 10000.0),
+                "min_order_gate_usd": MIN_ORDER_USD,
                 "mtm_gate_ok": float(strict_s["max_mtm_dd_pct"]) >= -abs(args.max_mtm_dd_pct),
                 "strict_trade_mtm_gate_ok": float(strict_s["min_trade_mtm_pct_equity"]) >= float(args.min_trade_mtm_pct),
                 "min_order_gate_ok": bool(strict_s["min_order_ok"]),
@@ -491,6 +590,7 @@ def main() -> None:
                 ),
                 "target_double_hit": float(strict_s["net_pct"]) >= 285.0,
                 **grounding_stats(strict_rows, fill_mode=args.strict_fill_mode, min_trade_mtm_pct=args.min_trade_mtm_pct),
+                **leverage_stats(strict_rows, leverage=args.leverage, min_trade_mtm_pct=args.min_trade_mtm_pct),
             }
         )
         summaries.append(s)
@@ -502,7 +602,10 @@ def main() -> None:
     strict_eligible = [
         s
         for s in strict_summaries
-        if s["mtm_gate_ok"] and s["strict_trade_mtm_gate_ok"] and s["min_order_gate_ok"] and s["grounded_compound_gate_ok"]
+        if s["mtm_gate_ok"]
+        and s["strict_trade_mtm_gate_ok"]
+        and s["min_order_gate_ok"]
+        and (s["grounded_compound_gate_ok"] if args.leverage <= 1.0 else s["leveraged_margin_gate_ok"])
     ]
     ranked = sorted(eligible, key=lambda s: (float(s["net_pct"]), float(s["max_mtm_dd_pct"])), reverse=True)
     ranked_strict = sorted(strict_eligible, key=lambda s: (float(s["net_pct"]), float(s["max_mtm_dd_pct"])), reverse=True)
@@ -523,7 +626,13 @@ def main() -> None:
         )
 
     stress_rows: List[Dict[str, Any]] = []
-    candidates_by_name = {c.name: c for c in candidate_grid(args.target_scale, args.random_candidates, args.seed, args.max_target_notional)}
+    candidates_by_name = {
+        c.name: c
+        for c in apply_candidate_slippage(
+            candidate_grid(args.target_scale, args.random_candidates, args.seed, args.max_target_notional),
+            args.slippage_bp,
+        )
+    }
     for row in ranked_strict[: min(args.topn, 10)]:
         base_candidate = candidates_by_name[str(row["candidate"])]
         for mult in (1.0, 2.0, 3.0):
@@ -535,6 +644,7 @@ def main() -> None:
                 fill_mode=args.strict_fill_mode,
                 initial_equity=args.initial_equity,
                 position_sizing_mode=args.position_sizing_mode,
+                leverage=args.leverage,
             )
             annotate_trade_equity_metrics(stressed_rows, args.initial_equity)
             ss = summarize(stressed_rows, args.initial_equity)
@@ -546,9 +656,11 @@ def main() -> None:
                     "target_notional": stressed.target_notional,
                     "fill_mode": args.strict_fill_mode,
                     "position_sizing_mode": args.position_sizing_mode,
+                    "entry_source": args.entry_source,
                     "mtm_gate_ok": float(ss["max_mtm_dd_pct"]) >= -abs(args.max_mtm_dd_pct),
                     "strict_trade_mtm_gate_ok": float(ss["min_trade_mtm_pct_equity"]) >= float(args.min_trade_mtm_pct),
                     **grounding_stats(stressed_rows, fill_mode=args.strict_fill_mode, min_trade_mtm_pct=args.min_trade_mtm_pct),
+                    **leverage_stats(stressed_rows, leverage=args.leverage, min_trade_mtm_pct=args.min_trade_mtm_pct),
                 }
             )
             stress_rows.append(ss)
@@ -562,6 +674,9 @@ def main() -> None:
         f"Initial equity: {args.initial_equity:.2f}. Target scale: {args.target_scale:.4g}.",
         f"Max target notional: {args.max_target_notional}.",
         f"Position sizing mode: `{args.position_sizing_mode}`.",
+        f"Entry source: `{args.entry_source}`.",
+        f"Slippage per side: `{(args.slippage_bp if args.slippage_bp is not None else Candidate('tmp',0,0,(),()).slippage*10000.0):.6g} bp`.",
+        f"Leverage diagnostic: `{args.leverage:g}x`; margin_used = notional / leverage, margin_call when intratrade MTM loss >= margin_used.",
         "Target notional is planned max position notional, not account equity.",
         f"Baseline fill mode: `{args.fill_mode}`. Strict output fill mode: `{args.strict_fill_mode}`.",
         f"Minimum order gate: every base/add leg must be >= ${MIN_ORDER_USD:.2f}.",
@@ -569,13 +684,13 @@ def main() -> None:
         f"Canonical research champion: `{CANONICAL_RESEARCH_CHAMPION}` as `grounded_compound_champion`.",
         "Reporting labels: `grounded_compound_champion`, `static_500_cap`, and rejected `high_notional_illusion`.",
         "",
-        "| rank | label | candidate | target notional | net % | max MTM DD % | max realized DD % | min trade MTM % eq | PF | avg/max notional | notional>equity | avg fills | double? |",
-        "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| rank | label | candidate | target notional | net % | max MTM DD % | max realized DD % | min trade MTM % eq | margin calls | PF | avg/max notional | notional>equity | avg fills | double? |",
+        "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for i, row in enumerate(ranked[: args.topn], 1):
         md.append(
             f"| {i} | {row['research_label']} | {row['candidate']} | {row['target_notional']:.1f} | {row['net_pct']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
-            f"{row['max_realized_dd_pct']:.2f} | {row['min_trade_mtm_pct_equity']:.2f} | {row['pf']:.2f} | "
+            f"{row['max_realized_dd_pct']:.2f} | {row['min_trade_mtm_pct_equity']:.2f} | {row['margin_call_count']} | {row['pf']:.2f} | "
             f"{row['avg_notional']:.1f}/{row['max_notional']:.1f} | {row['notional_gt_equity_before_count']} | "
             f"{row['avg_dca_fills']:.2f} | {row['target_double_hit']} |"
         )
@@ -584,14 +699,14 @@ def main() -> None:
             "",
             "## Strict Trade MTM Top",
             "",
-            "| rank | label | candidate | target notional | net % | max MTM DD % | min trade MTM % eq | PF | avg/max notional | notional>equity | avg fills |",
-            "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| rank | label | candidate | target notional | net % | max MTM DD % | min trade MTM % eq | margin calls | PF | avg/max notional | notional>equity | avg fills |",
+            "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for i, row in enumerate(ranked_strict[: args.topn], 1):
         md.append(
             f"| {i} | {row['research_label']} | {row['candidate']} | {row['target_notional']:.1f} | {row['net_pct']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
-            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['pf']:.2f} | "
+            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['margin_call_count']} | {row['pf']:.2f} | "
             f"{row['avg_notional']:.1f}/{row['max_notional']:.1f} | {row['notional_gt_equity_before_count']} | "
             f"{row['avg_dca_fills']:.2f} |"
         )

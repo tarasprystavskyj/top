@@ -5,7 +5,7 @@ param(
     [double]$MaxMtmDdPct = 50.0,
     [double]$MinTradeMtmPct = -50.0,
     [int]$RandomCandidates = 0,
-    [string]$CandidateFilter = "t500_b16_s0p25-0p35-0p55_w0p8-1p2-2p2"
+    [string]$CandidateFilter = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,7 +20,27 @@ for ($i = 1; $i -le $Cycles; $i++) {
     $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $out = Join-Path $ReportRoot ("dca_grounded_compound_cycle_{0:D3}_{1}" -f $i, $stamp)
 
-    python $Script `
+    $commonArgs = @(
+        $Script,
+        "--out-dir", $out,
+        "--initial-equity", $InitialEquity,
+        "--target-scale", 1,
+        "--max-target-notional", $MaxTargetNotional,
+        "--position-sizing-mode", "compound",
+        "--fill-mode", "close_beyond_skip_boundary",
+        "--strict-fill-mode", "close_beyond_skip_boundary",
+        "--max-mtm-dd-pct", $MaxMtmDdPct,
+        "--min-trade-mtm-pct", $MinTradeMtmPct,
+        "--random-candidates", $RandomCandidates,
+        "--seed", $seed,
+        "--topn", 30
+    )
+    if ($CandidateFilter -ne "") {
+        $commonArgs += @("--candidate-filter", $CandidateFilter)
+    }
+
+    python @commonArgs *> (Join-Path $LogDir ("compound_cycle_{0:D3}.log" -f $i))
+    <#
         --out-dir $out `
         --initial-equity $InitialEquity `
         --target-scale 1 `
@@ -34,4 +54,5 @@ for ($i = 1; $i -le $Cycles; $i++) {
         --random-candidates $RandomCandidates `
         --seed $seed `
         --topn 30 *> (Join-Path $LogDir ("compound_cycle_{0:D3}.log" -f $i))
+    #>
 }
