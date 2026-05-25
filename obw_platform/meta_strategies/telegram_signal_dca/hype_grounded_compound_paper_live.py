@@ -125,6 +125,13 @@ def fetch_market_context(session: requests.Session, symbol: str, timeout_sec: fl
     before = time.time()
     bingx_price = math.nan
     bingx_market = None
+    bingx_bid = math.nan
+    bingx_ask = math.nan
+    bingx_bid_size = math.nan
+    bingx_ask_size = math.nan
+    bingx_book_bids_top5: List[List[float]] = []
+    bingx_book_asks_top5: List[List[float]] = []
+    bingx_orderbook_error = None
     try:
         import ccxt  # type: ignore
 
@@ -137,6 +144,32 @@ def fetch_market_context(session: requests.Session, symbol: str, timeout_sec: fl
             bingx_price = parse_float(ticker.get("last"))
             if not math.isfinite(bingx_price):
                 bingx_price = parse_float(ticker.get("mark"))
+            bingx_bid = parse_float(ticker.get("bid"))
+            bingx_ask = parse_float(ticker.get("ask"))
+            try:
+                orderbook = ex.fetch_order_book(bingx_market, limit=5) or {}
+                bids = orderbook.get("bids") or []
+                asks = orderbook.get("asks") or []
+                if bids:
+                    bingx_bid = parse_float(bids[0][0])
+                    bingx_bid_size = parse_float(bids[0][1])
+                if asks:
+                    bingx_ask = parse_float(asks[0][0])
+                    bingx_ask_size = parse_float(asks[0][1])
+                for level in bids[:5]:
+                    if len(level) >= 2:
+                        px = parse_float(level[0])
+                        sz = parse_float(level[1])
+                        if math.isfinite(px) and math.isfinite(sz):
+                            bingx_book_bids_top5.append([px, sz])
+                for level in asks[:5]:
+                    if len(level) >= 2:
+                        px = parse_float(level[0])
+                        sz = parse_float(level[1])
+                        if math.isfinite(px) and math.isfinite(sz):
+                            bingx_book_asks_top5.append([px, sz])
+            except Exception as exc:
+                bingx_orderbook_error = str(exc)[:200]
     except Exception:
         bingx_price = math.nan
     book = fetch_json(session, BOOK_TICKER_URL, {"symbol": symbol}, timeout_sec)
@@ -146,6 +179,8 @@ def fetch_market_context(session: requests.Session, symbol: str, timeout_sec: fl
     ask = parse_float((book or {}).get("askPrice"))
     mark = parse_float((premium or {}).get("markPrice"))
     index = parse_float((premium or {}).get("indexPrice"))
+    bingx_spread = bingx_ask - bingx_bid if math.isfinite(bingx_bid) and math.isfinite(bingx_ask) else math.nan
+    bingx_mid = (bingx_ask + bingx_bid) / 2.0 if math.isfinite(bingx_bid) and math.isfinite(bingx_ask) else math.nan
     spread = ask - bid if math.isfinite(bid) and math.isfinite(ask) else math.nan
     mid = (ask + bid) / 2.0 if math.isfinite(bid) and math.isfinite(ask) else math.nan
     return {
@@ -153,14 +188,31 @@ def fetch_market_context(session: requests.Session, symbol: str, timeout_sec: fl
         "symbol": symbol,
         "bingx_market": bingx_market,
         "bingx_mark": bingx_price if math.isfinite(bingx_price) else None,
-        "bid": bid if math.isfinite(bid) else None,
-        "ask": ask if math.isfinite(ask) else None,
-        "mid": mid if math.isfinite(mid) else None,
+        "bingx_bid": bingx_bid if math.isfinite(bingx_bid) else None,
+        "bingx_ask": bingx_ask if math.isfinite(bingx_ask) else None,
+        "bingx_bid_size": bingx_bid_size if math.isfinite(bingx_bid_size) else None,
+        "bingx_ask_size": bingx_ask_size if math.isfinite(bingx_ask_size) else None,
+        "bingx_mid": bingx_mid if math.isfinite(bingx_mid) else None,
+        "bingx_spread": bingx_spread if math.isfinite(bingx_spread) else None,
+        "bingx_spread_bp_mid": (10_000.0 * bingx_spread / bingx_mid) if math.isfinite(bingx_spread) and math.isfinite(bingx_mid) and bingx_mid > 0 else None,
+        "bingx_book_bids_top5": bingx_book_bids_top5,
+        "bingx_book_asks_top5": bingx_book_asks_top5,
+        "bingx_orderbook_ok": bool(bingx_book_bids_top5 and bingx_book_asks_top5),
+        "bingx_orderbook_error": bingx_orderbook_error,
+        "bid": bingx_bid if math.isfinite(bingx_bid) else None,
+        "ask": bingx_ask if math.isfinite(bingx_ask) else None,
+        "mid": bingx_mid if math.isfinite(bingx_mid) else None,
+        "spread": bingx_spread if math.isfinite(bingx_spread) else None,
+        "spread_bp_mid": (10_000.0 * bingx_spread / bingx_mid) if math.isfinite(bingx_spread) and math.isfinite(bingx_mid) and bingx_mid > 0 else None,
+        "binance_bid_reference": bid if math.isfinite(bid) else None,
+        "binance_ask_reference": ask if math.isfinite(ask) else None,
+        "binance_mid_reference": mid if math.isfinite(mid) else None,
         "mark": bingx_price if math.isfinite(bingx_price) and bingx_price > 0 else None,
         "binance_mark_reference": mark if math.isfinite(mark) else None,
+        "binance_index_reference": index if math.isfinite(index) else None,
         "index": index if math.isfinite(index) else None,
-        "spread": spread if math.isfinite(spread) else None,
-        "spread_bp_mid": (10_000.0 * spread / mid) if math.isfinite(spread) and math.isfinite(mid) and mid > 0 else None,
+        "binance_spread_reference": spread if math.isfinite(spread) else None,
+        "binance_spread_bp_mid_reference": (10_000.0 * spread / mid) if math.isfinite(spread) and math.isfinite(mid) and mid > 0 else None,
         "request_latency_ms": round((after - before) * 1000.0, 3),
         "raw_book_ok": bool(book),
         "raw_premium_ok": bool(premium),
