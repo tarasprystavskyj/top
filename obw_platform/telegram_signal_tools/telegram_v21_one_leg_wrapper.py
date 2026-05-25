@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from obw_platform.telegram_signal_tools.regime_off_controller import RegimeOffConfig, RegimeOffController
+
 try:
     import yaml  # type: ignore
 except Exception:  # pragma: no cover - caller reports this as a config error
@@ -53,7 +55,24 @@ def side_keys(side: str) -> tuple[str, str]:
     return (LONG_CLASS_KEY, LONG_PARAMS_KEY) if s == "LONG" else (SHORT_CLASS_KEY, SHORT_PARAMS_KEY)
 
 
-def load_one_leg_config(config_path: str, side: str, delegated_capital_usdt: float) -> Dict[str, Any]:
+def apply_no_trend_filter_variant(params: Dict[str, Any], *, base_order_pct_eq: float = 5.0) -> Dict[str, Any]:
+    """Disable V21's trend-warmup-dependent entry sizing/gate for external signals."""
+    out = dict(params)
+    out["baseOrderPctEq"] = float(base_order_pct_eq)
+    out["useTrendAdaptiveSizing"] = 0.0
+    out["entryTrendStrengthMin"] = 0.0
+    return out
+
+
+def load_one_leg_config(
+    config_path: str,
+    side: str,
+    delegated_capital_usdt: float,
+    *,
+    disable_trend_filter: bool = False,
+    base_order_pct_eq: float = 5.0,
+    regime_off: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     if yaml is None:
         raise RuntimeError("PyYAML is required to load the V21 config")
     path = Path(config_path)
@@ -64,16 +83,26 @@ def load_one_leg_config(config_path: str, side: str, delegated_capital_usdt: flo
         raise KeyError(f"{class_key} is missing in {config_path}")
     params = dict(cfg.get(params_key) or {})
     params["equityForSizingUSDT"] = float(delegated_capital_usdt)
-    params["baseOrderPctEq"] = 5.0
+    params["baseOrderPctEq"] = float(base_order_pct_eq)
+    if disable_trend_filter:
+        params = apply_no_trend_filter_variant(params, base_order_pct_eq=base_order_pct_eq)
     cfg[params_key] = params
     cfg["telegram_v21_wrapper"] = {
         "active_side": normalize_side(side),
         "active_strategy_class": cfg[class_key],
         "delegated_capital_usdt": float(delegated_capital_usdt),
-        "baseOrderPctEq": 5.0,
+        "baseOrderPctEq": float(base_order_pct_eq),
+        "disable_trend_filter": bool(disable_trend_filter),
+        "trend_filter_disabled_fields": (
+            ["useTrendAdaptiveSizing", "entryTrendStrengthMin", "baseOrderPctEq"]
+            if disable_trend_filter
+            else []
+        ),
         "source_config": str(path),
         "opposite_leg_enabled": False,
     }
+    if regime_off:
+        cfg["telegram_v21_wrapper"]["regime_off"] = dict(regime_off)
     return cfg
 
 
@@ -125,6 +154,43 @@ def _state_snapshot(strategy: Any, symbol: str) -> Dict[str, Any]:
     }
 
 
+def _regime_off_config(strategy: Any) -> RegimeOffConfig:
+    cfg = getattr(strategy, "cfg", {}) or {}
+    section = cfg.get("telegram_v21_wrapper") or {}
+    return RegimeOffConfig.from_dict(section.get("regime_off"))
+
+
+def _regime_off_controller(strategy: Any, symbol: str) -> Optional[RegimeOffController]:
+    cfg = _regime_off_config(strategy)
+    if not cfg.enabled:
+        return None
+    controllers = getattr(strategy, "_telegram_regime_off_controllers", None)
+    if controllers is None:
+        controllers = {}
+        setattr(strategy, "_telegram_regime_off_controllers", controllers)
+    key = str(symbol)
+    ctl = controllers.get(key)
+    if ctl is None:
+        ctl = RegimeOffController(cfg)
+        controllers[key] = ctl
+    return ctl
+
+
+def _flatten_state(strategy: Any, symbol: str) -> None:
+    st = strategy._get_state(symbol)
+    st.pos_size = 0.0
+    st.pos_value_usdt = 0.0
+    st.avg_price = None
+    st.num_fills = 0
+    st.last_fill_price = None
+    st.next_level_price = None
+    st.lots = []
+    st.cycle_base_qty_coin = None
+    st.trailing_active = False
+    st.trailing_ref = None
+    st.tp_levels_done = [False] * len(getattr(strategy, "tp_scale_out_levels", []) or [])
+
+
 def restore_state(strategy: Any, symbol: str, snapshot: Dict[str, Any]) -> None:
     st = strategy._get_state(symbol)
     st.pos_size = float(snapshot.get("pos_size") or 0.0)
@@ -149,6 +215,11 @@ def open_external_signal(strategy: Any, symbol: str, row: Dict[str, Any]) -> Dic
     V21 strategy owns sizing, TP, next DCA level, and later management.
     """
     price = float(row["close"])
+    ctl = _regime_off_controller(strategy, symbol)
+    if ctl is not None and normalize_side(getattr(strategy, "SIDE", "LONG")) == "LONG":
+        decision = ctl.update(price, signal_fresh=True, has_long_position=False)
+        if not decision.allow_new_long:
+            raise RuntimeError(f"RegimeOff blocks new LONG entry: {decision.reason}")
     st = strategy._get_state(symbol)
     try:
         strategy._last_atr_ratio = float(row.get("atr_ratio", 0.0) or 0.0)
@@ -207,6 +278,27 @@ def manage_existing_position(
 ) -> Dict[str, Any]:
     restore_state(strategy, symbol, snapshot)
     before = _state_snapshot(strategy, symbol)
+    ctl = _regime_off_controller(strategy, symbol)
+    if ctl is not None and normalize_side(getattr(strategy, "SIDE", "LONG")) == "LONG":
+        decision = ctl.update(
+            float(row["close"]),
+            signal_fresh=False,
+            has_long_position=float(before.get("pos_size") or 0.0) > 0.0,
+        )
+        if decision.should_close_long:
+            _flatten_state(strategy, symbol)
+            after = _state_snapshot(strategy, symbol)
+            return {
+                "event": {
+                    "action": "EXIT",
+                    "exit_price": float(row["close"]),
+                    "qty_frac": 1.0,
+                    "reason": f"RegimeOff:{decision.reason}",
+                },
+                "state": after,
+                "pos_entry": float(before.get("avg_price") or row["close"]),
+                "pos_qty": float(before.get("pos_size") or 0.0),
+            }
     pos = PositionProxy(entry=float(before.get("avg_price") or row["close"]), qty=float(before.get("pos_size") or 0.0))
     exit_sig = strategy.manage_position(symbol, row, pos)
     after = _state_snapshot(strategy, symbol)
