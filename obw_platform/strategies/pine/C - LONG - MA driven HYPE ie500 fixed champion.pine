@@ -1,0 +1,1376 @@
+//@version=5
+strategy("C - LONG - MA driven | HYPE ie500 compound champion",
+     overlay=true,
+     pyramiding=300,
+     initial_capital=500,
+     default_qty_type=strategy.fixed,
+     commission_type=strategy.commission.percent,
+     commission_value=0.05,
+     process_orders_on_close=true,
+     calc_on_order_fills=true,
+     margin_long=100,
+     margin_short=100,
+     max_labels_count=500)
+
+// =====================
+// Inputs — MDD<50 preset
+// =====================
+// HYPE ie500 grounded compound champion:
+// t500_b16_s0p25-0p35-0p55_w0p8-1p2-2p2
+// equity_start=500, equity_end=2109.57, net=321.91%,
+// max_mtm_dd=-5.33%, min_trade_mtm=-13.68%.
+// Initial max target_notional=500; later max notional grows only with earned equity.
+firstBuyQtyCoin_in     = input.float(0.00001, "First Long (coin qty)", minval=0.000001, step=0.000001)
+minOrderQtyCoin_in     = input.float(0.00001, "Min order qty (coin)", minval=0.0, step=0.000001)
+useEquityPctBase_in    = input.bool(true,  "Base order as % of sizing equity")
+baseOrderPctEq_in      = input.float(16.0, "Base order % of fixed equity", minval=0.01, step=0.01)
+equityForSizingUSDT_in = input.float(500.0, "Equity for % sizing (USDT)", minval=0.01, step=0.01)
+useStrategyEquityForSizing_in = input.bool(true, "Compound: use current strategy equity for sizing")
+
+tpPercent_in         = input.float(0.52, "TP % (Whole warehouse)", step=0.01)
+callbackPercent_in   = input.float(0.10, "Callback % (Trailing)", step=0.01)
+marginCallLimit_in   = input.int(4,      "Margin Call Limit (max longs)", minval=1)
+linearDropPercent_in = input.float(1.20, "Margin Call Drop % (after lvl 5)", step=0.01)
+
+autoMerge_in        = input.bool(false, "Auto Merge")
+subSellTPPercent_in = input.float(0.65, "Sub-sell TP % (last lot)", step=0.01)
+
+requireCloseAboveFullTP_in   = input.bool(true,  "Require close >= Full TP for full close")
+subSellCloseConfirmMode_in   = input.string("breakeven", "Sub-sell close confirmation", options=["off", "breakeven", "subsell_tp"])
+requireCloseBelowDcaLevel_in = input.bool(true,  "Require close <= Next DCA level")
+blockDcaOnTpTouch_in         = input.bool(false, "Block DCA on Full TP touch even without close confirm")
+
+drop1_in = input.float(0.25, "Nonlinear drop lvl2 %", step=0.001)
+drop2_in = input.float(0.35, "Nonlinear drop lvl3 %", step=0.001)
+drop3_in = input.float(0.55, "Nonlinear drop lvl4 %", step=0.001)
+drop4_in = input.float(3.00, "Nonlinear drop lvl5 %", step=0.1)
+drop5_in = input.float(4.00, "Nonlinear drop lvl6 %", step=0.1)
+
+mult2_in = input.float(1.0, "Multiplier lvl2", step=0.001)
+mult3_in = input.float(1.5, "Multiplier lvl3", step=0.001)
+mult4_in = input.float(2.75, "Multiplier lvl4", step=0.001)
+mult5_in = input.float(1.5, "Multiplier lvl5", step=0.1)
+
+maxFillsPerBar_in    = input.int(2, "Max DCA fills per bar", minval=1, maxval=20)
+maxSubSellsPerBar_in = input.int(5, "Max SUB-sells per bar", minval=1, maxval=50)
+useHighLowTouch_in   = input.bool(true, "Check trigger touch by Low/High (else Open/Close body)")
+
+useLiveSyncStart_in = input.bool(true, "Use live sync start")
+liveStartTime_in    = input.time(0, "Live sync start time (UTC)")
+maxOrdersPer3Min_in = input.int(6, "Max fills in last 3 min", minval=1, maxval=100)
+showDebugLabels_in  = input.bool(false, "Show orange debug labels")
+liquidationLinePct_in = input.float(-100.0, "Liquidation line PNL %", step=0.1)
+
+useTrendAdaptiveSizing_in = input.bool(false, "Use trend-adaptive long sizing")
+trendMaTf_in              = input.string("D", "Trend MA timeframe")
+trendMaLen_in             = input.int(7, "Trend MA length", minval=1)
+trendSlopeBars_in         = input.int(3, "Trend slope bars", minval=1)
+trendSlopeLongBoundPct_in = input.float(1.0, "Trend slope long bound %", step=0.1)
+trendSlopeShortBoundPct_in= input.float(-1.0, "Trend slope short bound %", step=0.1)
+trendScoreMinPct_in       = input.float(45.0, "Trend longness score min %", step=0.1)
+trendScoreMaxPct_in       = input.float(75.0, "Trend longness score max %", step=0.1)
+minLongInvestPct_in       = input.float(0.40, "Min long investment %", step=0.01)
+maxLongInvestPct_in       = input.float(16.0, "Max long investment %", step=0.01)
+hardBreakevenDeleveragePct_in = input.float(25.0, "Force breakeven deleverage above long exposure %", step=0.1)
+
+// MDD guards
+maxPositionCostPct_in   = input.float(100.0, "Max position cost % of sizing equity", minval=0.1, maxval=1000.0, step=0.1)
+hardMaxTotalDDPct_in    = input.float(50.0, "Hard total DD stop %", minval=1.0, maxval=100.0, step=0.1)
+tvMaxDrawdownStopPct_in = input.float(50.0, "TradingView max drawdown stop %", minval=1.0, maxval=100.0, step=0.1)
+dcaPreset_in = input.string("Manual / CSV pack", "DCA preset", options=["Manual / CSV pack", "rnd5337 HYPE FBC"])
+showFixedSignalMarkers_in = input.bool(true, "Show fixed OPEN/CLOSE signals")
+useSignalAwareTp_in = input.bool(true, "Use signal-aware TP")
+signalFreshHours_in = input.float(24.0, "Signal-aware TP freshness hours", minval=0.0, step=0.5)
+signalFreshTpPercent_in = input.float(1.20, "Signal-aware TP %", step=0.01)
+signalFreshCallbackPercent_in = input.float(0.25, "Signal-aware callback %", step=0.01)
+
+// TradingView native hard stop
+strategy.risk.max_drawdown(tvMaxDrawdownStopPct_in, strategy.percent_of_equity)
+
+// =====================
+// Shared CSV pack
+// =====================
+// Order:
+// 0 firstBuyQtyCoin
+// 1 minOrderQtyCoin
+// 2 useEquityPctBase (0/1)
+// 3 baseOrderPctEq
+// 4 equityForSizingUSDT
+// 5 tpPercent
+// 6 callbackPercent
+// 7 marginCallLimit
+// 8 linearDropPercent
+// 9 autoMerge (0/1)
+// 10 subSellTPPercent
+// 11 requireCloseAboveFullTP (0/1)
+// 12 subSellCloseConfirmMode (0=off,1=breakeven,2=subsell_tp)
+// 13 requireCloseBelowDcaLevel (0/1)
+// 14 blockDcaOnTpTouch (0/1)
+// 15 drop1
+// 16 drop2
+// 17 drop3
+// 18 drop4
+// 19 drop5
+// 20 mult2
+// 21 mult3
+// 22 mult4
+// 23 mult5
+// 24 maxFillsPerBar
+// 25 maxSubSellsPerBar
+// 26 useHighLowTouch (0/1)
+// 27 useLiveSyncStart (0/1)
+// 28 liveStartTime (unix ms or 0)
+// 29 maxOrdersPer3Min
+useParamPack = input.bool(false, "Use parameter pack CSV")
+paramPackCsv = input.string("", "Parameter pack CSV")
+
+var string[] pack = array.new_string()
+if barstate.isfirst and useParamPack and str.length(str.replace_all(paramPackCsv, " ", "")) > 0
+    pack := str.split(paramPackCsv, ",")
+
+f_packFloat(_idx, _def) =>
+    float v = _def
+    if useParamPack and _idx < array.size(pack)
+        parsed = str.tonumber(str.trim(array.get(pack, _idx)))
+        v := na(parsed) ? _def : parsed
+    v
+
+f_packBool(_idx, _def) =>
+    f_packFloat(_idx, _def ? 1 : 0) != 0
+
+f_packMode(_idx, _def) =>
+    code = int(math.round(f_packFloat(_idx, _def == "off" ? 0 : _def == "breakeven" ? 1 : 2)))
+    code <= 0 ? "off" : code == 1 ? "breakeven" : "subsell_tp"
+
+firstBuyQtyCoin     = f_packFloat(0, firstBuyQtyCoin_in)
+minOrderQtyCoin     = f_packFloat(1, minOrderQtyCoin_in)
+useEquityPctBase    = f_packBool(2, useEquityPctBase_in)
+baseOrderPctEq      = f_packFloat(3, baseOrderPctEq_in)
+equityForSizingUSDT_input = f_packFloat(4, equityForSizingUSDT_in)
+equityForSizingUSDT = useStrategyEquityForSizing_in ? math.max(strategy.equity, 0.0) : equityForSizingUSDT_input
+tpPercent           = f_packFloat(5, tpPercent_in)
+callbackPercent     = f_packFloat(6, callbackPercent_in)
+marginCallLimit     = int(math.round(f_packFloat(7, marginCallLimit_in)))
+linearDropPercent   = f_packFloat(8, linearDropPercent_in)
+autoMerge           = f_packBool(9, autoMerge_in)
+subSellTPPercent    = f_packFloat(10, subSellTPPercent_in)
+requireCloseAboveFullTP   = f_packBool(11, requireCloseAboveFullTP_in)
+subSellCloseConfirmMode   = f_packMode(12, subSellCloseConfirmMode_in)
+requireCloseBelowDcaLevel = f_packBool(13, requireCloseBelowDcaLevel_in)
+blockDcaOnTpTouch         = f_packBool(14, blockDcaOnTpTouch_in)
+drop1 = f_packFloat(15, drop1_in)
+drop2 = f_packFloat(16, drop2_in)
+drop3 = f_packFloat(17, drop3_in)
+drop4 = f_packFloat(18, drop4_in)
+drop5 = f_packFloat(19, drop5_in)
+mult2 = f_packFloat(20, mult2_in)
+mult3 = f_packFloat(21, mult3_in)
+mult4 = f_packFloat(22, mult4_in)
+mult5 = f_packFloat(23, mult5_in)
+maxFillsPerBar    = int(math.round(f_packFloat(24, maxFillsPerBar_in)))
+maxSubSellsPerBar = int(math.round(f_packFloat(25, maxSubSellsPerBar_in)))
+useHighLowTouch   = f_packBool(26, useHighLowTouch_in)
+useLiveSyncStart  = f_packBool(27, useLiveSyncStart_in)
+liveStartTime     = int(math.round(f_packFloat(28, liveStartTime_in)))
+maxOrdersPer3Min  = int(math.round(f_packFloat(29, maxOrdersPer3Min_in)))
+
+showDebugLabels = showDebugLabels_in
+liquidationLinePct = liquidationLinePct_in
+useTrendAdaptiveSizing = useTrendAdaptiveSizing_in
+trendMaTf              = trendMaTf_in
+trendMaLen             = trendMaLen_in
+trendSlopeBars         = trendSlopeBars_in
+trendSlopeLongBoundPct = trendSlopeLongBoundPct_in
+trendSlopeShortBoundPct= trendSlopeShortBoundPct_in
+trendScoreMinPct       = trendScoreMinPct_in
+trendScoreMaxPct       = trendScoreMaxPct_in
+minLongInvestPct       = minLongInvestPct_in
+maxLongInvestPct       = maxLongInvestPct_in
+hardBreakevenDeleveragePct = hardBreakevenDeleveragePct_in
+
+maxPositionCostPct = maxPositionCostPct_in
+hardMaxTotalDDPct  = hardMaxTotalDDPct_in
+useSignalAwareTp = useSignalAwareTp_in
+signalFreshHours = signalFreshHours_in
+signalFreshTpPercent = signalFreshTpPercent_in
+signalFreshCallbackPercent = signalFreshCallbackPercent_in
+
+// =====================
+// DCA preset override
+// =====================
+// rnd5337_t500_b12_s0p953-1p3-1p442-1p767_w0p597-0p82-1p151-1p868
+// first_bar_close research result: equity 500 -> 758.870428, net +51.774086%.
+useRnd5337Preset = dcaPreset_in == "rnd5337 HYPE FBC"
+if useRnd5337Preset
+    useEquityPctBase := true
+    baseOrderPctEq := 12.0
+    marginCallLimit := 5
+    linearDropPercent := 1.767
+    requireCloseBelowDcaLevel := true
+    blockDcaOnTpTouch := false
+    drop1 := 0.953
+    drop2 := 1.300
+    drop3 := 1.442
+    drop4 := 1.767
+    drop5 := 1.767
+    mult2 := 0.9869251578
+    mult3 := 1.3555755936
+    mult4 := 1.9027652540
+    mult5 := 3.0880673279
+    maxFillsPerBar := 1
+    useHighLowTouch := false
+    useTrendAdaptiveSizing := false
+    maxLongInvestPct := 12.0
+    maxPositionCostPct := 100.0
+
+// =====================
+// Fixed first-bar-close signal overlay
+// =====================
+// Static HYPEUSDT LONG signals from rnd5337 first_bar_close replay.
+// Markers are visual only; they do not drive strategy orders.
+var array<int> fixedOpenTs = array.new_int()
+var array<int> fixedCloseTs = array.new_int()
+var array<float> fixedTradePnl = array.new_float()
+
+if barstate.isfirst
+    array.push(fixedOpenTs, 1767986186280)
+    array.push(fixedCloseTs, 1768113814441)
+    array.push(fixedTradePnl, 0.291621)
+    array.push(fixedOpenTs, 1768227436607)
+    array.push(fixedCloseTs, 1768246007491)
+    array.push(fixedTradePnl, 2.319111)
+    array.push(fixedOpenTs, 1768403080598)
+    array.push(fixedCloseTs, 1768404937942)
+    array.push(fixedTradePnl, 0.950404)
+    array.push(fixedOpenTs, 1768413611041)
+    array.push(fixedCloseTs, 1768418390266)
+    array.push(fixedTradePnl, 0.769529)
+    array.push(fixedOpenTs, 1768781079676)
+    array.push(fixedCloseTs, 1768811663604)
+    array.push(fixedTradePnl, 0.493235)
+    array.push(fixedOpenTs, 1768914675457)
+    array.push(fixedCloseTs, 1769023857221)
+    array.push(fixedTradePnl, -8.150162)
+    array.push(fixedOpenTs, 1769093526329)
+    array.push(fixedCloseTs, 1769102472968)
+    array.push(fixedTradePnl, 1.063211)
+    array.push(fixedOpenTs, 1769107455958)
+    array.push(fixedCloseTs, 1769130279951)
+    array.push(fixedTradePnl, 0.881986)
+    array.push(fixedOpenTs, 1769196941195)
+    array.push(fixedCloseTs, 1769208116928)
+    array.push(fixedTradePnl, 0.614829)
+    array.push(fixedOpenTs, 1769331393691)
+    array.push(fixedCloseTs, 1769374969058)
+    array.push(fixedTradePnl, -0.554586)
+    array.push(fixedOpenTs, 1769442138786)
+    array.push(fixedCloseTs, 1769444500856)
+    array.push(fixedTradePnl, 0.609119)
+    array.push(fixedOpenTs, 1769500379191)
+    array.push(fixedCloseTs, 1769502962802)
+    array.push(fixedTradePnl, 0.678976)
+    array.push(fixedOpenTs, 1769505201856)
+    array.push(fixedCloseTs, 1769516503521)
+    array.push(fixedTradePnl, 0.870078)
+    array.push(fixedOpenTs, 1769517724834)
+    array.push(fixedCloseTs, 1769529110015)
+    array.push(fixedTradePnl, 2.190771)
+    array.push(fixedOpenTs, 1769534041146)
+    array.push(fixedCloseTs, 1769540271076)
+    array.push(fixedTradePnl, 2.057065)
+    array.push(fixedOpenTs, 1769569094895)
+    array.push(fixedCloseTs, 1769570782060)
+    array.push(fixedTradePnl, 0.791840)
+    array.push(fixedOpenTs, 1769577154185)
+    array.push(fixedCloseTs, 1769582159348)
+    array.push(fixedTradePnl, 0.701166)
+    array.push(fixedOpenTs, 1769588592379)
+    array.push(fixedCloseTs, 1769593839196)
+    array.push(fixedTradePnl, 1.795440)
+    array.push(fixedOpenTs, 1769609389299)
+    array.push(fixedCloseTs, 1769628956034)
+    array.push(fixedTradePnl, 1.884642)
+    array.push(fixedOpenTs, 1769645329518)
+    array.push(fixedCloseTs, 1769687602033)
+    array.push(fixedTradePnl, 11.806309)
+    array.push(fixedOpenTs, 1769698695275)
+    array.push(fixedCloseTs, 1769701926518)
+    array.push(fixedTradePnl, 0.620307)
+    array.push(fixedOpenTs, 1769704111078)
+    array.push(fixedCloseTs, 1769704755682)
+    array.push(fixedTradePnl, 0.825996)
+    array.push(fixedOpenTs, 1769706556334)
+    array.push(fixedCloseTs, 1769800010303)
+    array.push(fixedTradePnl, 1.081896)
+    array.push(fixedOpenTs, 1769803530820)
+    array.push(fixedCloseTs, 1769821921087)
+    array.push(fixedTradePnl, 5.064738)
+    array.push(fixedOpenTs, 1769835156382)
+    array.push(fixedCloseTs, 1769904213398)
+    array.push(fixedTradePnl, 14.628618)
+    array.push(fixedOpenTs, 1769906208902)
+    array.push(fixedCloseTs, 1769907569326)
+    array.push(fixedTradePnl, 0.860999)
+    array.push(fixedOpenTs, 1769910175847)
+    array.push(fixedCloseTs, 1769913913117)
+    array.push(fixedTradePnl, 2.417658)
+    array.push(fixedOpenTs, 1769914848741)
+    array.push(fixedCloseTs, 1769988235778)
+    array.push(fixedTradePnl, -8.447561)
+    array.push(fixedOpenTs, 1769994782227)
+    array.push(fixedCloseTs, 1769995639085)
+    array.push(fixedTradePnl, 0.936364)
+    array.push(fixedOpenTs, 1770002120677)
+    array.push(fixedCloseTs, 1770004165106)
+    array.push(fixedTradePnl, 3.012966)
+    array.push(fixedOpenTs, 1770005100807)
+    array.push(fixedCloseTs, 1770018320745)
+    array.push(fixedTradePnl, 11.356791)
+    array.push(fixedOpenTs, 1770033664300)
+    array.push(fixedCloseTs, 1770041708921)
+    array.push(fixedTradePnl, 2.606110)
+    array.push(fixedOpenTs, 1770043372913)
+    array.push(fixedCloseTs, 1770048279779)
+    array.push(fixedTradePnl, 2.412223)
+    array.push(fixedOpenTs, 1770049689004)
+    array.push(fixedCloseTs, 1770062910259)
+    array.push(fixedTradePnl, 1.751469)
+    array.push(fixedOpenTs, 1770074736254)
+    array.push(fixedCloseTs, 1770075490471)
+    array.push(fixedTradePnl, 0.595878)
+    array.push(fixedOpenTs, 1770092565149)
+    array.push(fixedCloseTs, 1770229993023)
+    array.push(fixedTradePnl, -31.658461)
+    array.push(fixedOpenTs, 1770232249871)
+    array.push(fixedCloseTs, 1770234367744)
+    array.push(fixedTradePnl, 1.030243)
+    array.push(fixedOpenTs, 1770241596922)
+    array.push(fixedCloseTs, 1770243436423)
+    array.push(fixedTradePnl, 2.460204)
+    array.push(fixedOpenTs, 1770244683430)
+    array.push(fixedCloseTs, 1770280380112)
+    array.push(fixedTradePnl, 10.005771)
+    array.push(fixedOpenTs, 1770290671844)
+    array.push(fixedCloseTs, 1770313394787)
+    array.push(fixedTradePnl, 8.887899)
+    array.push(fixedOpenTs, 1770315474346)
+    array.push(fixedCloseTs, 1770325352164)
+    array.push(fixedTradePnl, 2.480091)
+    array.push(fixedOpenTs, 1770326059623)
+    array.push(fixedCloseTs, 1770329378540)
+    array.push(fixedTradePnl, 3.012824)
+    array.push(fixedOpenTs, 1770333625053)
+    array.push(fixedCloseTs, 1770338242846)
+    array.push(fixedTradePnl, 13.093247)
+    array.push(fixedOpenTs, 1770343808134)
+    array.push(fixedCloseTs, 1770380303473)
+    array.push(fixedTradePnl, -14.045139)
+    array.push(fixedOpenTs, 1770384753750)
+    array.push(fixedCloseTs, 1770388447419)
+    array.push(fixedTradePnl, 1.498017)
+    array.push(fixedOpenTs, 1770389736146)
+    array.push(fixedCloseTs, 1770390282643)
+    array.push(fixedTradePnl, 0.858022)
+    array.push(fixedOpenTs, 1770390788036)
+    array.push(fixedCloseTs, 1770396369770)
+    array.push(fixedTradePnl, 5.808445)
+    array.push(fixedOpenTs, 1770399336224)
+    array.push(fixedCloseTs, 1770437691955)
+    array.push(fixedTradePnl, 13.454251)
+    array.push(fixedOpenTs, 1770438499835)
+    array.push(fixedCloseTs, 1770441966763)
+    array.push(fixedTradePnl, 1.021022)
+    array.push(fixedOpenTs, 1770448570026)
+    array.push(fixedCloseTs, 1770450044847)
+    array.push(fixedTradePnl, 1.245332)
+    array.push(fixedOpenTs, 1770460365737)
+    array.push(fixedCloseTs, 1770489746095)
+    array.push(fixedTradePnl, 5.358286)
+    array.push(fixedOpenTs, 1770491448212)
+    array.push(fixedCloseTs, 1770539248405)
+    array.push(fixedTradePnl, 3.334197)
+    array.push(fixedOpenTs, 1770554499347)
+    array.push(fixedCloseTs, 1770567566093)
+    array.push(fixedTradePnl, 1.079725)
+    array.push(fixedOpenTs, 1770822745328)
+    array.push(fixedCloseTs, 1770823905676)
+    array.push(fixedTradePnl, 1.232864)
+    array.push(fixedOpenTs, 1770910720634)
+    array.push(fixedCloseTs, 1770937633123)
+    array.push(fixedTradePnl, 11.305221)
+    array.push(fixedOpenTs, 1770997533457)
+    array.push(fixedCloseTs, 1771031955207)
+    array.push(fixedTradePnl, 2.567897)
+    array.push(fixedOpenTs, 1771091370161)
+    array.push(fixedCloseTs, 1771097518804)
+    array.push(fixedTradePnl, 0.902840)
+    array.push(fixedOpenTs, 1771144348633)
+    array.push(fixedCloseTs, 1771153566485)
+    array.push(fixedTradePnl, 1.281825)
+    array.push(fixedOpenTs, 1771159918048)
+    array.push(fixedCloseTs, 1771279806061)
+    array.push(fixedTradePnl, 11.888888)
+    array.push(fixedOpenTs, 1771339439714)
+    array.push(fixedCloseTs, 1771344153693)
+    array.push(fixedTradePnl, 2.473800)
+    array.push(fixedOpenTs, 1771594538191)
+    array.push(fixedCloseTs, 1771599724841)
+    array.push(fixedTradePnl, 1.209714)
+    array.push(fixedOpenTs, 1771607708851)
+    array.push(fixedCloseTs, 1771613968244)
+    array.push(fixedTradePnl, 0.849709)
+    array.push(fixedOpenTs, 1771808954245)
+    array.push(fixedCloseTs, 1771827102948)
+    array.push(fixedTradePnl, 3.239155)
+    array.push(fixedOpenTs, 1771855607048)
+    array.push(fixedCloseTs, 1771873070949)
+    array.push(fixedTradePnl, 2.947195)
+    array.push(fixedOpenTs, 1771887163635)
+    array.push(fixedCloseTs, 1771923226011)
+    array.push(fixedTradePnl, 4.840033)
+    array.push(fixedOpenTs, 1771945348822)
+    array.push(fixedCloseTs, 1771946699754)
+    array.push(fixedTradePnl, 0.973413)
+    array.push(fixedOpenTs, 1772054129140)
+    array.push(fixedCloseTs, 1772055385429)
+    array.push(fixedTradePnl, 0.930994)
+    array.push(fixedOpenTs, 1772062783142)
+    array.push(fixedCloseTs, 1772065837535)
+    array.push(fixedTradePnl, 1.196776)
+    array.push(fixedOpenTs, 1772119167350)
+    array.push(fixedCloseTs, 1772165441192)
+    array.push(fixedTradePnl, 6.361169)
+    array.push(fixedOpenTs, 1772189580440)
+    array.push(fixedCloseTs, 1772289512570)
+    array.push(fixedTradePnl, -6.883396)
+    array.push(fixedOpenTs, 1772381843688)
+    array.push(fixedCloseTs, 1772383243319)
+    array.push(fixedTradePnl, 1.368563)
+    array.push(fixedOpenTs, 1772383722862)
+    array.push(fixedCloseTs, 1772390633789)
+    array.push(fixedTradePnl, 2.997541)
+    array.push(fixedOpenTs, 1772417416245)
+    array.push(fixedCloseTs, 1772462475855)
+    array.push(fixedTradePnl, 12.393083)
+    array.push(fixedOpenTs, 1772473427487)
+    array.push(fixedCloseTs, 1772490671757)
+    array.push(fixedTradePnl, 2.896654)
+    array.push(fixedOpenTs, 1772497292203)
+    array.push(fixedCloseTs, 1772502534544)
+    array.push(fixedTradePnl, 1.064849)
+    array.push(fixedOpenTs, 1772525745445)
+    array.push(fixedCloseTs, 1772554016143)
+    array.push(fixedTradePnl, 4.014953)
+    array.push(fixedOpenTs, 1772555902527)
+    array.push(fixedCloseTs, 1772610509737)
+    array.push(fixedTradePnl, 4.222832)
+    array.push(fixedOpenTs, 1772619805687)
+    array.push(fixedCloseTs, 1772634751255)
+    array.push(fixedTradePnl, 1.019658)
+    array.push(fixedOpenTs, 1772640760505)
+    array.push(fixedCloseTs, 1772667566639)
+    array.push(fixedTradePnl, 3.606426)
+    array.push(fixedOpenTs, 1772723512129)
+    array.push(fixedCloseTs, 1772779721163)
+    array.push(fixedTradePnl, 0.686018)
+    array.push(fixedOpenTs, 1772805452184)
+    array.push(fixedCloseTs, 1772827549137)
+    array.push(fixedTradePnl, 7.208698)
+    array.push(fixedOpenTs, 1773079782861)
+    array.push(fixedCloseTs, 1773081048431)
+    array.push(fixedTradePnl, 1.130835)
+    array.push(fixedOpenTs, 1773102160876)
+    array.push(fixedCloseTs, 1773112411737)
+    array.push(fixedTradePnl, 3.273720)
+    array.push(fixedOpenTs, 1773149911786)
+    array.push(fixedCloseTs, 1773211087103)
+    array.push(fixedTradePnl, 3.784518)
+    array.push(fixedOpenTs, 1773243053016)
+    array.push(fixedCloseTs, 1773277110650)
+    array.push(fixedTradePnl, 2.960001)
+    array.push(fixedOpenTs, 1773413198593)
+    array.push(fixedCloseTs, 1773462385558)
+    array.push(fixedTradePnl, 5.733499)
+    array.push(fixedOpenTs, 1773707255228)
+    array.push(fixedCloseTs, 1773728482173)
+    array.push(fixedTradePnl, 2.858335)
+    array.push(fixedOpenTs, 1773762207286)
+    array.push(fixedCloseTs, 1773763894969)
+    array.push(fixedTradePnl, 0.902032)
+    array.push(fixedOpenTs, 1773841730028)
+    array.push(fixedCloseTs, 1773852754173)
+    array.push(fixedTradePnl, 7.967566)
+    array.push(fixedOpenTs, 1773857973606)
+    array.push(fixedCloseTs, 1773994156969)
+    array.push(fixedTradePnl, -16.383753)
+    array.push(fixedOpenTs, 1774137149729)
+    array.push(fixedCloseTs, 1774264020687)
+    array.push(fixedTradePnl, -1.952675)
+    array.push(fixedOpenTs, 1774264984471)
+    array.push(fixedCloseTs, 1774269749089)
+    array.push(fixedTradePnl, 1.260015)
+    array.push(fixedOpenTs, 1774277007788)
+    array.push(fixedCloseTs, 1774336468232)
+    array.push(fixedTradePnl, 4.907193)
+    array.push(fixedOpenTs, 1774361953460)
+    array.push(fixedCloseTs, 1774364204730)
+    array.push(fixedTradePnl, 0.918749)
+    array.push(fixedOpenTs, 1774607926543)
+    array.push(fixedCloseTs, 1774625821651)
+    array.push(fixedTradePnl, 2.446469)
+    array.push(fixedOpenTs, 1774831077243)
+    array.push(fixedCloseTs, 1774838751651)
+    array.push(fixedTradePnl, 1.530977)
+    array.push(fixedOpenTs, 1774898245885)
+    array.push(fixedCloseTs, 1774905803804)
+    array.push(fixedTradePnl, 0.991462)
+    array.push(fixedOpenTs, 1775059934834)
+    array.push(fixedCloseTs, 1775177821182)
+    array.push(fixedTradePnl, -3.822199)
+    array.push(fixedOpenTs, 1775494881297)
+    array.push(fixedCloseTs, 1775554341836)
+    array.push(fixedTradePnl, 1.200116)
+    array.push(fixedOpenTs, 1775958102668)
+    array.push(fixedCloseTs, 1776042739472)
+    array.push(fixedTradePnl, 5.878921)
+    array.push(fixedOpenTs, 1776175255102)
+    array.push(fixedCloseTs, 1776252941812)
+    array.push(fixedTradePnl, 1.479561)
+    array.push(fixedOpenTs, 1776421920373)
+    array.push(fixedCloseTs, 1776430413073)
+    array.push(fixedTradePnl, 1.016543)
+    array.push(fixedOpenTs, 1776619678472)
+    array.push(fixedCloseTs, 1776743551989)
+    array.push(fixedTradePnl, -3.462499)
+    array.push(fixedOpenTs, 1777889344441)
+    array.push(fixedCloseTs, 1777929811838)
+    array.push(fixedTradePnl, 0.916253)
+    array.push(fixedOpenTs, 1778446169072)
+    array.push(fixedCloseTs, 1778456181088)
+    array.push(fixedTradePnl, 1.145103)
+    array.push(fixedOpenTs, 1778666713277)
+    array.push(fixedCloseTs, 1778737928093)
+    array.push(fixedTradePnl, -0.529704)
+    array.push(fixedOpenTs, 1778789232767)
+    array.push(fixedCloseTs, 1778804760034)
+    array.push(fixedTradePnl, 1.657169)
+    array.push(fixedOpenTs, 1778810834308)
+    array.push(fixedCloseTs, 1778813431654)
+    array.push(fixedTradePnl, 1.238453)
+    array.push(fixedOpenTs, 1778822054067)
+    array.push(fixedCloseTs, 1778829679992)
+    array.push(fixedTradePnl, 1.715445)
+    array.push(fixedOpenTs, 1778849097926)
+    array.push(fixedCloseTs, 1778865968749)
+    array.push(fixedTradePnl, 9.103586)
+    array.push(fixedOpenTs, 1778926125311)
+    array.push(fixedCloseTs, 1778927634299)
+    array.push(fixedTradePnl, 1.169099)
+    array.push(fixedOpenTs, 1779074539201)
+    array.push(fixedCloseTs, 1779079329369)
+    array.push(fixedTradePnl, 0.978044)
+    array.push(fixedOpenTs, 1779088571225)
+    array.push(fixedCloseTs, 1779092731778)
+    array.push(fixedTradePnl, 0.917201)
+    array.push(fixedOpenTs, 1779111416456)
+    array.push(fixedCloseTs, 1779133956405)
+    array.push(fixedTradePnl, 8.052471)
+    array.push(fixedOpenTs, 1779286364390)
+    array.push(fixedCloseTs, 1779288793272)
+    array.push(fixedTradePnl, 0.880284)
+    array.push(fixedOpenTs, 1779327179412)
+    array.push(fixedCloseTs, 1779347239375)
+    array.push(fixedTradePnl, 2.882865)
+    array.push(fixedOpenTs, 1779357254196)
+    array.push(fixedCloseTs, 1779359722644)
+    array.push(fixedTradePnl, 1.490995)
+    array.push(fixedOpenTs, 1779374520415)
+    array.push(fixedCloseTs, 1779375639510)
+    array.push(fixedTradePnl, 1.313898)
+    array.push(fixedOpenTs, 1779378212078)
+    array.push(fixedCloseTs, 1779384057106)
+    array.push(fixedTradePnl, 3.598203)
+    array.push(fixedOpenTs, 1779385197300)
+    array.push(fixedCloseTs, 1779404605248)
+    array.push(fixedTradePnl, 5.222601)
+    array.push(fixedOpenTs, 1779412969625)
+    array.push(fixedCloseTs, 1779415955350)
+    array.push(fixedTradePnl, 1.035845)
+    array.push(fixedOpenTs, 1779458776383)
+    array.push(fixedCloseTs, 1779584472362)
+    array.push(fixedTradePnl, 11.952849)
+
+f_fixedSignalInBar(_ts) =>
+    int right = na(time_close) ? time + timeframe.in_seconds(timeframe.period) * 1000 : time_close
+    time <= _ts and _ts < right
+
+f_signalFreshOrActive(_freshMs) =>
+    bool fresh = false
+    int n = array.size(fixedOpenTs)
+    if n > 0
+        for i = 0 to n - 1
+            int o = array.get(fixedOpenTs, i)
+            int c = array.get(fixedCloseTs, i)
+            bool active = time >= o and time <= c
+            bool recent = time >= o and time - o <= _freshMs
+            fresh := fresh or active or recent
+    fresh
+
+// =====================
+// Shared parity anchor
+// =====================
+anchorTz       = "UTC"
+anchorTs       = timestamp(anchorTz, year, 1, 1, 0, 0)
+barMs          = int(timeframe.in_seconds(timeframe.period) * 1000)
+barsFromAnchor = int(math.floor((time - anchorTs) / barMs))
+afterAnchor    = time >= anchorTs
+allowThisBar   = afterAnchor and (barsFromAnchor % 2 == 0)
+
+// =====================
+// Live sync start
+// =====================
+liveNow      = not useLiveSyncStart or time >= liveStartTime
+livePrev     = bar_index > 0 ? (not useLiveSyncStart or time[1] >= liveStartTime) : false
+liveStartBar = liveNow and not livePrev
+
+// =====================
+// Order-fill throttle
+// =====================
+barSeconds        = timeframe.in_seconds(timeframe.period)
+barsIn3MinWindow  = math.max(1, int(math.ceil(180.0 / barSeconds)))
+historyBarsLimit  = math.max(barsIn3MinWindow - 1, 0)
+
+var int ordersThisBar         = 0
+var int ordersBarIndex        = na
+var int[] recentBarFills      = array.new_int()
+var int recentHistoryFills    = 0
+var int maxOrdersPerBarBT     = 0
+var int maxOrdersBarTime      = na
+var int maxOrdersPerWindowBT  = 0
+var int maxOrdersWindowTime   = na
+var int fullTPWarehouseCloses = 0
+var label maxOrdersLabel      = na
+var bool riskStopped          = false
+
+f_recentOrdersIn3Min() =>
+    recentHistoryFills + ordersThisBar
+
+if na(ordersBarIndex)
+    ordersBarIndex := bar_index
+    ordersThisBar  := 0
+else if bar_index != ordersBarIndex
+    if historyBarsLimit > 0
+        array.push(recentBarFills, ordersThisBar)
+        recentHistoryFills += ordersThisBar
+        if array.size(recentBarFills) > historyBarsLimit
+            removed = array.shift(recentBarFills)
+            recentHistoryFills -= removed
+    else
+        recentHistoryFills := 0
+
+    ordersThisBar  := 0
+    ordersBarIndex := bar_index
+
+recentOrdersIn3Min = f_recentOrdersIn3Min()
+
+if recentOrdersIn3Min > maxOrdersPerWindowBT
+    maxOrdersPerWindowBT := recentOrdersIn3Min
+    maxOrdersWindowTime  := time
+
+triggerHigh = useHighLowTouch ? high : math.max(open, close)
+triggerLow  = useHighLowTouch ? low  : math.min(open, close)
+
+f_canPlaceOrder() =>
+    liveNow and allowThisBar and not riskStopped and f_recentOrdersIn3Min() < maxOrdersPer3Min
+
+// =====================
+// Trend adaptive sizing
+// =====================
+trendMa = request.security(syminfo.tickerid, trendMaTf, ta.sma(close, trendMaLen), lookahead=barmerge.lookahead_off)
+trendMaPrev = trendMa[trendSlopeBars]
+trendSlopeRawPct = not na(trendMaPrev) and trendMaPrev != 0 ? ((trendMa - trendMaPrev) / trendMaPrev) * 100.0 : 0.0
+trendSlopeRange = math.max(math.abs(trendSlopeLongBoundPct - trendSlopeShortBoundPct), 0.000001)
+
+trendLongnessPct = math.max(0.0, math.min(100.0, 100.0 * (trendSlopeRawPct - trendSlopeShortBoundPct) / trendSlopeRange))
+trendScoreRange = math.max(math.abs(trendScoreMaxPct - trendScoreMinPct), 0.000001)
+trendSizingFactor = math.max(0.0, math.min(1.0, (trendLongnessPct - trendScoreMinPct) / trendScoreRange))
+targetLongInvestPct = useTrendAdaptiveSizing ? (minLongInvestPct + (maxLongInvestPct - minLongInvestPct) * trendSizingFactor) : baseOrderPctEq
+
+// =====================
+// Helper funcs
+// =====================
+f_getDropForNextLevel(_numBuys) =>
+    nb = _numBuys + 1
+    nb == 2 ? drop1 :
+     nb == 3 ? drop2 :
+     nb == 4 ? drop3 :
+     nb == 5 ? drop4 :
+     nb == 6 ? drop5 :
+     linearDropPercent
+
+f_getMultForNextLevel(_numBuys) =>
+    nb = _numBuys + 1
+    nb == 2 ? mult2 :
+     nb == 3 ? mult3 :
+     nb == 4 ? mult4 :
+     nb == 5 ? mult5 :
+     1.0
+
+f_nextLevel(_lastFillPrice, _numBuys) =>
+    d = f_getDropForNextLevel(_numBuys)
+    _lastFillPrice * (1.0 - d / 100.0)
+
+f_recalcAvg(_cost, _sizeAbs) =>
+    _sizeAbs > 0 ? _cost / _sizeAbs : na
+
+f_calcBaseOrderQtyCoin() =>
+    sizingPct = useTrendAdaptiveSizing ? targetLongInvestPct : baseOrderPctEq
+    rawQtyCoin = useEquityPctBase ? ((equityForSizingUSDT * sizingPct / 100.0) / close) : firstBuyQtyCoin
+    math.max(rawQtyCoin, minOrderQtyCoin)
+
+f_lotTag(_n) =>
+    _n == 1 ? "dl1" :
+     _n <= 6 ? "dlN" + str.tostring(_n) :
+     "dl" + str.tostring(_n)
+
+f_maxPositionCostUSDT() =>
+    equityForSizingUSDT * maxPositionCostPct / 100.0
+
+// =====================
+// State
+// =====================
+var float posSizeAbs  = 0.0
+var float posCostUSDT = 0.0
+var float avgPrice    = na
+var int   numBuys     = 0
+var float lastFillPrice   = na
+var float nextLevelPrice  = na
+
+// LIFO lots
+var int      lotCounter = 0
+var string[] lotIds     = array.new_string()
+var float[]  lotQty     = array.new_float()
+var float[]  lotPrice   = array.new_float()
+var string[] lotTags    = array.new_string()
+var float[]  lotUsdt    = array.new_float()
+
+f_unrealizedPnlUSDT() =>
+    float acc = 0.0
+    int n = array.size(lotQty)
+    if n > 0
+        for i = 0 to n - 1
+            acc += array.get(lotQty, i) * (close - array.get(lotPrice, i))
+    acc
+
+f_totalPnlPct(_pnlUsdt) =>
+    equityForSizingUSDT > 0 ? (_pnlUsdt / equityForSizingUSDT) * 100.0 : na
+
+f_fullSellProfitUSDT(_fillPrice) =>
+    float acc = 0.0
+    int n = array.size(lotQty)
+    if n > 0
+        for i = 0 to n - 1
+            acc += array.get(lotQty, i) * (_fillPrice - array.get(lotPrice, i))
+    acc
+
+// Cycle-level counters
+var int cycleSsCounter = 0
+
+// PNL / liquidation tracking
+var float realizedPnlUSDT = 0.0
+var float minTotalPnlUSDT = 0.0
+var float minTotalPnlPct  = 0.0
+var bool  inLiqZone = false
+var int   liqZoneCount = 0
+var float liqZoneCurrentMaxTopUp = 0.0
+var float liqZoneTotalTopUp = 0.0
+var label liqWarnLabel = na
+
+// trailing for full TP
+var bool  trailingActive   = false
+var float trailingMax      = na
+var float cycleBaseQtyCoin = na
+
+// cycle flags
+var bool resetCycle       = false
+var bool restartedThisBar = false
+restartedThisBar := false
+
+// =====================
+// Bar event aggregation
+// =====================
+var string barEvents    = ""
+var bool   barHasAction = false
+var string barDcaBlock  = ""
+var string barSsBlock   = ""
+
+if barstate.isnew
+    barEvents    := ""
+    barHasAction := false
+    barDcaBlock  := ""
+    barSsBlock   := ""
+
+f_addEvent(_currEvents, _text) =>
+    _nextEvents = _currEvents == "" ? _text : _currEvents + "\n" + _text
+    [_nextEvents, true]
+
+// =====================
+// HARD RESET AT LIVE START
+// =====================
+if liveStartBar
+    posSizeAbs       := 0.0
+    posCostUSDT      := 0.0
+    avgPrice         := na
+    numBuys          := 0
+    lastFillPrice    := na
+    nextLevelPrice   := na
+    trailingActive   := false
+    trailingMax      := na
+    cycleBaseQtyCoin := na
+    cycleSsCounter   := 0
+    realizedPnlUSDT  := 0.0
+    minTotalPnlUSDT  := 0.0
+    minTotalPnlPct   := 0.0
+    inLiqZone        := false
+    liqZoneCount     := 0
+    liqZoneCurrentMaxTopUp := 0.0
+    liqZoneTotalTopUp := 0.0
+    riskStopped      := false
+    if not na(liqWarnLabel)
+        label.delete(liqWarnLabel)
+        liqWarnLabel := na
+    array.clear(lotIds)
+    array.clear(lotQty)
+    array.clear(lotPrice)
+    array.clear(lotTags)
+    array.clear(lotUsdt)
+    restartedThisBar := false
+    [_barEvents, _barHasAction] = f_addEvent(barEvents, "LIVE SYNC RESET")
+    barEvents := _barEvents
+    barHasAction := _barHasAction
+
+// =====================
+// RESET + immediate restart
+// =====================
+if liveNow and resetCycle
+    posSizeAbs       := 0.0
+    posCostUSDT      := 0.0
+    avgPrice         := na
+    numBuys          := 0
+    lastFillPrice    := na
+    nextLevelPrice   := na
+    trailingActive   := false
+    trailingMax      := na
+    cycleBaseQtyCoin := na
+    cycleSsCounter   := 0
+    array.clear(lotIds)
+    array.clear(lotQty)
+    array.clear(lotPrice)
+    array.clear(lotTags)
+    array.clear(lotUsdt)
+    resetCycle := false
+
+    if f_canPlaceOrder()
+        cycleBaseQtyCoin := f_calcBaseOrderQtyCoin()
+        buyQty  = cycleBaseQtyCoin
+        buyUSDT = buyQty * close
+
+        if buyUSDT <= f_maxPositionCostUSDT()
+            lotCounter += 1
+            id0  = "L" + str.tostring(lotCounter)
+            tag0 = f_lotTag(1)
+
+            strategy.entry(id0, strategy.long, qty=buyQty, comment="Restart Long_0")
+            ordersThisBar += 1
+            currentWindowOrders = f_recentOrdersIn3Min()
+            if currentWindowOrders > maxOrdersPerWindowBT
+                maxOrdersPerWindowBT := currentWindowOrders
+                maxOrdersWindowTime  := time
+            if ordersThisBar > maxOrdersPerBarBT
+                maxOrdersPerBarBT := ordersThisBar
+                maxOrdersBarTime  := time
+
+            qty0  = buyQty
+            fill0 = close
+
+            array.push(lotIds,  id0)
+            array.push(lotQty,  qty0)
+            array.push(lotPrice, fill0)
+            array.push(lotTags,  tag0)
+            array.push(lotUsdt,  buyUSDT)
+
+            posSizeAbs  += qty0
+            posCostUSDT += buyUSDT
+            avgPrice    := fill0
+            numBuys     := 1
+            lastFillPrice   := fill0
+            nextLevelPrice  := f_nextLevel(lastFillPrice, numBuys)
+
+            info = tag0 + " @" + str.tostring(fill0, "#.####") + " (" + str.tostring(buyQty, "#.######") + "q)"
+            restartedThisBar := true
+            [_barEvents, _barHasAction] = f_addEvent(barEvents, "RESTART " + info)
+            barEvents := _barEvents
+            barHasAction := _barHasAction
+        else
+            [_barEvents, _barHasAction] = f_addEvent(barEvents, "RESTART BLOCKED: cost cap")
+            barEvents := _barEvents
+            barHasAction := _barHasAction
+
+// =====================
+// Start new cycle if flat
+// =====================
+if liveNow and posSizeAbs == 0 and array.size(lotIds) == 0 and not resetCycle and not restartedThisBar
+    if f_canPlaceOrder()
+        cycleBaseQtyCoin := f_calcBaseOrderQtyCoin()
+        buyQty  = cycleBaseQtyCoin
+        buyUSDT = buyQty * close
+
+        if buyUSDT <= f_maxPositionCostUSDT()
+            lotCounter += 1
+            id0  = "L" + str.tostring(lotCounter)
+            tag0 = f_lotTag(1)
+
+            strategy.entry(id0, strategy.long, qty=buyQty, comment="First Long_0")
+            ordersThisBar += 1
+            currentWindowOrders = f_recentOrdersIn3Min()
+            if currentWindowOrders > maxOrdersPerWindowBT
+                maxOrdersPerWindowBT := currentWindowOrders
+                maxOrdersWindowTime  := time
+            if ordersThisBar > maxOrdersPerBarBT
+                maxOrdersPerBarBT := ordersThisBar
+                maxOrdersBarTime  := time
+
+            qty0  = buyQty
+            fill0 = close
+
+            array.push(lotIds,  id0)
+            array.push(lotQty,  qty0)
+            array.push(lotPrice, fill0)
+            array.push(lotTags,  tag0)
+            array.push(lotUsdt,  buyUSDT)
+
+            posSizeAbs  += qty0
+            posCostUSDT += buyUSDT
+            avgPrice    := fill0
+            numBuys     := 1
+            lastFillPrice   := fill0
+            nextLevelPrice  := f_nextLevel(lastFillPrice, numBuys)
+
+            info = tag0 + " @" + str.tostring(fill0, "#.####") + " (" + str.tostring(buyQty, "#.######") + "q)"
+            [_barEvents, _barHasAction] = f_addEvent(barEvents, "FIRST " + info)
+            barEvents := _barEvents
+            barHasAction := _barHasAction
+        else
+            [_barEvents, _barHasAction] = f_addEvent(barEvents, "FIRST BLOCKED: cost cap")
+            barEvents := _barEvents
+            barHasAction := _barHasAction
+
+// =====================
+// TP state
+// =====================
+signalFreshMs = int(math.round(signalFreshHours * 60.0 * 60.0 * 1000.0))
+signalFreshForTp = useSignalAwareTp and f_signalFreshOrActive(signalFreshMs)
+activeTpPercent = signalFreshForTp ? signalFreshTpPercent : tpPercent
+activeCallbackPercent = signalFreshForTp ? signalFreshCallbackPercent : callbackPercent
+
+tpPrice          = avgPrice * (1.0 + activeTpPercent / 100.0)
+tpTouch          = liveNow and not na(avgPrice) and triggerHigh >= tpPrice
+fullTPCloseOk    = not requireCloseAboveFullTP or close >= tpPrice
+tpCloseConfirmed = tpTouch and fullTPCloseOk
+
+tpBlocksDca = blockDcaOnTpTouch ? tpTouch : tpCloseConfirmed
+
+// =====================
+// FULL TP priority
+// =====================
+if liveNow and tpTouch
+    if activeCallbackPercent > 0
+        trailingActive := true
+        trailingMax := na(trailingMax) ? triggerHigh : math.max(trailingMax, triggerHigh)
+        trailStop = trailingMax * (1.0 - activeCallbackPercent / 100.0)
+
+        if tpCloseConfirmed and close <= trailStop and f_canPlaceOrder()
+            strategy.close_all(comment="TP Full (Trailing)")
+            ordersThisBar += 1
+            currentWindowOrders = f_recentOrdersIn3Min()
+            if currentWindowOrders > maxOrdersPerWindowBT
+                maxOrdersPerWindowBT := currentWindowOrders
+                maxOrdersWindowTime  := time
+            realizedPnlUSDT += f_fullSellProfitUSDT(close)
+            fullTPWarehouseCloses += 1
+            if ordersThisBar > maxOrdersPerBarBT
+                maxOrdersPerBarBT := ordersThisBar
+                maxOrdersBarTime  := time
+            resetCycle := true
+            [_barEvents, _barHasAction] = f_addEvent(barEvents, "FULL CLOSE (trail) @" + str.tostring(close, "#.####"))
+            barEvents := _barEvents
+            barHasAction := _barHasAction
+    else
+        if tpCloseConfirmed and f_canPlaceOrder()
+            strategy.close_all(comment="TP Full")
+            ordersThisBar += 1
+            currentWindowOrders = f_recentOrdersIn3Min()
+            if currentWindowOrders > maxOrdersPerWindowBT
+                maxOrdersPerWindowBT := currentWindowOrders
+                maxOrdersWindowTime  := time
+            realizedPnlUSDT += f_fullSellProfitUSDT(close)
+            fullTPWarehouseCloses += 1
+            if ordersThisBar > maxOrdersPerBarBT
+                maxOrdersPerBarBT := ordersThisBar
+                maxOrdersBarTime  := time
+            resetCycle := true
+            [_barEvents, _barHasAction] = f_addEvent(barEvents, "FULL CLOSE @" + str.tostring(close, "#.####"))
+            barEvents := _barEvents
+            barHasAction := _barHasAction
+
+// =====================
+// DCA longs
+// =====================
+if liveNow and not tpBlocksDca and posSizeAbs > 0 and not restartedThisBar
+    canBuyMore = numBuys < marginCallLimit
+    fills = 0
+
+    while canBuyMore and fills < maxFillsPerBar and not na(nextLevelPrice) and triggerLow <= nextLevelPrice and (not requireCloseBelowDcaLevel or close <= nextLevelPrice) and f_canPlaceOrder()
+        mult = f_getMultForNextLevel(numBuys)
+        if na(cycleBaseQtyCoin)
+            cycleBaseQtyCoin := f_calcBaseOrderQtyCoin()
+
+        buyQty  = cycleBaseQtyCoin * mult
+        buyUSDT = buyQty * close
+
+        if posCostUSDT + buyUSDT > f_maxPositionCostUSDT()
+            canBuyMore := false
+            barDcaBlock := barDcaBlock == "" ? "DCA BLOCKED: cost cap" : barDcaBlock + "\nDCA BLOCKED: cost cap"
+            break
+
+        lotCounter += 1
+        id   = "L" + str.tostring(lotCounter)
+        newLevel = numBuys + 1
+        tag      = f_lotTag(newLevel)
+        triggerLevel = nextLevelPrice
+
+        strategy.entry(id, strategy.long, qty=buyQty, comment="DCA Long")
+        ordersThisBar += 1
+        currentWindowOrders = f_recentOrdersIn3Min()
+        if currentWindowOrders > maxOrdersPerWindowBT
+            maxOrdersPerWindowBT := currentWindowOrders
+            maxOrdersWindowTime  := time
+        if ordersThisBar > maxOrdersPerBarBT
+            maxOrdersPerBarBT := ordersThisBar
+            maxOrdersBarTime  := time
+
+        fillP = close
+        qtyB  = buyQty
+
+        array.push(lotIds,   id)
+        array.push(lotQty,   qtyB)
+        array.push(lotPrice, fillP)
+        array.push(lotTags,  tag)
+        array.push(lotUsdt,  buyUSDT)
+
+        posSizeAbs  += qtyB
+        posCostUSDT += buyUSDT
+        avgPrice    := f_recalcAvg(posCostUSDT, posSizeAbs)
+
+        numBuys        += 1
+        lastFillPrice  := triggerLevel
+        nextLevelPrice := f_nextLevel(lastFillPrice, numBuys)
+
+        trailingActive := false
+        trailingMax    := na
+
+        dcaLine = tag + " close@" + str.tostring(fillP, "#.####") +
+             " trg@" + str.tostring(triggerLevel, "#.####") +
+             " (" + str.tostring(buyQty, "#.######") + "q)" +
+             "  ss-TP≥" + str.tostring(fillP * (1.0 + subSellTPPercent / 100.0), "#.####")
+
+        barDcaBlock := barDcaBlock == "" ? dcaLine : barDcaBlock + "\n" + dcaLine
+
+        fills       += 1
+        canBuyMore  := numBuys < marginCallLimit
+
+    if barDcaBlock != ""
+        [_barEvents, _barHasAction] = f_addEvent(barEvents, barDcaBlock)
+        barEvents := _barEvents
+        barHasAction := _barHasAction
+
+// =====================
+// SUB-SELL
+// =====================
+if liveNow and not tpBlocksDca and posSizeAbs > 0 and numBuys > 5 and not restartedThisBar
+    sold       = 0
+    anySold    = false
+
+    while sold < maxSubSellsPerBar and f_canPlaceOrder()
+        lastIdx = array.size(lotIds) - 1
+        if lastIdx < 0
+            break
+
+        idLast    = array.get(lotIds,   lastIdx)
+        qtyLast   = array.get(lotQty,   lastIdx)
+        entryLast = array.get(lotPrice, lastIdx)
+        tagLast   = array.get(lotTags,  lastIdx)
+        usdtLast  = array.get(lotUsdt,  lastIdx)
+
+        currentLongExposurePct = equityForSizingUSDT > 0 ? ((posSizeAbs * close) / equityForSizingUSDT) * 100.0 : 0.0
+        forceBreakevenDeleverage = currentLongExposurePct > hardBreakevenDeleveragePct
+        lastLotTP = entryLast * (1.0 + subSellTPPercent / 100.0)
+        sellTouchLevel = forceBreakevenDeleverage ? entryLast : lastLotTP
+        subSellTouch = triggerHigh >= sellTouchLevel
+
+        subSellCloseOk =
+             forceBreakevenDeleverage ? (close >= entryLast) :
+             subSellCloseConfirmMode == "off" ? true :
+             subSellCloseConfirmMode == "breakeven" ? (close >= entryLast) :
+             (close >= lastLotTP)
+
+        if subSellTouch and subSellCloseOk
+            anySold         := true
+            cycleSsCounter  += 1
+            strategy.close(idLast, comment="Sub-sell last lot")
+            ordersThisBar += 1
+            currentWindowOrders = f_recentOrdersIn3Min()
+            if currentWindowOrders > maxOrdersPerWindowBT
+                maxOrdersPerWindowBT := currentWindowOrders
+                maxOrdersWindowTime  := time
+            if ordersThisBar > maxOrdersPerBarBT
+                maxOrdersPerBarBT := ordersThisBar
+                maxOrdersBarTime  := time
+
+            entryCostUSDT = qtyLast * entryLast
+            profitUSDT    = qtyLast * (close - entryLast)
+
+            posSizeAbs  -= qtyLast
+            posCostUSDT -= entryCostUSDT
+            realizedPnlUSDT += profitUSDT
+
+            if autoMerge
+                posCostUSDT -= profitUSDT
+
+            avgPrice := f_recalcAvg(posCostUSDT, posSizeAbs)
+
+            array.pop(lotIds)
+            array.pop(lotQty)
+            array.pop(lotPrice)
+            array.pop(lotTags)
+            array.pop(lotUsdt)
+
+            numBuys := math.max(numBuys - 1, 0)
+            sold    += 1
+
+            ssLine =
+                 "ss" + str.tostring(cycleSsCounter) +
+                 " ← " + tagLast +
+                 " @" + str.tostring(entryLast, "#.####") +
+                 " (" + str.tostring(qtyLast, "#.######") + "q)" +
+                 "  TP≥" + str.tostring(sellTouchLevel, "#.####") +
+                 "  fill @" + str.tostring(close, "#.####")
+
+            barSsBlock := barSsBlock == "" ? ssLine : barSsBlock + "\n" + ssLine
+
+            if array.size(lotIds) == 0 or posSizeAbs <= 0
+                resetCycle := true
+                break
+        else
+            break
+
+    if barSsBlock != ""
+        [_barEvents, _barHasAction] = f_addEvent(barEvents, barSsBlock)
+        barEvents := _barEvents
+        barHasAction := _barHasAction
+
+    if anySold and not resetCycle and array.size(lotPrice) > 0
+        lastFillPrice  := array.get(lotPrice, array.size(lotPrice) - 1)
+        nextLevelPrice := f_nextLevel(lastFillPrice, numBuys)
+
+// =====================
+// PNL / hard DD stop
+// =====================
+unrealizedPnlUSDT = f_unrealizedPnlUSDT()
+totalPnlUSDT = realizedPnlUSDT + unrealizedPnlUSDT
+totalPnlPct  = f_totalPnlPct(totalPnlUSDT)
+
+hardDdHit = liveNow and not riskStopped and not na(totalPnlPct) and totalPnlPct <= -hardMaxTotalDDPct
+
+if hardDdHit
+    if posSizeAbs > 0 and array.size(lotIds) > 0
+        strategy.close_all(comment="HARD DD STOP")
+        ordersThisBar += 1
+        currentWindowOrders = f_recentOrdersIn3Min()
+        if currentWindowOrders > maxOrdersPerWindowBT
+            maxOrdersPerWindowBT := currentWindowOrders
+            maxOrdersWindowTime  := time
+        if ordersThisBar > maxOrdersPerBarBT
+            maxOrdersPerBarBT := ordersThisBar
+            maxOrdersBarTime  := time
+
+        realizedPnlUSDT += f_fullSellProfitUSDT(close)
+
+    posSizeAbs       := 0.0
+    posCostUSDT      := 0.0
+    avgPrice         := na
+    numBuys          := 0
+    lastFillPrice    := na
+    nextLevelPrice   := na
+    trailingActive   := false
+    trailingMax      := na
+    cycleBaseQtyCoin := na
+    resetCycle       := false
+    riskStopped      := true
+
+    array.clear(lotIds)
+    array.clear(lotQty)
+    array.clear(lotPrice)
+    array.clear(lotTags)
+    array.clear(lotUsdt)
+
+    unrealizedPnlUSDT := 0.0
+    totalPnlUSDT := realizedPnlUSDT
+    totalPnlPct  := f_totalPnlPct(totalPnlUSDT)
+
+    [_barEvents, _barHasAction] = f_addEvent(barEvents, "HARD DD STOP @" + str.tostring(close, "#.####"))
+    barEvents := _barEvents
+    barHasAction := _barHasAction
+
+// =====================
+// PNL / liquidation state
+// =====================
+thresholdPnlUSDT = equityForSizingUSDT * liquidationLinePct / 100.0
+requiredTopUpUSDT = math.max(0.0, thresholdPnlUSDT - totalPnlUSDT)
+isLiqZone = totalPnlPct < liquidationLinePct
+
+if barstate.isconfirmed
+    minTotalPnlUSDT := math.min(minTotalPnlUSDT, totalPnlUSDT)
+    minTotalPnlPct  := math.min(minTotalPnlPct, totalPnlPct)
+    if isLiqZone and not inLiqZone
+        liqZoneCount += 1
+        inLiqZone := true
+        liqZoneCurrentMaxTopUp := requiredTopUpUSDT
+    else if isLiqZone and inLiqZone
+        liqZoneCurrentMaxTopUp := math.max(liqZoneCurrentMaxTopUp, requiredTopUpUSDT)
+    else if not isLiqZone and inLiqZone
+        liqZoneTotalTopUp += liqZoneCurrentMaxTopUp
+        liqZoneCurrentMaxTopUp := 0.0
+        inLiqZone := false
+
+liqTopUpDisplay = liqZoneTotalTopUp + (inLiqZone ? liqZoneCurrentMaxTopUp : 0.0)
+posNotionalUSDT = posSizeAbs * close
+
+// FULL CLOSE label
+if barstate.isconfirmed and barHasAction and str.contains(barEvents, "FULL CLOSE")
+    label.new(
+         bar_index, close,
+         "★ FULL CLOSE\n" + barEvents,
+         style     = label.style_label_down,
+         color     = color.yellow,
+         textcolor = color.black,
+         size      = size.small)
+
+// HARD DD label
+if barstate.isconfirmed and barHasAction and str.contains(barEvents, "HARD DD STOP")
+    label.new(
+         bar_index, close,
+         "■ HARD DD STOP\n" + barEvents,
+         style     = label.style_label_down,
+         color     = color.red,
+         textcolor = color.white,
+         size      = size.small)
+
+// Debug
+if showDebugLabels and barstate.isconfirmed and ordersThisBar > 1
+    debugText =
+         "fills/bar=" + str.tostring(ordersThisBar) +
+         "\nrecent3m=" + str.tostring(f_recentOrdersIn3Min()) +
+         "\nhistory3m=" + str.tostring(recentHistoryFills) +
+         "\ntrgH/L=" + str.tostring(triggerHigh, "#.####") + " / " + str.tostring(triggerLow, "#.####") +
+         "\nclose=" + str.tostring(close, "#.####") +
+         "\ntpTouch=" + str.tostring(tpTouch) +
+         "\ntpCloseConfirmed=" + str.tostring(tpCloseConfirmed) +
+         "\ntpBlocksDca=" + str.tostring(tpBlocksDca) +
+         "\nsignalTP=" + str.tostring(signalFreshForTp) +
+         "\nactiveTP=" + str.tostring(activeTpPercent, "#.##") +
+         "\nsubMode=" + subSellCloseConfirmMode +
+         "\nposCost=" + str.tostring(posCostUSDT, "#.##") +
+         "\nmaxCost=" + str.tostring(f_maxPositionCostUSDT(), "#.##") +
+         "\nriskStopped=" + str.tostring(riskStopped)
+    label.new(
+         bar_index, high,
+         debugText,
+         style     = label.style_label_down,
+         color     = color.new(color.orange, 0),
+         textcolor = color.black,
+         size      = size.small)
+
+// Summary label
+if barstate.islast
+    if not na(maxOrdersLabel)
+        label.delete(maxOrdersLabel)
+    if not na(liqWarnLabel)
+        label.delete(liqWarnLabel)
+
+    maxOrdersText =
+         "Avg price: " + str.tostring(avgPrice, "#.####") +
+         "\nPos qty: " + str.tostring(posSizeAbs, "#.######") +
+         "\nPos notional USDT: " + str.tostring(posNotionalUSDT, "#.##") +
+         "\nPos cost USDT: " + str.tostring(posCostUSDT, "#.##") +
+         "\nMax cost cap USDT: " + str.tostring(f_maxPositionCostUSDT(), "#.##") +
+         "\nPNL total USDT: " + str.tostring(totalPnlUSDT, "#.##") +
+         "\nPNL total %: " + str.tostring(totalPnlPct, "#.##") +
+         "\nMax DD total PNL USDT: " + str.tostring(minTotalPnlUSDT, "#.##") +
+         "\nMax DD total PNL %: " + str.tostring(minTotalPnlPct, "#.##") +
+         "\nRisk stopped: " + str.tostring(riskStopped) +
+         "\nMax fills/bar: " + str.tostring(maxOrdersPerBarBT) +
+         "\nMax orders/3m: " + str.tostring(maxOrdersPerWindowBT) +
+         "\nCurrent orders/3m: " + str.tostring(f_recentOrdersIn3Min())
+
+    aquaY = high
+    redY  = high + ta.atr(14) * 1.5
+
+    maxOrdersLabel := label.new(
+         bar_index, aquaY,
+         maxOrdersText,
+         style     = label.style_label_left,
+         color     = color.new(color.aqua, 0),
+         textcolor = color.black,
+         size      = size.small)
+
+    if liqZoneCount > 0
+        liqWarnText =
+             "LIQ zones: " + str.tostring(liqZoneCount) +
+             "\nTop-up needed USDT: " + str.tostring(liqTopUpDisplay, "#.##")
+        liqWarnLabel := label.new(
+             bar_index, redY,
+             liqWarnText,
+             style     = label.style_label_left,
+             color     = color.new(color.red, 0),
+             textcolor = color.white,
+             size      = size.small)
+
+// Fixed signal overlay labels
+if showFixedSignalMarkers_in and barstate.isconfirmed
+    for i = 0 to array.size(fixedOpenTs) - 1
+        if f_fixedSignalInBar(array.get(fixedOpenTs, i))
+            label.new(
+                 bar_index, low,
+                 "OPEN #" + str.tostring(i + 1),
+                 style     = label.style_label_up,
+                 color     = color.new(color.lime, 0),
+                 textcolor = color.black,
+                 size      = size.tiny)
+        if f_fixedSignalInBar(array.get(fixedCloseTs, i))
+            pnl = array.get(fixedTradePnl, i)
+            label.new(
+                 bar_index, high,
+                 "CLOSE #" + str.tostring(i + 1) + " PnL " + str.tostring(pnl, "#.##"),
+                 style     = label.style_label_down,
+                 color     = pnl >= 0 ? color.new(color.aqua, 0) : color.new(color.red, 0),
+                 textcolor = color.black,
+                 size      = size.tiny)
+
+// =====================
+// Plots
+// =====================
+plot(avgPrice,        "Avg Price",      color=color.new(color.yellow, 0), linewidth=2)
+plot(tpPrice,         "TP Price",       color=color.new(color.green,  0), linewidth=2)
+plot(nextLevelPrice,  "Next DCA Level", color=color.new(color.red,    0), style=plot.style_cross)
+plotchar(numBuys,     "Longs Count", "", location=location.top)
