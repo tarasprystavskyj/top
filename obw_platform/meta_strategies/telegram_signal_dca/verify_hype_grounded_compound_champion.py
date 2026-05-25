@@ -26,6 +26,7 @@ from run_hype_dca_parameter_search import (  # noqa: E402
     STRICT_FILL_MODE,
     Candidate,
     annotate_trade_equity_metrics,
+    apply_entry_source,
     grounding_stats,
     simulate_candidate_rows,
     summarize,
@@ -37,19 +38,20 @@ INITIAL_EQUITY = 500.0
 MIN_TRADE_MTM_PCT = -50.0
 
 
-def champion(slippage_mult: float = 1.0) -> Candidate:
+def champion(slippage_mult: float = 1.0, slippage_bp: float | None = None) -> Candidate:
+    slip = (float(slippage_bp) / 10000.0) if slippage_bp is not None else 0.0009380229915652661
     return Candidate(
         name=CANONICAL_RESEARCH_CHAMPION,
         target_notional=500.0,
         base_frac=0.16,
         steps_pct=(0.25, 0.35, 0.55),
         add_weights=(0.8, 1.2, 2.2),
-        slippage=0.0009380229915652661 * slippage_mult,
+        slippage=slip * slippage_mult,
     )
 
 
-def high_notional_illusion() -> Candidate:
-    return replace(champion(), name="high_notional_illusion_t1200_same_shape", target_notional=1200.0)
+def high_notional_illusion(slippage_bp: float | None = None) -> Candidate:
+    return replace(champion(slippage_bp=slippage_bp), name="high_notional_illusion_t1200_same_shape", target_notional=1200.0)
 
 
 def run_case(
@@ -61,6 +63,7 @@ def run_case(
     position_sizing_mode: str,
     initial_equity: float,
     fill_mode: str,
+    entry_source: str,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     rows = simulate_candidate_rows(
         positions,
@@ -80,6 +83,8 @@ def run_case(
             "initial_max_target_notional": candidate.target_notional,
             "position_sizing_mode": position_sizing_mode,
             "fill_mode": fill_mode,
+            "entry_source": entry_source,
+            "slippage_bp_per_side": candidate.slippage * 10000.0,
             **grounding_stats(rows, fill_mode=fill_mode, min_trade_mtm_pct=MIN_TRADE_MTM_PCT),
         }
     )
@@ -103,6 +108,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Verify canonical HYPE grounded compound champion.")
     ap.add_argument("--positions-csv", default=str(DEFAULT_POSITIONS))
     ap.add_argument("--npz", default=str(DEFAULT_NPZ))
+    ap.add_argument("--slippage-bp", type=float, default=None, help="Override per-side slippage in basis points.")
+    ap.add_argument(
+        "--entry-source",
+        default="avgCost",
+        choices=("avgCost", "first_bar_open", "first_bar_close", "first_bar_high", "first_bar_low", "next_bar_open"),
+        help="Entry anchor. avgCost is historical lead average cost; bar anchors are public OHLC approximations.",
+    )
     ap.add_argument(
         "--out-dir",
         default=str(DEFAULT_REPORT_DIR / "grounded_compound_champion_canonical_20260524"),
@@ -115,17 +127,19 @@ def main() -> None:
     from run_hype_dca_parameter_search import load_npz_arrays  # local import keeps public surface small
 
     arrays = load_npz_arrays(Path(args.npz))
+    positions = apply_entry_source(positions, arrays, args.entry_source)
 
     summaries: List[Dict[str, Any]] = []
 
     rows, summary = run_case(
         positions,
         arrays,
-        champion(),
+        champion(slippage_bp=args.slippage_bp),
         label="grounded_compound_champion",
         position_sizing_mode="compound",
         initial_equity=INITIAL_EQUITY,
         fill_mode=STRICT_FILL_MODE,
+        entry_source=args.entry_source,
     )
     assert_canonical(summary)
     write_csv(out_dir / "trades_grounded_compound_champion.csv", rows)
@@ -134,11 +148,12 @@ def main() -> None:
     static_rows, static_summary = run_case(
         positions,
         arrays,
-        champion(),
+        champion(slippage_bp=args.slippage_bp),
         label="static_500_cap",
         position_sizing_mode="fixed",
         initial_equity=INITIAL_EQUITY,
         fill_mode=STRICT_FILL_MODE,
+        entry_source=args.entry_source,
     )
     write_csv(out_dir / "trades_static_500_cap.csv", static_rows)
     summaries.append(static_summary)
@@ -146,11 +161,12 @@ def main() -> None:
     illusion_rows, illusion_summary = run_case(
         positions,
         arrays,
-        high_notional_illusion(),
+        high_notional_illusion(slippage_bp=args.slippage_bp),
         label="high_notional_illusion",
         position_sizing_mode="fixed",
         initial_equity=INITIAL_EQUITY,
         fill_mode=STRICT_FILL_MODE,
+        entry_source=args.entry_source,
     )
     write_csv(out_dir / "trades_high_notional_illusion.csv", illusion_rows)
     summaries.append(illusion_summary)
@@ -160,11 +176,12 @@ def main() -> None:
         _, s = run_case(
             positions,
             arrays,
-            champion(slippage_mult=mult),
+            champion(slippage_mult=mult, slippage_bp=args.slippage_bp),
             label="grounded_compound_champion",
             position_sizing_mode="compound",
             initial_equity=INITIAL_EQUITY,
             fill_mode=STRICT_FILL_MODE,
+            entry_source=args.entry_source,
         )
         assert_canonical(s)
         s["slippage_mult"] = mult
@@ -192,6 +209,8 @@ def main() -> None:
         f"- Initial equity: `${INITIAL_EQUITY:.2f}`",
         "- Initial max target notional/cap: `$500.00`",
         f"- Strict fill mode: `{STRICT_FILL_MODE}`",
+        f"- Entry source: `{args.entry_source}`",
+        f"- Slippage per side: `{(args.slippage_bp if args.slippage_bp is not None else champion().slippage*10000.0):.6g} bp`",
         "- Compound rule: effective target notional grows only from realized equity and is capped at `equity_before`.",
         "",
         "## Results",
