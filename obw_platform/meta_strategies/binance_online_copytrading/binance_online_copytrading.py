@@ -247,6 +247,8 @@ class MarkProvider:
                         return price, "bingx_ccxt"
             except Exception:
                 pass
+        if self.exchange == "bingx":
+            return None, "missing_bingx_mark"
         if fallback:
             return fallback, "binance_position_fallback"
         try:
@@ -671,8 +673,7 @@ def apply_follow_open(
             continue
         symbol = str(trade["symbol"])
         hist = next((h for h in reversed(history) if h["symbol"] == symbol and h["side"] == trade["side"]), None)
-        fallback = hist.get("avg_close_price") if hist else trade.get("entry_mark_price")
-        mark, source = mark_provider.mark(session, symbol, fallback)
+        mark, source = mark_provider.mark(session, symbol)
         if not mark:
             continue
         if trade.get("v21"):
@@ -725,8 +726,7 @@ def apply_contrarian_on_close(
                 if row["symbol"] == trade["symbol"] and int(row["closed_ms"]) > int(trade.get("signal_closed_ms", 0)):
                     reversal = row
                     break
-        fallback = reversal.get("avg_close_price") if reversal else None
-        mark, source = mark_provider.mark(session, str(trade["symbol"]), fallback)
+        mark, source = mark_provider.mark(session, str(trade["symbol"]))
         if not mark:
             continue
         event, v21_closed = manage_v21_trade(trade, runtime=v21_runtime, mark=mark, mark_source=source, now=now, slippage_bp=slippage_bp)
@@ -757,7 +757,10 @@ def apply_contrarian_on_close(
         if has_open_source_symbol(state, lead["name"], row["symbol"]):
             events.append({"type": "skip_signal", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": row["symbol"], "side": side, "reason": "source_symbol_already_active"})
             continue
-        mark = row["avg_close_price"]
+        mark, source = mark_provider.mark(session, row["symbol"])
+        if not mark:
+            events.append({"type": "missing_mark", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": row["symbol"], "side": side, "reason": source})
+            continue
         trade, skip_reason = open_v21_paper(
             runtime=v21_runtime,
             strategy_name=lead["name"],
@@ -768,7 +771,7 @@ def apply_contrarian_on_close(
             symbol=row["symbol"],
             side=side,
             mark=mark,
-            mark_source="binance_position_history_avg_close",
+            mark_source=source,
             now=now,
             slippage_bp=slippage_bp,
             ttl_hours=ttl_hours,
