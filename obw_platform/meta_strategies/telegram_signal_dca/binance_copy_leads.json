@@ -1,0 +1,17 @@
+{
+  "leads": [
+    {
+      "portfolio_id": "4728671486012660992",
+      "source_url": "https://www.binance.com/uk-UA/copy-trading/lead-details/4728671486012660992?timeRange=365D&isSmartFilter=true",
+      "label": "binance_copy_472867",
+      "mode": "paper_only_public_positions",
+      "default_notional_usdt": 100.0,
+      "report_dir": "obw_platform/meta_strategies/telegram_signal_dca/reports/binance_copy_4728671486012660992_paper_20260525",
+      "notes": [
+        "Already present in collect_data_then_tune.py and run_night_rough_tune.py lead lists.",
+        "Public endpoint dry-run on 2026-05-25 saw 4 open positions and 20 history rows.",
+        "Do not promote to live orders without explicit approval and executable-entry/exit slippage calibration."
+      ]
+    }
+  ]
+}
