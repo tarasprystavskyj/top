@@ -236,30 +236,114 @@ class MarkProvider:
         base = symbol[:-4] if symbol.endswith("USDT") else symbol
         return f"{base}/USDT:USDT"
 
-    def mark(self, session: requests.Session, symbol: str, fallback: Optional[float] = None) -> Tuple[Optional[float], str]:
+    @staticmethod
+    def _book_level(book: Dict[str, Any], side: str) -> Tuple[Optional[float], Optional[float]]:
+        rows = book.get(side) or []
+        if not rows:
+            return None, None
+        level = rows[0]
+        if not isinstance(level, (list, tuple)) or len(level) < 2:
+            return None, None
+        return finite_price(level[0]), finite_price(level[1])
+
+    @staticmethod
+    def _compact_book(book: Dict[str, Any], side: str, limit: int = 5) -> List[List[float]]:
+        out: List[List[float]] = []
+        for level in (book.get(side) or [])[:limit]:
+            if not isinstance(level, (list, tuple)) or len(level) < 2:
+                continue
+            price = finite_price(level[0])
+            size = finite_price(level[1])
+            if price is not None and size is not None:
+                out.append([price, size])
+        return out
+
+    @staticmethod
+    def _spread_context(bid: Optional[float], ask: Optional[float]) -> Dict[str, Optional[float]]:
+        if bid is None or ask is None or bid <= 0 or ask <= 0:
+            return {"bingx_mid": None, "bingx_spread": None, "bingx_spread_bp_mid": None}
+        mid = (bid + ask) / 2.0
+        spread = ask - bid
+        return {
+            "bingx_mid": mid,
+            "bingx_spread": spread,
+            "bingx_spread_bp_mid": 10_000.0 * spread / mid if mid > 0 else None,
+        }
+
+    def context(self, session: requests.Session, symbol: str, fallback: Optional[float] = None) -> Tuple[Optional[float], str, Dict[str, Any]]:
+        started = time.time()
+        ctx: Dict[str, Any] = {
+            "exchange": self.exchange,
+            "symbol": symbol,
+            "fallback_price": fallback,
+        }
         if self.ccxt_ex is not None:
             market = self.market_symbol(symbol)
+            ctx["bingx_market"] = market
             try:
                 if market in self.ccxt_ex.markets:
                     ticker = self.ccxt_ex.fetch_ticker(market)
-                    price = finite_price(ticker.get("last")) or finite_price(ticker.get("mark"))
+                    book: Dict[str, Any] = {}
+                    try:
+                        book = self.ccxt_ex.fetch_order_book(market, limit=5) or {}
+                    except Exception as exc:
+                        ctx["bingx_orderbook_error"] = str(exc)[:200]
+                    book_bid, book_bid_size = self._book_level(book, "bids")
+                    book_ask, book_ask_size = self._book_level(book, "asks")
+                    ticker_bid = finite_price(ticker.get("bid"))
+                    ticker_ask = finite_price(ticker.get("ask"))
+                    bid = book_bid or ticker_bid
+                    ask = book_ask or ticker_ask
+                    price = finite_price(ticker.get("last")) or finite_price(ticker.get("mark")) or finite_price(ticker.get("close"))
+                    ctx.update(
+                        {
+                            "source": "bingx_ccxt",
+                            "bingx_last": finite_price(ticker.get("last")),
+                            "bingx_mark": finite_price(ticker.get("mark")),
+                            "bingx_close": finite_price(ticker.get("close")),
+                            "bingx_bid": bid,
+                            "bingx_ask": ask,
+                            "bingx_bid_size": book_bid_size,
+                            "bingx_ask_size": book_ask_size,
+                            "bingx_book_bids_top5": self._compact_book(book, "bids"),
+                            "bingx_book_asks_top5": self._compact_book(book, "asks"),
+                            "bingx_orderbook_ok": bool(book_bid and book_ask),
+                        }
+                    )
+                    ctx.update(self._spread_context(bid, ask))
+                    ctx["request_latency_ms"] = round((time.time() - started) * 1000.0, 3)
                     if price:
-                        return price, "bingx_ccxt"
-            except Exception:
-                pass
+                        ctx["mark"] = price
+                        return price, "bingx_ccxt", ctx
+            except Exception as exc:
+                ctx["bingx_error"] = str(exc)[:200]
         if self.exchange == "bingx":
-            return None, "missing_bingx_mark"
+            ctx["source"] = "missing_bingx_mark"
+            ctx["request_latency_ms"] = round((time.time() - started) * 1000.0, 3)
+            return None, "missing_bingx_mark", ctx
         if fallback:
-            return fallback, "binance_position_fallback"
+            ctx["source"] = "binance_position_fallback"
+            ctx["mark"] = fallback
+            ctx["request_latency_ms"] = round((time.time() - started) * 1000.0, 3)
+            return fallback, "binance_position_fallback", ctx
         try:
             resp = session.get(BINANCE_MARK_URL, params={"symbol": symbol}, timeout=self.timeout_sec)
             resp.raise_for_status()
-            price = finite_price(resp.json().get("markPrice"))
+            data = resp.json()
+            price = finite_price(data.get("markPrice"))
             if price:
-                return price, "binance_mark_fallback"
-        except Exception:
-            pass
-        return None, "missing"
+                ctx.update({"source": "binance_mark_fallback", "mark": price})
+                ctx["request_latency_ms"] = round((time.time() - started) * 1000.0, 3)
+                return price, "binance_mark_fallback", ctx
+        except Exception as exc:
+            ctx["binance_mark_error"] = str(exc)[:200]
+        ctx["source"] = "missing"
+        ctx["request_latency_ms"] = round((time.time() - started) * 1000.0, 3)
+        return None, "missing", ctx
+
+    def mark(self, session: requests.Session, symbol: str, fallback: Optional[float] = None) -> Tuple[Optional[float], str]:
+        price, source, _ = self.context(session, symbol, fallback)
+        return price, source
 
 
 def default_state() -> Dict[str, Any]:
@@ -305,6 +389,7 @@ def close_paper(
     *,
     exit_mark: float,
     exit_source: str,
+    exit_context: Optional[Dict[str, Any]],
     exit_reason: str,
     now: datetime,
     slippage_bp: float,
@@ -321,6 +406,7 @@ def close_paper(
             "exit_mark_price": exit_mark,
             "exit_exec_price": exit_px,
             "exit_price_source": exit_source,
+            "exit_market_context": exit_context,
             "exit_reason": exit_reason,
             "paper_pnl_usdt": pnl,
             "paper_return_pct": 100.0 * pnl / max(notional, 1e-12),
@@ -482,6 +568,7 @@ def open_v21_paper(
     side: str,
     mark: float,
     mark_source: str,
+    mark_context: Optional[Dict[str, Any]],
     now: datetime,
     slippage_bp: float,
     ttl_hours: float,
@@ -502,6 +589,7 @@ def open_v21_paper(
         side=side,
         mark=mark,
         mark_source=mark_source,
+        mark_context=mark_context,
         now=now,
         notional=qty * entry_exec,
         slippage_bp=slippage_bp,
@@ -526,6 +614,7 @@ def manage_v21_trade(
     runtime: V21OneLegRuntime,
     mark: float,
     mark_source: str,
+    mark_context: Optional[Dict[str, Any]],
     now: datetime,
     slippage_bp: float,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
@@ -557,6 +646,7 @@ def manage_v21_trade(
             trade,
             exit_mark=float(exit_sig.get("exit_price") or mark),
             exit_source=f"v21:{mark_source}",
+            exit_context=mark_context,
             exit_reason=f"v21:{exit_sig.get('action')}:{exit_sig.get('reason')}",
             now=now,
             slippage_bp=slippage_bp,
@@ -576,6 +666,7 @@ def open_paper(
     side: str,
     mark: float,
     mark_source: str,
+    mark_context: Optional[Dict[str, Any]],
     now: datetime,
     notional: float,
     slippage_bp: float,
@@ -595,6 +686,7 @@ def open_paper(
         "entry_mark_price": mark,
         "entry_exec_price": exec_price(mark, side, "entry", slippage_bp),
         "entry_price_source": mark_source,
+        "entry_market_context": mark_context,
         "notional_usdt": notional,
         "ttl_until_utc": iso(now + timedelta(hours=ttl_hours)),
         "raw_signal": raw_signal,
@@ -622,13 +714,14 @@ def apply_follow_open(
         current_keys.add(key)
         if key in state["open_positions"]:
             state["open_positions"][key]["last_seen_utc"] = iso(now)
-            mark, source = mark_provider.mark(session, pos["symbol"], pos.get("mark_price") or pos.get("entry_price"))
+            mark, source, mark_context = mark_provider.context(session, pos["symbol"], pos.get("mark_price") or pos.get("entry_price"))
             if mark:
                 event, closed = manage_v21_trade(
                     state["open_positions"][key],
                     runtime=v21_runtime,
                     mark=mark,
                     mark_source=source,
+                    mark_context=mark_context,
                     now=now,
                     slippage_bp=slippage_bp,
                 )
@@ -642,7 +735,7 @@ def apply_follow_open(
         if has_open_source_symbol(state, lead["name"], pos["symbol"]):
             events.append({"type": "skip_signal", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"], "side": pos["side"], "reason": "source_symbol_already_active"})
             continue
-        mark, source = mark_provider.mark(session, pos["symbol"], pos.get("mark_price") or pos.get("entry_price"))
+        mark, source, mark_context = mark_provider.context(session, pos["symbol"], pos.get("mark_price") or pos.get("entry_price"))
         if not mark:
             events.append({"type": "missing_mark", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"]})
             continue
@@ -657,6 +750,7 @@ def apply_follow_open(
             side=pos["side"],
             mark=mark,
             mark_source=source,
+            mark_context=mark_context,
             now=now,
             slippage_bp=slippage_bp,
             ttl_hours=ttl_hours,
@@ -673,11 +767,11 @@ def apply_follow_open(
             continue
         symbol = str(trade["symbol"])
         hist = next((h for h in reversed(history) if h["symbol"] == symbol and h["side"] == trade["side"]), None)
-        mark, source = mark_provider.mark(session, symbol)
+        mark, source, mark_context = mark_provider.context(session, symbol)
         if not mark:
             continue
         if trade.get("v21"):
-            event, v21_closed = manage_v21_trade(trade, runtime=v21_runtime, mark=mark, mark_source=source, now=now, slippage_bp=slippage_bp)
+            event, v21_closed = manage_v21_trade(trade, runtime=v21_runtime, mark=mark, mark_source=source, mark_context=mark_context, now=now, slippage_bp=slippage_bp)
             if event:
                 events.append(event)
             if v21_closed:
@@ -685,7 +779,7 @@ def apply_follow_open(
                 del state["open_positions"][key]
                 events.append({"type": "paper_exit", "key": key, "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": symbol, "reason": v21_closed["exit_reason"], "pnl": v21_closed["paper_pnl_usdt"]})
             continue
-        closed = close_paper(trade, exit_mark=mark, exit_source=source, exit_reason="lead_position_no_longer_open", now=now, slippage_bp=slippage_bp)
+        closed = close_paper(trade, exit_mark=mark, exit_source=source, exit_context=mark_context, exit_reason="lead_position_no_longer_open", now=now, slippage_bp=slippage_bp)
         state["closed_trades"].append(closed)
         del state["open_positions"][key]
         events.append({"type": "paper_exit", "key": key, "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": symbol, "pnl": closed["paper_pnl_usdt"]})
@@ -726,10 +820,10 @@ def apply_contrarian_on_close(
                 if row["symbol"] == trade["symbol"] and int(row["closed_ms"]) > int(trade.get("signal_closed_ms", 0)):
                     reversal = row
                     break
-        mark, source = mark_provider.mark(session, str(trade["symbol"]))
+        mark, source, mark_context = mark_provider.context(session, str(trade["symbol"]))
         if not mark:
             continue
-        event, v21_closed = manage_v21_trade(trade, runtime=v21_runtime, mark=mark, mark_source=source, now=now, slippage_bp=slippage_bp)
+        event, v21_closed = manage_v21_trade(trade, runtime=v21_runtime, mark=mark, mark_source=source, mark_context=mark_context, now=now, slippage_bp=slippage_bp)
         if event:
             events.append(event)
         if v21_closed:
@@ -743,7 +837,7 @@ def apply_contrarian_on_close(
         if not ttl_hit and not reversal:
             continue
         reason = "same_symbol_reversal" if reversal else "ttl"
-        closed = close_paper(trade, exit_mark=mark, exit_source=source, exit_reason=reason, now=now, slippage_bp=slippage_bp)
+        closed = close_paper(trade, exit_mark=mark, exit_source=source, exit_context=mark_context, exit_reason=reason, now=now, slippage_bp=slippage_bp)
         closed["reversal_signal"] = reversal
         state["closed_trades"].append(closed)
         del state["open_positions"][key]
@@ -757,7 +851,7 @@ def apply_contrarian_on_close(
         if has_open_source_symbol(state, lead["name"], row["symbol"]):
             events.append({"type": "skip_signal", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": row["symbol"], "side": side, "reason": "source_symbol_already_active"})
             continue
-        mark, source = mark_provider.mark(session, row["symbol"])
+        mark, source, mark_context = mark_provider.context(session, row["symbol"])
         if not mark:
             events.append({"type": "missing_mark", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": row["symbol"], "side": side, "reason": source})
             continue
@@ -772,6 +866,7 @@ def apply_contrarian_on_close(
             side=side,
             mark=mark,
             mark_source=source,
+            mark_context=mark_context,
             now=now,
             slippage_bp=slippage_bp,
             ttl_hours=ttl_hours,
