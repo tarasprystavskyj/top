@@ -123,6 +123,22 @@ def fetch_json(session: requests.Session, url: str, params: Dict[str, Any], time
 
 def fetch_market_context(session: requests.Session, symbol: str, timeout_sec: float) -> Dict[str, Any]:
     before = time.time()
+    bingx_price = math.nan
+    bingx_market = None
+    try:
+        import ccxt  # type: ignore
+
+        base = symbol[:-4] if symbol.endswith("USDT") else symbol
+        bingx_market = f"{base}/USDT:USDT"
+        ex = ccxt.bingx({"enableRateLimit": True, "timeout": int(timeout_sec * 1000)})
+        ex.load_markets()
+        if bingx_market in ex.markets:
+            ticker = ex.fetch_ticker(bingx_market)
+            bingx_price = parse_float(ticker.get("last"))
+            if not math.isfinite(bingx_price):
+                bingx_price = parse_float(ticker.get("mark"))
+    except Exception:
+        bingx_price = math.nan
     book = fetch_json(session, BOOK_TICKER_URL, {"symbol": symbol}, timeout_sec)
     after = time.time()
     premium = fetch_json(session, PREMIUM_INDEX_URL, {"symbol": symbol}, timeout_sec)
@@ -133,12 +149,15 @@ def fetch_market_context(session: requests.Session, symbol: str, timeout_sec: fl
     spread = ask - bid if math.isfinite(bid) and math.isfinite(ask) else math.nan
     mid = (ask + bid) / 2.0 if math.isfinite(bid) and math.isfinite(ask) else math.nan
     return {
-        "source": "binance_futures_public_market_data",
+        "source": "bingx_ccxt_ticker" if math.isfinite(bingx_price) and bingx_price > 0 else "missing_bingx_mark",
         "symbol": symbol,
+        "bingx_market": bingx_market,
+        "bingx_mark": bingx_price if math.isfinite(bingx_price) else None,
         "bid": bid if math.isfinite(bid) else None,
         "ask": ask if math.isfinite(ask) else None,
         "mid": mid if math.isfinite(mid) else None,
-        "mark": mark if math.isfinite(mark) else None,
+        "mark": bingx_price if math.isfinite(bingx_price) and bingx_price > 0 else None,
+        "binance_mark_reference": mark if math.isfinite(mark) else None,
         "index": index if math.isfinite(index) else None,
         "spread": spread if math.isfinite(spread) else None,
         "spread_bp_mid": (10_000.0 * spread / mid) if math.isfinite(spread) and math.isfinite(mid) and mid > 0 else None,
@@ -352,9 +371,12 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     for key, pos in sorted(current.items()):
         side = str(pos["side"])
         lead_entry = float(pos["entry_price"])
+        if not mark or mark <= 0:
+            events.append({"type": "missing_mark", "key": key, "symbol": pos["symbol"], "side": side, "source": market.get("source")})
+            continue
         if key not in open_trades:
-            plan = fill_plan(float(state["equity"]), args, side, lead_entry)
-            paper_entry = paper_fill_price(side, lead_entry, "entry", SLIPPAGE_RATE)
+            plan = fill_plan(float(state["equity"]), args, side, float(mark))
+            paper_entry = paper_fill_price(side, float(mark), "entry", SLIPPAGE_RATE)
             trade = {
                 "key": key,
                 "lead_position_id": pos.get("id"),
@@ -363,6 +385,9 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
                 "opened_at_utc": iso(now),
                 "detected_at_ms": int(now.timestamp() * 1000),
                 "lead_entry_price": lead_entry,
+                "expected_entry_price": float(mark),
+                "entry_price_source": market.get("source"),
+                "entry_market_context": market,
                 "target_notional": plan.target_notional,
                 "base_notional": plan.base_notional,
                 "add_notionals": list(plan.add_notionals),
@@ -379,11 +404,11 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
             fill = add_fill(
                 trade,
                 now=now,
-                expected_price=lead_entry,
+                expected_price=float(mark),
                 paper_price=paper_entry,
                 notional=plan.base_notional,
                 fill_type="base_entry",
-                fill_reason="binance_lead_open_position_detected",
+                fill_reason="binance_lead_open_position_detected_bingx_mark_snapshot",
                 equity_before=float(state["equity"]),
                 context=market,
                 rules=rules,
@@ -426,12 +451,11 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     for key in sorted(keys_to_close):
         trade = open_trades[key]
         hist = find_history_exit(trade, history)
-        if hist and hist.get("avg_close_price"):
-            expected_exit = float(hist["avg_close_price"])
-            exit_reason = "position_history_closed"
-        else:
-            expected_exit = float(mark or trade.get("last_mark") or trade.get("lead_entry_price"))
-            exit_reason = "lead_position_disappeared_mark_fallback"
+        expected_exit = float(mark or trade.get("last_mark") or 0.0)
+        if expected_exit <= 0:
+            events.append({"type": "missing_exit_mark", "key": key, "symbol": trade.get("symbol"), "source": market.get("source")})
+            continue
+        exit_reason = "lead_position_no_longer_open_bingx_mark_snapshot"
         closed = close_trade(
             trade,
             now=now,
