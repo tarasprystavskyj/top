@@ -106,6 +106,36 @@ python obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py \
 ```
 
 This is paper-only. It writes simulated `signals`, `orders`, and `positions` to SQLite and does not place exchange orders.
+`--dca-count N` enables V21-style paper DCA. `--notional` remains the planned
+maximum position notional, so initial entry is scaled down when DCA is enabled:
+
+```bash
+python obw_platform/telegram_signal_tools/telegram_signal_paper_live_daemon.py \
+  --env-file /var/www/vps2.happyuser.info/top/top_1/.env \
+  --channel https://t.me/Nevskiyh \
+  --out-jsonl runs/telegram_paper/Nevskiyh_signals.jsonl \
+  --db runs/telegram_paper/Nevskiyh_paper_live.sqlite \
+  --notional 100 \
+  --entry-policy touch \
+  --dca-count 3 \
+  --monitor-exits
+```
+
+## Paper-live status/equity snapshot
+
+For a runner-style status/equity snapshot without touching Telegram sessions or
+placing orders:
+
+```bash
+python obw_platform/telegram_signal_tools/telegram_paper_live_status.py \
+  --db runs/telegram_paper/paper_live.sqlite \
+  --initial-equity 1000 \
+  --out-json runs/telegram_paper/paper_live_status.json \
+  --write-session-db runs/telegram_paper/session.sqlite
+```
+
+Add `--fetch-marks` only when current BingX MTM marks are needed. Without it,
+open positions use entry-price fallback, so unrealized PnL is conservative zero.
 
 ## Validate signal quality
 

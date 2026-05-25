@@ -1,0 +1,60 @@
+{
+  "date": "2026-05-17",
+  "mode": "paper-only research",
+  "live_readiness": false,
+  "current_state": {
+    "branch_state": "BLOCKED_BY_DATA",
+    "data_gate_status": "FAIL",
+    "backtests_allowed": false,
+    "max_parallelism": 0,
+    "ready_for_live": false
+  },
+  "current_dataset": {
+    "extracted_signal_count": 312,
+    "primary_candidate": "rolling240d_symbol_side_min3_positive",
+    "split60_candidate_opened": 30,
+    "split70_candidate_opened": 23,
+    "required_opened_per_validation_split": 50
+  },
+  "unlock_requires": {
+    "added_signal_count_gt_0": true,
+    "schema_compatible_with_existing_extracted_signals": true,
+    "market_coverage_rate_min": 0.95,
+    "signal_csv_sha256_present": true,
+    "updated_npz_or_cache_sha256_present": true,
+    "market_coverage_report_present": true,
+    "row_count_manifest_present": true,
+    "source_channel_preserved": true,
+    "no_future_leakage": true,
+    "raw_edge_min5_deployable": false
+  },
+  "required_fields_for_added_signals": [
+    "dt_utc",
+    "symbol",
+    "side",
+    "entry",
+    "entry_range_low",
+    "entry_range_high",
+    "stop_loss",
+    "take_profit_levels",
+    "source_channel",
+    "raw_message_id",
+    "raw_message_text"
+  ],
+  "allowed_after_unlock_only": [
+    "rerun all_49/no-filter control",
+    "rerun all-after control",
+    "rerun rolling240d_symbol_side_min3_positive",
+    "rerun OOS/time split validation",
+    "rerun rolling symbol/state validation"
+  ],
+  "still_forbidden": [
+    "live execution",
+    "paper-live daemon changes",
+    "broker/order placement",
+    "secrets or private keys",
+    "deploy state changes",
+    "raw_edge_min5 as deployable filter",
+    "broad DCA grid before data gate PASS"
+  ]
+}

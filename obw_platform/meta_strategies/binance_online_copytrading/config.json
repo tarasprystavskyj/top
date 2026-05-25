@@ -1,0 +1,34 @@
+{
+  "paper_notional_usdt": 100.0,
+  "v21_config": "obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml",
+  "base_order_pct_eq": 5.0,
+  "slippage_bp": 9.38,
+  "ttl_hours": 72.0,
+  "exit_on_reversal": true,
+  "leads": [
+    {
+      "name": "lead_472867_follow_open",
+      "lead_trader_name": "昕儒之水",
+      "portfolio_id": "4728671486012660992",
+      "mode": "follow_open",
+      "delegated_capital_usdt": 107.302542,
+      "enabled": true
+    },
+    {
+      "name": "lead_475183_contrarian_close",
+      "lead_trader_name": "Btc星辰",
+      "portfolio_id": "4751838302089254401",
+      "mode": "contrarian_on_close",
+      "delegated_capital_usdt": 38.106564,
+      "enabled": true
+    },
+    {
+      "name": "lead_490601_contrarian_close",
+      "lead_trader_name": "勇行致远观势",
+      "portfolio_id": "4906010685108267264",
+      "mode": "contrarian_on_close",
+      "delegated_capital_usdt": 101.0026,
+      "enabled": true
+    }
+  ]
+}
