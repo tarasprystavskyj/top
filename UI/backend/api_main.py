@@ -67,8 +67,6 @@ LIVE_RESULTS_DIR = os.path.abspath(
     os.path.join(APP_ROOT, "..", "obw_platform", "_reports", "_live")
 )
 LIVE_TOP_REPORTS_DIR = os.path.abspath(os.path.join(REPO_ROOT, "_reports", "_live"))
-LIVE_REPO_REPORTS_DIR = os.path.abspath(os.path.join(REPO_ROOT, "reports"))
-LIVE_VERONIKA_REPORTS_DIR = os.path.abspath(os.path.join(REPO_ROOT, "..", "veronika", "reports"))
 BT_VERSION_FILE = os.path.join(DATA_ROOT, "backtester_version.yaml")
 BACKTESTER_SCRIPTS = [
     "backtester_dual_long_short_fast_pack_v2.py",
@@ -2316,7 +2314,7 @@ def _live_results_roots() -> List[str]:
     candidates: List[str] = []
     if env_roots:
         candidates.extend([part.strip() for part in env_roots.split(os.pathsep)])
-    candidates.extend([LIVE_RESULTS_DIR, LIVE_TOP_REPORTS_DIR, LIVE_REPO_REPORTS_DIR, LIVE_VERONIKA_REPORTS_DIR])
+    candidates.extend([LIVE_RESULTS_DIR, LIVE_TOP_REPORTS_DIR])
     out: List[str] = []
     for item in candidates:
         if item:

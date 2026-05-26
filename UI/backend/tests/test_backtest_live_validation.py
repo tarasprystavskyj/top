@@ -290,7 +290,7 @@ def test_live_session_endpoint_validation(monkeypatch, tmp_path):
     assert missing_path.status_code == 400
 
 
-def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
+def test_live_sessions_include_only_configured_live_roots(monkeypatch, tmp_path):
     legacy_root = tmp_path / "obw_platform" / "_reports" / "_live"
     top_live_reports = tmp_path / "_reports" / "_live"
     repo_reports = tmp_path / "reports"
@@ -303,10 +303,10 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
     unrelated.mkdir()
     (unrelated / "notes.txt").write_text("ignore me\n", encoding="utf-8")
 
-    session = repo_reports / "hype_canary_bingx_live_20260525"
-    session.mkdir()
+    legacy_session = legacy_root / "legacy_live_session"
+    legacy_session.mkdir()
     _write_json(
-        session / "RUN_STATUS.json",
+        legacy_session / "RUN_STATUS.json",
         {
             "exchange": "bingx",
             "timeframe": "5m",
@@ -315,11 +315,11 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
             "updated_at": "2026-05-25T00:05:00Z",
         },
     )
-    _write_json(session / "active_status.json", {"open_legs": 1, "filled_orders": 2})
-    (session / "ACTIVE_STATUS_PATH.txt").write_text("active_status.json\n", encoding="utf-8")
-    (session / "live_stdout_20260525.log").write_text("hype canary started\n", encoding="utf-8")
+    _write_json(legacy_session / "active_status.json", {"open_legs": 1, "filled_orders": 2})
+    (legacy_session / "ACTIVE_STATUS_PATH.txt").write_text("active_status.json\n", encoding="utf-8")
+    (legacy_session / "live_stdout_20260525.log").write_text("hype canary started\n", encoding="utf-8")
 
-    con = sqlite3.connect(session / "session.sqlite")
+    con = sqlite3.connect(legacy_session / "session.sqlite")
     try:
         con.execute(
             "CREATE TABLE open_positions (symbol TEXT, status TEXT, qty REAL, entry_fill REAL, ts_utc TEXT)"
@@ -339,8 +339,6 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
 
     monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(legacy_root))
     monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(top_live_reports))
-    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(repo_reports))
-    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(sibling_reports))
 
     client = TestClient(api_main.app)
 
@@ -349,29 +347,29 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
     payload = listed.json()
     assert payload["root"] == str(legacy_root)
     assert str(top_live_reports) in payload["roots"]
-    assert str(repo_reports) in payload["roots"]
-    assert str(sibling_reports) in payload["roots"]
+    assert str(repo_reports) not in payload["roots"]
+    assert str(sibling_reports) not in payload["roots"]
     names = [item["name"] for item in payload["sessions"]]
-    assert names == ["hype_canary_bingx_live_20260525"]
+    assert names == ["legacy_live_session"]
     summary = payload["sessions"][0]
     assert summary["exchange"] == "bingx"
     assert summary["open_legs"] == 1
     assert summary["filled_orders"] == 2
 
-    inspect = client.post("/api/backtest_live_validation/live_session/inspect", json={"path": str(session)})
+    inspect = client.post("/api/backtest_live_validation/live_session/inspect", json={"path": str(legacy_session)})
     assert inspect.status_code == 200
-    assert inspect.json()["path"] == str(session)
+    assert inspect.json()["path"] == str(legacy_session)
 
     positions = client.get(
         "/api/backtest_live_validation/live_session/table",
-        params={"path": str(session), "kind": "open_positions"},
+        params={"path": str(legacy_session), "kind": "open_positions"},
     )
     assert positions.status_code == 200
     assert positions.json()["rows"][0]["symbol"] == "HYPE-USDT"
 
     orders = client.get(
         "/api/backtest_live_validation/live_session/table",
-        params={"path": str(session), "kind": "orders"},
+        params={"path": str(legacy_session), "kind": "orders"},
     )
     assert orders.status_code == 200
     assert orders.json()["rows"][0]["symbol"] == "HYPE-USDT"
@@ -383,7 +381,7 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
     assert outside.status_code == 400
 
 
-def test_live_sessions_include_sibling_veronika_reports(monkeypatch, tmp_path):
+def test_live_sessions_reject_sibling_veronika_reports_by_default(monkeypatch, tmp_path):
     legacy_root = tmp_path / "obw_platform" / "_reports" / "_live"
     top_live_reports = tmp_path / "top_1" / "_reports" / "_live"
     repo_reports = tmp_path / "top_1" / "reports"
@@ -408,29 +406,19 @@ def test_live_sessions_include_sibling_veronika_reports(monkeypatch, tmp_path):
 
     monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(legacy_root))
     monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(top_live_reports))
-    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(repo_reports))
-    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(sibling_reports))
 
     client = TestClient(api_main.app)
     listed = client.get("/api/backtest_live_validation/live_sessions")
     assert listed.status_code == 200
     payload = listed.json()
-    assert str(sibling_reports) in payload["roots"]
-    assert [item["name"] for item in payload["sessions"]] == ["hype_canary_bingx_live_20260525"]
+    assert str(sibling_reports) not in payload["roots"]
+    assert payload["sessions"] == []
 
     status = client.get(
         "/api/backtest_live_validation/live_session/status",
         params={"path": str(session)},
     )
-    assert status.status_code == 200
-    assert status.json()["status"]["live_symbol"] == "HYPE-USDT"
-
-    positions = client.get(
-        "/api/backtest_live_validation/live_session/table",
-        params={"path": str(session), "kind": "open_positions"},
-    )
-    assert positions.status_code == 200
-    assert positions.json()["rows"][0]["source"] == "RUN_STATUS.json"
+    assert status.status_code == 400
 
 
 def test_live_sessions_include_top_reports_live_root(monkeypatch, tmp_path):
@@ -457,8 +445,6 @@ def test_live_sessions_include_top_reports_live_root(monkeypatch, tmp_path):
 
     monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(legacy_root))
     monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(top_live_reports))
-    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(repo_reports))
-    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(sibling_reports))
 
     client = TestClient(api_main.app)
     listed = client.get("/api/backtest_live_validation/live_sessions")
@@ -467,3 +453,10 @@ def test_live_sessions_include_top_reports_live_root(monkeypatch, tmp_path):
     assert str(top_live_reports) in payload["roots"]
     assert payload["sessions"][0]["path"] == str(session)
     assert payload["sessions"][0]["exchange"] == "bingx"
+
+    status = client.get(
+        "/api/backtest_live_validation/live_session/status",
+        params={"path": str(session)},
+    )
+    assert status.status_code == 200
+    assert status.json()["status"] == "running"
