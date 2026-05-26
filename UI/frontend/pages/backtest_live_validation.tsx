@@ -22,6 +22,7 @@ import {
 
 type FileEntry = { name: string; path: string; size: number; modified_at: string; symbol_guess?: string | null };
 type Point = { ts: string; value: number };
+type ChartSeries = { name: string; color: string; data: Point[] };
 type LiveSessionStatus = 'running' | 'stopped' | 'error' | 'unknown';
 type LiveSessionEntry = {
   name: string;
@@ -230,11 +231,16 @@ const preStyle: CSSProperties = {
   overflow: 'auto',
 };
 
-function LineChart({ title, series }: { title: string; series: { name: string; color: string; data: Point[] }[] }) {
+function LineChart({ title, series }: { title: string; series: ChartSeries[] }) {
+  const [hiddenLayers, setHiddenLayers] = useState<Record<string, boolean>>({});
   const width = 920;
   const height = 320;
   const padding = 46;
-  const domain = computeSharedDomain(series);
+  const visibleSeries = series.filter(s => !hiddenLayers[s.name]);
+  const visibleDataSeries = visibleSeries.filter(s => s.data.length > 0);
+  const domain = computeSharedDomain(visibleSeries);
+  const toggleLayer = (name: string) => setHiddenLayers(prev => ({ ...prev, [name]: !prev[name] }));
+  const showAllLayers = () => setHiddenLayers({});
   if (!domain.pointCount) return <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 14, color: colors.muted, background: '#0B1220' }}>{title}: No data</div>;
   const { xMin, xMax, yMin, yMax } = domain;
   const hasTimeX = xMax > 10_000_000_000;
@@ -248,7 +254,42 @@ function LineChart({ title, series }: { title: string; series: { name: string; c
 
   return (
     <div style={{ ...cardStyle, padding: 16 }}>
-      <h4 style={{ marginTop: 0, color: colors.text }}>{title}</h4>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 10 }}>
+        <h4 style={{ margin: 0, color: colors.text }}>{title}</h4>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {series.map(s => {
+            const active = !hiddenLayers[s.name];
+            const disabled = active && s.data.length > 0 && visibleDataSeries.length <= 1;
+            return (
+              <button
+                key={s.name}
+                type="button"
+                aria-pressed={active}
+                disabled={disabled}
+                onClick={() => toggleLayer(s.name)}
+                style={{
+                  border: `1px solid ${active ? s.color : colors.border}`,
+                  background: active ? '#0F172A' : '#020617',
+                  color: active ? colors.text : colors.muted,
+                  borderRadius: 6,
+                  padding: '5px 8px',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  opacity: disabled ? 0.75 : 1,
+                }}
+              >
+                <span style={{ color: s.color }}>■</span> {s.name}
+              </button>
+            );
+          })}
+          {visibleSeries.length < series.length && (
+            <button type="button" onClick={showAllLayers} style={{ ...buttonStyle, padding: '5px 8px', fontSize: 12 }}>
+              Show all
+            </button>
+          )}
+        </div>
+      </div>
       <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 320 }}>
         <rect x={0} y={0} width={width} height={height} fill="#0B1220" />
         <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#334155" />
@@ -275,7 +316,7 @@ function LineChart({ title, series }: { title: string; series: { name: string; c
             </g>
           );
         })}
-        {series.map(s => {
+        {visibleSeries.map(s => {
           const pts = s.data.map((d, i) => {
             const tsMs = Date.parse(String(d.ts || ''));
             return { x: Number.isFinite(tsMs) ? tsMs : i, y: Number(d.value) || 0, ts: d.ts };
@@ -287,7 +328,7 @@ function LineChart({ title, series }: { title: string; series: { name: string; c
         <text x={width - padding} y={height - 8} textAnchor="end" fontSize="11" fill="#94A3B8">X: {hasTimeX ? 'timestamp' : 'index'}</text>
       </svg>
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        {series.map(s => (
+        {visibleSeries.map(s => (
           <span key={s.name} style={{ color: s.color, fontWeight: 600 }}>{s.name}</span>
         ))}
       </div>

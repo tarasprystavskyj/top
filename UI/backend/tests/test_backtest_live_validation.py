@@ -492,6 +492,7 @@ def test_live_match_ready_prefers_runner_safe_symbol_csv(monkeypatch, tmp_path):
 
 
 def test_live_sessions_sort_newest_and_label_duplicate_names(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_main.time, "time", lambda: pd.Timestamp("2026-05-26T08:00:00Z").timestamp())
     production_root = tmp_path / "top_1" / "obw_platform" / "_reports" / "_live"
     legacy_root = tmp_path / "veronika" / "reports"
     other_root = tmp_path / "repo_reports"
@@ -547,7 +548,8 @@ def test_live_sessions_sort_newest_and_label_duplicate_names(monkeypatch, tmp_pa
     assert "legacy" in stale["display_name"]
 
 
-def test_live_status_fresh_run_status_with_kill_control_is_stopped(tmp_path):
+def test_live_status_fresh_run_status_with_kill_control_is_stopped(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_main.time, "time", lambda: pd.Timestamp("2026-05-26T08:00:00Z").timestamp())
     session = tmp_path / "session"
     session.mkdir()
     _write_json(
