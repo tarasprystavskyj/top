@@ -66,6 +66,9 @@ DEFAULT_SECONDS_PER_100_BARS_PER_SYMBOL = 0.5
 LIVE_RESULTS_DIR = os.path.abspath(
     os.path.join(APP_ROOT, "..", "obw_platform", "_reports", "_live")
 )
+LIVE_TOP_REPORTS_DIR = os.path.abspath(os.path.join(REPO_ROOT, "_reports", "_live"))
+LIVE_REPO_REPORTS_DIR = os.path.abspath(os.path.join(REPO_ROOT, "reports"))
+LIVE_VERONIKA_REPORTS_DIR = os.path.abspath(os.path.join(REPO_ROOT, "..", "veronika", "reports"))
 BT_VERSION_FILE = os.path.join(DATA_ROOT, "backtester_version.yaml")
 BACKTESTER_SCRIPTS = [
     "backtester_dual_long_short_fast_pack_v2.py",
@@ -2308,6 +2311,61 @@ VALIDATION_UPLOADS_DIR = os.path.join(VALIDATION_REPORTS_DIR, "_uploads")
 LIVE_SESSION_TABLE_KINDS = {"open_positions", "orders", "debug_events", "stdio"}
 
 
+def _live_results_roots() -> List[str]:
+    env_roots = os.environ.get("BACKTEST_LIVE_VALIDATION_LIVE_ROOTS") or os.environ.get("LIVE_RESULTS_ROOTS")
+    candidates: List[str] = []
+    if env_roots:
+        candidates.extend([part.strip() for part in env_roots.split(os.pathsep)])
+    candidates.extend([LIVE_RESULTS_DIR, LIVE_TOP_REPORTS_DIR, LIVE_REPO_REPORTS_DIR, LIVE_VERONIKA_REPORTS_DIR])
+    out: List[str] = []
+    for item in candidates:
+        if item:
+            out.append(os.path.abspath(item))
+    return list(dict.fromkeys(out))
+
+
+def _is_within_live_results_root(path: str) -> bool:
+    return any(_is_within(path, root) for root in _live_results_roots())
+
+
+def _active_status_json_path(session_dir: str) -> Optional[str]:
+    marker = os.path.join(session_dir, "ACTIVE_STATUS_PATH.txt")
+    if not os.path.isfile(marker):
+        return None
+    try:
+        with open(marker, "r", encoding="utf-8", errors="replace") as fh:
+            raw = fh.read().strip()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    path = raw if os.path.isabs(raw) else os.path.join(session_dir, raw)
+    path = os.path.abspath(path)
+    if not _is_within(path, session_dir) or not os.path.isfile(path):
+        return None
+    return path
+
+
+def _looks_like_live_session_dir(session_dir: str) -> bool:
+    markers = (
+        "status.json",
+        "session_status.json",
+        "session.json",
+        "meta.json",
+        "summary.json",
+        "config.json",
+        "RUN_STATUS.json",
+        "ACTIVE_STATUS_PATH.txt",
+        "session.sqlite",
+        "stdio.log",
+        "stdout.log",
+        "stderr.log",
+    )
+    if any(os.path.exists(os.path.join(session_dir, marker)) for marker in markers):
+        return True
+    return bool(glob.glob(os.path.join(session_dir, "live_stdout_*.log")))
+
+
 def _validation_source_candidates() -> List[str]:
     env_override = os.environ.get("TV_BACKTEST_SOURCE_DIR")
     candidates = [
@@ -2357,9 +2415,6 @@ def _parse_bingx_datetime_series(series: pd.Series) -> pd.Series:
     mask = out.isna()
     if mask.any():
         out.loc[mask] = pd.to_datetime(s.loc[mask], format="%d/%m/%y %H:%M", errors="coerce", utc=True)
-    mask = out.isna()
-    if mask.any():
-        out.loc[mask] = pd.to_datetime(s.loc[mask], format="%Y-%m-%d %H:%M:%S", errors="coerce", utc=True)
     mask = out.isna()
     if mask.any():
         out.loc[mask] = pd.to_datetime(s.loc[mask], errors="coerce", dayfirst=True, utc=True)
@@ -2487,7 +2542,7 @@ def _find_live_match_ready_csv(live_path: str, symbol: Optional[str]) -> Optiona
     base = os.path.abspath(live_path)
     if not os.path.isdir(base):
         return None
-    if not _is_within(base, LIVE_RESULTS_DIR):
+    if not _is_within_live_results_root(base):
         return None
     symbol_safe = str(symbol or "").replace("-", "_")
     candidates = [
@@ -2527,12 +2582,17 @@ def _to_iso_from_any(value: Any) -> Optional[str]:
 
 def _session_meta_candidates(session_dir: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    for name in ("status.json", "session_status.json", "session.json", "meta.json", "summary.json", "config.json"):
+    for name in ("status.json", "session_status.json", "session.json", "meta.json", "summary.json", "config.json", "RUN_STATUS.json"):
         p = os.path.join(session_dir, name)
         if os.path.isfile(p):
             data = _safe_read_json(p)
             if isinstance(data, dict):
                 out.append(data)
+    active_status_path = _active_status_json_path(session_dir)
+    if active_status_path:
+        data = _safe_read_json(active_status_path)
+        if isinstance(data, dict):
+            out.append(data)
     return out
 
 
@@ -2554,19 +2614,27 @@ def _extract_meta_fields(meta_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     last_debug_event = None
     last_equity_ts = None
     for meta in meta_list:
-        exchange = exchange or _meta_lookup(meta, ["exchange", "venue", "market"])
+        exchange = exchange or _meta_lookup(meta, ["exchange", "live_exchange", "venue", "market"])
         timeframe = timeframe or _meta_lookup(meta, ["timeframe", "tf", "interval", "bar_interval"])
         status = status or _meta_lookup(meta, ["status", "state", "runner_status"])
         started_at = started_at or _to_iso_from_any(_meta_lookup(meta, ["started_at", "started", "start_ts", "start_time"]))
-        updated_at = updated_at or _to_iso_from_any(_meta_lookup(meta, ["updated_at", "last_updated", "heartbeat_ts", "ts", "timestamp"]))
+        updated_at = updated_at or _to_iso_from_any(_meta_lookup(meta, ["updated_at", "last_updated", "heartbeat_ts", "utc", "ts", "timestamp"]))
         if open_legs is None:
             val = _meta_lookup(meta, ["open_legs", "open_positions", "open_count"])
             if isinstance(val, (int, float)):
                 open_legs = int(val)
+            elif isinstance(meta.get("open_paper_trades"), list):
+                open_legs = len(meta["open_paper_trades"])
         if filled_orders is None:
             val = _meta_lookup(meta, ["filled_orders", "orders_filled", "total_filled_orders"])
             if isinstance(val, (int, float)):
                 filled_orders = int(val)
+            elif isinstance(meta.get("open_paper_trades"), list):
+                filled_orders = sum(
+                    int(row.get("fills") or 0)
+                    for row in meta["open_paper_trades"]
+                    if isinstance(row, dict)
+                )
         if last_debug_event is None and isinstance(meta.get("last_debug_event"), dict):
             last_debug_event = meta.get("last_debug_event")
         last_equity_ts = last_equity_ts or _to_iso_from_any(_meta_lookup(meta, ["last_equity_ts", "equity_ts"]))
@@ -2644,6 +2712,75 @@ def _read_table_rows_from_file(path: str, limit: int = 200) -> List[Dict[str, An
     return []
 
 
+def _sqlite_rows_for_live_table(session_dir: str, kind: str, limit: int = 200) -> List[Dict[str, Any]]:
+    db_path = os.path.join(session_dir, "session.sqlite")
+    if not os.path.isfile(db_path):
+        return []
+    if kind == "open_positions":
+        tables = ("open_positions", "positions")
+    elif kind == "orders":
+        tables = ("orders", "filled_orders")
+    else:
+        return []
+    try:
+        con = sqlite3.connect(db_path)
+        try:
+            existing = set(_sqlite_table_names(db_path))
+            for table in tables:
+                if table not in existing:
+                    continue
+                cols = [r[1] for r in con.execute(f'PRAGMA table_info("{table}")').fetchall()]
+                if not cols:
+                    continue
+                where = ""
+                if kind == "open_positions" and "status" in cols:
+                    where = "WHERE status IS NULL OR UPPER(status) NOT IN ('CLOSED', 'EXITED')"
+                order_col = next((c for c in ("ts_utc", "updated_at", "created_at", "entry_fill_ts", "exit_fill_ts", "ts", "timestamp") if c in cols), None)
+                sql = f'SELECT * FROM "{table}" {where}'
+                if order_col:
+                    sql += f' ORDER BY "{order_col}" DESC'
+                sql += f" LIMIT {int(limit)}"
+                df = pd.read_sql(sql, con)
+                if not df.empty:
+                    rows = df.replace({np.nan: None}).to_dict(orient="records")
+                    if order_col:
+                        rows.reverse()
+                    return rows
+        finally:
+            con.close()
+    except Exception:
+        return []
+    return []
+
+
+def _run_status_open_position_rows(session_dir: str, limit: int = 200) -> List[Dict[str, Any]]:
+    status = _safe_read_json(os.path.join(session_dir, "RUN_STATUS.json"))
+    if not isinstance(status, dict):
+        return []
+    trades = status.get("open_paper_trades")
+    if not isinstance(trades, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for trade in trades[-limit:]:
+        if not isinstance(trade, dict):
+            continue
+        row = dict(trade)
+        avg_entry = row.get("avg_entry")
+        notional = row.get("notional")
+        if row.get("qty") is None and avg_entry:
+            try:
+                row["qty"] = float(notional or 0.0) / float(avg_entry)
+            except Exception:
+                pass
+        row.setdefault("status", "OPEN")
+        row.setdefault("exchange", status.get("live_exchange"))
+        row.setdefault("live_symbol", status.get("live_symbol"))
+        row.setdefault("updated_at", status.get("utc"))
+        row.setdefault("source", "RUN_STATUS.json")
+        out.append(row)
+    return out
+
+
 def _session_table_rows(session_dir: str, kind: str, limit: int = 200) -> List[Dict[str, Any]]:
     if kind == "open_positions":
         candidates = ["open_positions.csv", "positions_open.csv", "positions.csv", "open_positions.json"]
@@ -2653,14 +2790,22 @@ def _session_table_rows(session_dir: str, kind: str, limit: int = 200) -> List[D
         candidates = ["debug_events.jsonl", "debug_events.csv", "debug_events.json", "events_debug.jsonl", "events.jsonl"]
     elif kind == "stdio":
         candidates = ["stdio.log", "stdout.log", "stderr.log", "stdout.txt", "stderr.txt"]
+        candidates.extend(os.path.basename(p) for p in sorted(glob.glob(os.path.join(session_dir, "live_stdout_*.log"))))
     else:
         return []
+    if kind == "open_positions":
+        run_status_rows = _run_status_open_position_rows(session_dir, limit=limit)
+        if run_status_rows:
+            return run_status_rows
     for rel in candidates:
         full = os.path.join(session_dir, rel)
         if os.path.isfile(full):
             rows = _read_table_rows_from_file(full, limit=limit)
             if rows:
                 return rows
+    sqlite_rows = _sqlite_rows_for_live_table(session_dir, kind, limit=limit)
+    if sqlite_rows:
+        return sqlite_rows
     return []
 
 
@@ -2675,13 +2820,6 @@ def _coerce_point(ts: Any, value: Any) -> Optional[Dict[str, Any]]:
     if np.isnan(v) or np.isinf(v):
         return None
     return {"ts": iso, "value": float(v)}
-
-
-def _point_value_from_row(row: Dict[str, Any], keys: List[str]) -> Any:
-    for key in keys:
-        if key in row and row.get(key) is not None:
-            return row.get(key)
-    return None
 
 
 def _series_from_df(df: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -2708,9 +2846,7 @@ def _load_series_file(session_dir: str, candidates: List[str]) -> List[Dict[str,
         ext = os.path.splitext(full)[1].lower()
         try:
             if ext == ".csv":
-                out = _series_from_df(pd.read_csv(full))
-                if out:
-                    return out
+                return _series_from_df(pd.read_csv(full))
             if ext in {".json", ".js"}:
                 data = _safe_read_json(full)
                 rows = data.get("rows") if isinstance(data, dict) else data
@@ -2719,86 +2855,19 @@ def _load_series_file(session_dir: str, candidates: List[str]) -> List[Dict[str,
                     for row in rows:
                         if not isinstance(row, dict):
                             continue
-                        p = _coerce_point(
-                            row.get("ts") or row.get("timestamp"),
-                            _point_value_from_row(row, ["value", "equity", "pnl"]),
-                        )
+                        p = _coerce_point(row.get("ts") or row.get("timestamp"), row.get("value") or row.get("equity") or row.get("pnl"))
                         if p:
                             out.append(p)
                     out.sort(key=lambda x: x["ts"])
-                    if out:
-                        return out
+                    return out
         except Exception:
             continue
     return []
 
 
-def _backtest_series_from_tv_path(tv_path: str) -> List[Dict[str, Any]]:
-    if not tv_path:
-        return []
-    abs_path = os.path.abspath(tv_path)
-    if not _is_allowed_validation_path(abs_path) or not os.path.isfile(abs_path):
-        raise HTTPException(400, "tv_path is outside allowed roots or missing")
-    df = _read_tv_csv(abs_path).sort_values("dt")
-    if "Type" in df.columns:
-        df = df[df["Type"].astype(str).str.contains("Exit", case=False, na=False)].copy()
-    if df.empty:
-        return []
-    pnl_col = "Net P&L USDT" if "Net P&L USDT" in df.columns else None
-    if not pnl_col:
-        pnl_col = next((c for c in df.columns if "p&l" in c.lower() or "pnl" in c.lower()), None)
-    if not pnl_col:
-        return []
-    df["value"] = pd.to_numeric(df[pnl_col], errors="coerce").fillna(0.0).cumsum()
-    return [{"ts": row["dt"].isoformat(), "value": float(row["value"])} for _, row in df.iterrows() if pd.notna(row.get("dt"))]
-
-
-def _live_series_from_session_sqlite(session_dir: str) -> List[Dict[str, Any]]:
-    session_db = os.path.join(session_dir, "session.sqlite")
-    try:
-        df = _session_equity_df(session_db)
-    except Exception:
-        return []
-    if df is None or df.empty:
-        return []
-    out = df.copy()
-    if "ts" not in out.columns or "equity" not in out.columns:
-        return []
-    out["ts"] = pd.to_datetime(out["ts"], errors="coerce", utc=True)
-    out["equity"] = pd.to_numeric(out["equity"], errors="coerce")
-    out = out.dropna(subset=["ts", "equity"]).sort_values("ts")
-    if out.empty:
-        return []
-    base = out.attrs.get("initial_equity")
-    try:
-        base = float(base)
-    except Exception:
-        base = float(out["equity"].iloc[0])
-    out["value"] = out["equity"] - base
-    return [{"ts": row["ts"].isoformat(), "value": float(row["value"])} for _, row in out.iterrows()]
-
-
-def _filter_series_window(series: List[Dict[str, Any]], start_iso: Optional[str], end_iso: Optional[str]) -> List[Dict[str, Any]]:
-    if not series or not (start_iso or end_iso):
-        return series
-    start = pd.to_datetime(start_iso, utc=True, errors="coerce") if start_iso else None
-    end = pd.to_datetime(end_iso, utc=True, errors="coerce") if end_iso else None
-    out: List[Dict[str, Any]] = []
-    for row in series:
-        ts = pd.to_datetime(row.get("ts"), utc=True, errors="coerce")
-        if pd.isna(ts):
-            continue
-        if start is not None and pd.notna(start) and ts < start:
-            continue
-        if end is not None and pd.notna(end) and ts > end:
-            continue
-        out.append(row)
-    return out
-
-
 def _resolve_live_session_path(raw_path: str) -> str:
     abs_path = os.path.abspath(raw_path or "")
-    if not abs_path or not _is_within(abs_path, LIVE_RESULTS_DIR):
+    if not abs_path or not _is_within_live_results_root(abs_path):
         raise HTTPException(400, "path is outside allowed root")
     if not os.path.isdir(abs_path):
         raise HTTPException(404, "session not found")
@@ -3095,26 +3164,28 @@ def backtest_live_validation_files():
 
 @app.get("/api/backtest_live_validation/live_sessions")
 def backtest_live_validation_live_sessions():
-    if not os.path.isdir(LIVE_RESULTS_DIR):
-        return {"root": LIVE_RESULTS_DIR, "sessions": []}
     sessions: List[Dict[str, Any]] = []
-    for entry in sorted(os.scandir(LIVE_RESULTS_DIR), key=lambda e: e.name.lower()):
-        if not entry.is_dir():
+    roots = _live_results_roots()
+    for root in roots:
+        if not os.path.isdir(root):
             continue
-        try:
-            sessions.append(_build_live_session_summary(entry.path))
-        except Exception:
-            sessions.append(
-                {
-                    "name": entry.name,
-                    "path": entry.path,
-                    "exchange": None,
-                    "timeframe": None,
-                    "status": "unknown",
-                    "updated_at": None,
-                }
-            )
-    return {"root": LIVE_RESULTS_DIR, "sessions": sessions}
+        for entry in sorted(os.scandir(root), key=lambda e: e.name.lower()):
+            if not entry.is_dir() or not _looks_like_live_session_dir(entry.path):
+                continue
+            try:
+                sessions.append(_build_live_session_summary(entry.path))
+            except Exception:
+                sessions.append(
+                    {
+                        "name": entry.name,
+                        "path": entry.path,
+                        "exchange": None,
+                        "timeframe": None,
+                        "status": "unknown",
+                        "updated_at": None,
+                    }
+                )
+    return {"root": LIVE_RESULTS_DIR, "roots": roots, "sessions": sessions}
 
 
 @app.post("/api/backtest_live_validation/live_session/inspect")
@@ -3148,23 +3219,12 @@ def backtest_live_validation_live_session_status(path: str = Query(default="")):
 
 
 @app.get("/api/backtest_live_validation/live_session/chart")
-def backtest_live_validation_live_session_chart(path: str = Query(default=""), tv_path: str = Query(default="")):
+def backtest_live_validation_live_session_chart(path: str = Query(default="")):
     if not path:
         raise HTTPException(400, "path is required")
     session_dir = _resolve_live_session_path(path)
     live = _load_series_file(session_dir, ["equity.csv", "live_equity.csv", "equity_curve.csv", "live_pnl.csv"])
-    if not live:
-        live = _live_series_from_session_sqlite(session_dir)
     backtest = _load_series_file(session_dir, ["backtest_equity.csv", "backtest_pnl.csv", "equity_backtest.csv"])
-    tv_window: Optional[Dict[str, Any]] = None
-    if tv_path:
-        tv_abs_path = os.path.abspath(tv_path)
-        if not _is_allowed_validation_path(tv_abs_path) or not os.path.isfile(tv_abs_path):
-            raise HTTPException(400, "tv_path is outside allowed roots or missing")
-        tv_window = _inspect_tv_path(tv_abs_path)
-        backtest = _backtest_series_from_tv_path(tv_abs_path)
-    if tv_window:
-        live = _filter_series_window(live, tv_window.get("start"), tv_window.get("end"))
     distance = _load_series_file(session_dir, ["distance.csv", "absolute_distance.csv"])
     if not distance and live and backtest:
         bt_map = {row["ts"]: row["value"] for row in backtest}
