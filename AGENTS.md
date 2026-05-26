@@ -14,6 +14,7 @@ Local rules:
 - Keep worker branches off `dev`; promote through the parent/coordinator branch
   or a PR-style handoff.
 - Add agent attribution trailers to new commits.
+- Use machine-prefixed agent display names in new attribution:
+  `л_` laptop, `с_` server/VPS, `а_` Arch Linux.
 - Do not push raw loops, NPZ files, or live/paper-live runtime state to `dev`.
 - Before restarting server paper/live processes, backup state and logs.
-
