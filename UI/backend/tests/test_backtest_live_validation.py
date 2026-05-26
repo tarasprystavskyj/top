@@ -338,7 +338,6 @@ def test_live_sessions_include_only_configured_live_roots(monkeypatch, tmp_path)
         con.close()
 
     monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(legacy_root))
-    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(top_live_reports))
 
     client = TestClient(api_main.app)
 
@@ -346,7 +345,7 @@ def test_live_sessions_include_only_configured_live_roots(monkeypatch, tmp_path)
     assert listed.status_code == 200
     payload = listed.json()
     assert payload["root"] == str(legacy_root)
-    assert str(top_live_reports) in payload["roots"]
+    assert str(top_live_reports) not in payload["roots"]
     assert str(repo_reports) not in payload["roots"]
     assert str(sibling_reports) not in payload["roots"]
     names = [item["name"] for item in payload["sessions"]]
@@ -405,7 +404,6 @@ def test_live_sessions_reject_sibling_veronika_reports_by_default(monkeypatch, t
     )
 
     monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(legacy_root))
-    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(top_live_reports))
 
     client = TestClient(api_main.app)
     listed = client.get("/api/backtest_live_validation/live_sessions")
@@ -421,7 +419,7 @@ def test_live_sessions_reject_sibling_veronika_reports_by_default(monkeypatch, t
     assert status.status_code == 400
 
 
-def test_live_sessions_include_top_reports_live_root(monkeypatch, tmp_path):
+def test_live_sessions_reject_top_reports_live_root_by_default(monkeypatch, tmp_path):
     legacy_root = tmp_path / "obw_platform" / "_reports" / "_live"
     top_live_reports = tmp_path / "top_1" / "_reports" / "_live"
     repo_reports = tmp_path / "top_1" / "reports"
@@ -444,19 +442,15 @@ def test_live_sessions_include_top_reports_live_root(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(legacy_root))
-    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(top_live_reports))
-
     client = TestClient(api_main.app)
     listed = client.get("/api/backtest_live_validation/live_sessions")
     assert listed.status_code == 200
     payload = listed.json()
-    assert str(top_live_reports) in payload["roots"]
-    assert payload["sessions"][0]["path"] == str(session)
-    assert payload["sessions"][0]["exchange"] == "bingx"
+    assert str(top_live_reports) not in payload["roots"]
+    assert payload["sessions"] == []
 
     status = client.get(
         "/api/backtest_live_validation/live_session/status",
         params={"path": str(session)},
     )
-    assert status.status_code == 200
-    assert status.json()["status"] == "running"
+    assert status.status_code == 400

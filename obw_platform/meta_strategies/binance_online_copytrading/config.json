@@ -1,0 +1,26 @@
+{
+  "paper_notional_usdt": 100.0,
+  "slippage_bp": 9.38,
+  "ttl_hours": 72.0,
+  "exit_on_reversal": true,
+  "leads": [
+    {
+      "name": "lead_472867_follow_open",
+      "portfolio_id": "4728671486012660992",
+      "mode": "follow_open",
+      "enabled": true
+    },
+    {
+      "name": "lead_475183_contrarian_close",
+      "portfolio_id": "4751838302089254401",
+      "mode": "contrarian_on_close",
+      "enabled": true
+    },
+    {
+      "name": "lead_490601_contrarian_close",
+      "portfolio_id": "4906010685108267264",
+      "mode": "contrarian_on_close",
+      "enabled": true
+    }
+  ]
+}
