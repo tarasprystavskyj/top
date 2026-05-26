@@ -1,11 +1,12 @@
-import { type CSSProperties, useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { ColorType, CrosshairMode, createChart, LineSeries } from 'lightweight-charts';
+import TradingViewLiveChart from '../components/TradingViewLiveChart';
 import { apiFetch } from '../utils/api';
 import {
   avgPriceDiffColorRule,
   computePollingIntervalMs,
   computeSharedDomain,
   preparePnlSeries,
-  seriesToSvgPath,
 } from '../utils/backtestValidation';
 import {
   buildRefreshSessionPlan,
@@ -25,7 +26,10 @@ type Point = { ts: string; value: number };
 type LiveSessionStatus = 'running' | 'stopped' | 'error' | 'unknown';
 type LiveSessionEntry = {
   name: string;
+  display_name?: string | null;
   path: string;
+  root_label?: string | null;
+  stale_duplicate?: boolean;
   exchange?: string | null;
   timeframe?: string | null;
   status?: LiveSessionStatus;
@@ -44,7 +48,21 @@ type LiveSessionInspect = {
   last_debug_event?: { level?: string; event_type?: string; ts?: string } | null;
   last_equity_ts?: string | null;
 };
-type LiveChartPayload = { live?: Point[]; backtest?: Point[]; distance?: Point[] };
+type LiveChartPayload = {
+  live?: Point[];
+  backtest?: Point[];
+  live_realized?: Point[];
+  backtest_realized?: Point[];
+  backtest_price?: Point[];
+  price_bars?: { ts: string; open: number; high: number; low: number; close: number }[];
+  distance?: Point[];
+  mark?: Point[];
+  markers?: any[];
+  labels?: any[];
+  sources?: Record<string, string | null>;
+  warnings?: string[];
+  approximate?: boolean;
+};
 type LiveTableKind = 'open_positions' | 'orders' | 'debug_events' | 'stdio';
 type TableStateMap = Record<LiveTableKind, any[]>;
 type TableLoadingMap = Record<LiveTableKind, boolean>;
@@ -227,62 +245,88 @@ const preStyle: CSSProperties = {
   overflow: 'auto',
 };
 
-function LineChart({ title, series }: { title: string; series: { name: string; color: string; data: Point[] }[] }) {
-  const width = 920;
-  const height = 320;
-  const padding = 46;
-  const domain = computeSharedDomain(series);
-  if (!domain.pointCount) return <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 14, color: colors.muted, background: '#0B1220' }}>{title}: No data</div>;
-  const { xMin, xMax, yMin, yMax } = domain;
-  const hasTimeX = xMax > 10_000_000_000;
+function toTradingViewLineData(points: Point[]) {
+  const byTime = new Map<number, { time: number; value: number }>();
+  points.forEach((point, index) => {
+    const parsed = Date.parse(String(point.ts || ''));
+    const time = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : index + 1;
+    const value = Number(point.value);
+    if (Number.isFinite(value)) byTime.set(time, { time, value });
+  });
+  return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+}
 
-  const fmtTime = (ms: number) => {
-    if (!Number.isFinite(ms)) return '';
-    return new Date(ms).toISOString().slice(5, 16).replace('T', ' ');
-  };
-  const yTickVals = [yMin, (yMin + yMax) / 2, yMax];
-  const xTickVals = [xMin, (xMin + xMax) / 2, xMax];
+function LineChart({ title, series }: { title: string; series: { name: string; color: string; data: Point[] }[] }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const domain = computeSharedDomain(series);
+  const hasData = domain.pointCount > 0;
+
+  useEffect(() => {
+    if (!containerRef.current || !hasData) return;
+    const el = containerRef.current;
+    el.replaceChildren();
+
+    const chart = createChart(el, {
+      autoSize: true,
+      height: 340,
+      layout: {
+        background: { type: ColorType.Solid, color: '#0B1220' },
+        textColor: colors.muted,
+      },
+      grid: {
+        vertLines: { color: '#1E293B' },
+        horzLines: { color: '#1E293B' },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: { color: 'rgba(148, 163, 184, 0.55)', labelBackgroundColor: '#111827' },
+        horzLine: { color: 'rgba(148, 163, 184, 0.55)', labelBackgroundColor: '#111827' },
+      },
+      rightPriceScale: {
+        borderColor: '#334155',
+        scaleMargins: { top: 0.12, bottom: 0.12 },
+      },
+      timeScale: {
+        borderColor: '#334155',
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      handleScale: {
+        axisPressedMouseMove: true,
+        mouseWheel: true,
+        pinch: true,
+      },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: false,
+      },
+    });
+
+    series.forEach((item) => {
+      const tvSeries = chart.addSeries(LineSeries, {
+        color: item.color,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: item.name,
+      });
+      tvSeries.setData(toTradingViewLineData(item.data) as any);
+    });
+    chart.timeScale().fitContent();
+
+    return () => {
+      chart.remove();
+    };
+  }, [hasData, title, series]);
+
+  if (!hasData) return <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 14, color: colors.muted, background: '#0B1220' }}>{title}: No data</div>;
 
   return (
     <div style={{ ...cardStyle, padding: 16 }}>
       <h4 style={{ marginTop: 0, color: colors.text }}>{title}</h4>
-      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 320 }}>
-        <rect x={0} y={0} width={width} height={height} fill="#0B1220" />
-        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#334155" />
-        <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#334155" />
-        {yTickVals.map((v, i) => {
-          const y = height - padding - ((v - yMin) / (Math.max(1e-9, yMax - yMin))) * (height - padding * 2);
-          return (
-            <g key={`y-${i}`}>
-              <line x1={padding} y1={y} x2={width - padding} y2={y} stroke="#1E293B" strokeDasharray="4 4" />
-              <text x={padding - 8} y={y + 4} textAnchor="end" fontSize="11" fill="#94A3B8">
-                {v.toFixed(2)}
-              </text>
-            </g>
-          );
-        })}
-        {xTickVals.map((v, i) => {
-          const x = padding + ((v - xMin) / (Math.max(1e-9, xMax - xMin))) * (width - padding * 2);
-          return (
-            <g key={`x-${i}`}>
-              <line x1={x} y1={padding} x2={x} y2={height - padding} stroke="#1E293B" strokeDasharray="4 4" />
-              <text x={x} y={height - padding + 16} textAnchor="middle" fontSize="11" fill="#94A3B8">
-                {hasTimeX ? fmtTime(v) : v.toFixed(0)}
-              </text>
-            </g>
-          );
-        })}
-        {series.map(s => {
-          const pts = s.data.map((d, i) => {
-            const tsMs = Date.parse(String(d.ts || ''));
-            return { x: Number.isFinite(tsMs) ? tsMs : i, y: Number(d.value) || 0, ts: d.ts };
-          });
-          const path = seriesToSvgPath(pts, width, height, padding, domain);
-          return <path key={s.name} d={path} stroke={s.color} strokeWidth={2} fill="none" />;
-        })}
-        <text x={padding} y={padding - 10} fontSize="11" fill="#94A3B8">Y: value</text>
-        <text x={width - padding} y={height - 8} textAnchor="end" fontSize="11" fill="#94A3B8">X: {hasTimeX ? 'timestamp' : 'index'}</text>
-      </svg>
+      <div ref={containerRef} style={{ width: '100%', height: 340, minWidth: 0 }} />
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         {series.map(s => (
           <span key={s.name} style={{ color: s.color, fontWeight: 600 }}>{s.name}</span>
@@ -313,7 +357,7 @@ const DEBUG_LEVEL_COLOR_MAP: Record<string, string> = {
   info: '#0284c7',
   debug: '#7c3aed',
 };
-const PAGE_VERSION = 'v2026.04.20-3';
+const PAGE_VERSION = 'v2026.05.26-zeno3-chart';
 
 function fmtTs(ts?: string | null) {
   if (!ts) return '—';
@@ -331,7 +375,10 @@ function normalizeStatus(value: any): LiveSessionStatus {
 function normalizeLiveSessionEntry(raw: any): LiveSessionEntry {
   return {
     name: String(raw?.name || raw?.path || 'unknown_session'),
+    display_name: raw?.display_name != null ? String(raw.display_name) : null,
     path: String(raw?.path || ''),
+    root_label: raw?.root_label != null ? String(raw.root_label) : null,
+    stale_duplicate: !!raw?.stale_duplicate,
     exchange: raw?.exchange != null ? String(raw.exchange) : null,
     timeframe: raw?.timeframe != null ? String(raw.timeframe) : null,
     status: normalizeStatus(raw?.status),
@@ -412,6 +459,8 @@ export default function BacktestLiveValidationPage() {
   const [liveChartError, setLiveChartError] = useState<string | null>(null);
   const [liveTableLoading, setLiveTableLoading] = useState<TableLoadingMap>(emptyLiveTableLoading());
   const [liveTableErrors, setLiveTableErrors] = useState<TableErrorMap>(emptyLiveTableErrors());
+  const autoLoadedLivePathRef = useRef('');
+  const autoChartRetryRef = useRef<Record<string, number>>({});
 
   const pollingIntervalMs = useMemo(() => computePollingIntervalMs(inspect?.bar_interval_seconds || runData?.inspect?.bar_interval_seconds || 60), [inspect?.bar_interval_seconds, runData?.inspect?.bar_interval_seconds]);
   const livePollingIntervalMs = useMemo(() => computePollingIntervalMs(liveStatus?.open_legs ? 15 : 20), [liveStatus?.open_legs]);
@@ -422,6 +471,13 @@ export default function BacktestLiveValidationPage() {
     const norm = normalizeLiveChartPayload(liveCharts || {});
     return { live: norm.live || [], backtest: norm.backtest || [], distance: norm.distance || [] };
   }, [liveCharts]);
+  const liveChartMeta = useMemo(() => normalizeLiveChartPayload(liveCharts || {}), [liveCharts]);
+  const liveChartHasAnyData = !!(
+    liveChartMeta.live?.length ||
+    liveChartMeta.backtest?.length ||
+    liveChartMeta.price_bars?.length ||
+    liveChartMeta.mark?.length
+  );
 
   async function refreshLiveSessions(keepPath = true) {
     setLiveListLoading(true);
@@ -432,8 +488,9 @@ export default function BacktestLiveValidationPage() {
       const d = await r.json().catch(() => ({}));
       const sessions = (Array.isArray(d?.sessions) ? d.sessions : []).map(normalizeLiveSessionEntry).filter((s: LiveSessionEntry) => !!s.path);
       setLiveSessions(sessions);
-      if (keepPath && selectedLivePath && !sessions.some((s: LiveSessionEntry) => s.path === selectedLivePath)) {
-        setSelectedLivePath('');
+      const hasSelectedPath = selectedLivePath && sessions.some((s: LiveSessionEntry) => s.path === selectedLivePath);
+      if (!selectedLivePath || !hasSelectedPath) {
+        setSelectedLivePath(sessions[0]?.path || '');
       }
     } catch (e: any) {
       setLiveListError(e?.message || 'live sessions load failed');
@@ -446,7 +503,11 @@ export default function BacktestLiveValidationPage() {
   useEffect(() => {
     apiFetch('/api/backtest_live_validation/files')
       .then(r => r.json())
-      .then(d => setFiles(Array.isArray(d?.files) ? d.files : []))
+      .then(d => {
+        const nextFiles = Array.isArray(d?.files) ? d.files : [];
+        setFiles(nextFiles);
+        if (!selectedPath && nextFiles[0]?.path) inspectPath(nextFiles[0].path);
+      })
       .catch(() => setFiles([]));
     refreshLiveSessions(false);
   }, []);
@@ -479,6 +540,32 @@ export default function BacktestLiveValidationPage() {
     }, livePollingIntervalMs);
     return () => clearInterval(timer);
   }, [selectedLivePath, liveAutoRefresh, livePollingIntervalMs]);
+
+  useEffect(() => {
+    if (!selectedLivePath || autoLoadedLivePathRef.current === selectedLivePath) return;
+    autoLoadedLivePathRef.current = selectedLivePath;
+    autoChartRetryRef.current[selectedLivePath] = 0;
+    Promise.allSettled([
+      inspectLiveSession(selectedLivePath),
+      loadLiveStatus(selectedLivePath, { silent: true }),
+    ]).finally(() => {
+      loadLiveChart(selectedLivePath);
+    });
+  }, [selectedLivePath]);
+
+  useEffect(() => {
+    if (!selectedLivePath || liveChartHasAnyData || liveChartLoading) return;
+    const attempts = autoChartRetryRef.current[selectedLivePath] || 0;
+    if (attempts >= 3) return;
+    autoChartRetryRef.current[selectedLivePath] = attempts + 1;
+    const timer = setTimeout(() => loadLiveChart(selectedLivePath), 1200);
+    return () => clearTimeout(timer);
+  }, [selectedLivePath, liveChartHasAnyData, liveChartLoading]);
+
+  useEffect(() => {
+    if (!selectedPath || !selectedLivePath || !liveCharts) return;
+    loadLiveChart(selectedLivePath);
+  }, [selectedPath]);
 
   async function inspectPath(path: string) {
     setSelectedPath(path);
@@ -557,9 +644,8 @@ export default function BacktestLiveValidationPage() {
     setLiveChartLoading(true);
     setLiveChartError(null);
     try {
-      const query = new URLSearchParams({ path });
-      if (selectedPath) query.set('tv_path', selectedPath);
-      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?${query.toString()}`);
+      const backtestParam = selectedPath ? `&backtest_path=${encodeURIComponent(selectedPath)}` : '';
+      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?path=${encodeURIComponent(path)}${backtestParam}`);
       if (!r.ok) throw new Error('Live chart failed');
       setLiveCharts(normalizeLiveChartPayload(await r.json()));
       setLiveLastRefreshTs(new Date().toISOString());
@@ -716,6 +802,7 @@ export default function BacktestLiveValidationPage() {
   const pnlDomain = computeSharedDomain([{ data: alignedPnl.backtest }, { data: alignedPnl.live }]);
 
   const liveChartVisibility = getLiveChartVisibility(liveCharts);
+  const liveChartSourceLabel = liveChartMeta.sources?.live ? `Source: ${liveChartMeta.sources.live}` : null;
   const summaryModel = buildLiveSummaryModel(selectedLivePath, selectedLiveEntry, liveInspect, liveStatus);
   const debugLevelColor = DEBUG_LEVEL_COLOR_MAP[String(summaryModel.debugLevel).toLowerCase()] || '#64748b';
 
@@ -792,7 +879,7 @@ export default function BacktestLiveValidationPage() {
             <option value="">--select live session from _reports/_live--</option>
             {liveSessions.map(session => (
               <option key={session.path} value={session.path}>
-                {session.name || session.path} | ex: {session.exchange || 'n/a'} | tf: {session.timeframe || 'n/a'} | updated: {fmtTs(session.updated_at)} | status: {session.status || 'unknown'}
+                {session.display_name || session.name || session.path}{session.stale_duplicate ? ' | stale duplicate' : ''} | ex: {session.exchange || 'n/a'} | tf: {session.timeframe || 'n/a'} | updated: {fmtTs(session.updated_at)} | status: {session.status || 'unknown'}
               </option>
             ))}
           </select>
@@ -837,13 +924,17 @@ export default function BacktestLiveValidationPage() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <h4 style={sectionTitleStyle}>Live charts</h4>
-            {liveChartVisibility.live ? <LineChart title="Live equity / PNL" series={[{ name: 'Live equity', color: colors.success, data: liveSeries.live }]} /> : <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 10, color: colors.muted, background: '#0B1220' }}>No chart data</div>}
-            {liveChartVisibility.overlay ? (
-              <LineChart title="Live vs Backtest overlay" series={[{ name: 'Live', color: colors.success, data: liveSeries.live }, { name: 'Backtest', color: colors.accent, data: liveSeries.backtest }]} />
-            ) : (
-              <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 10, color: colors.muted, background: '#0B1220' }}>Overlay unavailable (requires both live and backtest series)</div>
+            {(liveChartMeta.approximate || liveChartMeta.warnings?.length || liveChartSourceLabel) && (
+              <div style={{ border: `1px solid ${liveChartMeta.approximate ? colors.warning : colors.border}`, borderRadius: 8, padding: 10, color: liveChartMeta.approximate ? colors.warning : colors.muted, background: '#0B1220', fontSize: 12, lineHeight: 1.45 }}>
+                {liveChartMeta.approximate ? 'Orders-only fallback: approximate notional chart, not real PnL.' : liveChartSourceLabel}
+                {liveChartMeta.warnings?.length ? ` ${liveChartMeta.warnings.join(' ')}` : ''}
+              </div>
             )}
-            {liveChartVisibility.distance && <LineChart title="Absolute distance" series={[{ name: 'Absolute distance', color: colors.danger, data: liveSeries.distance }]} />}
+            {liveChartHasAnyData ? (
+              <TradingViewLiveChart payload={liveChartMeta} />
+            ) : (
+              <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 10, color: colors.muted, background: '#0B1220' }}>No chart data</div>
+            )}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
