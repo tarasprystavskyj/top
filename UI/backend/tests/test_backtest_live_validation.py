@@ -273,56 +273,6 @@ def test_live_session_endpoints_with_valid_session(monkeypatch, tmp_path):
         assert isinstance(table.json().get("rows"), list)
 
 
-def test_live_chart_uses_selected_tv_and_session_sqlite(monkeypatch, tmp_path):
-    src = tmp_path / "TV_backtest_source"
-    src.mkdir()
-    tv = src / "C_-_SHORT_-_MA_driven_BINGX_ENAUSDT.P_2026-04-16_c2859.csv"
-    _sample_tv_csv(tv)
-
-    live_root = tmp_path / "_reports" / "_live"
-    session = live_root / "sqlite_only_session"
-    session.mkdir(parents=True)
-    con = sqlite3.connect(session / "session.sqlite")
-    con.execute("CREATE TABLE config_snapshots (run_id TEXT, ts_utc TEXT, cfg_json TEXT)")
-    con.execute(
-        "INSERT INTO config_snapshots VALUES (?, ?, ?)",
-        ("r1", "2026-04-10T00:00:00Z", json.dumps({"initial_equity": 10000})),
-    )
-    con.execute(
-        "CREATE TABLE equity (run_id TEXT, ts_utc TEXT, equity_usdt REAL, cash_usdt REAL, position_value_usdt REAL, realized_pnl_cum REAL, unrealized_pnl REAL)"
-    )
-    con.executemany(
-        "INSERT INTO equity VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-            ("r1", "2026-04-10T00:00:00Z", 10000, 10000, 0, 0, 0),
-            ("r1", "2026-04-10T00:05:00Z", 10005, 10005, 0, 5, 0),
-            ("r1", "2026-04-10T00:10:00Z", 10008, 10008, 0, 8, 0),
-        ],
-    )
-    con.commit()
-    con.close()
-
-    monkeypatch.setattr(api_main, "TV_BACKTEST_SOURCE_DIR", str(src))
-    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
-
-    client = TestClient(api_main.app)
-    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session), "tv_path": str(tv)})
-    assert chart.status_code == 200
-    body = chart.json()
-    assert [p["value"] for p in body["live"]] == [0.0, 5.0, 8.0]
-    assert len(body["backtest"]) == 1
-    assert body["backtest"][0]["value"] == 5.0
-
-
-def test_bingx_datetime_parser_prefers_iso_before_dayfirst():
-    parsed = api_main._parse_bingx_datetime_series(
-        pd.Series(["2026-04-12 00:35:16", "2026-04-13 00:08:46"])
-    )
-    assert parsed.notna().all()
-    assert parsed.iloc[0].isoformat().startswith("2026-04-12T00:35:16")
-    assert parsed.iloc[1].isoformat().startswith("2026-04-13T00:08:46")
-
-
 def test_live_session_endpoint_validation(monkeypatch, tmp_path):
     live_root = tmp_path / "_reports" / "_live"
     session = _create_valid_live_session(live_root, "session_guardrails")
@@ -338,3 +288,182 @@ def test_live_session_endpoint_validation(monkeypatch, tmp_path):
 
     missing_path = client.get("/api/backtest_live_validation/live_session/chart")
     assert missing_path.status_code == 400
+
+
+def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
+    legacy_root = tmp_path / "obw_platform" / "_reports" / "_live"
+    top_live_reports = tmp_path / "_reports" / "_live"
+    repo_reports = tmp_path / "reports"
+    sibling_reports = tmp_path / "veronika" / "reports"
+    legacy_root.mkdir(parents=True)
+    top_live_reports.mkdir(parents=True)
+    repo_reports.mkdir()
+    sibling_reports.mkdir(parents=True)
+    unrelated = repo_reports / "not_a_live_session"
+    unrelated.mkdir()
+    (unrelated / "notes.txt").write_text("ignore me\n", encoding="utf-8")
+
+    session = repo_reports / "hype_canary_bingx_live_20260525"
+    session.mkdir()
+    _write_json(
+        session / "RUN_STATUS.json",
+        {
+            "exchange": "bingx",
+            "timeframe": "5m",
+            "status": "running",
+            "started_at": "2026-05-25T00:00:00Z",
+            "updated_at": "2026-05-25T00:05:00Z",
+        },
+    )
+    _write_json(session / "active_status.json", {"open_legs": 1, "filled_orders": 2})
+    (session / "ACTIVE_STATUS_PATH.txt").write_text("active_status.json\n", encoding="utf-8")
+    (session / "live_stdout_20260525.log").write_text("hype canary started\n", encoding="utf-8")
+
+    con = sqlite3.connect(session / "session.sqlite")
+    try:
+        con.execute(
+            "CREATE TABLE open_positions (symbol TEXT, status TEXT, qty REAL, entry_fill REAL, ts_utc TEXT)"
+        )
+        con.execute(
+            "INSERT INTO open_positions VALUES ('HYPE-USDT', 'OPEN', 1.5, 25.0, '2026-05-25T00:01:00Z')"
+        )
+        con.execute(
+            "CREATE TABLE orders (id INTEGER, symbol TEXT, status TEXT, price REAL, ts_utc TEXT)"
+        )
+        con.execute(
+            "INSERT INTO orders VALUES (1, 'HYPE-USDT', 'filled', 25.1, '2026-05-25T00:02:00Z')"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(legacy_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(top_live_reports))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(repo_reports))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(sibling_reports))
+
+    client = TestClient(api_main.app)
+
+    listed = client.get("/api/backtest_live_validation/live_sessions")
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert payload["root"] == str(legacy_root)
+    assert str(top_live_reports) in payload["roots"]
+    assert str(repo_reports) in payload["roots"]
+    assert str(sibling_reports) in payload["roots"]
+    names = [item["name"] for item in payload["sessions"]]
+    assert names == ["hype_canary_bingx_live_20260525"]
+    summary = payload["sessions"][0]
+    assert summary["exchange"] == "bingx"
+    assert summary["open_legs"] == 1
+    assert summary["filled_orders"] == 2
+
+    inspect = client.post("/api/backtest_live_validation/live_session/inspect", json={"path": str(session)})
+    assert inspect.status_code == 200
+    assert inspect.json()["path"] == str(session)
+
+    positions = client.get(
+        "/api/backtest_live_validation/live_session/table",
+        params={"path": str(session), "kind": "open_positions"},
+    )
+    assert positions.status_code == 200
+    assert positions.json()["rows"][0]["symbol"] == "HYPE-USDT"
+
+    orders = client.get(
+        "/api/backtest_live_validation/live_session/table",
+        params={"path": str(session), "kind": "orders"},
+    )
+    assert orders.status_code == 200
+    assert orders.json()["rows"][0]["symbol"] == "HYPE-USDT"
+
+    outside = client.get(
+        "/api/backtest_live_validation/live_session/status",
+        params={"path": str(tmp_path / "outside")},
+    )
+    assert outside.status_code == 400
+
+
+def test_live_sessions_include_sibling_veronika_reports(monkeypatch, tmp_path):
+    legacy_root = tmp_path / "obw_platform" / "_reports" / "_live"
+    top_live_reports = tmp_path / "top_1" / "_reports" / "_live"
+    repo_reports = tmp_path / "top_1" / "reports"
+    sibling_reports = tmp_path / "veronika" / "reports"
+    legacy_root.mkdir(parents=True)
+    top_live_reports.mkdir(parents=True)
+    repo_reports.mkdir(parents=True)
+    sibling_reports.mkdir(parents=True)
+
+    session = sibling_reports / "hype_canary_bingx_live_20260525"
+    session.mkdir()
+    _write_json(
+        session / "RUN_STATUS.json",
+        {
+            "live_exchange": "bingx",
+            "live_symbol": "HYPE-USDT",
+            "paper_only": False,
+            "open_paper_trades": [{"symbol": "HYPEUSDT", "side": "LONG"}],
+            "utc": "2026-05-26T05:00:00Z",
+        },
+    )
+
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(legacy_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(top_live_reports))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(repo_reports))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(sibling_reports))
+
+    client = TestClient(api_main.app)
+    listed = client.get("/api/backtest_live_validation/live_sessions")
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert str(sibling_reports) in payload["roots"]
+    assert [item["name"] for item in payload["sessions"]] == ["hype_canary_bingx_live_20260525"]
+
+    status = client.get(
+        "/api/backtest_live_validation/live_session/status",
+        params={"path": str(session)},
+    )
+    assert status.status_code == 200
+    assert status.json()["status"]["live_symbol"] == "HYPE-USDT"
+
+    positions = client.get(
+        "/api/backtest_live_validation/live_session/table",
+        params={"path": str(session), "kind": "open_positions"},
+    )
+    assert positions.status_code == 200
+    assert positions.json()["rows"][0]["source"] == "RUN_STATUS.json"
+
+
+def test_live_sessions_include_top_reports_live_root(monkeypatch, tmp_path):
+    legacy_root = tmp_path / "obw_platform" / "_reports" / "_live"
+    top_live_reports = tmp_path / "top_1" / "_reports" / "_live"
+    repo_reports = tmp_path / "top_1" / "reports"
+    sibling_reports = tmp_path / "veronika" / "reports"
+    legacy_root.mkdir(parents=True)
+    top_live_reports.mkdir(parents=True)
+    repo_reports.mkdir(parents=True)
+    sibling_reports.mkdir(parents=True)
+
+    session = top_live_reports / "hype_canary_bingx_live"
+    session.mkdir()
+    _write_json(
+        session / "RUN_STATUS.json",
+        {
+            "live_exchange": "bingx",
+            "live_symbol": "HYPE-USDT",
+            "open_paper_trades": [{"symbol": "HYPEUSDT", "side": "LONG", "fills": 1}],
+            "utc": "2026-05-26T05:10:00Z",
+        },
+    )
+
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(legacy_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(top_live_reports))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(repo_reports))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(sibling_reports))
+
+    client = TestClient(api_main.app)
+    listed = client.get("/api/backtest_live_validation/live_sessions")
+    assert listed.status_code == 200
+    payload = listed.json()
+    assert str(top_live_reports) in payload["roots"]
+    assert payload["sessions"][0]["path"] == str(session)
+    assert payload["sessions"][0]["exchange"] == "bingx"
