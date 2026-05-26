@@ -1,5 +1,7 @@
 import argparse
+import csv
 import os
+import sqlite3
 import sys
 import tempfile
 import types
@@ -59,6 +61,9 @@ def make_args(**overrides):
         run_id="run-1",
         order_sync_wait_sec=0.0,
         order_sync_poll_sec=0.01,
+        hot_restart_snapshot_path="",
+        resume_snapshot="",
+        resume_snapshot_overwrite=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -133,7 +138,13 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             "record_session_order",
             "upsert_session_position",
             "control_paths",
+            "hot_stop_path",
             "control_state",
+            "default_hot_restart_snapshot_path",
+            "build_hot_restart_snapshot",
+            "write_hot_restart_snapshot",
+            "load_resume_snapshot",
+            "handle_hot_stop_if_requested",
             "load_env_file",
             "safe_order",
             "avg_price",
@@ -184,10 +195,13 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             Path(td, "STOP_NEW_ORDERS").write_text("", encoding="utf-8")
             Path(td, "KILL").write_text("", encoding="utf-8")
+            Path(td, "HOT_STOP").write_text("", encoding="utf-8")
             state = live.control_state(make_args(control_dir=td))
         self.assertTrue(state["stop_new_orders"])
         self.assertTrue(state["kill"])
+        self.assertTrue(state["hot_stop"])
         self.assertTrue(state["stop_new_orders_path"].endswith("STOP_NEW_ORDERS"))
+        self.assertTrue(state["hot_stop_path"].endswith("HOT_STOP"))
 
     def test_load_env_file_sets_missing_values_without_overwriting(self):
         with tempfile.TemporaryDirectory() as td:
@@ -412,11 +426,56 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
                 status = live.poll_once(args)
         self.assertEqual(status["dca_eval_meta"]["dca_eval_bucket"], int(NOW.timestamp() // 60))
 
+    def test_hot_stop_writes_snapshot_without_loading_inputs(self):
+        with tempfile.TemporaryDirectory() as td:
+            args = make_args(out_dir=td, state_path=str(Path(td) / "state.json"), status_path=str(Path(td) / "RUN_STATUS.json"), telemetry_path=str(Path(td) / "telemetry.jsonl"))
+            state = live.paper.default_state(args)
+            state["open_trades"] = {"HYPEUSDT:LONG": open_trade()}
+            live.paper.write_json(Path(args.state_path), state)
+            Path(td, "HOT_STOP").write_text("", encoding="utf-8")
+
+            with patch.object(live.paper, "utc_now", return_value=NOW), patch.object(live, "load_inputs_live") as load_inputs:
+                with self.assertRaises(SystemExit):
+                    live.poll_once(args)
+
+            self.assertFalse(load_inputs.called)
+            snapshot = live.paper.load_json(Path(td) / "HOT_RESTART_SNAPSHOT.json", {})
+            self.assertEqual(snapshot["schema"], "hype_cap100_live_hot_restart_snapshot_v1")
+            self.assertIn("HYPEUSDT:LONG", snapshot["state"]["open_trades"])
+            status = live.paper.load_json(Path(args.status_path), {})
+            self.assertTrue(status["hot_stop_requested"])
+            self.assertEqual(status["hot_restart_snapshot_path"], str(Path(td) / "HOT_RESTART_SNAPSHOT.json"))
+
+    def test_resume_snapshot_restores_state_and_requires_overwrite_for_existing_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            source_state = live.paper.default_state(make_args())
+            source_state["open_trades"] = {"HYPEUSDT:LONG": open_trade()}
+            snapshot = {
+                "schema": "hype_cap100_live_hot_restart_snapshot_v1",
+                "utc": live.paper.iso(NOW),
+                "state": source_state,
+                "status": {"utc": live.paper.iso(NOW)},
+            }
+            snapshot_path = Path(td) / "snapshot.json"
+            live.paper.write_json(snapshot_path, snapshot)
+            state_path = Path(td) / "state.json"
+            args = make_args(out_dir=td, state_path=str(state_path), resume_snapshot=str(snapshot_path))
+
+            loaded = live.load_resume_snapshot(args)
+            self.assertEqual(loaded["utc"], live.paper.iso(NOW))
+            restored = live.paper.load_json(state_path, {})
+            self.assertIn("HYPEUSDT:LONG", restored["open_trades"])
+            self.assertEqual(restored["events"][-1]["type"], "resume_snapshot_loaded")
+
+            args.resume_snapshot_overwrite = False
+            with self.assertRaises(SystemExit):
+                live.load_resume_snapshot(args)
+
     def test_parser_normalize_validate_and_reports_root_behavior(self):
         parser = live.build_arg_parser()
         args = parser.parse_args([])
         self.assertEqual(Path(args.out_dir), live.DEFAULT_OUT_DIR)
-        self.assertEqual(Path(args.out_dir).parent, Path("/var/www/vps2.happyuser.info/top/top_1/_reports/_live"))
+        self.assertEqual(Path(args.out_dir).parent, Path("/var/www/vps2.happyuser.info/top/top_1/obw_platform/_reports/_live"))
         with tempfile.TemporaryDirectory() as td:
             args.out_dir = td
             args.session_db = "session.sqlite"
@@ -435,6 +494,56 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             live.upsert_session_position(args, open_trade(), status="OPEN", now=NOW, exchange_order_id="ex-1")
         self.assertTrue(insert.called)
         self.assertTrue(upsert.called)
+
+    def test_ui_artifacts_emit_live_equity_and_match_ready_csv_from_session_orders(self):
+        with tempfile.TemporaryDirectory() as td:
+            session_db = str(Path(td) / "session.sqlite")
+            live.ensure_session_dbs(td, session_db)
+            live.ensure_orders_db(session_db)
+            args = make_args(out_dir=td, session_db=session_db, run_id="run-artifacts")
+            live.record_session_order(
+                args,
+                now=NOW,
+                symbol="HYPE-USDT",
+                side="LONG",
+                type_="OPEN",
+                price=50.25,
+                qty=0.2,
+                status="FILLED",
+                reason="artifact_test",
+                exchange_order_id="ex-artifact-1",
+            )
+            status = {
+                "utc": live.paper.iso(NOW),
+                "guards": {
+                    "daily_realized_plus_unrealized_pnl_usdt": 1.25,
+                    "gross_open_notional": 10.05,
+                },
+            }
+            artifacts = live.emit_ui_artifacts(args, status)
+
+            self.assertTrue(Path(artifacts["live_equity_csv"]).exists())
+            with open(artifacts["live_equity_csv"], newline="", encoding="utf-8-sig") as fh:
+                equity_rows = list(csv.DictReader(fh))
+            self.assertEqual(equity_rows[-1]["ts"], live.paper.iso(NOW))
+            self.assertEqual(float(equity_rows[-1]["value"]), 1.25)
+
+            self.assertTrue(Path(artifacts["match_ready_csv"]).exists())
+            with open(artifacts["match_ready_csv"], newline="", encoding="utf-8-sig") as fh:
+                match_rows = list(csv.DictReader(fh))
+            self.assertTrue(match_rows[0]["Ордер №"].startswith("hypecap100-"))
+            self.assertIn("HYPEUSDT", match_rows[0]["Ф’ючерси / Напрямок"])
+            self.assertIn("Відкрити Long", match_rows[0]["Ф’ючерси / Напрямок"])
+
+            con = sqlite3.connect(session_db)
+            try:
+                db_row = con.execute(
+                    "SELECT equity_usdt, position_value_usdt, realized_pnl_cum FROM equity WHERE run_id=?",
+                    ("run-artifacts",),
+                ).fetchone()
+            finally:
+                con.close()
+            self.assertEqual(db_row, (31.25, 10.05, 1.25))
 
 
 if __name__ == "__main__":

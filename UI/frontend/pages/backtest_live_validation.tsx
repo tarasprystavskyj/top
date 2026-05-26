@@ -25,7 +25,10 @@ type Point = { ts: string; value: number };
 type LiveSessionStatus = 'running' | 'stopped' | 'error' | 'unknown';
 type LiveSessionEntry = {
   name: string;
+  display_name?: string | null;
   path: string;
+  root_label?: string | null;
+  stale_duplicate?: boolean;
   exchange?: string | null;
   timeframe?: string | null;
   status?: LiveSessionStatus;
@@ -44,7 +47,7 @@ type LiveSessionInspect = {
   last_debug_event?: { level?: string; event_type?: string; ts?: string } | null;
   last_equity_ts?: string | null;
 };
-type LiveChartPayload = { live?: Point[]; backtest?: Point[]; distance?: Point[] };
+type LiveChartPayload = { live?: Point[]; backtest?: Point[]; distance?: Point[]; sources?: Record<string, string | null>; warnings?: string[]; approximate?: boolean };
 type LiveTableKind = 'open_positions' | 'orders' | 'debug_events' | 'stdio';
 type TableStateMap = Record<LiveTableKind, any[]>;
 type TableLoadingMap = Record<LiveTableKind, boolean>;
@@ -331,7 +334,10 @@ function normalizeStatus(value: any): LiveSessionStatus {
 function normalizeLiveSessionEntry(raw: any): LiveSessionEntry {
   return {
     name: String(raw?.name || raw?.path || 'unknown_session'),
+    display_name: raw?.display_name != null ? String(raw.display_name) : null,
     path: String(raw?.path || ''),
+    root_label: raw?.root_label != null ? String(raw.root_label) : null,
+    stale_duplicate: !!raw?.stale_duplicate,
     exchange: raw?.exchange != null ? String(raw.exchange) : null,
     timeframe: raw?.timeframe != null ? String(raw.timeframe) : null,
     status: normalizeStatus(raw?.status),
@@ -422,6 +428,7 @@ export default function BacktestLiveValidationPage() {
     const norm = normalizeLiveChartPayload(liveCharts || {});
     return { live: norm.live || [], backtest: norm.backtest || [], distance: norm.distance || [] };
   }, [liveCharts]);
+  const liveChartMeta = useMemo(() => normalizeLiveChartPayload(liveCharts || {}), [liveCharts]);
 
   async function refreshLiveSessions(keepPath = true) {
     setLiveListLoading(true);
@@ -557,9 +564,7 @@ export default function BacktestLiveValidationPage() {
     setLiveChartLoading(true);
     setLiveChartError(null);
     try {
-      const query = new URLSearchParams({ path });
-      if (selectedPath) query.set('tv_path', selectedPath);
-      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?${query.toString()}`);
+      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?path=${encodeURIComponent(path)}`);
       if (!r.ok) throw new Error('Live chart failed');
       setLiveCharts(normalizeLiveChartPayload(await r.json()));
       setLiveLastRefreshTs(new Date().toISOString());
@@ -716,6 +721,7 @@ export default function BacktestLiveValidationPage() {
   const pnlDomain = computeSharedDomain([{ data: alignedPnl.backtest }, { data: alignedPnl.live }]);
 
   const liveChartVisibility = getLiveChartVisibility(liveCharts);
+  const liveChartSourceLabel = liveChartMeta.sources?.live ? `Source: ${liveChartMeta.sources.live}` : null;
   const summaryModel = buildLiveSummaryModel(selectedLivePath, selectedLiveEntry, liveInspect, liveStatus);
   const debugLevelColor = DEBUG_LEVEL_COLOR_MAP[String(summaryModel.debugLevel).toLowerCase()] || '#64748b';
 
@@ -792,7 +798,7 @@ export default function BacktestLiveValidationPage() {
             <option value="">--select live session from _reports/_live--</option>
             {liveSessions.map(session => (
               <option key={session.path} value={session.path}>
-                {session.name || session.path} | ex: {session.exchange || 'n/a'} | tf: {session.timeframe || 'n/a'} | updated: {fmtTs(session.updated_at)} | status: {session.status || 'unknown'}
+                {session.display_name || session.name || session.path}{session.stale_duplicate ? ' | stale duplicate' : ''} | ex: {session.exchange || 'n/a'} | tf: {session.timeframe || 'n/a'} | updated: {fmtTs(session.updated_at)} | status: {session.status || 'unknown'}
               </option>
             ))}
           </select>
@@ -837,6 +843,12 @@ export default function BacktestLiveValidationPage() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <h4 style={sectionTitleStyle}>Live charts</h4>
+            {(liveChartMeta.approximate || liveChartMeta.warnings?.length || liveChartSourceLabel) && (
+              <div style={{ border: `1px solid ${liveChartMeta.approximate ? colors.warning : colors.border}`, borderRadius: 8, padding: 10, color: liveChartMeta.approximate ? colors.warning : colors.muted, background: '#0B1220', fontSize: 12, lineHeight: 1.45 }}>
+                {liveChartMeta.approximate ? 'Orders-only fallback: approximate notional chart, not real PnL.' : liveChartSourceLabel}
+                {liveChartMeta.warnings?.length ? ` ${liveChartMeta.warnings.join(' ')}` : ''}
+              </div>
+            )}
             {liveChartVisibility.live ? <LineChart title="Live equity / PNL" series={[{ name: 'Live equity', color: colors.success, data: liveSeries.live }]} /> : <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 10, color: colors.muted, background: '#0B1220' }}>No chart data</div>}
             {liveChartVisibility.overlay ? (
               <LineChart title="Live vs Backtest overlay" series={[{ name: 'Live', color: colors.success, data: liveSeries.live }, { name: 'Backtest', color: colors.accent, data: liveSeries.backtest }]} />
