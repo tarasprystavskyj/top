@@ -18,7 +18,7 @@ Example:
 import argparse
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -129,7 +129,24 @@ def parse_utc_ms(raw: str) -> Optional[int]:
         return None
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    dt = datetime.fromisoformat(s)
+    try:
+        dt = datetime.fromisoformat(s)
+    except AttributeError:
+        sign_pos = max(s.rfind("+"), s.rfind("-", 10))
+        offset = None
+        main = s
+        if sign_pos > 10:
+            main = s[:sign_pos]
+            off = s[sign_pos:]
+            sign = 1 if off[0] == "+" else -1
+            hh, mm = off[1:].split(":", 1)
+            offset = timezone(sign * timedelta(hours=int(hh), minutes=int(mm)))
+        try:
+            dt = datetime.strptime(main, "%Y-%m-%dT%H:%M:%S.%f")
+        except ValueError:
+            dt = datetime.strptime(main, "%Y-%m-%dT%H:%M:%S")
+        if offset is not None:
+            dt = dt.replace(tzinfo=offset)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.astimezone(timezone.utc).timestamp() * 1000)

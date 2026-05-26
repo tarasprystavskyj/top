@@ -4,8 +4,6 @@
 Read-only/paper-only. The Binance copy-trading public open-position endpoint is
 the signal source. No exchange order endpoint or secret is used.
 """
-from __future__ import annotations
-
 import argparse
 import copy
 import json
@@ -44,12 +42,12 @@ DEFAULT_REPORT_DIR = (
     / "paper_live_grounded_compound_champion"
 )
 
-CHAMPION_NAME = "t500_b16_s0p25-0p35-0p55_w0p8-1p2-2p2"
+CHAMPION_NAME = "rnd5337_t500_b12_s0p953-1p3-1p442-1p767_w0p597-0p82-1p151-1p868"
 INITIAL_EQUITY = 500.0
 INITIAL_TARGET_NOTIONAL = 500.0
-BASE_FRAC = 0.16
-STEPS_PCT = (0.25, 0.35, 0.55)
-ADD_WEIGHTS = (0.8, 1.2, 2.2)
+BASE_FRAC = 0.12
+STEPS_PCT = (0.953, 1.3, 1.442, 1.767)
+ADD_WEIGHTS = (0.597, 0.82, 1.151, 1.868)
 FEE_RATE = 0.0005
 SLIPPAGE_BP = 4.25
 SLIPPAGE_RATE = SLIPPAGE_BP / 10_000.0
