@@ -1,11 +1,11 @@
-import { type CSSProperties, useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import { ColorType, CrosshairMode, createChart, LineSeries } from 'lightweight-charts';
 import { apiFetch } from '../utils/api';
 import {
   avgPriceDiffColorRule,
   computePollingIntervalMs,
   computeSharedDomain,
   preparePnlSeries,
-  seriesToSvgPath,
 } from '../utils/backtestValidation';
 import {
   buildRefreshSessionPlan,
@@ -230,62 +230,88 @@ const preStyle: CSSProperties = {
   overflow: 'auto',
 };
 
-function LineChart({ title, series }: { title: string; series: { name: string; color: string; data: Point[] }[] }) {
-  const width = 920;
-  const height = 320;
-  const padding = 46;
-  const domain = computeSharedDomain(series);
-  if (!domain.pointCount) return <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 14, color: colors.muted, background: '#0B1220' }}>{title}: No data</div>;
-  const { xMin, xMax, yMin, yMax } = domain;
-  const hasTimeX = xMax > 10_000_000_000;
+function toTradingViewLineData(points: Point[]) {
+  const byTime = new Map<number, { time: number; value: number }>();
+  points.forEach((point, index) => {
+    const parsed = Date.parse(String(point.ts || ''));
+    const time = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : index + 1;
+    const value = Number(point.value);
+    if (Number.isFinite(value)) byTime.set(time, { time, value });
+  });
+  return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+}
 
-  const fmtTime = (ms: number) => {
-    if (!Number.isFinite(ms)) return '';
-    return new Date(ms).toISOString().slice(5, 16).replace('T', ' ');
-  };
-  const yTickVals = [yMin, (yMin + yMax) / 2, yMax];
-  const xTickVals = [xMin, (xMin + xMax) / 2, xMax];
+function LineChart({ title, series }: { title: string; series: { name: string; color: string; data: Point[] }[] }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const domain = computeSharedDomain(series);
+  const hasData = domain.pointCount > 0;
+
+  useEffect(() => {
+    if (!containerRef.current || !hasData) return;
+    const el = containerRef.current;
+    el.replaceChildren();
+
+    const chart = createChart(el, {
+      autoSize: true,
+      height: 340,
+      layout: {
+        background: { type: ColorType.Solid, color: '#0B1220' },
+        textColor: colors.muted,
+      },
+      grid: {
+        vertLines: { color: '#1E293B' },
+        horzLines: { color: '#1E293B' },
+      },
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: { color: 'rgba(148, 163, 184, 0.55)', labelBackgroundColor: '#111827' },
+        horzLine: { color: 'rgba(148, 163, 184, 0.55)', labelBackgroundColor: '#111827' },
+      },
+      rightPriceScale: {
+        borderColor: '#334155',
+        scaleMargins: { top: 0.12, bottom: 0.12 },
+      },
+      timeScale: {
+        borderColor: '#334155',
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      handleScale: {
+        axisPressedMouseMove: true,
+        mouseWheel: true,
+        pinch: true,
+      },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: false,
+      },
+    });
+
+    series.forEach((item) => {
+      const tvSeries = chart.addSeries(LineSeries, {
+        color: item.color,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: item.name,
+      });
+      tvSeries.setData(toTradingViewLineData(item.data) as any);
+    });
+    chart.timeScale().fitContent();
+
+    return () => {
+      chart.remove();
+    };
+  }, [hasData, title, series]);
+
+  if (!hasData) return <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 14, color: colors.muted, background: '#0B1220' }}>{title}: No data</div>;
 
   return (
     <div style={{ ...cardStyle, padding: 16 }}>
       <h4 style={{ marginTop: 0, color: colors.text }}>{title}</h4>
-      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 320 }}>
-        <rect x={0} y={0} width={width} height={height} fill="#0B1220" />
-        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#334155" />
-        <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#334155" />
-        {yTickVals.map((v, i) => {
-          const y = height - padding - ((v - yMin) / (Math.max(1e-9, yMax - yMin))) * (height - padding * 2);
-          return (
-            <g key={`y-${i}`}>
-              <line x1={padding} y1={y} x2={width - padding} y2={y} stroke="#1E293B" strokeDasharray="4 4" />
-              <text x={padding - 8} y={y + 4} textAnchor="end" fontSize="11" fill="#94A3B8">
-                {v.toFixed(2)}
-              </text>
-            </g>
-          );
-        })}
-        {xTickVals.map((v, i) => {
-          const x = padding + ((v - xMin) / (Math.max(1e-9, xMax - xMin))) * (width - padding * 2);
-          return (
-            <g key={`x-${i}`}>
-              <line x1={x} y1={padding} x2={x} y2={height - padding} stroke="#1E293B" strokeDasharray="4 4" />
-              <text x={x} y={height - padding + 16} textAnchor="middle" fontSize="11" fill="#94A3B8">
-                {hasTimeX ? fmtTime(v) : v.toFixed(0)}
-              </text>
-            </g>
-          );
-        })}
-        {series.map(s => {
-          const pts = s.data.map((d, i) => {
-            const tsMs = Date.parse(String(d.ts || ''));
-            return { x: Number.isFinite(tsMs) ? tsMs : i, y: Number(d.value) || 0, ts: d.ts };
-          });
-          const path = seriesToSvgPath(pts, width, height, padding, domain);
-          return <path key={s.name} d={path} stroke={s.color} strokeWidth={2} fill="none" />;
-        })}
-        <text x={padding} y={padding - 10} fontSize="11" fill="#94A3B8">Y: value</text>
-        <text x={width - padding} y={height - 8} textAnchor="end" fontSize="11" fill="#94A3B8">X: {hasTimeX ? 'timestamp' : 'index'}</text>
-      </svg>
+      <div ref={containerRef} style={{ width: '100%', height: 340, minWidth: 0 }} />
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         {series.map(s => (
           <span key={s.name} style={{ color: s.color, fontWeight: 600 }}>{s.name}</span>
