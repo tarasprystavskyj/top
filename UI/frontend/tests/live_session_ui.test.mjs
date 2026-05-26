@@ -7,6 +7,7 @@ import {
   formatLiveTableCell,
   getLiveChartVisibility,
   inferLiveTableColumns,
+  normalizeLiveChartPayload,
   normalizeLiveTableRows,
   selectLiveSessionState,
   shouldShowNoLiveSessions,
@@ -52,6 +53,17 @@ test('live chart visibility rules', () => {
     { live: true, overlay: true, distance: false },
   );
   assert.deepEqual(getLiveChartVisibility({ distance: [{ ts: '2026-01-01T00:00:00Z', value: 0.2 }] }), { live: false, overlay: false, distance: true });
+});
+
+test('live chart payload preserves source metadata and approximate fallback flag', () => {
+  const normalized = normalizeLiveChartPayload({
+    live: [{ ts: '2026-01-01T00:00:00Z', value: 1 }],
+    sources: { live: 'session.sqlite:orders' },
+    warnings: ['approximate'],
+  });
+  assert.equal(normalized.approximate, true);
+  assert.equal(normalized.sources.live, 'session.sqlite:orders');
+  assert.deepEqual(normalized.warnings, ['approximate']);
 });
 
 test('live table panels empty and tabular helpers', () => {

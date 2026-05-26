@@ -40,10 +40,15 @@ export function normalizeChartSeries(points) {
 }
 
 export function normalizeLiveChartPayload(raw) {
+  const sources = raw && typeof raw.sources === 'object' && !Array.isArray(raw.sources) ? raw.sources : {};
+  const warnings = Array.isArray(raw?.warnings) ? raw.warnings.map((w) => String(w)).filter(Boolean) : [];
   return {
     live: normalizeChartSeries(raw?.live || []),
     backtest: normalizeChartSeries(raw?.backtest || []),
     distance: normalizeChartSeries(raw?.distance || []),
+    sources,
+    warnings,
+    approximate: !!raw?.approximate || sources.live === 'session.sqlite:orders',
   };
 }
 
