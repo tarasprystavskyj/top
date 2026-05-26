@@ -3,7 +3,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -11,6 +13,12 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.append(str(BACKEND_DIR))
 
 import api_main
+
+
+@pytest.fixture(autouse=True)
+def _isolate_live_root_env(monkeypatch):
+    monkeypatch.delenv("BACKTEST_LIVE_VALIDATION_LIVE_ROOTS", raising=False)
+    monkeypatch.delenv("LIVE_RESULTS_ROOTS", raising=False)
 
 
 def _write_json(path: Path, payload):
@@ -313,11 +321,17 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
             "status": "running",
             "started_at": "2026-05-25T00:00:00Z",
             "updated_at": "2026-05-25T00:05:00Z",
+            "candidate_params": {"fresh_tp_percent": 1.4, "normal_base_pct": 10.0},
         },
     )
     _write_json(session / "active_status.json", {"open_legs": 1, "filled_orders": 2})
     (session / "ACTIVE_STATUS_PATH.txt").write_text("active_status.json\n", encoding="utf-8")
     (session / "live_stdout_20260525.log").write_text("hype canary started\n", encoding="utf-8")
+    (session / "run_telemetry_20260525T000000Z.jsonl").write_text(
+        json.dumps({"ts": "2026-05-25T00:02:00Z", "input_meta": {"market": {"mark": 25.2}}}) + "\n"
+        + json.dumps({"ts": "2026-05-25T00:03:00Z", "input_meta": {"market": {"mark": 25.4}}}) + "\n",
+        encoding="utf-8",
+    )
 
     con = sqlite3.connect(session / "session.sqlite")
     try:
@@ -381,9 +395,13 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
         params={"path": str(session)},
     )
     assert chart.status_code == 200
-    assert chart.json()["live"][0]["value"] > 0
-    assert chart.json()["sources"]["live"] == "session.sqlite:orders"
-    assert chart.json()["approximate"] is True
+    chart_body = chart.json()
+    assert chart_body["live"][0]["value"] > 0
+    assert chart_body["sources"]["live"] == "session.sqlite:orders"
+    assert chart_body["approximate"] is True
+    assert chart_body["mark"][-1]["value"] == 25.4
+    assert chart_body["markers"][0]["text"] in {"DCA buy", "Meta strategy open"}
+    assert any(item["layer"] == "parameters" for item in chart_body["labels"])
 
     generated_csv = tmp_path / "HYPE_USDT_trade_history_for_match.csv"
     generated = api_main._write_live_orders_match_csv_from_sqlite(str(session), str(generated_csv), "HYPE-USDT")
@@ -417,6 +435,7 @@ def test_live_sessions_include_sibling_veronika_reports(monkeypatch, tmp_path):
             "live_exchange": "bingx",
             "live_symbol": "HYPE-USDT",
             "paper_only": False,
+            "status": "running",
             "open_paper_trades": [{"symbol": "HYPEUSDT", "side": "LONG"}],
             "utc": "2026-05-26T05:00:00Z",
         },
@@ -475,6 +494,109 @@ def test_live_session_chart_prefers_live_equity_artifact(monkeypatch, tmp_path):
     assert body.get("backtest")
 
 
+def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tmp_path):
+    tv_src = tmp_path / "TV_backtest_source"
+    tv_src.mkdir()
+    tv = tv_src / "X_BINGX_HYPEUSDT.P_sample.csv"
+    _sample_tv_csv(tv)
+    live_root = tmp_path / "_reports" / "_live"
+    session = live_root / "hype_chart_contract"
+    session.mkdir(parents=True)
+    _write_json(
+        session / "RUN_STATUS.json",
+        {
+            "live_exchange": "bingx",
+            "live_symbol": "HYPE-USDT",
+            "utc": "2026-05-26T08:59:59Z",
+            "candidate_params": {
+                "fresh_base_pct": 28.0,
+                "fresh_tp_percent": 1.4,
+                "normal_base_pct": 10.0,
+            },
+        },
+    )
+    pd.DataFrame(
+        [
+            {"ts": "2026-05-26T08:58:00Z", "value": -0.1, "equity": 29.9},
+            {"ts": "2026-05-26T08:59:00Z", "value": 0.2, "equity": 30.2},
+        ]
+    ).to_csv(session / "live_equity.csv", index=False)
+    pd.DataFrame(
+        [
+            {"ts": "2026-05-26T08:58:00Z", "value": 0.0, "equity": 30.0, "realized_equity": 30.0},
+            {"ts": "2026-05-26T08:59:00Z", "value": 0.3, "equity": 30.3, "realized_equity": 30.2},
+        ]
+    ).to_csv(session / "backtest_equity.csv", index=False)
+    np.savez(
+        session / "live_hype_1m_ohlcv_full_session.npz",
+        symbols=np.array(["HYPE/USDT:USDT"], dtype=object),
+        offsets=np.array([0, 2]),
+        timestamp_s=np.array([1779785880, 1779785940]),
+        open=np.array([59.5, 59.7]),
+        high=np.array([59.8, 59.9]),
+        low=np.array([59.4, 59.6]),
+        close=np.array([59.7, 59.8]),
+        volume=np.array([1.0, 1.2]),
+    )
+    (session / "run_telemetry_20260526T045829Z_restart.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"utc": "2026-05-26T08:58:00Z", "input_meta": {"market": {"mark": 59.5}}}),
+                json.dumps({"event": "poll", "status": {"utc": "2026-05-26T08:59:00Z", "input_meta": {"market": {"mark": 59.8}}}}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pd.DataFrame(
+        [
+            {"ts": "2026-05-26T08:58:30Z", "type": "meta_open", "price": 59.6, "pnl": ""},
+            {"ts": "2026-05-26T08:59:30Z", "type": "meta_full_close", "price": 59.8, "pnl": 0.25},
+        ]
+    ).to_csv(session / "live_chart_events.csv", index=False)
+    con = sqlite3.connect(session / "session.sqlite")
+    try:
+        con.execute(
+            "CREATE TABLE orders (order_id TEXT, ts_utc TEXT, bar_time_utc TEXT, mode TEXT, symbol TEXT, side TEXT, type TEXT, price REAL, qty REAL, status TEXT, reason TEXT, run_id TEXT, extra TEXT)"
+        )
+        con.execute(
+            "INSERT INTO orders VALUES ('order-open', '2026-05-26T08:58:30Z', '2026-05-26T08:58:00Z', 'LIVE', 'HYPE-USDT', 'LONG', 'OPEN', 59.6, 0.1, 'FILLED', 'lead_open_position_detected', 'run-1', ?)",
+            (json.dumps({"fill": {"fill_type": "base_entry"}}),),
+        )
+        con.execute(
+            "INSERT INTO orders VALUES ('order-dca', '2026-05-26T08:59:30Z', '2026-05-26T08:59:00Z', 'LIVE', 'HYPE-USDT', 'LONG', 'OPEN', 59.4, 0.1, 'FILLED', 'mark_crossed_dca_level', 'run-1', ?)",
+            (json.dumps({"fill": {"fill_type": "dca_add_1"}}),),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "TV_BACKTEST_SOURCE_DIR", str(tv_src))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+
+    client = TestClient(api_main.app)
+    chart = client.get(
+        "/api/backtest_live_validation/live_session/chart",
+        params={"path": str(session), "backtest_path": str(tv)},
+    )
+
+    assert chart.status_code == 200
+    body = chart.json()
+    assert body["sources"]["mark"].startswith("run_telemetry_")
+    assert [p["value"] for p in body["mark"]] == [59.5, 59.8]
+    assert len(body["price_bars"]) == 2
+    assert body["price_bars"][0]["open"] == 59.5
+    assert body["sources"]["price_bars"] == "live_hype_1m_ohlcv_full_session.npz"
+    assert body["live_realized"][-1]["value"] == 0.25
+    assert body["backtest_realized"][0]["value"] == 0.0
+    assert {m["text"] for m in body["markers"]} >= {"Meta strategy open", "DCA buy"}
+    assert any(label["text"].startswith("fresh_tp_percent") for label in body["labels"])
+    assert [p["value"] for p in body["backtest_price"]] == [100.0, 95.0, 98.0]
+    assert body["sources"]["backtest_price"] == "TradingView CSV:Price USDT"
+
+
 def test_live_match_ready_prefers_runner_safe_symbol_csv(monkeypatch, tmp_path):
     live_root = tmp_path / "_reports" / "_live"
     session = live_root / "hype_canary_match_csv"
@@ -522,6 +644,7 @@ def test_live_sessions_sort_newest_and_label_duplicate_names(monkeypatch, tmp_pa
         {
             "live_exchange": "bingx",
             "live_symbol": "HYPE-USDT",
+            "status": "running",
             "utc": "2026-05-26T07:55:00Z",
             "control": {"kill": False, "stop_new_orders": False},
         },
@@ -579,6 +702,7 @@ def test_live_sessions_include_top_reports_live_root(monkeypatch, tmp_path):
         {
             "live_exchange": "bingx",
             "live_symbol": "HYPE-USDT",
+            "status": "running",
             "open_paper_trades": [{"symbol": "HYPEUSDT", "side": "LONG", "fills": 1}],
             "utc": "2026-05-26T05:10:00Z",
         },

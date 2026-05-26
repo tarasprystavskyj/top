@@ -39,13 +39,59 @@ export function normalizeChartSeries(points) {
     .filter((p) => p.ts);
 }
 
+export function normalizePriceBars(points) {
+  return sortSeriesByTs(Array.isArray(points) ? points : [])
+    .map((p) => ({
+      ts: String(p?.ts || ''),
+      open: Number(p?.open),
+      high: Number(p?.high),
+      low: Number(p?.low),
+      close: Number(p?.close),
+    }))
+    .filter((p) => p.ts && Number.isFinite(p.open) && Number.isFinite(p.high) && Number.isFinite(p.low) && Number.isFinite(p.close));
+}
+
 export function normalizeLiveChartPayload(raw) {
   const sources = raw && typeof raw.sources === 'object' && !Array.isArray(raw.sources) ? raw.sources : {};
   const warnings = Array.isArray(raw?.warnings) ? raw.warnings.map((w) => String(w)).filter(Boolean) : [];
+  const markers = Array.isArray(raw?.markers)
+    ? raw.markers
+        .map((m, idx) => ({
+          id: String(m?.id || `marker-${idx}`),
+          time: String(m?.time || m?.ts || ''),
+          price: Number(m?.price),
+          text: String(m?.text || m?.label || ''),
+          kind: String(m?.kind || 'event'),
+          layer: String(m?.layer || 'events'),
+          color: String(m?.color || '#22D3EE'),
+          shape: String(m?.shape || 'circle'),
+          position: String(m?.position || 'atPriceMiddle'),
+        }))
+        .filter((m) => m.time && Number.isFinite(m.price))
+    : [];
+  const labels = Array.isArray(raw?.labels)
+    ? raw.labels
+        .map((label, idx) => ({
+          id: String(label?.id || `label-${idx}`),
+          time: String(label?.time || label?.ts || ''),
+          price: Number(label?.price),
+          text: String(label?.text || label?.label || ''),
+          layer: String(label?.layer || 'labels'),
+          color: String(label?.color || '#22D3EE'),
+        }))
+        .filter((label) => label.time && Number.isFinite(label.price) && label.text)
+    : [];
   return {
     live: normalizeChartSeries(raw?.live || []),
     backtest: normalizeChartSeries(raw?.backtest || []),
+    live_realized: normalizeChartSeries(raw?.live_realized || []),
+    backtest_realized: normalizeChartSeries(raw?.backtest_realized || []),
+    backtest_price: normalizeChartSeries(raw?.backtest_price || []),
+    price_bars: normalizePriceBars(raw?.price_bars || []),
     distance: normalizeChartSeries(raw?.distance || []),
+    mark: normalizeChartSeries(raw?.mark || []),
+    markers,
+    labels,
     sources,
     warnings,
     approximate: !!raw?.approximate || sources.live === 'session.sqlite:orders',

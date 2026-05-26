@@ -1,5 +1,6 @@
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
 import { ColorType, CrosshairMode, createChart, LineSeries } from 'lightweight-charts';
+import TradingViewLiveChart from '../components/TradingViewLiveChart';
 import { apiFetch } from '../utils/api';
 import {
   avgPriceDiffColorRule,
@@ -47,7 +48,21 @@ type LiveSessionInspect = {
   last_debug_event?: { level?: string; event_type?: string; ts?: string } | null;
   last_equity_ts?: string | null;
 };
-type LiveChartPayload = { live?: Point[]; backtest?: Point[]; distance?: Point[]; sources?: Record<string, string | null>; warnings?: string[]; approximate?: boolean };
+type LiveChartPayload = {
+  live?: Point[];
+  backtest?: Point[];
+  live_realized?: Point[];
+  backtest_realized?: Point[];
+  backtest_price?: Point[];
+  price_bars?: { ts: string; open: number; high: number; low: number; close: number }[];
+  distance?: Point[];
+  mark?: Point[];
+  markers?: any[];
+  labels?: any[];
+  sources?: Record<string, string | null>;
+  warnings?: string[];
+  approximate?: boolean;
+};
 type LiveTableKind = 'open_positions' | 'orders' | 'debug_events' | 'stdio';
 type TableStateMap = Record<LiveTableKind, any[]>;
 type TableLoadingMap = Record<LiveTableKind, boolean>;
@@ -342,7 +357,7 @@ const DEBUG_LEVEL_COLOR_MAP: Record<string, string> = {
   info: '#0284c7',
   debug: '#7c3aed',
 };
-const PAGE_VERSION = 'v2026.04.20-3';
+const PAGE_VERSION = 'v2026.05.26-zeno3-chart';
 
 function fmtTs(ts?: string | null) {
   if (!ts) return '—';
@@ -444,6 +459,8 @@ export default function BacktestLiveValidationPage() {
   const [liveChartError, setLiveChartError] = useState<string | null>(null);
   const [liveTableLoading, setLiveTableLoading] = useState<TableLoadingMap>(emptyLiveTableLoading());
   const [liveTableErrors, setLiveTableErrors] = useState<TableErrorMap>(emptyLiveTableErrors());
+  const autoLoadedLivePathRef = useRef('');
+  const autoChartRetryRef = useRef<Record<string, number>>({});
 
   const pollingIntervalMs = useMemo(() => computePollingIntervalMs(inspect?.bar_interval_seconds || runData?.inspect?.bar_interval_seconds || 60), [inspect?.bar_interval_seconds, runData?.inspect?.bar_interval_seconds]);
   const livePollingIntervalMs = useMemo(() => computePollingIntervalMs(liveStatus?.open_legs ? 15 : 20), [liveStatus?.open_legs]);
@@ -455,6 +472,12 @@ export default function BacktestLiveValidationPage() {
     return { live: norm.live || [], backtest: norm.backtest || [], distance: norm.distance || [] };
   }, [liveCharts]);
   const liveChartMeta = useMemo(() => normalizeLiveChartPayload(liveCharts || {}), [liveCharts]);
+  const liveChartHasAnyData = !!(
+    liveChartMeta.live?.length ||
+    liveChartMeta.backtest?.length ||
+    liveChartMeta.price_bars?.length ||
+    liveChartMeta.mark?.length
+  );
 
   async function refreshLiveSessions(keepPath = true) {
     setLiveListLoading(true);
@@ -465,8 +488,9 @@ export default function BacktestLiveValidationPage() {
       const d = await r.json().catch(() => ({}));
       const sessions = (Array.isArray(d?.sessions) ? d.sessions : []).map(normalizeLiveSessionEntry).filter((s: LiveSessionEntry) => !!s.path);
       setLiveSessions(sessions);
-      if (keepPath && selectedLivePath && !sessions.some((s: LiveSessionEntry) => s.path === selectedLivePath)) {
-        setSelectedLivePath('');
+      const hasSelectedPath = selectedLivePath && sessions.some((s: LiveSessionEntry) => s.path === selectedLivePath);
+      if (!selectedLivePath || !hasSelectedPath) {
+        setSelectedLivePath(sessions[0]?.path || '');
       }
     } catch (e: any) {
       setLiveListError(e?.message || 'live sessions load failed');
@@ -479,7 +503,11 @@ export default function BacktestLiveValidationPage() {
   useEffect(() => {
     apiFetch('/api/backtest_live_validation/files')
       .then(r => r.json())
-      .then(d => setFiles(Array.isArray(d?.files) ? d.files : []))
+      .then(d => {
+        const nextFiles = Array.isArray(d?.files) ? d.files : [];
+        setFiles(nextFiles);
+        if (!selectedPath && nextFiles[0]?.path) inspectPath(nextFiles[0].path);
+      })
       .catch(() => setFiles([]));
     refreshLiveSessions(false);
   }, []);
@@ -512,6 +540,32 @@ export default function BacktestLiveValidationPage() {
     }, livePollingIntervalMs);
     return () => clearInterval(timer);
   }, [selectedLivePath, liveAutoRefresh, livePollingIntervalMs]);
+
+  useEffect(() => {
+    if (!selectedLivePath || autoLoadedLivePathRef.current === selectedLivePath) return;
+    autoLoadedLivePathRef.current = selectedLivePath;
+    autoChartRetryRef.current[selectedLivePath] = 0;
+    Promise.allSettled([
+      inspectLiveSession(selectedLivePath),
+      loadLiveStatus(selectedLivePath, { silent: true }),
+    ]).finally(() => {
+      loadLiveChart(selectedLivePath);
+    });
+  }, [selectedLivePath]);
+
+  useEffect(() => {
+    if (!selectedLivePath || liveChartHasAnyData || liveChartLoading) return;
+    const attempts = autoChartRetryRef.current[selectedLivePath] || 0;
+    if (attempts >= 3) return;
+    autoChartRetryRef.current[selectedLivePath] = attempts + 1;
+    const timer = setTimeout(() => loadLiveChart(selectedLivePath), 1200);
+    return () => clearTimeout(timer);
+  }, [selectedLivePath, liveChartHasAnyData, liveChartLoading]);
+
+  useEffect(() => {
+    if (!selectedPath || !selectedLivePath || !liveCharts) return;
+    loadLiveChart(selectedLivePath);
+  }, [selectedPath]);
 
   async function inspectPath(path: string) {
     setSelectedPath(path);
@@ -590,7 +644,8 @@ export default function BacktestLiveValidationPage() {
     setLiveChartLoading(true);
     setLiveChartError(null);
     try {
-      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?path=${encodeURIComponent(path)}`);
+      const backtestParam = selectedPath ? `&backtest_path=${encodeURIComponent(selectedPath)}` : '';
+      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?path=${encodeURIComponent(path)}${backtestParam}`);
       if (!r.ok) throw new Error('Live chart failed');
       setLiveCharts(normalizeLiveChartPayload(await r.json()));
       setLiveLastRefreshTs(new Date().toISOString());
@@ -875,13 +930,11 @@ export default function BacktestLiveValidationPage() {
                 {liveChartMeta.warnings?.length ? ` ${liveChartMeta.warnings.join(' ')}` : ''}
               </div>
             )}
-            {liveChartVisibility.live ? <LineChart title="Live equity / PNL" series={[{ name: 'Live equity', color: colors.success, data: liveSeries.live }]} /> : <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 10, color: colors.muted, background: '#0B1220' }}>No chart data</div>}
-            {liveChartVisibility.overlay ? (
-              <LineChart title="Live vs Backtest overlay" series={[{ name: 'Live', color: colors.success, data: liveSeries.live }, { name: 'Backtest', color: colors.accent, data: liveSeries.backtest }]} />
+            {liveChartHasAnyData ? (
+              <TradingViewLiveChart payload={liveChartMeta} />
             ) : (
-              <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 10, color: colors.muted, background: '#0B1220' }}>Overlay unavailable (requires both live and backtest series)</div>
+              <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 10, color: colors.muted, background: '#0B1220' }}>No chart data</div>
             )}
-            {liveChartVisibility.distance && <LineChart title="Absolute distance" series={[{ name: 'Absolute distance', color: colors.danger, data: liveSeries.distance }]} />}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

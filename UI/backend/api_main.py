@@ -1,5 +1,6 @@
 # FastAPI MVP backend
 import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re, sys, sqlite3
+from collections import deque
 from typing import Any, Dict, Optional, List, Tuple
 from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -2993,6 +2994,78 @@ def _load_series_file_with_source(session_dir: str, candidates: List[str]) -> Tu
     return [], None
 
 
+def _last_csv_ts(session_dir: str, candidates: List[str]) -> Optional[str]:
+    for rel in candidates:
+        full = os.path.join(session_dir, rel)
+        if not os.path.isfile(full):
+            continue
+        try:
+            with open(full, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                pos = fh.tell()
+                chunk = b""
+                while pos > 0 and chunk.count(b"\n") < 2:
+                    step = min(4096, pos)
+                    pos -= step
+                    fh.seek(pos)
+                    chunk = fh.read(step) + chunk
+                lines = [line for line in chunk.decode("utf-8", errors="replace").splitlines() if line.strip()]
+            if len(lines) < 2:
+                continue
+            ts = lines[-1].split(",", 1)[0].strip()
+            return _to_iso_from_any(ts) or ts
+        except Exception:
+            continue
+    return None
+
+
+def _load_series_column_file_with_source(session_dir: str, candidates: List[str], value_columns: List[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    for rel in candidates:
+        full = os.path.join(session_dir, rel)
+        if not os.path.isfile(full):
+            continue
+        try:
+            df = pd.read_csv(full)
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        time_col = next((c for c in ("ts", "timestamp", "time", "dt", "Date and time") if c in df.columns), None)
+        value_col = next((c for c in value_columns if c in df.columns), None)
+        if not time_col or not value_col:
+            continue
+        out: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            point = _coerce_point(row.get(time_col), row.get(value_col))
+            if point:
+                out.append(point)
+        if out:
+            return sorted(out, key=lambda x: x["ts"]), rel
+    return [], None
+
+
+def _live_realized_pnl_series(session_dir: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    full = os.path.join(session_dir, "live_chart_events.csv")
+    if not os.path.isfile(full):
+        return [], None
+    try:
+        df = pd.read_csv(full)
+    except Exception:
+        return [], None
+    if df.empty or "ts" not in df.columns or "pnl" not in df.columns:
+        return [], None
+    out: List[Dict[str, Any]] = []
+    realized = 0.0
+    for _, row in df.sort_values("ts").iterrows():
+        ts = _to_iso_from_any(row.get("ts"))
+        pnl = _safe_float(row.get("pnl"))
+        if not ts or pnl == 0.0:
+            continue
+        realized += pnl
+        out.append({"ts": ts, "value": float(realized)})
+    return out, "live_chart_events.csv" if out else None
+
+
 def _sqlite_live_equity_series(session_dir: str) -> List[Dict[str, Any]]:
     db_path = _live_session_sqlite_path(session_dir)
     if not db_path:
@@ -3016,6 +3089,223 @@ def _sqlite_live_equity_series(session_dir: str) -> List[Dict[str, Any]]:
     except Exception:
         base = float(out["equity"].iloc[0])
     return [{"ts": row["ts"].isoformat(), "value": float(row["equity"] - base)} for _, row in out.iterrows()]
+
+
+def _tv_backtest_price_series(tv_path: Optional[str]) -> List[Dict[str, Any]]:
+    if not tv_path:
+        return []
+    abs_path = os.path.abspath(str(tv_path))
+    if not _is_allowed_validation_path(abs_path) or not os.path.isfile(abs_path):
+        return []
+    try:
+        df = _read_tv_csv(abs_path)
+    except Exception:
+        return []
+    price_col = next((c for c in ("Price USDT", "price", "Price", "close", "Close") if c in df.columns), None)
+    if not price_col:
+        return []
+    out = df.copy()
+    out[price_col] = pd.to_numeric(out[price_col], errors="coerce")
+    out = out.dropna(subset=["dt", price_col]).sort_values("dt")
+    if out.empty:
+        return []
+    points: List[Dict[str, Any]] = []
+    for _, row in out.iterrows():
+        points.append({"ts": row["dt"].isoformat(), "value": float(row[price_col])})
+    return points
+
+
+def _latest_live_telemetry_path(session_dir: str) -> Optional[str]:
+    candidates = sorted(
+        glob.glob(os.path.join(session_dir, "run_telemetry_*.jsonl")),
+        key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _live_mark_points_from_telemetry(session_dir: str, max_lines: int = 8000) -> List[Dict[str, Any]]:
+    path = _latest_live_telemetry_path(session_dir)
+    if not path:
+        return []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = deque(fh, maxlen=max_lines)
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        status = row.get("status") if isinstance(row.get("status"), dict) else {}
+        input_meta = row.get("input_meta") if isinstance(row.get("input_meta"), dict) else {}
+        if not input_meta and isinstance(status.get("input_meta"), dict):
+            input_meta = status.get("input_meta") or {}
+        market = input_meta.get("market") if isinstance(input_meta.get("market"), dict) else {}
+        mark = market.get("mark")
+        ts = row.get("ts") or row.get("utc") or row.get("timestamp")
+        if ts is None:
+            ts = status.get("utc") or status.get("timestamp")
+        point = _coerce_point(ts, mark)
+        if point:
+            out.append(point)
+    dedup: Dict[str, Dict[str, Any]] = {}
+    for point in out:
+        dedup[point["ts"]] = point
+    return sorted(dedup.values(), key=lambda x: x["ts"])
+
+
+def _live_ohlcv_bars_from_npz(session_dir: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    candidates = sorted(
+        glob.glob(os.path.join(session_dir, "*ohlcv*.npz")),
+        key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            data = np.load(path, allow_pickle=True)
+            timestamps = data["timestamp_s"]
+            opens = data["open"]
+            highs = data["high"]
+            lows = data["low"]
+            closes = data["close"]
+        except Exception:
+            continue
+        rows: List[Dict[str, Any]] = []
+        for idx in range(len(timestamps)):
+            try:
+                ts = pd.to_datetime(int(timestamps[idx]), unit="s", utc=True).isoformat()
+                row = {
+                    "ts": ts,
+                    "open": float(opens[idx]),
+                    "high": float(highs[idx]),
+                    "low": float(lows[idx]),
+                    "close": float(closes[idx]),
+                }
+            except Exception:
+                continue
+            if all(np.isfinite(row[k]) for k in ("open", "high", "low", "close")):
+                rows.append(row)
+        if rows:
+            return rows, os.path.basename(path)
+    return [], None
+
+
+def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
+    order_type = str(row.get("type") or "").upper()
+    reason = str(row.get("reason") or "")
+    extra = row.get("extra")
+    fill_type = ""
+    if isinstance(extra, str) and extra.strip():
+        try:
+            extra = json.loads(extra)
+        except Exception:
+            extra = {}
+    if isinstance(extra, dict):
+        fill = extra.get("fill") if isinstance(extra.get("fill"), dict) else {}
+        fill_type = str(fill.get("fill_type") or "")
+    reason_l = reason.lower()
+    fill_l = fill_type.lower()
+    if order_type in {"CLOSE", "EXIT"}:
+        return "Meta strategy full close", "meta_close", "#F87171"
+    if "mark_crossed_dca_level" in reason_l or fill_l.startswith("dca_add"):
+        return "DCA buy", "dca_buy", "#22C55E"
+    if "lead_open_position_detected" in reason_l or fill_l == "base_entry":
+        return "Meta strategy open", "meta_open", "#38BDF8"
+    side = str(row.get("side") or "").upper()
+    if order_type == "OPEN" and side in {"LONG", "BUY"}:
+        return "DCA buy", "dca_buy", "#22C55E"
+    if order_type == "OPEN":
+        return "Meta strategy open", "meta_open", "#38BDF8"
+    return "DCA sell", "dca_sell", "#F59E0B"
+
+
+def _live_event_markers(session_dir: str) -> List[Dict[str, Any]]:
+    rows = _sqlite_live_order_rows(session_dir, limit=10000)
+    out: List[Dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        ts = _to_iso_from_any(row.get("ts_utc") or row.get("bar_time_utc") or row.get("timestamp"))
+        price = _safe_float(row.get("price"))
+        if not ts or price <= 0:
+            continue
+        text, kind, color = _label_from_live_order(row)
+        is_close = kind in {"meta_close", "dca_sell"}
+        out.append(
+            {
+                "id": str(row.get("order_id") or f"order-{idx}"),
+                "time": ts,
+                "price": float(price),
+                "text": text,
+                "kind": kind,
+                "layer": "events",
+                "color": color,
+                "shape": "arrowDown" if is_close else "arrowUp",
+                "position": "atPriceTop" if is_close else "atPriceBottom",
+            }
+        )
+    closed_positions = _sqlite_rows_for_live_table(session_dir, "open_positions", limit=10000)
+    for idx, row in enumerate(closed_positions):
+        status = str(row.get("status") or "").upper()
+        ts = _to_iso_from_any(row.get("exit_fill_ts") or row.get("close_ts") or row.get("closed_at"))
+        price = _safe_float(row.get("exit_fill") or row.get("exit") or row.get("close_price"))
+        if status != "CLOSED" or not ts or price <= 0:
+            continue
+        marker_id = f"position-close-{idx}"
+        if any(m["time"] == ts and abs(float(m["price"]) - price) < 1e-9 for m in out):
+            continue
+        out.append(
+            {
+                "id": marker_id,
+                "time": ts,
+                "price": float(price),
+                "text": "Meta strategy full close",
+                "kind": "meta_close",
+                "layer": "events",
+                "color": "#F87171",
+                "shape": "arrowDown",
+                "position": "atPriceTop",
+            }
+        )
+    return sorted(out, key=lambda x: x["time"])
+
+
+def _live_strategy_labels(session_dir: str, anchor_time: Optional[str], anchor_price: Optional[float]) -> List[Dict[str, Any]]:
+    status = _safe_read_json(os.path.join(session_dir, "RUN_STATUS.json"))
+    params = status.get("candidate_params") if isinstance(status, dict) else None
+    if not isinstance(params, dict) or not anchor_time or anchor_price is None:
+        return []
+    preferred = [
+        "fresh_base_pct",
+        "normal_base_pct",
+        "fresh_tp_percent",
+        "fresh_callback_percent",
+        "max_position_cost_pct",
+        "dca_profile",
+    ]
+    labels: List[Dict[str, Any]] = []
+    for idx, key in enumerate(preferred):
+        if key not in params:
+            continue
+        value = params.get(key)
+        price = float(anchor_price) * (1.0 + (idx + 1) * 0.0015)
+        labels.append(
+            {
+                "id": f"param-{key}",
+                "time": anchor_time,
+                "price": price,
+                "text": f"{key}: {value}",
+                "layer": "parameters",
+                "color": "#22D3EE",
+            }
+        )
+    return labels
 
 
 def _resolve_live_session_path(raw_path: str) -> str:
@@ -3084,15 +3374,15 @@ def _annotate_live_sessions(sessions: List[Dict[str, Any]]) -> List[Dict[str, An
     return sorted(sessions, key=_live_session_sort_key, reverse=True)
 
 
-def _build_live_session_summary(session_dir: str) -> Dict[str, Any]:
+def _build_live_session_summary(session_dir: str, light: bool = False) -> Dict[str, Any]:
     st = os.stat(session_dir)
     meta_list = _session_meta_candidates(session_dir)
     meta = _extract_meta_fields(meta_list)
-    if meta["open_legs"] is None:
+    if meta["open_legs"] is None and not light:
         meta["open_legs"] = len(_session_table_rows(session_dir, "open_positions", limit=1000))
-    if meta["filled_orders"] is None:
+    if meta["filled_orders"] is None and not light:
         meta["filled_orders"] = len(_session_table_rows(session_dir, "orders", limit=10000))
-    if meta["last_debug_event"] is None:
+    if meta["last_debug_event"] is None and not light:
         debug_rows = _session_table_rows(session_dir, "debug_events", limit=1)
         if debug_rows:
             top = debug_rows[-1]
@@ -3102,9 +3392,12 @@ def _build_live_session_summary(session_dir: str) -> Dict[str, Any]:
                 "ts": top.get("ts") if isinstance(top, dict) else None,
             }
     if meta["last_equity_ts"] is None:
-        live = _load_series_file(session_dir, ["equity.csv", "live_equity.csv", "equity_curve.csv"])
-        if live:
-            meta["last_equity_ts"] = live[-1]["ts"]
+        if light:
+            meta["last_equity_ts"] = _last_csv_ts(session_dir, ["equity.csv", "live_equity.csv", "equity_curve.csv"])
+        else:
+            live = _load_series_file(session_dir, ["equity.csv", "live_equity.csv", "equity_curve.csv"])
+            if live:
+                meta["last_equity_ts"] = live[-1]["ts"]
     updated_at = meta["updated_at"] or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime))
     status = _infer_live_status(meta["status"], session_dir, updated_at, meta["last_debug_event"])
     return {
@@ -3383,7 +3676,7 @@ def backtest_live_validation_live_sessions():
             if not entry.is_dir() or not _looks_like_live_session_dir(entry.path):
                 continue
             try:
-                summary = _build_live_session_summary(entry.path)
+                summary = _build_live_session_summary(entry.path, light=True)
                 summary["root"] = root
                 sessions.append(summary)
             except Exception:
@@ -3433,7 +3726,7 @@ def backtest_live_validation_live_session_status(path: str = Query(default="")):
 
 
 @app.get("/api/backtest_live_validation/live_session/chart")
-def backtest_live_validation_live_session_chart(path: str = Query(default="")):
+def backtest_live_validation_live_session_chart(path: str = Query(default=""), backtest_path: str = Query(default="")):
     if not path:
         raise HTTPException(400, "path is required")
     session_dir = _resolve_live_session_path(path)
@@ -3450,6 +3743,22 @@ def backtest_live_validation_live_session_chart(path: str = Query(default="")):
             live_source = "session.sqlite:orders"
             warnings.append("Live chart uses filled order notional only; this is approximate and not real PnL.")
     backtest, backtest_source = _load_series_file_with_source(session_dir, ["backtest_equity.csv", "backtest_pnl.csv", "equity_backtest.csv"])
+    backtest_realized, backtest_realized_source = _load_series_column_file_with_source(
+        session_dir,
+        ["backtest_equity.csv", "backtest_pnl.csv", "equity_backtest.csv"],
+        ["realized_pnl", "realized_value", "realized_equity"],
+    )
+    if backtest_realized and backtest_realized_source == "backtest_equity.csv":
+        base_realized = backtest_realized[0]["value"]
+        backtest_realized = [{**point, "value": float(point["value"] - base_realized)} for point in backtest_realized]
+    live_realized, live_realized_source = _live_realized_pnl_series(session_dir)
+    backtest_price = _tv_backtest_price_series(backtest_path)
+    backtest_price_source = "TradingView CSV:Price USDT" if backtest_price else None
+    if not backtest_price:
+        backtest_price, backtest_price_source = _load_series_file_with_source(
+            session_dir,
+            ["backtest_price.csv", "price_backtest.csv", "backtest_mark.csv"],
+        )
     distance, distance_source = _load_series_file_with_source(session_dir, ["distance.csv", "absolute_distance.csv"])
     if not distance and live and backtest:
         bt_map = {row["ts"]: row["value"] for row in backtest}
@@ -3461,6 +3770,19 @@ def backtest_live_validation_live_session_chart(path: str = Query(default="")):
         distance = computed
         if distance:
             distance_source = "computed"
+    price_bars, price_bars_source = _live_ohlcv_bars_from_npz(session_dir)
+    mark = _live_mark_points_from_telemetry(session_dir)
+    markers = _live_event_markers(session_dir)
+    anchor_time = None
+    anchor_price: Optional[float] = None
+    if mark:
+        anchor_time = mark[-1]["ts"]
+        anchor_price = float(mark[-1]["value"])
+        sources["mark"] = os.path.basename(_latest_live_telemetry_path(session_dir) or "run_telemetry_*.jsonl")
+    elif live:
+        anchor_time = live[-1]["ts"]
+        anchor_price = float(live[-1]["value"])
+    labels = _live_strategy_labels(session_dir, anchor_time, anchor_price)
     payload: Dict[str, Any] = {}
     if live:
         payload["live"] = live
@@ -3468,9 +3790,27 @@ def backtest_live_validation_live_session_chart(path: str = Query(default="")):
     if backtest:
         payload["backtest"] = backtest
         sources["backtest"] = backtest_source
+    if live_realized:
+        payload["live_realized"] = live_realized
+        sources["live_realized"] = live_realized_source
+    if backtest_realized:
+        payload["backtest_realized"] = backtest_realized
+        sources["backtest_realized"] = backtest_realized_source
+    if backtest_price:
+        payload["backtest_price"] = backtest_price
+        sources["backtest_price"] = backtest_price_source
     if distance:
         payload["distance"] = distance
         sources["distance"] = distance_source
+    if mark:
+        payload["mark"] = mark
+    if price_bars:
+        payload["price_bars"] = price_bars
+        sources["price_bars"] = price_bars_source
+    if markers:
+        payload["markers"] = markers
+    if labels:
+        payload["labels"] = labels
     if sources:
         payload["sources"] = sources
     if warnings:
