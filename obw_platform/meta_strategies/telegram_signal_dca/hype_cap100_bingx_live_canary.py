@@ -7,12 +7,14 @@ but submits small BingX market orders when a guarded paper entry/exit would
 otherwise be recorded.
 """
 import argparse
+import csv
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 import hashlib
 import json
 import math
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
@@ -213,7 +215,7 @@ except (ImportError, SyntaxError):  # pragma: no cover - exercised by import smo
         return exact[0]
 
 
-LIVE_REPORTS_ROOT = ROOT.parent / "top_1" / "_reports" / "_live"
+LIVE_REPORTS_ROOT = ROOT.parent / "top_1" / "obw_platform" / "_reports" / "_live"
 DEFAULT_OUT_DIR = LIVE_REPORTS_ROOT / "hype_canary_bingx_live"
 DEFAULT_ENV_FILE = "/var/www/vps2.happyuser.info/top/top_1/.env"
 DEFAULT_LIVE_SYMBOL = "HYPE-USDT"
@@ -288,19 +290,291 @@ def upsert_session_position(args: argparse.Namespace, trade: Dict[str, Any], *, 
     db_upsert_open_position(args.session_db, bot_id, rec)
 
 
+def _fmt_float(value: Any) -> str:
+    try:
+        out = float(value or 0.0)
+    except Exception:
+        out = 0.0
+    if not math.isfinite(out):
+        out = 0.0
+    return f"{out:.12g}"
+
+
+def _ua_order_direction(order_type: Any, side: Any) -> str:
+    action = "Закрити" if str(order_type or "").upper() in {"CLOSE", "EXIT"} else "Відкрити"
+    side_text = str(side or "").upper()
+    if side_text == "LONG":
+        return f"{action} Long"
+    if side_text == "SHORT":
+        return f"{action} Short"
+    return action
+
+
+def _read_session_orders_for_artifacts(session_db: str) -> List[Dict[str, Any]]:
+    if not session_db or not Path(session_db).exists():
+        return []
+    try:
+        con = sqlite3.connect(f"file:{session_db}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        try:
+            tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "orders" not in tables:
+                return []
+            rows = con.execute(
+                """
+                SELECT order_id, ts_utc, symbol, side, type, price, qty, status, reason, extra
+                FROM orders
+                WHERE UPPER(COALESCE(status, '')) = 'FILLED'
+                ORDER BY ts_utc ASC, order_id ASC
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
+def export_match_ready_trade_history(args: argparse.Namespace) -> Optional[str]:
+    rows = _read_session_orders_for_artifacts(str(args.session_db or ""))
+    if not rows:
+        return None
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    symbol_safe = str(args.live_symbol or DEFAULT_LIVE_SYMBOL).replace("-", "_")
+    out_path = out_dir / f"{symbol_safe}_trade_history_for_match.csv"
+    with out_path.open("w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=[
+                "Час виконання",
+                "Ф’ючерси / Напрямок",
+                "Виконано",
+                "Ціна виконання",
+                "Закриті PnL / %",
+                "Комісія",
+                "Ордер №",
+                "Операція",
+            ],
+        )
+        writer.writeheader()
+        for row in rows:
+            symbol = str(row.get("symbol") or args.live_symbol or DEFAULT_LIVE_SYMBOL).replace("-", "")
+            writer.writerow(
+                {
+                    "Час виконання": row.get("ts_utc") or "",
+                    "Ф’ючерси / Напрямок": f"{symbol}\n{_ua_order_direction(row.get('type'), row.get('side'))}",
+                    "Виконано": _fmt_float(row.get("qty")),
+                    "Ціна виконання": _fmt_float(row.get("price")),
+                    "Закриті PnL / %": "0 USDT",
+                    "Комісія": "0 USDT",
+                    "Ордер №": row.get("order_id") or "",
+                    "Операція": "",
+                }
+            )
+    return str(out_path)
+
+
+def write_live_equity_artifacts(args: argparse.Namespace, status: Dict[str, Any]) -> Optional[str]:
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = str(status.get("utc") or paper.iso(paper.utc_now()))
+    guards = status.get("guards") if isinstance(status.get("guards"), dict) else {}
+    realized_plus_unrealized = float(guards.get("daily_realized_plus_unrealized_pnl_usdt") or 0.0)
+    open_notional = float(guards.get("gross_open_notional") or 0.0)
+    equity = float(getattr(args, "initial_equity", 0.0) or 0.0) + realized_plus_unrealized
+    live_equity_path = out_dir / "live_equity.csv"
+    existing: List[Dict[str, Any]] = []
+    if live_equity_path.exists():
+        try:
+            with live_equity_path.open("r", newline="", encoding="utf-8-sig") as fh:
+                existing = [row for row in csv.DictReader(fh) if row.get("ts") and row.get("ts") != ts]
+        except Exception:
+            existing = []
+    existing.append(
+        {
+            "ts": ts,
+            "value": _fmt_float(realized_plus_unrealized),
+            "equity": _fmt_float(equity),
+            "realized_plus_unrealized_pnl_usdt": _fmt_float(realized_plus_unrealized),
+            "position_value_usdt": _fmt_float(open_notional),
+        }
+    )
+    existing = existing[-10000:]
+    with live_equity_path.open("w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=["ts", "value", "equity", "realized_plus_unrealized_pnl_usdt", "position_value_usdt"],
+        )
+        writer.writeheader()
+        writer.writerows(existing)
+    if args.session_db:
+        try:
+            con = sqlite3.connect(args.session_db)
+            try:
+                con.execute(
+                    """
+                    INSERT OR REPLACE INTO equity(
+                        run_id, ts_utc, equity_usdt, cash_usdt, position_value_usdt,
+                        realized_pnl_cum, unrealized_pnl
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        args.run_id,
+                        ts,
+                        equity,
+                        equity - open_notional,
+                        open_notional,
+                        realized_plus_unrealized,
+                        0.0,
+                    ),
+                )
+                con.commit()
+            finally:
+                con.close()
+        except Exception:
+            pass
+    return str(live_equity_path)
+
+
+def emit_ui_artifacts(args: argparse.Namespace, status: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    return {
+        "live_equity_csv": write_live_equity_artifacts(args, status),
+        "match_ready_csv": export_match_ready_trade_history(args),
+    }
+
+
 def control_paths(args: argparse.Namespace) -> Tuple[Path, Path]:
     base = Path(args.control_dir or args.out_dir)
     return base / "STOP_NEW_ORDERS", base / "KILL"
 
 
+def hot_stop_path(args: argparse.Namespace) -> Path:
+    return Path(args.control_dir or args.out_dir) / "HOT_STOP"
+
+
 def control_state(args: argparse.Namespace) -> Dict[str, Any]:
     stop_path, kill_path = control_paths(args)
+    hot_path = hot_stop_path(args)
     return {
         "stop_new_orders_path": str(stop_path),
         "kill_path": str(kill_path),
+        "hot_stop_path": str(hot_path),
         "stop_new_orders": stop_path.exists(),
         "kill": kill_path.exists(),
+        "hot_stop": hot_path.exists(),
     }
+
+
+def default_hot_restart_snapshot_path(args: argparse.Namespace) -> Path:
+    return Path(args.hot_restart_snapshot_path or Path(args.out_dir) / "HOT_RESTART_SNAPSHOT.json")
+
+
+def build_hot_restart_snapshot(
+    args: argparse.Namespace,
+    *,
+    state: Dict[str, Any],
+    status: Dict[str, Any],
+    now: datetime,
+    reason: str,
+) -> Dict[str, Any]:
+    return {
+        "schema": "hype_cap100_live_hot_restart_snapshot_v1",
+        "utc": paper.iso(now),
+        "reason": reason,
+        "pid": os.getpid(),
+        "run_id": args.run_id,
+        "paths": {
+            "out_dir": str(args.out_dir),
+            "state_path": str(args.state_path),
+            "status_path": str(args.status_path),
+            "telemetry_path": str(args.telemetry_path),
+            "session_db": str(args.session_db or ""),
+            "control_dir": str(args.control_dir or args.out_dir),
+        },
+        "runner_args": {
+            "portfolio_id": args.portfolio_id,
+            "symbol": args.symbol,
+            "live_exchange": args.live_exchange,
+            "live_symbol": args.live_symbol,
+            "position_mode": args.position_mode,
+            "initial_equity": args.initial_equity,
+            "initial_target_notional": args.initial_target_notional,
+            "max_gross_notional_usdt": args.max_gross_notional_usdt,
+            "max_one_side_notional_usdt": args.max_one_side_notional_usdt,
+            "max_daily_loss_usdt": args.max_daily_loss_usdt,
+            "max_orders_per_hour": args.max_orders_per_hour,
+            "deadline_utc": args.deadline_utc,
+            "long_only": bool(args.long_only),
+            "interval_sec": args.interval_sec,
+            "dca_eval_interval_sec": args.dca_eval_interval_sec,
+            "history_poll_interval_sec": args.history_poll_interval_sec,
+            "order_sync_wait_sec": args.order_sync_wait_sec,
+            "order_sync_poll_sec": args.order_sync_poll_sec,
+        },
+        "state": state,
+        "status": status,
+    }
+
+
+def write_hot_restart_snapshot(
+    args: argparse.Namespace,
+    *,
+    state: Dict[str, Any],
+    status: Dict[str, Any],
+    now: datetime,
+    reason: str,
+) -> str:
+    snapshot = build_hot_restart_snapshot(args, state=state, status=status, now=now, reason=reason)
+    path = default_hot_restart_snapshot_path(args)
+    paper.write_json(path, snapshot)
+    return str(path)
+
+
+def load_resume_snapshot(args: argparse.Namespace) -> Optional[Dict[str, Any]]:
+    if not args.resume_snapshot:
+        return None
+    snapshot_path = Path(args.resume_snapshot)
+    snapshot = paper.load_json(snapshot_path, {})
+    if snapshot.get("schema") != "hype_cap100_live_hot_restart_snapshot_v1":
+        raise SystemExit(f"unsupported resume snapshot schema: {snapshot_path}")
+    state = snapshot.get("state")
+    if not isinstance(state, dict):
+        raise SystemExit(f"resume snapshot has no state object: {snapshot_path}")
+    existing_state_path = Path(args.state_path)
+    if existing_state_path.exists() and not args.resume_snapshot_overwrite:
+        raise SystemExit(f"state path already exists; use --resume-snapshot-overwrite to replace it: {existing_state_path}")
+    state = dict(state)
+    state["mode"] = "hype_cap100_bingx_live_canary"
+    state["paper_only"] = False
+    state.setdefault("events", []).append(
+        {
+            "utc": paper.iso(paper.utc_now()),
+            "type": "resume_snapshot_loaded",
+            "snapshot_path": str(snapshot_path),
+            "snapshot_utc": snapshot.get("utc"),
+        }
+    )
+    state["events"] = state["events"][-args.max_events :]
+    paper.write_json(existing_state_path, state)
+    return snapshot
+
+
+def handle_hot_stop_if_requested(args: argparse.Namespace, controls: Dict[str, Any], now: datetime) -> None:
+    if not controls.get("hot_stop"):
+        return
+    state = paper.load_json(Path(args.state_path), paper.default_state(args))
+    status = paper.load_json(Path(args.status_path), {})
+    if not status:
+        status = status_payload(state, None, now, [], {"hot_stop": True, "inputs_skipped": True}, args)
+    status["utc"] = paper.iso(now)
+    status["hot_stop_requested"] = True
+    status["control"] = control_state(args)
+    snapshot_path = write_hot_restart_snapshot(args, state=state, status=status, now=now, reason="HOT_STOP")
+    status["hot_restart_snapshot_path"] = snapshot_path
+    paper.write_json(Path(args.status_path), status)
+    paper.append_jsonl(Path(args.telemetry_path), {"event": "hot_stop", "utc": paper.iso(now), "snapshot_path": snapshot_path})
+    raise SystemExit(f"HOT_STOP file present; snapshot written: {snapshot_path}")
 
 
 def load_env_file(path: str) -> Dict[str, bool]:
@@ -911,6 +1185,7 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
 def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     now = paper.utc_now()
     controls = control_state(args)
+    handle_hot_stop_if_requested(args, controls, now)
     if controls["kill"]:
         raise SystemExit(f"KILL file present: {controls['kill_path']}")
     state = paper.load_json(Path(args.state_path), paper.default_state(args))
@@ -924,6 +1199,7 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
         state["last_dca_eval_bucket"] = dca_meta.get("dca_eval_bucket")
         state["last_dca_eval_utc"] = paper.iso(now)
     status = status_payload(state, mark, now, events, input_meta, args)
+    status["ui_artifacts"] = emit_ui_artifacts(args, status)
     state["last_poll"] = status
     state.setdefault("events", []).extend({"utc": paper.iso(now), **event} for event in events)
     state["events"] = state["events"][-args.max_events :]
@@ -950,6 +1226,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--run-id", default="")
     ap.add_argument("--order-sync-wait-sec", type=float, default=3.0)
     ap.add_argument("--order-sync-poll-sec", type=float, default=0.25)
+    ap.add_argument("--hot-restart-snapshot-path", default="", help="Where HOT_STOP writes a restart snapshot. Defaults to out-dir/HOT_RESTART_SNAPSHOT.json.")
+    ap.add_argument("--resume-snapshot", default="", help="Load state from a HOT_STOP snapshot before starting.")
+    ap.add_argument("--resume-snapshot-overwrite", action="store_true", help="Allow --resume-snapshot to replace an existing state-path.")
     return ap
 
 
@@ -970,6 +1249,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--history-poll-interval-sec must be non-negative")
     if args.order_sync_wait_sec < 0 or args.order_sync_poll_sec <= 0:
         raise SystemExit("order sync timing must be non-negative/positive")
+    if args.resume_snapshot and not Path(args.resume_snapshot).exists():
+        raise SystemExit(f"--resume-snapshot does not exist: {args.resume_snapshot}")
 
 
 def main() -> None:
@@ -982,6 +1263,7 @@ def main() -> None:
         args.run_id = "HYPE_CAP100_LIVE_" + paper.utc_now().strftime("%Y%m%dT%H%M%SZ")
     ensure_session_dbs(args.out_dir, args.session_db)
     ensure_orders_db(args.session_db)
+    load_resume_snapshot(args)
     args._auth_probe = auth_probe(args)
     while True:
         print(json.dumps(poll_once(args), ensure_ascii=False, indent=2, sort_keys=True), flush=True)
