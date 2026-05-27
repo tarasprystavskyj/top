@@ -29,6 +29,10 @@ from obw_platform.runners.strategy_intents import (
     notify_strategy_rejected,
     strategy_can_submit,
 )
+from obw_platform.runners.legacy_strategy_adapter import (
+    LegacyStrategyPolicy,
+    call_manage_position,
+)
 
 
 class StrategyIntentTests(unittest.TestCase):
@@ -133,6 +137,20 @@ class StrategyIntentTests(unittest.TestCase):
         self.assertFalse(strategy_can_submit(strat, "HYPE/USDT:USDT", "open"))
         notify_strategy_filled(strat, "HYPE/USDT:USDT", event="dca")
         self.assertTrue(strategy_can_submit(strat, "HYPE/USDT:USDT", "open"))
+
+    def test_legacy_adapter_does_not_mask_strategy_body_typeerror(self):
+        class Strategy:
+            def __init__(self):
+                self.calls = 0
+
+            def manage_position(self, sym, row, pos, ctx=None):
+                self.calls += 1
+                raise TypeError("strategy body bug")
+
+        strat = Strategy()
+        with self.assertRaisesRegex(TypeError, "strategy body bug"):
+            call_manage_position(strat, "HYPE/USDT:USDT", {}, SimpleNamespace(qty=1.0, entry=40.0), {}, LegacyStrategyPolicy(enabled=True))
+        self.assertEqual(strat.calls, 1)
 
     def test_hype_paper_dca_levels_map_to_strategy_add_intent(self):
         args = SimpleNamespace(initial_equity=INITIAL_EQUITY, initial_target_notional=INITIAL_TARGET_NOTIONAL)
@@ -1170,6 +1188,33 @@ class LiveRunnerIntentRoutingTests(unittest.TestCase):
             self.assertEqual(loaded[key_db]["exchange_order_id"], "DB1")
             self.assertEqual(loaded[key_json]["exchange_order_id"], "JSON1")
 
+    def test_pending_entry_hybrid_load_preserves_same_key_json_db_collision(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = str(Path(td) / "session.sqlite")
+            key = live_runner.pos_key("HYPE/USDT:USDT", "LONG")
+            live_runner._save_pending_entries(td, {
+                key: {
+                    "symbol": "HYPE/USDT:USDT", "side": "LONG", "exchange_order_id": "JSON1",
+                    "created_bar_iso": self.row["datetime_utc"], "limit_price": 39.0,
+                    "delta_qty": 1.0, "applied_filled_qty": 0.0, "status": "open",
+                    "strategy_snapshot": {"source": "json"}, "intent": {"kind": "OPEN"},
+                }
+            }, run_id="run")
+            live_runner._db_upsert_pending_entry(db_path, key, {
+                "symbol": "HYPE/USDT:USDT", "side": "LONG", "exchange_order_id": "DB1",
+                "created_bar_iso": self.row["datetime_utc"], "limit_price": 38.0,
+                "delta_qty": 1.0, "applied_filled_qty": 0.0, "status": "open",
+                "strategy_snapshot": {"source": "db"}, "intent": {"kind": "ADD"},
+            }, run_id="run")
+
+            loaded = live_runner._load_pending_entries_hybrid(td, db_path)
+            order_ids = {v["exchange_order_id"] for v in loaded.values()}
+            self.assertEqual(order_ids, {"JSON1", "DB1"})
+            self.assertEqual(loaded[key]["exchange_order_id"], "DB1")
+            alias_keys = [k for k in loaded if k != key]
+            self.assertEqual(len(alias_keys), 1)
+            self.assertEqual(live_runner._pending_position_key(alias_keys[0], loaded[alias_keys[0]]), key)
+
     def test_stale_pending_no_fill_after_restart_restores_persisted_snapshot(self):
         class FakeExchange:
             def __init__(self):
@@ -1394,7 +1439,8 @@ class LiveRunnerIntentRoutingTests(unittest.TestCase):
                     "created_bar_iso": self.row["datetime_utc"], "limit_price": 39.5,
                     "delta_qty": 1.0, "applied_filled_qty": 0.0, "status": "open",
                     "strategy_snapshot": {"pos_size": 0.0}, "restart_loaded": True,
-                    "snapshot_recoverable": True, "intent": {"kind": "OPEN", "strategy_event": "first"},
+                    "snapshot_recoverable": True,
+                    "intent": {"kind": "OPEN", "strategy_event": "first", "tp_price": 42.0, "sl_price": 37.0},
                 }
             }
             positions = {}
@@ -1406,6 +1452,8 @@ class LiveRunnerIntentRoutingTests(unittest.TestCase):
             self.assertEqual(pending, {})
             self.assertAlmostEqual(positions[key]["qty"], 1.0)
             self.assertAlmostEqual(positions[key]["entry"], 39.5)
+            self.assertAlmostEqual(positions[key]["tp_price"], 42.0)
+            self.assertAlmostEqual(positions[key]["sl_price"], 37.0)
 
     def test_restart_guard_blocks_untracked_open_strategy_orders(self):
         class FakeExchange:
@@ -1502,6 +1550,35 @@ class LiveRunnerIntentRoutingTests(unittest.TestCase):
         )
         self.assertTrue(res["ok"])
         self.assertEqual(fetcher.ex.calls, [None, "HYPE/USDT:USDT"])
+
+    def test_restart_guard_scans_supplied_universe_when_no_local_state(self):
+        class FakeExchange:
+            def __init__(self):
+                self.calls = []
+
+            def fetch_open_orders(self, symbol=None):
+                self.calls.append(symbol)
+                if symbol is None:
+                    return []
+                if symbol == "ENA/USDT:USDT":
+                    return [{"id": "ORPHAN", "symbol": symbol, "status": "open", "type": "limit"}]
+                return []
+
+        class FakeFetcher:
+            def __init__(self):
+                self.ex = FakeExchange()
+
+            def resolve_symbol(self, sym):
+                return sym
+
+        fetcher = FakeFetcher()
+        res = live_runner._validate_pending_entries_restart_guard(
+            fetcher, {}, {}, results_dir="/tmp/no-write", session_db_path="", run_id="run",
+            symbols=["HYPE/USDT:USDT", "ENA/USDT:USDT"],
+        )
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["untracked_open_orders"][0]["id"], "ORPHAN")
+        self.assertIn("ENA/USDT:USDT", fetcher.ex.calls)
 
     def test_restart_guard_ignores_reduce_only_and_close_orders(self):
         class FakeExchange:

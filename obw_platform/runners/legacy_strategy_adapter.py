@@ -76,7 +76,6 @@ def call_manage_position(strat: Any, sym: str, row: dict, pos: Any, ctx: dict, p
     try:
         sig = inspect.signature(fn)
         sig.bind(sym, row, pos, ctx=ctx)
-        return fn(sym, row, pos, ctx=ctx)
     except ValueError:
         return fn(sym, row, pos, ctx=ctx)
     except TypeError as exc:
@@ -85,6 +84,7 @@ def call_manage_position(strat: Any, sym: str, row: dict, pos: Any, ctx: dict, p
         except TypeError:
             raise exc
         return fn(True, sym, row, pos, ctx)
+    return fn(sym, row, pos, ctx=ctx)
 
 
 def legacy_execution_policy(policy: LegacyStrategyPolicy, event: str) -> dict:

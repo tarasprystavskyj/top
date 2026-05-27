@@ -639,8 +639,26 @@ def _load_pending_entries_hybrid(results_dir: str, session_db_path: str) -> dict
     db_entries = _load_pending_entries_from_db(session_db_path)
     json_entries = _load_pending_entries(results_dir)
     merged = dict(json_entries or {})
-    merged.update(db_entries or {})
+    for key, pend in (db_entries or {}).items():
+        existing = merged.get(key)
+        existing_oid = str((existing or {}).get('exchange_order_id') or '')
+        db_oid = str((pend or {}).get('exchange_order_id') or '')
+        if existing and existing_oid and db_oid and existing_oid != db_oid:
+            merged[_pending_collision_key(key, existing_oid, 'json')] = existing
+        merged[key] = pend
     return merged
+
+
+def _pending_collision_key(base_key: str, order_id: str, source: str) -> str:
+    return f"{base_key}#pending#{source}:{str(order_id or '')}"
+
+
+def _pending_position_key(key: str, pend: dict) -> str:
+    sym = str((pend or {}).get('symbol') or '')
+    side = str((pend or {}).get('side') or '').upper()
+    if sym and side:
+        return pos_key(sym, side)
+    return str(key or '').split('#pending#', 1)[0]
 
 
 def _save_pending_entries(results_dir: str, pending_entries: dict, *, run_id: str = '', session_db_path: str = '') -> None:
@@ -756,10 +774,14 @@ def _is_reduce_or_close_order(order: dict) -> bool:
     return any(str(v).lower() in {'true', '1', 'yes'} for v in vals)
 
 
-def _validate_pending_entries_restart_guard(fetcher, pending_entries: dict, positions: dict, *, results_dir: str, session_db_path: str, run_id: str) -> dict:
+def _validate_pending_entries_restart_guard(fetcher, pending_entries: dict, positions: dict, *, results_dir: str, session_db_path: str, run_id: str, symbols=None) -> dict:
     pending_ids = {str((v or {}).get('exchange_order_id') or '') for v in (pending_entries or {}).values()}
     pending_ids.discard('')
-    symbols = sorted({split_pos_key(k)[0] for k in (positions or {}).keys()} | {str((v or {}).get('symbol') or '') for v in (pending_entries or {}).values() if (v or {}).get('symbol')})
+    symbols = sorted(
+        {str(s or '') for s in (symbols or []) if str(s or '')}
+        | {split_pos_key(k)[0] for k in (positions or {}).keys()}
+        | {str((v or {}).get('symbol') or '') for v in (pending_entries or {}).values() if (v or {}).get('symbol')}
+    )
     try:
         open_orders = _fetch_open_strategy_orders(fetcher, symbols=symbols)
     except Exception as e:
@@ -1167,6 +1189,7 @@ def _place_market_fallback_open(fetcher, strat, *, sym, side, requested_px, qty,
 def _apply_pending_entry_order_state(*, key: str, pend: dict, od: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, strat, current_bar_iso: str, run_id: str) -> str:
     sym = pend.get('symbol')
     side = str(pend.get('side', 'LONG')).upper()
+    position_key = _pending_position_key(key, pend)
     order_id = pend.get('exchange_order_id')
     status = str((od or {}).get('status') or pend.get('status') or '').lower()
     try:
@@ -1175,7 +1198,7 @@ def _apply_pending_entry_order_state(*, key: str, pend: dict, od: dict, position
         filled = 0.0
     already_applied = float(pend.get('applied_filled_qty') or 0.0)
     delta_filled = max(0.0, filled - already_applied)
-    rec = positions.get(key)
+    rec = positions.get(position_key)
     applied_without_existing_position = False
     if delta_filled > 1e-12 and pend.get('restart_loaded'):
         if not pend.get('snapshot_recoverable') and pend.get('strategy_snapshot') is None:
@@ -1198,6 +1221,8 @@ def _apply_pending_entry_order_state(*, key: str, pend: dict, od: dict, position
                 'side': side,
                 'qty': delta_filled,
                 'entry': entry,
+                'tp_price': intent.get('tp_price'),
+                'sl_price': intent.get('sl_price'),
                 'ts_open': current_bar_iso,
                 'run_id': run_id,
                 'order_id': str(uuid.uuid4()),
@@ -1206,7 +1231,7 @@ def _apply_pending_entry_order_state(*, key: str, pend: dict, od: dict, position
                 'entry_fill': fill_px,
                 'entry_fill_ts': _dt.datetime.now(_dt.timezone.utc).isoformat(),
             }
-            positions[key] = rec
+            positions[position_key] = rec
             save_positions(results_dir, positions)
             try:
                 db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN'})
@@ -1217,7 +1242,7 @@ def _apply_pending_entry_order_state(*, key: str, pend: dict, od: dict, position
             notify_strategy_filled(strat, sym, event='first')
             pend['applied_filled_qty'] = already_applied + delta_filled
             applied_without_existing_position = True
-            rec = positions.get(key)
+            rec = positions.get(position_key)
         else:
             pend['last_order'] = od or pend.get('last_order') or {}
             pend['status'] = 'recovery_blocked_missing_position_after_fill'
@@ -1234,7 +1259,7 @@ def _apply_pending_entry_order_state(*, key: str, pend: dict, od: dict, position
         elif fill_px is not None:
             rec['entry'] = float(fill_px)
         rec['qty'] = new_qty
-        positions[key] = rec
+        positions[position_key] = rec
         save_positions(results_dir, positions)
         try:
             db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN', 'entry_fill': fill_px, 'entry_fill_ts': _dt.datetime.now(_dt.timezone.utc).isoformat()})
@@ -2653,6 +2678,8 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
                         'limit_price': limit_price,
                         'qty': qty,
                         'sizing_policy': sizing_policy,
+                        'tp_price': tp_price,
+                        'sl_price': sl_price,
                     },
                     'applied_filled_qty': 0.0,
                     'last_order': cancel_od or od or res.get('order') or {},
@@ -3068,7 +3095,20 @@ def run_live(cfg: dict, args):
             positions = db_positions
     except Exception:
         pass
-    restart_guard = _validate_pending_entries_restart_guard(fetcher, pending_entries, positions, results_dir=args.results_dir, session_db_path=session_db_path, run_id=run_id)
+    guard_allow = []
+    try:
+        allow_env = os.getenv('RS_UNIVERSE_ALLOW', '')
+        if allow_env:
+            guard_allow = [s.strip() for s in allow_env.split(',') if s.strip()]
+        if not guard_allow:
+            guard_allow = list((cfg.get('universe', {}) or {}).get('allow', []) or [])
+    except Exception:
+        guard_allow = []
+    try:
+        guard_symbols = [s for s in sorted(set(fetcher.by_base.values())) if (not guard_allow or s in guard_allow)]
+    except Exception:
+        guard_symbols = []
+    restart_guard = _validate_pending_entries_restart_guard(fetcher, pending_entries, positions, results_dir=args.results_dir, session_db_path=session_db_path, run_id=run_id, symbols=guard_symbols)
     if not restart_guard.get('ok', False):
         raise RuntimeError(f"pending_entries_restart_guard_block: {restart_guard.get('reason') or restart_guard.get('untracked_open_orders')}")
     if ENABLE_STARTUP_RECONCILE:
