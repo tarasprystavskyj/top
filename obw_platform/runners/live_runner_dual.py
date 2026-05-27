@@ -537,102 +537,97 @@ def ensure_pending_entry_orders_db(db_path: str) -> None:
         con.close()
 
 
+class PendingEntryPersistenceError(RuntimeError):
+    pass
+
+
 def _db_upsert_pending_entry(db_path: str, key: str, pend: dict, *, run_id: str = '') -> None:
     if not db_path or not key or not pend:
         return
+    ensure_pending_entry_orders_db(db_path)
+    public = _pending_entry_public(pend)
+    con = sqlite3.connect(db_path)
     try:
-        ensure_pending_entry_orders_db(db_path)
-        public = _pending_entry_public(pend)
-        con = sqlite3.connect(db_path)
-        try:
-            con.execute(
-                """INSERT OR REPLACE INTO pending_entry_orders
-                (key, run_id, symbol, side, exchange_order_id, created_bar_iso, limit_price, delta_qty,
-                 applied_filled_qty, status, last_order_json, strategy_snapshot_json, intent_json,
-                 updated_ts_utc, removed_ts_utc, remove_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)""",
-                (
-                    key, run_id, public['symbol'], public['side'], public['exchange_order_id'],
-                    public['created_bar_iso'], public['limit_price'], public['delta_qty'],
-                    public['applied_filled_qty'], public['status'],
-                    json.dumps(public.get('last_order') or {}, ensure_ascii=False, sort_keys=True),
-                    json.dumps(public.get('strategy_snapshot'), ensure_ascii=False, sort_keys=True),
-                    json.dumps(public.get('intent') or {}, ensure_ascii=False, sort_keys=True),
-                    _dt.datetime.now(_dt.timezone.utc).isoformat(),
-                )
+        con.execute(
+            """INSERT OR REPLACE INTO pending_entry_orders
+            (key, run_id, symbol, side, exchange_order_id, created_bar_iso, limit_price, delta_qty,
+             applied_filled_qty, status, last_order_json, strategy_snapshot_json, intent_json,
+             updated_ts_utc, removed_ts_utc, remove_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)""",
+            (
+                key, run_id, public['symbol'], public['side'], public['exchange_order_id'],
+                public['created_bar_iso'], public['limit_price'], public['delta_qty'],
+                public['applied_filled_qty'], public['status'],
+                json.dumps(public.get('last_order') or {}, ensure_ascii=False, sort_keys=True),
+                json.dumps(public.get('strategy_snapshot'), ensure_ascii=False, sort_keys=True),
+                json.dumps(public.get('intent') or {}, ensure_ascii=False, sort_keys=True),
+                _dt.datetime.now(_dt.timezone.utc).isoformat(),
             )
-            con.commit()
-        finally:
-            con.close()
-    except Exception:
-        pass
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def _db_remove_pending_entry(db_path: str, key: str, *, status: str, reason: str = '') -> None:
     if not db_path or not key:
         return
+    ensure_pending_entry_orders_db(db_path)
+    con = sqlite3.connect(db_path)
     try:
-        ensure_pending_entry_orders_db(db_path)
-        con = sqlite3.connect(db_path)
-        try:
-            con.execute(
-                "UPDATE pending_entry_orders SET status=?, removed_ts_utc=?, remove_reason=?, updated_ts_utc=? WHERE key=?",
-                (status, _dt.datetime.now(_dt.timezone.utc).isoformat(), reason, _dt.datetime.now(_dt.timezone.utc).isoformat(), key),
-            )
-            con.commit()
-        finally:
-            con.close()
-    except Exception:
-        pass
+        con.execute(
+            "UPDATE pending_entry_orders SET status=?, removed_ts_utc=?, remove_reason=?, updated_ts_utc=? WHERE key=?",
+            (status, _dt.datetime.now(_dt.timezone.utc).isoformat(), reason, _dt.datetime.now(_dt.timezone.utc).isoformat(), key),
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def _load_pending_entries_from_db(db_path: str) -> dict:
     if not db_path:
         return {}
+    ensure_pending_entry_orders_db(db_path)
+    con = sqlite3.connect(db_path)
     try:
-        ensure_pending_entry_orders_db(db_path)
-        con = sqlite3.connect(db_path)
+        rows = con.execute("""SELECT key, symbol, side, exchange_order_id, created_bar_iso, limit_price, delta_qty,
+                                     applied_filled_qty, status, last_order_json, strategy_snapshot_json, intent_json
+                              FROM pending_entry_orders
+                              WHERE removed_ts_utc IS NULL
+                                AND COALESCE(status, '') NOT IN ('closed', 'canceled', 'cancelled', 'removed')""").fetchall()
+    finally:
+        con.close()
+    out = {}
+    for row in rows:
+        key, sym, side, order_id, created, limit_px, delta_qty, applied, status, last_json, snap_json, intent_json = row
         try:
-            rows = con.execute("""SELECT key, symbol, side, exchange_order_id, created_bar_iso, limit_price, delta_qty,
-                                         applied_filled_qty, status, last_order_json, strategy_snapshot_json, intent_json
-                                  FROM pending_entry_orders
-                                  WHERE removed_ts_utc IS NULL
-                                    AND COALESCE(status, '') NOT IN ('closed', 'canceled', 'cancelled', 'removed')""").fetchall()
-        finally:
-            con.close()
-        out = {}
-        for row in rows:
-            key, sym, side, order_id, created, limit_px, delta_qty, applied, status, last_json, snap_json, intent_json = row
-            try:
-                last_order = json.loads(last_json) if last_json else {}
-            except Exception:
-                last_order = {}
-            try:
-                snapshot = json.loads(snap_json) if snap_json else None
-            except Exception:
-                snapshot = None
-            try:
-                intent = json.loads(intent_json) if intent_json else {}
-            except Exception:
-                intent = {}
-            out[str(key)] = {
-                'symbol': sym,
-                'side': str(side or '').upper(),
-                'exchange_order_id': order_id,
-                'created_bar_iso': created,
-                'limit_price': limit_px,
-                'delta_qty': delta_qty,
-                'applied_filled_qty': applied or 0.0,
-                'status': status or '',
-                'last_order': last_order,
-                'strategy_snapshot': snapshot,
-                'intent': intent,
-                'restart_loaded': True,
-                'snapshot_recoverable': snapshot is not None,
-            }
-        return out
-    except Exception:
-        return {}
+            last_order = json.loads(last_json) if last_json else {}
+        except Exception as e:
+            raise PendingEntryPersistenceError(f'pending DB last_order JSON decode failed for {key}: {e}') from e
+        try:
+            snapshot = json.loads(snap_json) if snap_json else None
+        except Exception as e:
+            raise PendingEntryPersistenceError(f'pending DB snapshot JSON decode failed for {key}: {e}') from e
+        try:
+            intent = json.loads(intent_json) if intent_json else {}
+        except Exception as e:
+            raise PendingEntryPersistenceError(f'pending DB intent JSON decode failed for {key}: {e}') from e
+        out[str(key)] = {
+            'symbol': sym,
+            'side': str(side or '').upper(),
+            'exchange_order_id': order_id,
+            'created_bar_iso': created,
+            'limit_price': limit_px,
+            'delta_qty': delta_qty,
+            'applied_filled_qty': applied or 0.0,
+            'status': status or '',
+            'last_order': last_order,
+            'strategy_snapshot': snapshot,
+            'intent': intent,
+            'restart_loaded': True,
+            'snapshot_recoverable': snapshot is not None,
+        }
+    return out
 
 
 def _load_pending_entries_hybrid(results_dir: str, session_db_path: str) -> dict:
@@ -661,52 +656,73 @@ def _pending_position_key(key: str, pend: dict) -> str:
     return str(key or '').split('#pending#', 1)[0]
 
 
-def _save_pending_entries(results_dir: str, pending_entries: dict, *, run_id: str = '', session_db_path: str = '') -> None:
-    try:
-        path = _pending_entries_path(results_dir)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            'schema': 'live_pending_entries_v1',
-            'run_id': run_id,
-            'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(),
-            'entries': {str(k): _pending_entry_public(v) for k, v in (pending_entries or {}).items()},
-        }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
-    except Exception:
-        pass
+def _pending_entry_is_unresolved(pend: dict) -> bool:
+    status = str((pend or {}).get('status') or '').lower()
+    return status not in {'closed', 'canceled', 'cancelled', 'filled', 'rejected', 'expired', 'removed'}
+
+
+def _pending_entries_for_leg(pending_entries: dict, sym: str, side: str) -> list:
+    target = pos_key(sym, side)
+    out = []
     for key, pend in (pending_entries or {}).items():
-        _db_upsert_pending_entry(session_db_path, str(key), pend, run_id=run_id)
+        if _pending_position_key(str(key), pend) == target and _pending_entry_is_unresolved(pend):
+            out.append((str(key), pend))
+    return out
+
+
+def _has_unresolved_pending_entry(pending_entries: dict, sym: str, side: str) -> bool:
+    return bool(_pending_entries_for_leg(pending_entries, sym, side))
+
+
+def _save_pending_entries(results_dir: str, pending_entries: dict, *, run_id: str = '', session_db_path: str = '') -> None:
+    path = _pending_entries_path(results_dir)
+    payload = {
+        'schema': 'live_pending_entries_v1',
+        'run_id': run_id,
+        'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        'entries': {str(k): _pending_entry_public(v) for k, v in (pending_entries or {}).items()},
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+    except Exception as e:
+        raise PendingEntryPersistenceError(f'pending JSON save failed: {e}') from e
+    for key, pend in (pending_entries or {}).items():
+        try:
+            _db_upsert_pending_entry(session_db_path, str(key), pend, run_id=run_id)
+        except Exception as e:
+            raise PendingEntryPersistenceError(f'pending DB upsert failed for {key}: {e}') from e
 
 
 def _load_pending_entries(results_dir: str) -> dict:
-    try:
-        path = _pending_entries_path(results_dir)
-        if not path.exists():
-            return {}
-        raw = json.loads(path.read_text(encoding='utf-8'))
-        entries = raw.get('entries') if isinstance(raw, dict) else {}
-        out = {}
-        for key, val in (entries or {}).items():
-            if not isinstance(val, dict):
-                continue
-            sym = str(val.get('symbol') or '')
-            side = str(val.get('side') or '').upper()
-            order_id = str(val.get('exchange_order_id') or '')
-            if not sym or not side or not order_id:
-                continue
-            out[str(key or pos_key(sym, side))] = {
-                **val,
-                'symbol': sym,
-                'side': side,
-                'exchange_order_id': order_id,
-                'strategy_snapshot': val.get('strategy_snapshot'),
-                'intent': val.get('intent') or {},
-                'restart_loaded': True,
-                'snapshot_recoverable': val.get('strategy_snapshot') is not None,
-            }
-        return out
-    except Exception:
+    path = _pending_entries_path(results_dir)
+    if not path.exists():
         return {}
+    try:
+        raw = json.loads(path.read_text(encoding='utf-8'))
+    except Exception as e:
+        raise PendingEntryPersistenceError(f'pending JSON load failed: {e}') from e
+    entries = raw.get('entries') if isinstance(raw, dict) else {}
+    out = {}
+    for key, val in (entries or {}).items():
+        if not isinstance(val, dict):
+            continue
+        sym = str(val.get('symbol') or '')
+        side = str(val.get('side') or '').upper()
+        order_id = str(val.get('exchange_order_id') or '')
+        if not sym or not side or not order_id:
+            continue
+        out[str(key or pos_key(sym, side))] = {
+            **val,
+            'symbol': sym,
+            'side': side,
+            'exchange_order_id': order_id,
+            'strategy_snapshot': val.get('strategy_snapshot'),
+            'intent': val.get('intent') or {},
+            'restart_loaded': True,
+            'snapshot_recoverable': val.get('strategy_snapshot') is not None,
+        }
+    return out
 
 
 def _fetch_open_strategy_orders(fetcher, symbols=None) -> list:
@@ -715,6 +731,14 @@ def _fetch_open_strategy_orders(fetcher, symbols=None) -> list:
     orders = []
     targets = list(symbols or [])
     seen_ids = set()
+    ex_id = str(getattr(ex, 'id', '') or getattr(ex, 'name', '') or '').lower()
+    swap_params = {}
+    if ex_id in {'bingx', 'gate', 'gateio', 'okx', 'binance'}:
+        swap_params['type'] = 'swap'
+    if ex_id in {'gate', 'gateio'}:
+        swap_params['settle'] = 'usdt'
+    if ex_id == 'bybit':
+        swap_params['category'] = 'linear'
     def _extend(got):
         for od in got or []:
             oid = _open_order_id(od)
@@ -725,9 +749,20 @@ def _fetch_open_strategy_orders(fetcher, symbols=None) -> list:
             orders.append(od)
     def _order_symbol(od):
         return str((od or {}).get('symbol') or '')
+    def _fetch(symbol=None):
+        if swap_params:
+            try:
+                if symbol is None:
+                    return ex.fetch_open_orders(None, None, None, dict(swap_params))
+                return ex.fetch_open_orders(symbol, None, None, dict(swap_params))
+            except TypeError:
+                pass
+        if symbol is None:
+            return ex.fetch_open_orders()
+        return ex.fetch_open_orders(symbol)
     try:
         if hasattr(ex, 'fetch_open_orders'):
-            got = ex.fetch_open_orders()
+            got = _fetch()
             sleep_ms(RATE_MS)
             _extend(got or [])
             returned_symbols = {_order_symbol(od) for od in got or [] if _order_symbol(od)}
@@ -746,11 +781,11 @@ def _fetch_open_strategy_orders(fetcher, symbols=None) -> list:
             except Exception:
                 ccxt_sym = sym
         try:
-            got = ex.fetch_open_orders(ccxt_sym)
+            got = _fetch(ccxt_sym)
             sleep_ms(RATE_MS)
             _extend(got or [])
         except TypeError:
-            got = ex.fetch_open_orders()
+            got = _fetch()
             sleep_ms(RATE_MS)
             _extend(got or [])
             break
@@ -763,14 +798,70 @@ def _open_order_id(order: dict) -> str:
     return str((order or {}).get('id') or (order or {}).get('orderId') or (order or {}).get('clientOrderId') or '')
 
 
+def _first_float(*values):
+    for v in values:
+        if v in (None, ''):
+            continue
+        try:
+            return float(v)
+        except Exception:
+            continue
+    return None
+
+
+def _order_filled_qty(order: dict) -> float:
+    if not isinstance(order, dict):
+        return 0.0
+    info = order.get('info') if isinstance(order.get('info'), dict) else {}
+    raw = order.get('raw') if isinstance(order.get('raw'), dict) else {}
+    val = _first_float(
+        order.get('filled'),
+        order.get('filledQty'),
+        order.get('filled_qty'),
+        order.get('executedQty'),
+        order.get('cumExecQty'),
+        order.get('cumFilledQty'),
+        order.get('dealSize'),
+        info.get('filled'),
+        info.get('filledQty'),
+        info.get('filled_qty'),
+        info.get('executedQty'),
+        info.get('cumExecQty'),
+        info.get('cumFilledQty'),
+        info.get('dealSize'),
+        info.get('accFillSz'),
+        info.get('fillSz'),
+        raw.get('filled'),
+        raw.get('executedQty'),
+        raw.get('cumExecQty'),
+    )
+    return float(val or 0.0)
+
+
 def _is_reduce_or_close_order(order: dict) -> bool:
     info = (order or {}).get('info') if isinstance(order, dict) else {}
     if not isinstance(info, dict):
         info = {}
+    initial = (order or {}).get('initial') if isinstance(order, dict) else {}
+    if not isinstance(initial, dict):
+        initial = {}
     params = (order or {}).get('params') if isinstance(order, dict) else {}
     if not isinstance(params, dict):
         params = {}
-    vals = [order.get('reduceOnly') if isinstance(order, dict) else None, info.get('reduceOnly'), info.get('closePosition'), params.get('reduceOnly')]
+    vals = [
+        order.get('reduceOnly') if isinstance(order, dict) else None,
+        order.get('reduce_only') if isinstance(order, dict) else None,
+        order.get('is_reduce_only') if isinstance(order, dict) else None,
+        info.get('reduceOnly'),
+        info.get('reduce_only'),
+        info.get('is_reduce_only'),
+        info.get('closePosition'),
+        initial.get('reduceOnly'),
+        initial.get('reduce_only'),
+        initial.get('is_reduce_only'),
+        params.get('reduceOnly'),
+        params.get('reduce_only'),
+    ]
     return any(str(v).lower() in {'true', '1', 'yes'} for v in vals)
 
 
@@ -788,6 +879,29 @@ def _validate_pending_entries_restart_guard(fetcher, pending_entries: dict, posi
         payload = {'ok': False, 'reason': 'fetch_open_orders_failed', 'error': str(e), 'pending_order_ids': sorted(pending_ids)}
         _emit_runtime_debug(session_db_path, run_id, 'pending_entries_restart_guard_block', payload, level='ERROR', fg='red')
         return payload
+    missing_tracked = []
+    ex = getattr(fetcher, 'ex', fetcher)
+    resolver = getattr(fetcher, 'resolve_symbol', None)
+    open_ids = {_open_order_id(od) for od in open_orders or [] if _open_order_id(od)}
+    for key, pend in (pending_entries or {}).items():
+        oid = str((pend or {}).get('exchange_order_id') or '')
+        if not oid or oid in open_ids:
+            continue
+        sym = str((pend or {}).get('symbol') or '')
+        ccxt_sym = sym
+        if callable(resolver):
+            try:
+                ccxt_sym = resolver(sym) or sym
+            except Exception:
+                ccxt_sym = sym
+        try:
+            fetched = ex.fetch_order(oid, ccxt_sym) if hasattr(ex, 'fetch_order') else None
+            sleep_ms(RATE_MS)
+        except Exception as e:
+            missing_tracked.append({'key': str(key), 'id': oid, 'symbol': sym, 'error': str(e)})
+            continue
+        if not fetched or not _open_order_id(fetched):
+            missing_tracked.append({'key': str(key), 'id': oid, 'symbol': sym, 'error': 'empty_fetch_order'})
     relevant = []
     for od in open_orders or []:
         oid = _open_order_id(od)
@@ -807,13 +921,17 @@ def _validate_pending_entries_restart_guard(fetcher, pending_entries: dict, posi
             or (od or {}).get('position_side')
             or info.get('positionSide')
             or info.get('position_side')
+            or info.get('posSide')
+            or info.get('positionIdx')
             or params.get('positionSide')
             or params.get('position_side')
             or ''
         )
         relevant.append({'id': oid, 'symbol': str((od or {}).get('symbol') or ''), 'type': str((od or {}).get('type') or ''), 'side': str((od or {}).get('side') or ''), 'positionSide': str(position_side or ''), 'status': status or 'open'})
     untracked = [od for od in relevant if od.get('id') not in pending_ids]
-    payload = {'ok': not bool(untracked), 'pending_order_ids': sorted(pending_ids), 'open_orders': relevant, 'untracked_open_orders': untracked}
+    payload = {'ok': not bool(untracked or missing_tracked), 'pending_order_ids': sorted(pending_ids), 'open_orders': relevant, 'untracked_open_orders': untracked, 'missing_tracked_pending_orders': missing_tracked}
+    if missing_tracked:
+        payload['reason'] = 'tracked_pending_order_missing_from_exchange'
     event = 'pending_entries_restart_guard_ok' if payload['ok'] else 'pending_entries_restart_guard_block'
     _emit_runtime_debug(session_db_path, run_id, event, payload, level='INFO' if payload['ok'] else 'ERROR', fg='cyan' if payload['ok'] else 'red')
     return payload
@@ -1192,10 +1310,7 @@ def _apply_pending_entry_order_state(*, key: str, pend: dict, od: dict, position
     position_key = _pending_position_key(key, pend)
     order_id = pend.get('exchange_order_id')
     status = str((od or {}).get('status') or pend.get('status') or '').lower()
-    try:
-        filled = float((od or {}).get('filled') or 0.0)
-    except Exception:
-        filled = 0.0
+    filled = _order_filled_qty(od or {})
     already_applied = float(pend.get('applied_filled_qty') or 0.0)
     delta_filled = max(0.0, filled - already_applied)
     rec = positions.get(position_key)
@@ -2848,6 +2963,11 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
             _strategy_restore(strat, sym, snapshot); return False
         return _execute_reduce_with_rollback(fetcher, strat, sym=sym, side=side, qty=qty_close, requested_px=requested_px, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, close_reason=reason, rec=rec, positions=positions, results_dir=results_dir, bot_id=bot_id, event_type='partial', partial=True)[0]
     if intent.kind == INTENT_ADD:
+        if _has_unresolved_pending_entry(pending_entries or {}, sym, side):
+            _strategy_restore(strat, sym, snapshot)
+            _record_order(session_db_path, bar_time=bar_dt, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=float(intent.qty or 0.0), status='SKIPPED', reason='pending_order_active', run_id=run_id, extra={'strategy_event': 'dca', 'pending': [k for k, _ in _pending_entries_for_leg(pending_entries or {}, sym, side)]})
+            _emit_runtime_debug(session_db_path, run_id, 'dca_blocked_pending_order', {'symbol': sym, 'side': side, 'pending': [k for k, _ in _pending_entries_for_leg(pending_entries or {}, sym, side)]}, level='WARNING', fg='yellow')
+            return False
         stop_active, stop_reason = _stop_new_orders_active(results_dir)
         if stop_active:
             delta_qty = float(intent.qty or 0.0)
@@ -2914,6 +3034,9 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
 
 def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: dict, results_dir: str, position_mode: str, session_db_path: str, bot_id: str, run_id: str, *, notional_long: float, notional_short: float, cfg: dict = None, pending_entries: dict = None):
     if pos_key(sym, side) in positions:
+        return False
+    if _has_unresolved_pending_entry(pending_entries or {}, sym, side):
+        _emit_runtime_debug(session_db_path, run_id, 'entry_blocked_pending_order', {'symbol': sym, 'side': side, 'pending': [k for k, _ in _pending_entries_for_leg(pending_entries or {}, sym, side)]}, level='WARNING', fg='yellow')
         return False
     stop_active, stop_reason = _stop_new_orders_active(results_dir)
     if stop_active:

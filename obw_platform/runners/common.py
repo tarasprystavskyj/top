@@ -250,8 +250,17 @@ class CCXTFetcher:
             'secret_found': bool(api_s),
         }
         opts = {'enableRateLimit': True, 'timeout': 20000}
-        if ex_norm == 'gateio':
-            opts['options'] = {'defaultType': 'swap', 'defaultSettle': 'USDT'}
+        swap_options = {}
+        if ex_norm in {'bingx', 'gate', 'gateio', 'binance', 'okx'}:
+            swap_options['defaultType'] = 'swap'
+        if ex_norm == 'gateio' or ex_norm == 'gate':
+            swap_options['defaultSettle'] = 'USDT'
+            swap_options['settle'] = 'USDT'
+        if ex_norm == 'bybit':
+            swap_options['defaultType'] = 'swap'
+            swap_options['defaultSubType'] = 'linear'
+        if swap_options:
+            opts['options'] = swap_options
         if api_k and api_s:
             opts.update({'apiKey': api_k, 'secret': api_s})
         if debug:

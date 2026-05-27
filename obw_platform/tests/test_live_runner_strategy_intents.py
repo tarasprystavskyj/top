@@ -1,21 +1,19 @@
 from __future__ import annotations
 
 import unittest
+import unittest.mock
 import tempfile
 import sqlite3
 import importlib
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from obw_platform.runners import common as runner_common
 from obw_platform.runners import live_runner_dual as live_runner
-from obw_platform.meta_strategies.telegram_signal_dca.hype_grounded_compound_paper_live import (
-    ADD_WEIGHTS,
-    INITIAL_EQUITY,
-    INITIAL_TARGET_NOTIONAL,
-    dca_levels,
-    fill_plan,
-    should_fill_level,
-)
 from obw_platform.runners.strategy_intents import (
     INTENT_ADD,
     INTENT_CLOSE,
@@ -152,17 +150,9 @@ class StrategyIntentTests(unittest.TestCase):
             call_manage_position(strat, "HYPE/USDT:USDT", {}, SimpleNamespace(qty=1.0, entry=40.0), {}, LegacyStrategyPolicy(enabled=True))
         self.assertEqual(strat.calls, 1)
 
-    def test_hype_paper_dca_levels_map_to_strategy_add_intent(self):
-        args = SimpleNamespace(initial_equity=INITIAL_EQUITY, initial_target_notional=INITIAL_TARGET_NOTIONAL)
-        plan = fill_plan(INITIAL_EQUITY, args, "LONG", 40.0)
-
-        self.assertEqual(tuple(plan.levels), dca_levels("LONG", 40.0))
-        self.assertAlmostEqual(sum(plan.add_notionals), plan.target_notional - plan.base_notional)
-        self.assertEqual(len(plan.add_notionals), len(ADD_WEIGHTS))
-        self.assertTrue(should_fill_level("LONG", plan.levels[0] - 0.001, plan.levels[0]))
-
-        qty_before = plan.base_notional / 40.0
-        add_qty = plan.add_notionals[0] / plan.levels[0]
+    def test_strategy_state_delta_dca_maps_to_add_intent_without_external_strategy_module(self):
+        qty_before = 2.0
+        add_qty = 0.5
         intent = manage_intent_from_result(
             symbol="HYPEUSDT",
             side="LONG",
@@ -1749,6 +1739,246 @@ class LiveRunnerIntentRoutingTests(unittest.TestCase):
                 live_runner.LIVE_RESULTS_DIR = old_results
                 live_runner.LIVE_FEE_RATE = old_fee
                 live_runner.LIVE_REALIZED_PNL_CUM = old_cum
+
+    def test_pending_persistence_fail_closed_on_json_and_db_errors(self):
+        key = live_runner.pos_key("HYPE/USDT:USDT", "LONG")
+        pending = {
+            key: {
+                "symbol": "HYPE/USDT:USDT", "side": "LONG", "exchange_order_id": "L1",
+                "created_bar_iso": self.row["datetime_utc"], "limit_price": 39.0,
+                "delta_qty": 1.0, "status": "open", "strategy_snapshot": {"ok": True},
+            }
+        }
+        with tempfile.TemporaryDirectory() as td:
+            bad_results_dir = str(Path(td) / "not_a_dir")
+            Path(bad_results_dir).write_text("block mkdir", encoding="utf-8")
+            with self.assertRaises(live_runner.PendingEntryPersistenceError):
+                live_runner._save_pending_entries(bad_results_dir, pending, run_id="run")
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(live_runner.PendingEntryPersistenceError):
+                live_runner._save_pending_entries(td, pending, run_id="run", session_db_path=td)
+
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, live_runner.PENDING_ENTRIES_FILENAME).write_text("{bad json", encoding="utf-8")
+            with self.assertRaises(live_runner.PendingEntryPersistenceError):
+                live_runner._load_pending_entries(td)
+
+    def test_pending_fill_uses_raw_exchange_executed_qty(self):
+        class Strategy(_RunnerStrategy):
+            def sync_after_external_fill(self, sym, qty, entry, fill_price=None, delta_qty=None, event=''):
+                self.synced = (qty, entry, delta_qty, event)
+
+        with tempfile.TemporaryDirectory() as td:
+            key = live_runner.pos_key("HYPE/USDT:USDT", "LONG")
+            pending = {
+                key: {
+                    "symbol": "HYPE/USDT:USDT", "side": "LONG", "exchange_order_id": "L1",
+                    "created_bar_iso": self.row["datetime_utc"], "limit_price": 39.0,
+                    "delta_qty": 0.5, "applied_filled_qty": 0.0, "status": "open",
+                    "strategy_snapshot": {"pos_size": 2.0},
+                }
+            }
+            positions = {key: {"symbol": "HYPE/USDT:USDT", "side": "LONG", "qty": 2.0, "entry": 40.0}}
+            strat = Strategy()
+            od = {"id": "L1", "status": "closed", "average": 39.0, "info": {"executedQty": "0.5"}}
+            with _PatchAttr(live_runner, "save_positions", lambda *args, **kwargs: None), _PatchAttr(
+                live_runner, "db_upsert_open_position", lambda *args, **kwargs: None,
+            ), _PatchAttr(live_runner, "_record_order", lambda *args, **kwargs: None):
+                status = live_runner._apply_pending_entry_order_state(
+                    key=key, pend=pending[key], od=od, positions=positions, results_dir=td,
+                    session_db_path="", bot_id="bot", strat=strat,
+                    current_bar_iso=self.row["datetime_utc"], run_id="run",
+                )
+            self.assertEqual(status, "closed")
+            self.assertAlmostEqual(positions[key]["qty"], 2.5)
+            self.assertEqual(strat.synced[3], "dca_limit_fill")
+
+    def test_same_leg_pending_blocks_first_entry_and_dca_submits(self):
+        key = live_runner.pos_key("HYPE/USDT:USDT", "LONG")
+        pending = {
+            key + "#pending#json:L1": {
+                "symbol": "HYPE/USDT:USDT", "side": "LONG", "exchange_order_id": "L1",
+                "status": "cancel_requested",
+            }
+        }
+        entry_calls = []
+        with _PatchAttr(live_runner, "_choose_requested_price", lambda fetcher, sym, fallback: fallback), _PatchAttr(
+            live_runner, "_execute_open_with_rollback", lambda *args, **kwargs: entry_calls.append(kwargs) or (True, {}),
+        ), _PatchAttr(live_runner, "_emit_runtime_debug", lambda *args, **kwargs: None):
+            ok_entry = live_runner._attempt_entry(
+                object(), "HYPE/USDT:USDT", "LONG",
+                _RunnerStrategy(entry_signal=SimpleNamespace(qty=1.0, order_type="market")),
+                self.row, {}, "/tmp/no-write", "hedge", "", "bot", "run",
+                notional_long=100.0, notional_short=100.0, pending_entries=pending,
+            )
+        self.assertFalse(ok_entry)
+        self.assertEqual(entry_calls, [])
+
+        dca_calls = []
+        rec = {"symbol": "HYPE/USDT:USDT", "side": "LONG", "qty": 2.0, "entry": 40.0}
+        with _PatchAttr(live_runner, "_choose_requested_price", lambda fetcher, sym, fallback: fallback), _PatchAttr(
+            live_runner, "place_open_qty_limit", lambda *args, **kwargs: dca_calls.append(args) or {"ok": True, "order": {"id": "L2"}},
+        ), _PatchAttr(live_runner, "_record_order", lambda *args, **kwargs: None), _PatchAttr(
+            live_runner, "_emit_runtime_debug", lambda *args, **kwargs: None,
+        ):
+            ok_dca = live_runner._maybe_apply_manage_result(
+                object(), key, rec, self.row,
+                _RunnerStrategy(manage_result=SimpleNamespace(action="DCA", delta_qty=0.5, order_type="limit", limit_price=39.0), dca_order_type="limit"),
+                {key: dict(rec)}, "/tmp/no-write", "hedge", "", "bot", "run", pending_entries=pending,
+            )
+        self.assertFalse(ok_dca)
+        self.assertEqual(dca_calls, [])
+
+    def test_restart_guard_blocks_missing_tracked_pending_order(self):
+        class FakeExchange:
+            def fetch_open_orders(self, symbol=None):
+                return []
+            def fetch_order(self, order_id, symbol):
+                raise KeyError(order_id)
+        class FakeFetcher:
+            ex = FakeExchange()
+            def resolve_symbol(self, sym):
+                return sym
+
+        key = live_runner.pos_key("HYPE/USDT:USDT", "LONG")
+        pending = {key: {"symbol": "HYPE/USDT:USDT", "side": "LONG", "exchange_order_id": "L1"}}
+        res = live_runner._validate_pending_entries_restart_guard(
+            FakeFetcher(), pending, {}, results_dir="/tmp/no-write", session_db_path="", run_id="run"
+        )
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "tracked_pending_order_missing_from_exchange")
+        self.assertEqual(res["missing_tracked_pending_orders"][0]["id"], "L1")
+
+    def test_restart_guard_uses_swap_params_and_symbol_scope_for_bingx_gate_and_binance(self):
+        class PolicyExchange:
+            def __init__(self, ex_id, raise_global=False):
+                self.id = ex_id
+                self.calls = []
+                self.raise_global = raise_global
+            def fetch_open_orders(self, symbol=None, since=None, limit=None, params=None):
+                self.calls.append((symbol, dict(params or {})))
+                if symbol is None and self.raise_global:
+                    raise RuntimeError("global unsupported")
+                if symbol is None:
+                    return []
+                return [{"id": "ORPHAN", "symbol": symbol, "status": "open", "type": "limit"}]
+        class FakeFetcher:
+            def __init__(self, ex):
+                self.ex = ex
+            def resolve_symbol(self, sym):
+                return sym
+
+        for ex_id, expected in (("bingx", {"type": "swap"}), ("gateio", {"type": "swap", "settle": "usdt"})):
+            ex = PolicyExchange(ex_id)
+            res = live_runner._validate_pending_entries_restart_guard(
+                FakeFetcher(ex), {}, {}, results_dir="/tmp/no-write", session_db_path="", run_id="run",
+                symbols=["HYPE/USDT:USDT"],
+            )
+            self.assertFalse(res["ok"])
+            self.assertIn(("HYPE/USDT:USDT", expected), ex.calls)
+
+        ex = PolicyExchange("binance", raise_global=True)
+        res = live_runner._validate_pending_entries_restart_guard(
+            FakeFetcher(ex), {}, {}, results_dir="/tmp/no-write", session_db_path="", run_id="run",
+            symbols=["HYPE/USDT:USDT"],
+        )
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["reason"], "fetch_open_orders_failed")
+
+    def test_reduce_only_and_position_side_raw_shapes(self):
+        self.assertTrue(live_runner._is_reduce_or_close_order({"info": {"is_reduce_only": "true"}}))
+        self.assertTrue(live_runner._is_reduce_or_close_order({"initial": {"is_reduce_only": True}}))
+        self.assertTrue(live_runner._is_reduce_or_close_order({"info": {"closePosition": "true"}}))
+
+        class FakeExchange:
+            def fetch_open_orders(self):
+                return [
+                    {"id": "OKX1", "symbol": "HYPE/USDT:USDT", "status": "open", "type": "limit", "info": {"posSide": "long"}},
+                    {"id": "BYBIT1", "symbol": "ENA/USDT:USDT", "status": "open", "type": "limit", "info": {"positionIdx": 2}},
+                ]
+        class FakeFetcher:
+            ex = FakeExchange()
+        res = live_runner._validate_pending_entries_restart_guard(
+            FakeFetcher(), {}, {}, results_dir="/tmp/no-write", session_db_path="", run_id="run"
+        )
+        self.assertFalse(res["ok"])
+        ids = {od["id"]: od for od in res["untracked_open_orders"]}
+        self.assertEqual(ids["OKX1"]["positionSide"], "long")
+        self.assertEqual(ids["BYBIT1"]["positionSide"], "2")
+
+    def test_ccxt_fetcher_sets_swap_default_options_without_env_secrets(self):
+        class FakeCcxt:
+            def __init__(self):
+                self.created = {}
+            def gateio(self, opts):
+                self.created["gateio"] = opts
+                return SimpleNamespace(load_markets=lambda: {})
+            def bingx(self, opts):
+                self.created["bingx"] = opts
+                return SimpleNamespace(load_markets=lambda: {})
+            def bybit(self, opts):
+                self.created["bybit"] = opts
+                return SimpleNamespace(load_markets=lambda: {})
+
+        fake = FakeCcxt()
+        with _PatchAttr(runner_common, "ccxt", fake), unittest.mock.patch.dict(os.environ, {}, clear=True):
+            runner_common.CCXTFetcher(exchange="gateio")
+            runner_common.CCXTFetcher(exchange="bingx")
+            runner_common.CCXTFetcher(exchange="bybit")
+        self.assertEqual(fake.created["gateio"]["options"]["defaultType"], "swap")
+        self.assertEqual(fake.created["gateio"]["options"]["settle"], "USDT")
+        self.assertEqual(fake.created["bingx"]["options"]["defaultType"], "swap")
+        self.assertEqual(fake.created["bybit"]["options"]["defaultSubType"], "linear")
+
+    def test_virtual_exchange_state_survives_subprocess_restart_and_pending_fill(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "prices.sqlite"
+            state_path = Path(td) / "vex_state.json"
+            con = sqlite3.connect(db_path)
+            try:
+                con.execute("CREATE TABLE price_indicators(symbol TEXT, datetime_utc TEXT, open REAL, high REAL, low REAL, close REAL, volume REAL)")
+                con.executemany(
+                    "INSERT INTO price_indicators VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        ("HYPE/USDT:USDT", "2026-05-27T00:00:00+00:00", 100.0, 101.0, 99.0, 100.0, 1000.0),
+                        ("HYPE/USDT:USDT", "2026-05-27T00:01:00+00:00", 100.0, 101.0, 94.0, 96.0, 1000.0),
+                    ],
+                )
+                con.commit()
+            finally:
+                con.close()
+
+            env = os.environ.copy()
+            env.update({
+                "PYTHONPATH": ".",
+                "VIRTUAL_EXCHANGE_DB": str(db_path),
+                "VIRTUAL_EXCHANGE_SYMBOLS": "HYPE/USDT:USDT",
+                "VIRTUAL_EXCHANGE_STATE_PATH": str(state_path),
+                "VIRTUAL_EXCHANGE_MODE": "hedge",
+                "VIRTUAL_EXCHANGE_ORDER_TTL_BARS": "10",
+            })
+            create_code = (
+                "from obw_platform.runners.virtual_exchange import VirtualExchange\n"
+                "ex=VirtualExchange.from_env()\n"
+                "od=ex.create_order('HYPE/USDT:USDT','limit','buy',1.0,95.0,{'positionSide':'LONG'})\n"
+                "print(od['id'], od['status'])\n"
+            )
+            out_a = subprocess.check_output([sys.executable, "-c", create_code], cwd=str(Path.cwd()), env=env, text=True).strip()
+            self.assertEqual(out_a, "vex-00000001 open")
+            self.assertTrue(state_path.exists())
+
+            replay_code = (
+                "from obw_platform.runners.virtual_exchange import VirtualExchange\n"
+                "ex=VirtualExchange.from_env()\n"
+                "before=ex.fetch_order('vex-00000001','HYPE/USDT:USDT')\n"
+                "opens=len(ex.fetch_open_orders('HYPE/USDT:USDT'))\n"
+                "ex.advance(1,'HYPE/USDT:USDT')\n"
+                "after=ex.fetch_order('vex-00000001','HYPE/USDT:USDT')\n"
+                "print(before['status'], opens, after['status'], after['filled'])\n"
+            )
+            out_b = subprocess.check_output([sys.executable, "-c", replay_code], cwd=str(Path.cwd()), env=env, text=True).strip()
+            self.assertEqual(out_b, "open 1 closed 1.0")
 
     def test_live_candidate_strategy_classes_expose_execution_hooks(self):
         config_paths = [
