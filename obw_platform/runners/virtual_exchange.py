@@ -61,6 +61,7 @@ class VirtualExchange:
         debug: bool = False,
         dynamic_slippage_model: Optional[Dict[str, Any]] = None,
         broker_id: str = 'generic',
+        state_path: str = '',
     ):
         if not npz_path and not db_path:
             raise ValueError('Provide npz_path or db_path')
@@ -92,6 +93,10 @@ class VirtualExchange:
         self.orders: Dict[str, Dict[str, Any]] = {}
         self.order_seq = 0
         self.rejections_left = int(self.error_config.get('reject_next_n_orders', 0) or 0)
+        self.state_path = str(state_path or '')
+        self._loading_state = False
+        if self.state_path and os.path.exists(self.state_path):
+            self.load_state(self.state_path)
 
     @classmethod
     def from_env(cls, debug: bool = False) -> 'VirtualExchange':
@@ -122,6 +127,7 @@ class VirtualExchange:
             debug=debug,
             dynamic_slippage_model=(json.loads(os.getenv('VIRTUAL_EXCHANGE_DYNAMIC_SLIPPAGE_JSON', '{}')) if os.getenv('VIRTUAL_EXCHANGE_DYNAMIC_SLIPPAGE_JSON', '').strip() else None),
             broker_id=os.getenv('VIRTUAL_EXCHANGE_BROKER_ID', os.getenv('VIRTUAL_EXCHANGE_EXCHANGE', 'generic')),
+            state_path=os.getenv('VIRTUAL_EXCHANGE_STATE_PATH', ''),
         )
 
     def _log(self, *parts):
@@ -226,6 +232,79 @@ class VirtualExchange:
             out[str(sym)] = pd.DataFrame(base)
         return out
 
+    def export_state(self) -> Dict[str, Any]:
+        return {
+            'schema': 'virtual_exchange_state_v1',
+            'mode': self.mode,
+            'default_timeframe': self.default_timeframe,
+            'balance_total': self.balance_total,
+            'balance_free': self.balance_free,
+            'order_seq': self.order_seq,
+            'cursor': dict(self._cursor),
+            'clock_ms': self._clock_ms,
+            'rejections_left': self.rejections_left,
+            'orders': copy.deepcopy(self.orders),
+            'positions': [
+                {'symbol': p.symbol, 'side': p.side, 'qty': p.qty, 'entry': p.entry}
+                for p in self.positions.values()
+            ],
+        }
+
+    def import_state(self, state: Dict[str, Any]) -> None:
+        if not isinstance(state, dict):
+            raise ValueError('VirtualExchange state must be a dict')
+        self._loading_state = True
+        try:
+            cursor = state.get('cursor') or {}
+            for sym, idx in cursor.items():
+                resolved = self.resolve_symbol(sym) or sym
+                if resolved in self._cursor:
+                    n = len(self.data[resolved])
+                    self._cursor[resolved] = max(0, min(int(idx), n - 1))
+            self._clock_ms = int(state.get('clock_ms') or self._clock_ms)
+            self.balance_total = float(state.get('balance_total', self.balance_total))
+            self.balance_free = float(state.get('balance_free', self.balance_free))
+            self.order_seq = int(state.get('order_seq') or 0)
+            self.rejections_left = int(state.get('rejections_left') or 0)
+            self.orders = copy.deepcopy(state.get('orders') or {})
+            self.positions = {}
+            for raw in state.get('positions') or []:
+                sym = self.resolve_symbol(str(raw.get('symbol') or '')) or str(raw.get('symbol') or '')
+                side = str(raw.get('side') or '').upper()
+                if not sym or side not in {'LONG', 'SHORT'}:
+                    continue
+                qty = float(raw.get('qty') or 0.0)
+                if qty <= 0:
+                    continue
+                self.positions[(sym, side)] = _Position(symbol=sym, side=side, qty=qty, entry=float(raw.get('entry') or 0.0))
+        finally:
+            self._loading_state = False
+
+    def save_state(self, path: Optional[str] = None) -> None:
+        dst = str(path or self.state_path or '')
+        if not dst:
+            return
+        parent = os.path.dirname(dst)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = dst + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(self.export_state(), fh, ensure_ascii=False, sort_keys=True)
+        os.replace(tmp, dst)
+
+    def load_state(self, path: Optional[str] = None) -> None:
+        src = str(path or self.state_path or '')
+        if not src:
+            return
+        with open(src, 'r', encoding='utf-8') as fh:
+            state = json.load(fh)
+        self.import_state(state)
+
+    def _persist_state(self) -> None:
+        if self._loading_state or not self.state_path:
+            return
+        self.save_state(self.state_path)
+
     def load_markets(self) -> Dict[str, Dict[str, Any]]:
         return self.markets
 
@@ -267,6 +346,7 @@ class VirtualExchange:
         self._cursor[sym] = max(0, min(int(index), n - 1))
         self._clock_ms = int(self.data[sym]['ts'].iloc[self._cursor[sym]])
         self._expire_open_orders(sym)
+        self._persist_state()
 
     def advance(self, steps: int = 1, symbol: Optional[str] = None) -> None:
         syms = [self.resolve_symbol(symbol) or symbol] if symbol else list(self.symbols)
@@ -275,6 +355,7 @@ class VirtualExchange:
             self._cursor[sym] = max(0, min(int(self._cursor[sym] + steps), n - 1))
             self._clock_ms = max(self._clock_ms, int(self.data[sym]['ts'].iloc[self._cursor[sym]]))
             self._expire_open_orders(sym)
+        self._persist_state()
 
     def current_bar(self, symbol: str) -> Dict[str, Any]:
         sym = self.resolve_symbol(symbol) or symbol
@@ -415,6 +496,7 @@ class VirtualExchange:
                 self._apply_fill(sym, side=side, qty=qty, px=exec_px, reduce_only=reduce_only, position_side=str(params.get('positionSide') or '').upper() or None)
                 self.balance_free -= fee
                 od['fee'] = {'cost': fee, 'currency': 'USDT'}
+            self._persist_state()
             return copy.deepcopy(od)
         if order_type != 'limit':
             raise RuntimeError(f'unsupported order type: {order_type}')
@@ -424,6 +506,7 @@ class VirtualExchange:
         od['info'].update({'reason': 'resting_limit'})
         self.orders[order_id] = od
         self._refresh_open_orders(symbol=sym)
+        self._persist_state()
         return copy.deepcopy(self.orders[order_id])
 
     def fetch_order(self, id: str, symbol: Optional[str] = None):
@@ -431,6 +514,7 @@ class VirtualExchange:
         if od.get('status') == 'open' and str(od.get('type')).lower() == 'limit':
             self._refresh_open_orders(symbol=od['symbol'])
             od = self.orders[str(id)]
+            self._persist_state()
         return copy.deepcopy(od)
 
     def cancel_order(self, id: str, symbol: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
@@ -439,6 +523,7 @@ class VirtualExchange:
             od['status'] = 'canceled'
             od['remaining'] = od['amount'] - od.get('filled', 0.0)
             od['info']['reason'] = 'canceled'
+            self._persist_state()
         return copy.deepcopy(od)
 
     def _expire_open_orders(self, symbol: str):
@@ -452,6 +537,7 @@ class VirtualExchange:
                 od['status'] = 'canceled'
                 od['info']['reason'] = 'timeout'
                 od['remaining'] = max(0.0, float(od['amount']) - float(od.get('filled', 0.0)))
+        self._persist_state()
 
     def _refresh_open_orders(self, symbol: Optional[str] = None) -> None:
         for od in list(self.orders.values()):
@@ -478,6 +564,7 @@ class VirtualExchange:
             od['remaining'] = max(0.0, float(od['amount']) - float(od['filled']))
             od['status'] = 'closed' if od['remaining'] <= 1e-12 else 'open'
             od['info'].update({'reason': 'limit_touch_fill', 'fill_price': fill_px, 'last_fill_qty': fill_qty, 'fill_ratio': fill_ratio, 'slippageBps': 0.0})
+        self._persist_state()
 
     def _limit_touched(self, od: Dict[str, Any], bar: Dict[str, Any]) -> bool:
         px = float(od.get('price') if od.get('price') is not None else bar.get('close', 0.0))
@@ -593,4 +680,3 @@ class VirtualExchange:
                 pos.entry = ((pos.entry * pos.qty) + (px * qty)) / max(new_qty, 1e-12)
                 pos.qty = new_qty
                 self.positions[key] = pos
-
