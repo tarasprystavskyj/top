@@ -250,6 +250,8 @@ class CCXTFetcher:
             'secret_found': bool(api_s),
         }
         opts = {'enableRateLimit': True, 'timeout': 20000}
+        if ex_norm == 'gateio':
+            opts['options'] = {'defaultType': 'swap', 'defaultSettle': 'USDT'}
         if api_k and api_s:
             opts.update({'apiKey': api_k, 'secret': api_s})
         if debug:

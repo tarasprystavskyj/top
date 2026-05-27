@@ -5,8 +5,6 @@ This is read-only. It polls Binance public/friendly frontend endpoints for one
 copy-trading lead portfolio and keeps a local paper state. It never places
 orders and defaults to a single poll.
 """
-from __future__ import annotations
-
 import argparse
 import copy
 import json

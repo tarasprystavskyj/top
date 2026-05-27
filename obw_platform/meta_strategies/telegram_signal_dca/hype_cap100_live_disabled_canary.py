@@ -5,15 +5,13 @@ Paper-only by construction: this module reads public copy-trading/market data
 or explicit mock inputs, writes local paper state, and contains no exchange
 order submission path.
 """
-from __future__ import annotations
-
 import argparse
 import copy
 import json
 import math
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -41,14 +39,18 @@ DEFAULT_DEADLINE_UTC = "2026-05-26T09:00:00Z"
 
 CHAMPION_CANDIDATE_INDEX = 189
 CHAMPION_PARAMS = {
+    "dca_add_mode": "multiplier",
+    "dca_add_notional_usdt": 2.0,
     "dca_profile": "default",
+    "dca_min_order_usdt": 2.0,
+    "min_order_qty_hype": 0.105,
     "fresh_base_pct": 28.0,
     "fresh_callback_percent": 0.45,
     "fresh_tp_percent": 1.4,
     "freshness_ms": 259200000,
     "max_position_cost_pct": 100.0,
     "normal_base_pct": 10.0,
-    "tp_freshness_ms": 43200000,
+    "tp_freshness_ms": 345600000,
 }
 DCA_DROPS_PCT = (0.25, 0.35, 0.55, 3.00)
 DCA_MULTIPLIERS = (1.0, 1.5, 2.75, 1.5)
@@ -64,7 +66,24 @@ def parse_utc(raw: str) -> datetime:
     text = raw.strip()
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
-    dt = datetime.fromisoformat(text)
+    try:
+        dt = datetime.fromisoformat(text)
+    except AttributeError:
+        sign_pos = max(text.rfind("+"), text.rfind("-", 10))
+        offset = None
+        main = text
+        if sign_pos > 10:
+            main = text[:sign_pos]
+            off = text[sign_pos:]
+            sign = 1 if off[0] == "+" else -1
+            hh, mm = off[1:].split(":", 1)
+            offset = timezone(sign * timedelta(hours=int(hh), minutes=int(mm)))
+        try:
+            dt = datetime.strptime(main, "%Y-%m-%dT%H:%M:%S.%f")
+        except ValueError:
+            dt = datetime.strptime(main, "%Y-%m-%dT%H:%M:%S")
+        if offset is not None:
+            dt = dt.replace(tzinfo=offset)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
@@ -155,13 +174,35 @@ def dca_levels(entry_price: float) -> List[float]:
 def build_plan(equity: float, args: argparse.Namespace, entry_price: float) -> Dict[str, Any]:
     target = min(float(args.initial_target_notional), float(args.max_gross_notional_usdt), max(equity, 0.0))
     base = min(target * CHAMPION_PARAMS["fresh_base_pct"] / 100.0, target)
+    min_order_notional = max(
+        0.0,
+        float(CHAMPION_PARAMS.get("dca_min_order_usdt") or 0.0),
+        float(CHAMPION_PARAMS.get("min_order_qty_hype") or 0.0) * max(float(entry_price or 0.0), 0.0),
+    )
+    if min_order_notional > 0:
+        base = min(target, max(base, min_order_notional))
     remaining = max(target - base, 0.0)
-    raw_adds = [base * m for m in DCA_MULTIPLIERS]
+    dca_mode = str(CHAMPION_PARAMS.get("dca_add_mode") or "multiplier").strip().lower()
+    if dca_mode == "fixed":
+        fixed = max(0.0, float(CHAMPION_PARAMS.get("dca_add_notional_usdt") or 0.0))
+        raw_adds = [fixed for _ in DCA_MULTIPLIERS]
+    elif dca_mode == "min_order":
+        min_order = max(0.0, float(CHAMPION_PARAMS.get("dca_min_order_usdt") or 0.0))
+        raw_adds = [min_order for _ in DCA_MULTIPLIERS]
+    else:
+        dca_mode = "multiplier"
+        raw_adds = [base * m for m in DCA_MULTIPLIERS]
     scale = min(1.0, remaining / max(sum(raw_adds), 1e-12))
+    add_notionals = [x * scale for x in raw_adds]
+    if min_order_notional > 0:
+        add_notionals = [max(x, min_order_notional) if x > 0 else 0.0 for x in add_notionals]
     return {
         "target_notional": target,
         "base_notional": base,
-        "add_notionals": [x * scale for x in raw_adds],
+        "add_notionals": add_notionals,
+        "dca_add_mode": dca_mode,
+        "min_order_notional": min_order_notional,
+        "min_order_qty_hype": float(CHAMPION_PARAMS.get("min_order_qty_hype") or 0.0),
         "levels": dca_levels(entry_price),
     }
 
