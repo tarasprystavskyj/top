@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -78,6 +79,45 @@ def parse_json(stdout: str) -> dict[str, Any] | None:
             except json.JSONDecodeError:
                 return None
     return None
+
+
+def prune_old_basket_raw(protected_names: set[str] | None = None) -> list[str]:
+    """Remove old ignored basket raw dirs after compact summaries exist.
+
+    The committed report files are the durable evidence. Raw curves are large
+    runtime artifacts and can be regenerated from the manifest commands.
+    """
+
+    if os.environ.get("OBW_AKELA_PRUNE_BASKET_RAW", "1").strip().lower() in {"0", "false", "no"}:
+        return []
+    keep = int(os.environ.get("OBW_AKELA_BASKET_RAW_KEEP", "2") or 2)
+    protected = protected_names or set()
+    if keep < 1:
+        keep = 1
+
+    dirs = sorted(
+        [path for path in RAW_ROOT.glob("basket_*") if path.is_dir()],
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    kept = 0
+    removed: list[str] = []
+    for path in dirs:
+        if path.name in protected:
+            kept += 1
+            continue
+        stamp = path.name[len("basket_") :] if path.name.startswith("basket_") else path.name
+        summary_name = f"basket_summary_{stamp}.md"
+        summary_exists = (REPORTS / summary_name).exists()
+        if not summary_exists:
+            kept += 1
+            continue
+        if kept < keep:
+            kept += 1
+            continue
+        shutil.rmtree(path)
+        removed.append(str(path.relative_to(ROOT)))
+    return removed
 
 
 def run_candidate(candidate: dict[str, str], run_dir: Path, limit_bars: int) -> dict[str, Any]:
@@ -234,6 +274,7 @@ def build_summary(manifest: dict[str, Any]) -> str:
 def main() -> int:
     stamp = stamp_utc()
     limit_bars = int(os.environ.get("OBW_AKELA_BASKET_LIMIT_BARS", "0") or 0)
+    pre_pruned = prune_old_basket_raw()
     run_dir = RAW_ROOT / f"basket_{stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     REPORTS.mkdir(parents=True, exist_ok=True)
@@ -256,6 +297,15 @@ def main() -> int:
     latest_manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     latest_summary.write_text(summary, encoding="utf-8")
     dated_summary.write_text(summary, encoding="utf-8")
+    post_pruned = prune_old_basket_raw({run_dir.name})
+    if pre_pruned or post_pruned:
+        manifest["raw_retention"] = {
+            "policy": "keep latest basket raw dirs after committed summaries exist",
+            "pre_run_removed": pre_pruned,
+            "post_run_removed": post_pruned,
+            "keep": int(os.environ.get("OBW_AKELA_BASKET_RAW_KEEP", "2") or 2),
+        }
+        latest_manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(summary)
     return 0 if all(row["status"] == "ok" for row in results) else 1

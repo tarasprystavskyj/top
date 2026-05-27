@@ -1,0 +1,38 @@
+{
+  "symbol": "HYPEUSDT",
+  "updated_at": "2026-05-24T13:36:00Z",
+  "paper_only": true,
+  "source": "HYPE paper telemetry snapshots; no real exchange fills",
+  "samples": 207,
+  "spread_bp": {
+    "min": 0.15540377786658194,
+    "median": 5.5708089610435865,
+    "p75": 5.873761756775691,
+    "p90": 6.241956579309917,
+    "p95": 7.676425627531824,
+    "p99": 8.092763713711856,
+    "max": 8.377923381519134,
+    "mean": 4.623166257223756
+  },
+  "half_spread_bp": {
+    "min": 0.07770188893329097,
+    "median": 2.7854044805217932,
+    "p75": 2.9368808783878455,
+    "p90": 3.1209782896549587,
+    "p95": 3.838212813765912,
+    "p99": 4.046381856855928,
+    "max": 4.188961690759567,
+    "mean": 2.311583128611878
+  },
+  "model": {
+    "name": "hype_spread_p95_plus_buffer_v1",
+    "slippage_bp_per_side": 4.25,
+    "formula": "max(0.50, half_spread_bp + depth_impact_bp + 0.25) capped below by calibrated 4.25 for paper PnL",
+    "normal_notional_usdt": [2.5, 80.0, 500.0],
+    "notes": [
+      "Previous ENA fallback was 9.38 bp per side.",
+      "HYPE telemetry currently supports market microstructure calibration only, not real fill error calibration.",
+      "A real 2.5 USDT Binance futures test would be rejected by observed min_notional 50.0; keep 2.5 tests paper-only."
+    ]
+  }
+}

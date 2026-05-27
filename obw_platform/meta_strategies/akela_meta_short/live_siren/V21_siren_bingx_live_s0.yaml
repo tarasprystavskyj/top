@@ -1,0 +1,160 @@
+cache_db: ''
+symbol: SIREN/USDT:USDT
+live: true
+portfolio:
+  fee_rate: 0.0005
+  initial_equity_per_leg: 100.0
+  max_notional_frac: 1.0
+  slippage_per_side: 0.0009380229915652661
+  maker_fee_rate: 0.0002
+source: api
+strategy_class_long: strategies.cryptomine_pack_dual_full.CryptomineLongPackAdaptiveEven
+strategy_class_short: strategies.cryptomine_pack_dual_full.CryptomineShortPackAdaptiveEven
+strategy_params_long:
+  autoMerge: 0.0
+  baseOrderPctEq: 1.5
+  blockDcaOnTpTouch: 0.0
+  callbackPercent: 0.0375
+  dcaBlockCounterTrendGainAbs: 0.1
+  drop1: 0.3
+  drop2: 0.35
+  drop3: 0.6
+  drop4: 0.8
+  drop5: 0.8
+  entryTrendStrengthMin: 50.0
+  equityForSizingUSDT: 208
+  firstBuyQtyCoin: 0.09
+  hardBreakevenDeleveragePct: 50
+  linearDropPercent: 0.004615000000000001
+  liveStartTime: 0.0
+  marginCallLimit: 244.0
+  maxFillsPerBar: 6.0
+  maxLongInvestPct: 2.9
+  maxOrdersPer3Min: 14.0
+  maxSubSellsPerBar: 10.0
+  minLongInvestPct: 0.5
+  minOrderQtyCoin: 0.0
+  minOrderUSDT: 2.02
+  mult2: 1.2
+  mult3: 1.0
+  mult4: 1.5
+  mult5: 3.5
+  requireCloseAboveFullTP: 1.0
+  requireCloseBelowDcaLevel: 1.0
+  subSellCloseConfirmMode: breakeven
+  subSellTPPercent: 0.44
+  tpPercent: 0.3025
+  trendMaLen: 20.0
+  trendMaTf: W
+  trendScoreMaxPct: 85.0
+  trendScoreMinPct: 35.0
+  trendSlopeBars: 3.0
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  useEquityPctBase: 1.0
+  useHighLowTouch: 1.0
+  useLiveSyncStart: 0.0
+  useTrendAdaptiveSizing: 1.0
+strategy_params_short:
+  autoMerge: 0.0
+  baseOrderPctEq: 1.388859
+  blockDcaOnTpTouch: 0.0
+  callbackPercent: 0.07
+  dcaBlockCounterTrendGainAbs: 0.08
+  entryTrendStrengthMin: 50.0
+  equityForSizingUSDT: 214
+  firstSellQtyCoin: 0.09
+  hardBreakevenDeleveragePct: 50.0
+  linearRisePercent: 0.198706
+  liveStartTime: 0.0
+  marginCallLimit: 244.0
+  maxFillsPerBar: 6.0
+  maxOrdersPer3Min: 14.0
+  maxShortInvestPct: 0.55
+  maxSubSellsPerBar: 10.0
+  minOrderQtyCoin: 0.0
+  minShortInvestPct: 0.5
+  mult2: 2.272696
+  mult3: 1.0
+  mult4: 2.0
+  mult5: 3.5
+  requireCloseAboveDcaLevel: 0.0
+  requireCloseBelowFullTP: 1.0
+  rise1: 0.1
+  rise2: 0.4
+  rise3: 0.6
+  rise4: 0.8
+  rise5: 0.8
+  subCoverCloseConfirmMode: breakeven
+  subSellTPPercent: 0.6000000000000001
+  tpPercent: 0.24
+  trendMaLen: 20.0
+  trendMaTf: D
+  trendScoreMaxPct: 85.0
+  trendScoreMinPct: 35.0
+  trendSlopeBars: 3.0
+  trendSlopeLongBoundPct: 1.0
+  trendSlopeShortBoundPct: -1.0
+  useEquityPctBase: 1.0
+  useHighLowTouch: 1.0
+  useLiveSyncStart: 0.0
+  useTrendAdaptiveSizing: 1.0
+  minOrderUSDT: 2.02
+timeframe: 0.5m
+rollback_label: v21_siren_bingx_live_s0
+backtest:
+  use_live_sync: false
+  primary_metric: total_pnl_mtm
+  slippage:
+    enabled: true
+    mode: static
+    static_bp: 3.968746124271661
+    note: SIREN rough-tune proxy from passive orderbook p50/p95 before S0 telemetry live.
+  stress_slippage_bp: 14.101188248543322
+runner:
+  mode_label: S0_MICRO_TELEMETRY_LIVE
+  s0_micro_telemetry:
+    enabled: true
+    objective: collect_fills_rejects_spread_depth_latency_slippage
+    symbol: SIREN/USDT:USDT
+    fill_observation_target: 30
+    approved_notional_cap_usdt: 18.0
+    approved_loss_budget_usdt: 3.0
+    max_unrealized_to_realized_debt_ratio: -0.5
+    spread_stop_bp: 25.0
+    single_fill_adverse_slippage_stop_bp: 100.0
+    dynamic_min_order_floor:
+      enabled: true
+      configured_min_order_usdt: 2.02
+      buffer: 1.1
+      formula: max(min_cost*buffer, min_amount*current_price*buffer, configured_min_order_usdt)
+  debug_console: false
+  debug_payload: false
+  console:
+    debug: false
+    debug_payload: false
+    error_summary: true
+    error_details: false
+  entry_open_order_type: limit
+  entry_limit_post_only: true
+  entry_limit_use_book_passive_price: true
+  entry_limit_passive_ticks: 0
+  entry_limit_ttl_sec: 2.0
+  entry_limit_cancel_confirm_sec: 2.0
+  entry_limit_fallback_to_market: true
+  entry_limit_fallback_on_reject: true
+  entry_limit_fallback_on_timeout: true
+  slippage_calibration:
+    enabled: true
+    min_obs: 30
+    window_obs: 500
+    recency_hours: 72
+    output_json: live_slippage_calibration.json
+    suggested_yaml: backtest_slippage_suggestion.json
+    volume_regime:
+      enabled: true
+      metric: quote_volume
+      recent_bars: 60
+      baseline_bars: 360
+      shift_ratio: 2.0
+backtester_file: backtester_dual_long_short_fast_pack_v2.py

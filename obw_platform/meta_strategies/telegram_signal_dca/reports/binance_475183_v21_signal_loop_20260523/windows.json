@@ -1,0 +1,13 @@
+{
+  "lead_id": "4751838302089254401",
+  "positions_csv": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/meta_strategies/telegram_signal_dca/reports/binance_475183_v21_signal_loop_20260523/wave_002/position_refresh/position_history_normalized.csv",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "position_start_utc": "2026-01-13T15:34:06.214000Z",
+  "position_end_utc": "2026-05-23T13:52:23.102000Z",
+  "warmup_days": 21,
+  "window_start_utc": "2025-12-23T15:34:06.214000Z",
+  "window_end_utc": "2026-05-24T02:25:21.819836Z"
+}
