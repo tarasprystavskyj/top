@@ -251,6 +251,76 @@ def stable_client_order_id(*parts: Any) -> str:
     return f"hypecap100-{digest}"
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
+def active_pointer_paths(args: argparse.Namespace) -> Dict[str, Path]:
+    out_dir = Path(args.out_dir)
+    return {
+        "status_path": out_dir / "ACTIVE_STATUS_PATH.txt",
+        "telemetry_path": out_dir / "ACTIVE_TELEMETRY_PATH.txt",
+        "state_path": out_dir / "ACTIVE_STATE_PATH.txt",
+        "session_db": out_dir / "ACTIVE_SESSION_DB_PATH.txt",
+        "log_path": out_dir / "ACTIVE_LOG_PATH.txt",
+    }
+
+
+def active_log_path_arg(args: argparse.Namespace) -> str:
+    return str(
+        getattr(args, "stdout_log_path", "")
+        or os.getenv("HYPE_CAP100_STDOUT_LOG_PATH", "")
+        or os.getenv("LIVE_STDOUT_LOG_PATH", "")
+        or ""
+    )
+
+
+def write_active_pointers(args: argparse.Namespace) -> Dict[str, str]:
+    log_path = active_log_path_arg(args)
+    if not log_path:
+        log_path = str(Path(args.out_dir) / "__ACTIVE_LOG_PATH_NOT_PROVIDED__")
+    values = {
+        "status_path": str(args.status_path),
+        "telemetry_path": str(args.telemetry_path),
+        "state_path": str(args.state_path),
+        "session_db": str(args.session_db or ""),
+        "log_path": log_path,
+    }
+    for key, marker in active_pointer_paths(args).items():
+        _atomic_write_text(marker, values.get(key, "") + "\n")
+    return values
+
+
+def active_pointer_sanity(args: argparse.Namespace, status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"ok": True, "pointers": {}}
+    expected = {
+        "status_path": str(args.status_path),
+        "telemetry_path": str(args.telemetry_path),
+        "state_path": str(args.state_path),
+        "session_db": str(args.session_db or ""),
+    }
+    for key, marker in active_pointer_paths(args).items():
+        try:
+            value = marker.read_text(encoding="utf-8").strip()
+        except Exception:
+            value = ""
+        out["pointers"][key] = value
+        if key in expected and value != expected[key]:
+            out["ok"] = False
+            out.setdefault("mismatches", {})[key] = {"expected": expected[key], "actual": value}
+    status_telemetry = str((status or {}).get("telemetry_path") or "")
+    if status_telemetry and out["pointers"].get("telemetry_path") != status_telemetry:
+        out["ok"] = False
+        out.setdefault("mismatches", {})["status.telemetry_path"] = {
+            "expected": status_telemetry,
+            "actual": out["pointers"].get("telemetry_path"),
+        }
+    return out
+
+
 def order_id_from_response(order: Optional[Dict[str, Any]]) -> str:
     try:
         return _extract_order_id(order)
@@ -422,7 +492,7 @@ def _ua_order_direction(order_type: Any, side: Any) -> str:
     return action
 
 
-def _read_session_orders_for_artifacts(session_db: str) -> List[Dict[str, Any]]:
+def _read_session_orders_for_artifacts(session_db: str, run_id: str = "", *, all_runs: bool = False) -> List[Dict[str, Any]]:
     if not session_db or not Path(session_db).exists():
         return []
     try:
@@ -432,13 +502,20 @@ def _read_session_orders_for_artifacts(session_db: str) -> List[Dict[str, Any]]:
             tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
             if "orders" not in tables:
                 return []
+            has_run_id = "run_id" in {r[1] for r in con.execute("PRAGMA table_info(orders)").fetchall()}
+            params: List[Any] = []
+            where = "WHERE UPPER(COALESCE(status, '')) = 'FILLED'"
+            if run_id and has_run_id and not all_runs:
+                where += " AND COALESCE(run_id, '') = ?"
+                params.append(run_id)
             rows = con.execute(
-                """
+                f"""
                 SELECT order_id, ts_utc, symbol, side, type, price, qty, status, reason, extra
                 FROM orders
-                WHERE UPPER(COALESCE(status, '')) = 'FILLED'
+                {where}
                 ORDER BY ts_utc ASC, order_id ASC
-                """
+                """,
+                params,
             ).fetchall()
             return [dict(row) for row in rows]
         finally:
@@ -448,7 +525,7 @@ def _read_session_orders_for_artifacts(session_db: str) -> List[Dict[str, Any]]:
 
 
 def export_match_ready_trade_history(args: argparse.Namespace) -> Optional[str]:
-    rows = _read_session_orders_for_artifacts(str(args.session_db or ""))
+    rows = _read_session_orders_for_artifacts(str(args.session_db or ""), str(args.run_id or ""))
     if not rows:
         return None
     out_dir = Path(args.out_dir)
@@ -473,13 +550,14 @@ def export_match_ready_trade_history(args: argparse.Namespace) -> Optional[str]:
         for row in rows:
             symbol = str(row.get("symbol") or args.live_symbol or DEFAULT_LIVE_SYMBOL).replace("-", "")
             extra = _load_order_extra(row)
+            pnl = _chart_event_pnl(extra) if str(row.get("type") or "").upper() in {"CLOSE", "EXIT"} else ""
             writer.writerow(
                 {
                     "Час виконання": row.get("ts_utc") or "",
                     "Ф’ючерси / Напрямок": f"{symbol}\n{_ua_order_direction(row.get('type'), row.get('side'))}",
                     "Виконано": _fmt_float(row.get("qty")),
                     "Ціна виконання": _fmt_float(row.get("price")),
-                    "Закриті PnL / %": "0 USDT",
+                    "Закриті PnL / %": f"{pnl} USDT" if pnl else "",
                     "Комісія": f"{_fmt_float(_order_fee_from_extra(extra))} USDT",
                     "Ордер №": row.get("order_id") or "",
                     "Операція": "",
@@ -727,7 +805,7 @@ def _chart_event_text(row: Dict[str, Any], extra: Dict[str, Any]) -> str:
 
 
 def export_live_chart_events(args: argparse.Namespace) -> Dict[str, Optional[str]]:
-    rows = _read_session_orders_for_artifacts(str(args.session_db or ""))
+    rows = _read_session_orders_for_artifacts(str(args.session_db or ""), str(args.run_id or ""))
     if not rows:
         return {"live_chart_events_jsonl": None, "live_chart_events_csv": None}
     out_dir = Path(args.out_dir)
@@ -1354,6 +1432,11 @@ def submit_open(args: argparse.Namespace, symbol: str, side: str, expected_price
         "order": order,
         "order_amount": order_amount,
         "contract_size": contract_size,
+        "requested_base_qty": base_qty,
+        "normalized_contract_amount": order_amount,
+        "filled_contracts": order_amount,
+        "filled_base_qty": order_qty,
+        "post_trade_position_qty": float((ex_pos or {}).get("qty") or order_qty),
         "order_qty": order_qty,
         "qty": float((ex_pos or {}).get("qty") or order_qty),
         "entry": float((ex_pos or {}).get("entry") or fill_px),
@@ -1413,6 +1496,11 @@ def submit_close(args: argparse.Namespace, symbol: str, side: str, qty: float, c
         "qty": filled_base_qty,
         "order_amount": order_amount,
         "contract_size": contract_size,
+        "requested_base_qty": base_qty,
+        "normalized_contract_amount": order_amount,
+        "filled_contracts": order_amount,
+        "filled_base_qty": filled_base_qty,
+        "post_trade_position_qty": float((ex_after or {}).get("qty") or 0.0),
         "fill_price": float(fill_px),
         "fill_dt": fill_dt.isoformat() if fill_dt else None,
         "params": params,
@@ -1578,8 +1666,10 @@ def live_add_fill(
         }
     client_order_id = stable_client_order_id(
         "entry",
+        args.run_id,
         trade.get("key"),
         trade.get("lead_position_id"),
+        trade.get("opened_at_utc"),
         fill_type,
         trade.get("next_level_idx"),
     )
@@ -1645,6 +1735,11 @@ def live_add_fill(
         "requested_notional": notional,
         "live_notional": live_notional,
         "qty": qty,
+        "requested_base_qty": submitted.get("requested_base_qty"),
+        "normalized_contract_amount": submitted.get("normalized_contract_amount"),
+        "filled_contracts": submitted.get("filled_contracts"),
+        "filled_base_qty": submitted.get("filled_base_qty"),
+        "post_trade_position_qty": submitted.get("post_trade_position_qty"),
         "position_qty": position_qty,
         "position_entry": position_entry,
         "fee_usdt": fee,
@@ -1700,7 +1795,7 @@ def live_close_trade(
             "reason": str(backoff.get("reason") or "order_error_backoff"),
             "backoff": backoff,
         }
-    client_order_id = stable_client_order_id("exit", trade.get("key"), trade.get("lead_position_id"))
+    client_order_id = stable_client_order_id("exit", args.run_id, trade.get("key"), trade.get("lead_position_id"), trade.get("opened_at_utc"))
     submitted = submit_close(args, trade["symbol"], str(trade["side"]), float(trade.get("qty") or 0.0), client_order_id)
     if submitted.get("synced_only"):
         closed = paper.close_trade(trade, now=now, expected_exit=expected_exit, mark=mark, reason=str(submitted.get("reason") or reason), history_row=history_row)
@@ -1758,6 +1853,7 @@ def live_close_trade(
     closed["live_exit_order"] = order
     closed["live_exit_price"] = exit_price
     closed["exit_slip_bp"] = exit_slip
+    closed["exit_expected_price"] = expected_exit
     closed["exit_lag_sec"] = exit_lag
     closed["exit_fill_ts"] = submitted.get("fill_dt")
     closed["exit_mark_price"] = mark
@@ -1911,6 +2007,7 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["control"] = control_state(args)
     payload["session_db"] = args.session_db
     payload["run_id"] = args.run_id
+    payload["active_pointers"] = active_pointer_sanity(args)
     payload["order_sync_wait_sec"] = args.order_sync_wait_sec
     payload["order_error_backoff"] = state.get("order_error_backoff") if isinstance(state.get("order_error_backoff"), dict) else {}
     payload["entry_failures"] = state.get("entry_failures") if isinstance(state.get("entry_failures"), dict) else {}
@@ -1919,6 +2016,7 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
 
 def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     now = paper.utc_now()
+    write_active_pointers(args)
     controls = control_state(args)
     handle_hot_stop_if_requested(args, controls, now)
     if controls["kill"]:
@@ -1936,6 +2034,7 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
         state["last_dca_eval_utc"] = paper.iso(now)
     status = status_payload(state, mark, now, events, input_meta, args)
     status["ui_artifacts"] = emit_ui_artifacts(args, status)
+    status["active_pointers"] = active_pointer_sanity(args, status)
     state["last_poll"] = status
     state.setdefault("events", []).extend({"utc": paper.iso(now), **event} for event in events)
     state["events"] = state["events"][-args.max_events :]
@@ -1972,6 +2071,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--resume-snapshot-overwrite", action="store_true", help="Allow --resume-snapshot to replace an existing state-path.")
     ap.add_argument("--live-cache-npz-path", default="", help="Live OHLCV NPZ artifact path. Defaults to out-dir/live_mark_ohlcv.npz.")
     ap.add_argument("--live-cache-npz-max-bars", type=int, default=10000, help="Max rows retained in the live OHLCV NPZ artifact.")
+    ap.add_argument("--stdout-log-path", default="", help="Current stdout log path to publish via ACTIVE_LOG_PATH.txt.")
     return ap
 
 
@@ -1995,6 +2095,7 @@ def normalize_paths(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir)
     if args.session_db and not Path(args.session_db).is_absolute() and Path(args.session_db).parent == Path("."):
         args.session_db = str(out_dir / args.session_db)
+    write_active_pointers(args)
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -2027,6 +2128,7 @@ def main() -> None:
         args.run_id = "HYPE_CAP100_LIVE_" + paper.utc_now().strftime("%Y%m%dT%H%M%SZ")
     ensure_session_dbs(args.out_dir, args.session_db)
     ensure_orders_db(args.session_db)
+    write_active_pointers(args)
     load_resume_snapshot(args)
     args._exchange_switch_reset = reset_exchange_failures_on_switch(args)
     args._auth_probe = auth_probe(args)

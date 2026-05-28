@@ -72,6 +72,7 @@ def make_args(**overrides):
         hot_restart_snapshot_path="",
         resume_snapshot="",
         resume_snapshot_overwrite=False,
+        stdout_log_path="",
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -195,6 +196,14 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertNotEqual(first, other)
         self.assertLessEqual(len(first), 29)
         self.assertTrue(first.startswith("hypecap100-"))
+
+    def test_exchange_client_order_id_seed_includes_run_context(self):
+        a = live.stable_client_order_id("entry", "run-a", "HYPEUSDT:LONG", "lead-1", "2026-05-25T21:00:00Z", "base", 0)
+        b = live.stable_client_order_id("entry", "run-b", "HYPEUSDT:LONG", "lead-1", "2026-05-25T21:00:00Z", "base", 0)
+        c = live.stable_client_order_id("entry", "run-a", "HYPEUSDT:LONG", "lead-1", "2026-05-25T21:01:00Z", "base", 0)
+        self.assertNotEqual(a, b)
+        self.assertNotEqual(a, c)
+        self.assertLessEqual(len(a), 29)
 
     def test_order_id_safe_order_and_avg_price_helpers(self):
         order = {"id": "id-1", "clientOrderId": "client-1", "average": "51.5", "info": {"secret": "nope", "positionSide": "LONG"}}
@@ -349,6 +358,11 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             result = live.submit_open(args, "HYPEUSDT", "LONG", 50.0, 12.5, "client-open")
         self.assertTrue(result["ok"])
         self.assertEqual(result["qty"], 0.25)
+        self.assertEqual(result["requested_base_qty"], 0.25)
+        self.assertEqual(result["normalized_contract_amount"], 0.25)
+        self.assertEqual(result["filled_contracts"], 0.25)
+        self.assertEqual(result["filled_base_qty"], 0.25)
+        self.assertEqual(result["post_trade_position_qty"], 0.25)
         self.assertEqual(args._live_client.ex.calls[0][2], "buy")
         self.assertEqual(args._live_client.ex.calls[0][5]["clientOrderId"], "client-open")
 
@@ -371,6 +385,11 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         ), patch.object(live, "_fetch_order_fill", return_value=(52.0, NOW, {"id": "close-1", "average": 52.0})):
             result = live.submit_close(args, "HYPEUSDT", "LONG", 0.5, "client-close")
         self.assertTrue(result["ok"])
+        self.assertEqual(result["requested_base_qty"], 0.2)
+        self.assertEqual(result["normalized_contract_amount"], 0.2)
+        self.assertEqual(result["filled_contracts"], 0.2)
+        self.assertEqual(result["filled_base_qty"], 0.2)
+        self.assertEqual(result["post_trade_position_qty"], 0.0)
         self.assertEqual(args._live_client.ex.calls[0][2], "sell")
         self.assertTrue(args._live_client.ex.calls[0][5]["reduceOnly"])
         self.assertTrue(args._live_client.ex.calls[0][5]["hedged"])
@@ -472,7 +491,10 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             event = live.live_add_fill(state, trade, now=NOW, expected_price=50.0, notional=10.0, fill_type="base", reason="test", mark=50.0, args=args)
         self.assertEqual(event["type"], "live_fill")
         self.assertEqual(trade["qty"], 0.4)
-        self.assertEqual(state["paper_orders"][0]["client_order_id"], live.stable_client_order_id("entry", trade["key"], trade["lead_position_id"], "base", 0))
+        self.assertEqual(state["paper_orders"][0]["client_order_id"], live.stable_client_order_id("entry", args.run_id, trade["key"], trade["lead_position_id"], trade["opened_at_utc"], "base", 0))
+        self.assertIn("requested_base_qty", state["paper_orders"][0])
+        self.assertIn("normalized_contract_amount", state["paper_orders"][0])
+        self.assertIn("filled_base_qty", state["paper_orders"][0])
         self.assertTrue(record.called)
         self.assertTrue(upsert.called)
 
@@ -546,6 +568,9 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertAlmostEqual(closed["paper_exit_price"], 52.0)
         self.assertAlmostEqual(closed["exit_fee"], 0.01)
         self.assertAlmostEqual(closed["paper_pnl_usdt"], 0.39)
+        self.assertAlmostEqual(closed["exit_slip_bp"], 0.0)
+        self.assertAlmostEqual(live.signed_slip_bp("LONG", 58.245, 58.245, is_close=True), 0.0)
+        self.assertAlmostEqual(live.signed_slip_bp("LONG", 58.245, 58.22956, is_close=True), (58.245 - 58.22956) / 58.245 * 10000.0)
         with patch.object(live, "submit_close", return_value={"ok": False, "error": "rejected"}), patch.object(live, "record_session_order"), patch.object(
             live, "upsert_session_position"
         ):
@@ -728,6 +753,32 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
                 exchange_order_id="ex-artifact-1",
                 extra={"submitted": {"order": {"fee": {"cost": "0.005", "currency": "USDT"}}}},
             )
+            other_args = make_args(out_dir=td, session_db=session_db, run_id="old-run")
+            live.record_session_order(
+                other_args,
+                now=NOW,
+                symbol="HYPE-USDT",
+                side="LONG",
+                type_="OPEN",
+                price=49.0,
+                qty=9.9,
+                status="FILLED",
+                reason="old_run",
+                exchange_order_id="old-artifact",
+            )
+            live.record_session_order(
+                args,
+                now=NOW,
+                symbol="HYPE-USDT",
+                side="LONG",
+                type_="CLOSE",
+                price=51.0,
+                qty=0.2,
+                status="FILLED",
+                reason="close_artifact",
+                exchange_order_id="ex-close",
+                extra={"closed": {"paper_pnl_usdt": -0.1097}, "submitted": {"order": {"fee": {"cost": "0.007", "currency": "USDT"}}}},
+            )
             status = {
                 "utc": live.paper.iso(NOW),
                 "input_meta": {"market": {"mark": 50.75}},
@@ -747,10 +798,14 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             self.assertTrue(Path(artifacts["match_ready_csv"]).exists())
             with open(artifacts["match_ready_csv"], newline="", encoding="utf-8-sig") as fh:
                 match_rows = list(csv.DictReader(fh))
+            self.assertEqual(len(match_rows), 2)
             self.assertTrue(match_rows[0]["Ордер №"].startswith("hypecap100-"))
             self.assertIn("HYPEUSDT", match_rows[0]["Ф’ючерси / Напрямок"])
             self.assertIn("Відкрити Long", match_rows[0]["Ф’ючерси / Напрямок"])
             self.assertEqual(match_rows[0]["Комісія"], "0.005 USDT")
+            self.assertIn("Закрити Long", match_rows[1]["Ф’ючерси / Напрямок"])
+            self.assertEqual(match_rows[1]["Закриті PnL / %"], "-0.1097 USDT")
+            self.assertEqual(match_rows[1]["Комісія"], "0.007 USDT")
 
             self.assertTrue(Path(artifacts["live_candles_csv"]).exists())
             with open(artifacts["live_candles_csv"], newline="", encoding="utf-8-sig") as fh:
@@ -758,6 +813,11 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             self.assertEqual(candle_rows[-1]["ts"], live.paper.iso(NOW))
             self.assertEqual(float(candle_rows[-1]["close"]), 50.75)
             self.assertEqual(candle_rows[-1]["symbol"], "HYPE-USDT")
+
+            with open(artifacts["live_chart_events_csv"], newline="", encoding="utf-8-sig") as fh:
+                chart_rows = list(csv.DictReader(fh))
+            self.assertEqual(len(chart_rows), 2)
+            self.assertNotEqual(chart_rows[0]["price"], "49")
 
             self.assertTrue(Path(artifacts["live_cache_npz"]).exists())
             with np.load(artifacts["live_cache_npz"], allow_pickle=False) as z:
@@ -794,6 +854,27 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             finally:
                 con.close()
             self.assertEqual(db_row, (31.25, 10.05, 1.25))
+
+    def test_active_pointers_are_atomic_and_match_status_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            args = make_args(
+                out_dir=td,
+                state_path=str(Path(td) / "state.json"),
+                status_path=str(Path(td) / "RUN_STATUS.json"),
+                telemetry_path=str(Path(td) / "telemetry_current.jsonl"),
+                session_db=str(Path(td) / "session.sqlite"),
+                stdout_log_path=str(Path(td) / "stdout_current.log"),
+            )
+            live.write_active_pointers(args)
+            sanity = live.active_pointer_sanity(args, {"telemetry_path": args.telemetry_path})
+            self.assertTrue(sanity["ok"])
+            self.assertEqual(Path(td, "ACTIVE_TELEMETRY_PATH.txt").read_text(encoding="utf-8").strip(), args.telemetry_path)
+            self.assertEqual(Path(td, "ACTIVE_LOG_PATH.txt").read_text(encoding="utf-8").strip(), args.stdout_log_path)
+
+            Path(td, "ACTIVE_TELEMETRY_PATH.txt").write_text("old.jsonl\n", encoding="utf-8")
+            sanity = live.active_pointer_sanity(args, {"telemetry_path": args.telemetry_path})
+            self.assertFalse(sanity["ok"])
+            self.assertIn("telemetry_path", sanity["mismatches"])
 
 
 if __name__ == "__main__":
