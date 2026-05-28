@@ -243,6 +243,8 @@ DEFAULT_ORDER_ERROR_BACKOFF_SEC = 300.0
 DEFAULT_ORDER_ERROR_CIRCUIT_SEC = 1800.0
 DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE = 3
 DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC = 3600.0
+SOURCE_HISTORY_OPEN_TOLERANCE_SEC = 2 * 60 * 60
+SOURCE_HISTORY_CLOSE_TOLERANCE_SEC = 30 * 60
 
 
 def stable_client_order_id(*parts: Any) -> str:
@@ -359,6 +361,203 @@ def record_session_order(args: argparse.Namespace, *, now: datetime, symbol: str
             "extra": json.dumps(extra or {}, ensure_ascii=False, sort_keys=True),
         },
     )
+
+
+def ensure_order_execution_comparisons_db(db_path: str) -> None:
+    if not db_path:
+        return
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS order_execution_comparisons (
+                comparison_id TEXT PRIMARY KEY,
+                run_id TEXT,
+                ts_utc TEXT,
+                symbol TEXT,
+                side TEXT,
+                action TEXT,
+                trade_key TEXT,
+                lead_position_id TEXT,
+                signal_time_utc TEXT,
+                signal_price REAL,
+                exchange_fill_time_utc TEXT,
+                exchange_fill_price REAL,
+                source_opened_utc TEXT,
+                source_closed_utc TEXT,
+                source_avg_cost REAL,
+                source_avg_close REAL,
+                lag_sec REAL,
+                exchange_vs_signal_bp REAL,
+                source_vs_signal_bp REAL,
+                exchange_vs_source_bp REAL,
+                source_history_valid INTEGER,
+                source_history_reject_reason TEXT,
+                exchange_order_id TEXT,
+                client_order_id TEXT,
+                extra_json TEXT
+            )
+            """
+        )
+        con.execute("CREATE INDEX IF NOT EXISTS idx_order_execution_comparisons_run ON order_execution_comparisons(run_id, ts_utc)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_order_execution_comparisons_trade ON order_execution_comparisons(trade_key, action)")
+        con.commit()
+    finally:
+        con.close()
+
+
+def _parse_iso_dt(raw: Any) -> Optional[datetime]:
+    if raw in (None, ""):
+        return None
+    try:
+        text = str(raw)
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _ms_to_dt(raw: Any) -> Optional[datetime]:
+    try:
+        ms = int(raw or 0)
+    except Exception:
+        return None
+    if ms <= 0:
+        return None
+    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+
+
+def _time_lag_sec(a: Optional[datetime], b: Optional[datetime]) -> Optional[float]:
+    if not a or not b:
+        return None
+    return abs((a - b).total_seconds())
+
+
+def _bp_delta(ref_price: Any, test_price: Any, side: str = "LONG", *, is_close: bool = False) -> Optional[float]:
+    return signed_slip_bp(side, ref_price, test_price, is_close=is_close)
+
+
+def _source_history_open_dt(row: Dict[str, Any]) -> Optional[datetime]:
+    return _parse_iso_dt(row.get("opened_utc")) or _ms_to_dt(row.get("opened_ms"))
+
+
+def _source_history_close_dt(row: Dict[str, Any]) -> Optional[datetime]:
+    return _parse_iso_dt(row.get("closed_utc")) or _ms_to_dt(row.get("closed_ms"))
+
+
+def validate_source_history_match(trade: Dict[str, Any], row: Optional[Dict[str, Any]], close_time: datetime) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    if not row:
+        return None, {"valid": False, "reason": "missing_history"}
+    key = str(trade.get("key") or "")
+    if row.get("key") and str(row.get("key")) != key:
+        return None, {"valid": False, "reason": "key_mismatch", "history_key": row.get("key"), "trade_key": key}
+    lead_id = str(trade.get("lead_position_id") or "")
+    hist_id = str(row.get("id") or "")
+    if lead_id and hist_id and lead_id != hist_id:
+        return None, {"valid": False, "reason": "position_id_mismatch", "history_id": hist_id, "lead_position_id": lead_id}
+    opened_ref = _ms_to_dt(trade.get("detected_at_ms")) or _parse_iso_dt(trade.get("opened_at_utc"))
+    hist_open = _source_history_open_dt(row)
+    open_lag = _time_lag_sec(opened_ref, hist_open)
+    if open_lag is None:
+        return None, {"valid": False, "reason": "missing_open_time", "history_opened_utc": row.get("opened_utc"), "trade_opened_at_utc": trade.get("opened_at_utc")}
+    if open_lag > SOURCE_HISTORY_OPEN_TOLERANCE_SEC:
+        return None, {"valid": False, "reason": "open_time_mismatch", "open_lag_sec": open_lag, "history_opened_utc": row.get("opened_utc"), "trade_opened_at_utc": trade.get("opened_at_utc")}
+    hist_close = _source_history_close_dt(row)
+    close_lag = _time_lag_sec(close_time, hist_close)
+    if close_lag is None:
+        return None, {"valid": False, "reason": "missing_close_time", "history_closed_utc": row.get("closed_utc"), "close_event_utc": paper.iso(close_time)}
+    if close_lag > SOURCE_HISTORY_CLOSE_TOLERANCE_SEC:
+        return None, {"valid": False, "reason": "close_time_mismatch", "close_lag_sec": close_lag, "history_closed_utc": row.get("closed_utc"), "close_event_utc": paper.iso(close_time)}
+    if not row.get("avg_close_price"):
+        return None, {"valid": False, "reason": "missing_avg_close_price"}
+    return row, {"valid": True, "open_lag_sec": open_lag, "close_lag_sec": close_lag}
+
+
+def find_valid_source_history_exit(trade: Dict[str, Any], history: List[Dict[str, Any]], close_time: datetime) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    candidates = [row for row in (history or []) if row.get("key") == trade.get("key") and row.get("avg_close_price")]
+    lead_id = str(trade.get("lead_position_id") or "")
+    if lead_id:
+        exact = [row for row in candidates if str(row.get("id") or "") == lead_id]
+        if exact:
+            candidates = exact
+    ranked = sorted(candidates, key=lambda row: (_time_lag_sec(close_time, _source_history_close_dt(row)) if _source_history_close_dt(row) else float("inf")))
+    rejects = []
+    for row in ranked:
+        valid, meta = validate_source_history_match(trade, row, close_time)
+        if valid:
+            return valid, {**meta, "candidate_count": len(candidates)}
+        rejects.append(meta)
+    return None, {"valid": False, "reason": "no_valid_history_match", "candidate_count": len(candidates), "rejects": rejects[:5]}
+
+
+def record_order_execution_comparison(
+    args: argparse.Namespace,
+    *,
+    now: datetime,
+    action: str,
+    trade: Dict[str, Any],
+    signal_price: Optional[float],
+    exchange_fill_price: Optional[float],
+    exchange_fill_time_utc: Optional[str],
+    source_history: Optional[Dict[str, Any]] = None,
+    source_meta: Optional[Dict[str, Any]] = None,
+    exchange_order_id: str = "",
+    client_order_id: str = "",
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    if not args.session_db:
+        return
+    ensure_order_execution_comparisons_db(args.session_db)
+    source_history = source_history if isinstance(source_history, dict) else {}
+    source_meta = source_meta if isinstance(source_meta, dict) else {}
+    signal_dt = _parse_iso_dt(trade.get("opened_at_utc")) if str(action).upper() == "OPEN" else now
+    fill_dt = _parse_iso_dt(exchange_fill_time_utc) or now
+    source_price = source_history.get("avg_close_price") if str(action).upper() == "CLOSE" else source_history.get("avg_cost")
+    lag_sec = (fill_dt - signal_dt).total_seconds() if signal_dt and fill_dt else None
+    side = str(trade.get("side") or "LONG")
+    is_close = str(action).upper() == "CLOSE"
+    row = {
+        "comparison_id": stable_client_order_id("comparison", args.run_id, action, trade.get("key"), exchange_order_id, client_order_id, paper.iso(now)),
+        "run_id": args.run_id,
+        "ts_utc": paper.iso(now),
+        "symbol": args.live_symbol,
+        "side": side,
+        "action": str(action).upper(),
+        "trade_key": str(trade.get("key") or ""),
+        "lead_position_id": str(trade.get("lead_position_id") or ""),
+        "signal_time_utc": paper.iso(signal_dt) if signal_dt else "",
+        "signal_price": float(signal_price) if signal_price not in (None, "") else None,
+        "exchange_fill_time_utc": paper.iso(fill_dt) if fill_dt else "",
+        "exchange_fill_price": float(exchange_fill_price) if exchange_fill_price not in (None, "") else None,
+        "source_opened_utc": str(source_history.get("opened_utc") or ""),
+        "source_closed_utc": str(source_history.get("closed_utc") or ""),
+        "source_avg_cost": float(source_history.get("avg_cost")) if source_history.get("avg_cost") not in (None, "") else None,
+        "source_avg_close": float(source_history.get("avg_close_price")) if source_history.get("avg_close_price") not in (None, "") else None,
+        "lag_sec": lag_sec,
+        "exchange_vs_signal_bp": _bp_delta(signal_price, exchange_fill_price, side, is_close=is_close),
+        "source_vs_signal_bp": _bp_delta(signal_price, source_price, side, is_close=is_close),
+        "exchange_vs_source_bp": _bp_delta(source_price, exchange_fill_price, side, is_close=is_close),
+        "source_history_valid": 1 if source_meta.get("valid") else 0,
+        "source_history_reject_reason": "" if source_meta.get("valid") else str(source_meta.get("reason") or ""),
+        "exchange_order_id": str(exchange_order_id or ""),
+        "client_order_id": str(client_order_id or ""),
+        "extra_json": json.dumps({"source_meta": source_meta, **(extra or {})}, ensure_ascii=False, sort_keys=True),
+    }
+    con = sqlite3.connect(args.session_db)
+    try:
+        cols = list(row)
+        con.execute(
+            f"INSERT OR REPLACE INTO order_execution_comparisons({','.join(cols)}) VALUES({','.join(['?'] * len(cols))})",
+            [row[c] for c in cols],
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def mark_stale_session_positions_closed(
@@ -1757,6 +1956,20 @@ def live_add_fill(
     state["paper_orders"] = state["paper_orders"][-5000:]
     trade.setdefault("fills", []).append(fill)
     trade["exchange_order_id"] = submitted.get("exchange_order_id")
+    record_order_execution_comparison(
+        args,
+        now=now,
+        action="OPEN",
+        trade=trade,
+        signal_price=expected_price,
+        exchange_fill_price=fill_price,
+        exchange_fill_time_utc=submitted.get("fill_dt"),
+        source_history=None,
+        source_meta={"valid": False, "reason": "open_no_source_history"},
+        exchange_order_id=str(submitted.get("exchange_order_id") or ""),
+        client_order_id=client_order_id,
+        extra={"fill_type": fill_type, "reason": reason},
+    )
     upsert_session_position(args, trade, status="OPEN", now=now, exchange_order_id=str(submitted.get("exchange_order_id") or ""))
     record_session_order(
         args,
@@ -1841,10 +2054,15 @@ def live_close_trade(
         }
     order = safe_order(submitted.get("order"))
     exit_price = float(submitted.get("fill_price") or avg_price(order, expected_exit))
-    exit_slip = signed_slip_bp(str(trade["side"]), expected_exit, exit_price, is_close=True)
     exit_lag = fill_lag_sec(now, submitted.get("fill_dt"))
     exit_fee = order_fee_usdt(submitted.get("order") if isinstance(submitted.get("order"), dict) else order)
-    closed = paper.close_trade(trade, now=now, expected_exit=exit_price, mark=mark, reason=reason, history_row=history_row)
+    source_meta = {"valid": False, "reason": "missing_history"}
+    valid_history = None
+    if history_row:
+        valid_history, source_meta = validate_source_history_match(trade, history_row, now)
+    slip_reference = float(valid_history.get("avg_close_price")) if valid_history and valid_history.get("avg_close_price") else expected_exit
+    exit_slip = signed_slip_bp(str(trade["side"]), slip_reference, exit_price, is_close=True)
+    closed = paper.close_trade(trade, now=now, expected_exit=exit_price, mark=mark, reason=reason, history_row=valid_history)
     gross = paper.ret_for(str(trade["side"]), float(trade["avg_entry"]), exit_price) * float(trade["notional"])
     closed["paper_pnl_usdt"] = gross - float(trade.get("fees_paid") or 0.0) - exit_fee
     closed["paper_exit_price"] = exit_price
@@ -1854,6 +2072,8 @@ def live_close_trade(
     closed["live_exit_price"] = exit_price
     closed["exit_slip_bp"] = exit_slip
     closed["exit_expected_price"] = expected_exit
+    closed["exit_slip_reference_price"] = slip_reference
+    closed["history_exit_match"] = source_meta
     closed["exit_lag_sec"] = exit_lag
     closed["exit_fill_ts"] = submitted.get("fill_dt")
     closed["exit_mark_price"] = mark
@@ -1871,7 +2091,21 @@ def live_close_trade(
         status="FILLED",
         reason=reason,
         exchange_order_id=str(submitted.get("exchange_order_id") or ""),
-        extra={"closed": closed, "submitted": submitted},
+        extra={"closed": closed, "submitted": submitted, "source_history_match": source_meta},
+    )
+    record_order_execution_comparison(
+        args,
+        now=now,
+        action="CLOSE",
+        trade=trade,
+        signal_price=slip_reference,
+        exchange_fill_price=exit_price,
+        exchange_fill_time_utc=submitted.get("fill_dt"),
+        source_history=valid_history,
+        source_meta=source_meta,
+        exchange_order_id=str(submitted.get("exchange_order_id") or ""),
+        client_order_id=client_order_id,
+        extra={"expected_exit_before_validation": expected_exit, "reason": reason},
     )
     clear_order_error_backoff(state)
     return closed, {"type": "live_exit", "key": trade.get("key"), "pnl": closed["paper_pnl_usdt"], "reason": reason, "live_order": order}
@@ -1973,13 +2207,14 @@ def apply_live_snapshot(
     keys_to_close = set(open_trades) - set(current)
     for key in sorted(keys_to_close):
         trade = open_trades[key]
-        hist = paper.find_history_exit(trade, history)
+        hist, hist_meta = find_valid_source_history_exit(trade, history, now)
         if hist and hist.get("avg_close_price"):
             exit_price = float(hist["avg_close_price"])
             reason = "position_history_closed"
         else:
             exit_price = float(mark or trade.get("last_mark") or trade["lead_entry_price"])
             reason = "lead_position_disappeared_mark_fallback"
+            trade["last_history_match_reject"] = hist_meta
         closed, event = live_close_trade(state, trade, now=now, expected_exit=exit_price, mark=mark, reason=reason, history_row=hist, args=args)
         events.append(event)
         if closed is None:
