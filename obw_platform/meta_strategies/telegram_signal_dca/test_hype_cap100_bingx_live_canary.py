@@ -73,6 +73,8 @@ def make_args(**overrides):
         resume_snapshot="",
         resume_snapshot_overwrite=False,
         stdout_log_path="",
+        binance_mark_telemetry=True,
+        binance_mark_telemetry_timeout_sec=0.75,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -705,6 +707,78 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertIsNone(closed)
         self.assertEqual(event["type"], "live_exit_blocked")
         self.assertEqual(event["reason"], "order_error_circuit_breaker")
+
+    def test_enqueue_binance_mark_telemetry_starts_daemon_without_fetching_inline(self):
+        with tempfile.TemporaryDirectory() as td:
+            args = make_args(telemetry_path=str(Path(td) / "telemetry.jsonl"))
+            started = []
+
+            class FakeThread:
+                def __init__(self, *, target, args, name, daemon):
+                    self.target = target
+                    self.args = args
+                    self.name = name
+                    self.daemon = daemon
+
+                def start(self):
+                    started.append(self)
+
+            with patch.object(live.threading, "Thread", FakeThread), patch.object(live.paper, "fetch_mark") as fetch_mark:
+                ok = live.enqueue_binance_mark_telemetry(
+                    args,
+                    now=NOW,
+                    phase="signal_received",
+                    action="OPEN",
+                    trade=open_trade(),
+                    signal_price=50.0,
+                    exchange_mark_price=49.9,
+                    client_order_id="client-1",
+                )
+
+            self.assertTrue(ok)
+            fetch_mark.assert_not_called()
+            self.assertEqual(len(started), 1)
+            self.assertTrue(started[0].daemon)
+            self.assertIn("binance-mark-telemetry-signal_received-OPEN", started[0].name)
+
+    def test_collect_binance_mark_telemetry_writes_lead_lag_row(self):
+        with tempfile.TemporaryDirectory() as td:
+            telemetry_path = str(Path(td) / "telemetry.jsonl")
+            snapshot = {
+                "telemetry_path": telemetry_path,
+                "run_id": "run-mark",
+                "symbol": "HYPEUSDT",
+                "live_symbol": "HYPE-USDT",
+                "timeout_sec": 0.1,
+            }
+            payload = {
+                "phase": "post_execution",
+                "action": "OPEN",
+                "trade_key": "HYPEUSDT:LONG",
+                "lead_position_id": "lead-1",
+                "requested_utc": live.paper.iso(NOW),
+                "signal_price": 50.0,
+                "exchange_mark_price": 49.9,
+                "exchange_fill_price": 50.1,
+                "exchange_fill_time_utc": live.paper.iso(NOW),
+                "exchange_order_id": "ex-1",
+                "client_order_id": "client-1",
+                "extra": {"reason": "test"},
+            }
+            with patch.object(live.paper, "fetch_mark", return_value=(50.2, {"source": "binance"})):
+                live._collect_binance_mark_telemetry(snapshot, payload)
+
+            rows = [json.loads(line) for line in Path(telemetry_path).read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["event"], "binance_mark_sample")
+            self.assertTrue(row["ok"])
+            self.assertEqual(row["run_id"], "run-mark")
+            self.assertEqual(row["phase"], "post_execution")
+            self.assertAlmostEqual(row["binance_mark_price"], 50.2)
+            self.assertAlmostEqual(row["binance_mark_minus_signal_bp"], (50.2 - 50.0) / 50.0 * 10000.0)
+            self.assertAlmostEqual(row["binance_mark_minus_exchange_mark_bp"], (50.2 - 49.9) / 49.9 * 10000.0)
+            self.assertAlmostEqual(row["binance_mark_minus_exchange_fill_bp"], (50.2 - 50.1) / 50.1 * 10000.0)
 
     def test_apply_live_snapshot_respects_dca_schedule_and_reconciles_existing_position(self):
         args = make_args()

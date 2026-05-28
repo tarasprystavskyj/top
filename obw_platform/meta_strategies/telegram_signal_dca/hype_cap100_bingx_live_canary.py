@@ -16,6 +16,7 @@ import os
 import shlex
 import sqlite3
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -245,6 +246,7 @@ DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE = 3
 DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC = 3600.0
 SOURCE_HISTORY_OPEN_TOLERANCE_SEC = 2 * 60 * 60
 SOURCE_HISTORY_CLOSE_TOLERANCE_SEC = 30 * 60
+DEFAULT_BINANCE_MARK_TELEMETRY_TIMEOUT_SEC = 0.75
 
 
 def stable_client_order_id(*parts: Any) -> str:
@@ -440,6 +442,150 @@ def _time_lag_sec(a: Optional[datetime], b: Optional[datetime]) -> Optional[floa
 
 def _bp_delta(ref_price: Any, test_price: Any, side: str = "LONG", *, is_close: bool = False) -> Optional[float]:
     return signed_slip_bp(side, ref_price, test_price, is_close=is_close)
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _raw_bp_delta(ref_price: Any, test_price: Any) -> Optional[float]:
+    ref = _float_or_none(ref_price)
+    test = _float_or_none(test_price)
+    if ref is None or test is None or ref <= 0:
+        return None
+    return (test - ref) / ref * 10000.0
+
+
+def _binance_mark_telemetry_timeout(args: argparse.Namespace) -> float:
+    raw = getattr(args, "binance_mark_telemetry_timeout_sec", DEFAULT_BINANCE_MARK_TELEMETRY_TIMEOUT_SEC)
+    timeout = _float_or_none(raw)
+    if timeout is None:
+        timeout = DEFAULT_BINANCE_MARK_TELEMETRY_TIMEOUT_SEC
+    return min(max(timeout, 0.05), 5.0)
+
+
+def _binance_mark_telemetry_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "binance_mark_telemetry", True)) and bool(getattr(args, "telemetry_path", ""))
+
+
+def _binance_mark_telemetry_row(
+    snapshot: Dict[str, Any],
+    payload: Dict[str, Any],
+    *,
+    collected_utc: str,
+    binance_mark: Optional[float],
+    binance_meta: Dict[str, Any],
+    error: str = "",
+) -> Dict[str, Any]:
+    signal_price = _float_or_none(payload.get("signal_price"))
+    exchange_fill_price = _float_or_none(payload.get("exchange_fill_price"))
+    exchange_mark_price = _float_or_none(payload.get("exchange_mark_price"))
+    row = {
+        "event": "binance_mark_sample",
+        "ok": binance_mark is not None and not error,
+        "run_id": snapshot.get("run_id") or "",
+        "symbol": snapshot.get("symbol") or "",
+        "live_symbol": snapshot.get("live_symbol") or "",
+        "phase": payload.get("phase") or "",
+        "action": payload.get("action") or "",
+        "trade_key": payload.get("trade_key") or "",
+        "lead_position_id": payload.get("lead_position_id") or "",
+        "requested_utc": payload.get("requested_utc") or "",
+        "collected_utc": collected_utc,
+        "signal_price": signal_price,
+        "exchange_mark_price": exchange_mark_price,
+        "exchange_fill_price": exchange_fill_price,
+        "exchange_fill_time_utc": payload.get("exchange_fill_time_utc") or "",
+        "binance_mark_price": binance_mark,
+        "binance_mark_minus_signal_bp": _raw_bp_delta(signal_price, binance_mark),
+        "binance_mark_minus_exchange_mark_bp": _raw_bp_delta(exchange_mark_price, binance_mark),
+        "binance_mark_minus_exchange_fill_bp": _raw_bp_delta(exchange_fill_price, binance_mark),
+        "exchange_order_id": payload.get("exchange_order_id") or "",
+        "client_order_id": payload.get("client_order_id") or "",
+        "error": error,
+        "binance_meta": binance_meta,
+        "extra": payload.get("extra") or {},
+    }
+    return row
+
+
+def _collect_binance_mark_telemetry(snapshot: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    telemetry_path = str(snapshot.get("telemetry_path") or "")
+    if not telemetry_path:
+        return
+    mark = None
+    meta: Dict[str, Any] = {}
+    error = ""
+    try:
+        with requests.Session() as session:
+            mark, meta = paper.fetch_mark(session, str(snapshot.get("symbol") or ""), float(snapshot.get("timeout_sec") or DEFAULT_BINANCE_MARK_TELEMETRY_TIMEOUT_SEC))
+    except Exception as exc:
+        error = str(exc)
+        meta = {"error": error}
+    row = _binance_mark_telemetry_row(
+        snapshot,
+        payload,
+        collected_utc=paper.iso(paper.utc_now()),
+        binance_mark=_float_or_none(mark),
+        binance_meta=meta if isinstance(meta, dict) else {"raw_meta": str(meta)},
+        error=error,
+    )
+    try:
+        paper.append_jsonl(Path(telemetry_path), row)
+    except Exception:
+        pass
+
+
+def enqueue_binance_mark_telemetry(
+    args: argparse.Namespace,
+    *,
+    now: datetime,
+    phase: str,
+    action: str,
+    trade: Dict[str, Any],
+    signal_price: Optional[float],
+    exchange_mark_price: Optional[float],
+    exchange_fill_price: Optional[float] = None,
+    exchange_fill_time_utc: Optional[str] = None,
+    exchange_order_id: str = "",
+    client_order_id: str = "",
+    extra: Optional[Dict[str, Any]] = None,
+) -> bool:
+    if not _binance_mark_telemetry_enabled(args):
+        return False
+    snapshot = {
+        "telemetry_path": str(getattr(args, "telemetry_path", "") or ""),
+        "run_id": str(getattr(args, "run_id", "") or ""),
+        "symbol": str(getattr(args, "symbol", "") or ""),
+        "live_symbol": str(getattr(args, "live_symbol", "") or ""),
+        "timeout_sec": _binance_mark_telemetry_timeout(args),
+    }
+    payload = {
+        "phase": phase,
+        "action": str(action).upper(),
+        "trade_key": str(trade.get("key") or ""),
+        "lead_position_id": str(trade.get("lead_position_id") or ""),
+        "requested_utc": paper.iso(now),
+        "signal_price": signal_price,
+        "exchange_mark_price": exchange_mark_price,
+        "exchange_fill_price": exchange_fill_price,
+        "exchange_fill_time_utc": exchange_fill_time_utc or "",
+        "exchange_order_id": exchange_order_id,
+        "client_order_id": client_order_id,
+        "extra": extra or {},
+    }
+    worker = threading.Thread(
+        target=_collect_binance_mark_telemetry,
+        args=(snapshot, payload),
+        name=f"binance-mark-telemetry-{phase}-{payload['action']}",
+        daemon=True,
+    )
+    worker.start()
+    return True
 
 
 def _source_history_open_dt(row: Dict[str, Any]) -> Optional[datetime]:
@@ -1872,6 +2018,17 @@ def live_add_fill(
         fill_type,
         trade.get("next_level_idx"),
     )
+    enqueue_binance_mark_telemetry(
+        args,
+        now=now,
+        phase="signal_received",
+        action="OPEN",
+        trade=trade,
+        signal_price=expected_price,
+        exchange_mark_price=mark,
+        client_order_id=client_order_id,
+        extra={"fill_type": fill_type, "reason": reason, "requested_notional": notional},
+    )
     submitted = submit_open(args, trade["symbol"], str(trade["side"]), expected_price, notional, client_order_id)
     if not submitted.get("ok"):
         error_text = str(submitted.get("error") or "unknown_order_error")
@@ -1970,6 +2127,20 @@ def live_add_fill(
         client_order_id=client_order_id,
         extra={"fill_type": fill_type, "reason": reason},
     )
+    enqueue_binance_mark_telemetry(
+        args,
+        now=now,
+        phase="post_execution",
+        action="OPEN",
+        trade=trade,
+        signal_price=expected_price,
+        exchange_mark_price=mark,
+        exchange_fill_price=fill_price,
+        exchange_fill_time_utc=submitted.get("fill_dt"),
+        exchange_order_id=str(submitted.get("exchange_order_id") or ""),
+        client_order_id=client_order_id,
+        extra={"fill_type": fill_type, "reason": reason, "qty": qty, "requested_notional": notional},
+    )
     upsert_session_position(args, trade, status="OPEN", now=now, exchange_order_id=str(submitted.get("exchange_order_id") or ""))
     record_session_order(
         args,
@@ -2009,6 +2180,17 @@ def live_close_trade(
             "backoff": backoff,
         }
     client_order_id = stable_client_order_id("exit", args.run_id, trade.get("key"), trade.get("lead_position_id"), trade.get("opened_at_utc"))
+    enqueue_binance_mark_telemetry(
+        args,
+        now=now,
+        phase="signal_received",
+        action="CLOSE",
+        trade=trade,
+        signal_price=expected_exit,
+        exchange_mark_price=mark,
+        client_order_id=client_order_id,
+        extra={"reason": reason},
+    )
     submitted = submit_close(args, trade["symbol"], str(trade["side"]), float(trade.get("qty") or 0.0), client_order_id)
     if submitted.get("synced_only"):
         closed = paper.close_trade(trade, now=now, expected_exit=expected_exit, mark=mark, reason=str(submitted.get("reason") or reason), history_row=history_row)
@@ -2106,6 +2288,20 @@ def live_close_trade(
         exchange_order_id=str(submitted.get("exchange_order_id") or ""),
         client_order_id=client_order_id,
         extra={"expected_exit_before_validation": expected_exit, "reason": reason},
+    )
+    enqueue_binance_mark_telemetry(
+        args,
+        now=now,
+        phase="post_execution",
+        action="CLOSE",
+        trade=trade,
+        signal_price=slip_reference,
+        exchange_mark_price=mark,
+        exchange_fill_price=exit_price,
+        exchange_fill_time_utc=submitted.get("fill_dt"),
+        exchange_order_id=str(submitted.get("exchange_order_id") or ""),
+        client_order_id=client_order_id,
+        extra={"expected_exit_before_validation": expected_exit, "reason": reason, "qty": float(submitted.get("qty") or 0.0)},
     )
     clear_order_error_backoff(state)
     return closed, {"type": "live_exit", "key": trade.get("key"), "pnl": closed["paper_pnl_usdt"], "reason": reason, "live_order": order}
@@ -2307,6 +2503,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--live-cache-npz-path", default="", help="Live OHLCV NPZ artifact path. Defaults to out-dir/live_mark_ohlcv.npz.")
     ap.add_argument("--live-cache-npz-max-bars", type=int, default=10000, help="Max rows retained in the live OHLCV NPZ artifact.")
     ap.add_argument("--stdout-log-path", default="", help="Current stdout log path to publish via ACTIVE_LOG_PATH.txt.")
+    ap.add_argument("--no-binance-mark-telemetry", dest="binance_mark_telemetry", action="store_false", default=True, help="Disable best-effort background Binance mark samples around live signal execution.")
+    ap.add_argument("--binance-mark-telemetry-timeout-sec", type=float, default=DEFAULT_BINANCE_MARK_TELEMETRY_TIMEOUT_SEC, help="Per-sample public Binance mark timeout for background telemetry.")
     return ap
 
 
@@ -2349,6 +2547,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--order-error-max-consecutive must be positive")
     if args.live_cache_npz_max_bars <= 0:
         raise SystemExit("--live-cache-npz-max-bars must be positive")
+    if args.binance_mark_telemetry_timeout_sec <= 0:
+        raise SystemExit("--binance-mark-telemetry-timeout-sec must be positive")
     if args.resume_snapshot and not Path(args.resume_snapshot).exists():
         raise SystemExit(f"--resume-snapshot does not exist: {args.resume_snapshot}")
 
