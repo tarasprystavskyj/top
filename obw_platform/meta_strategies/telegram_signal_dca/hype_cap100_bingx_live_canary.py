@@ -248,6 +248,7 @@ DEFAULT_ORDER_ERROR_BACKOFF_SEC = 300.0
 DEFAULT_ORDER_ERROR_CIRCUIT_SEC = 1800.0
 DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE = 3
 DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC = 3600.0
+MAX_OPEN_NORMALIZATION_UPSIZE_BP = 1.0
 
 
 def stable_client_order_id(*parts: Any) -> str:
@@ -1527,6 +1528,41 @@ def live_order_filled_base_qty(args: argparse.Namespace, client: CCXTFetcher, cc
     return float(order_amount or 0.0)
 
 
+def live_open_order_preflight(args: argparse.Namespace, symbol: str, expected_price: float, notional: float) -> Dict[str, Any]:
+    client = getattr(args, "_live_client", None)
+    requested_notional = float(notional or 0.0)
+    expected_price = float(expected_price or 0.0)
+    if client is None or expected_price <= 0 or requested_notional <= 0:
+        return {"ok": True, "available": False, "requested_notional": requested_notional, "normalized_notional": requested_notional}
+    ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
+    requested_base_qty = requested_notional / max(expected_price, 1e-12)
+    order_amount, normalized_base_qty, contract_size = live_order_amount_from_base_qty(args, client, ccxt_symbol, requested_base_qty, is_close=False)
+    normalized_notional = normalized_base_qty * expected_price
+    max_allowed = requested_notional * (1.0 + MAX_OPEN_NORMALIZATION_UPSIZE_BP / 10000.0)
+    out = {
+        "ok": True,
+        "available": True,
+        "ccxt_symbol": ccxt_symbol,
+        "requested_notional": requested_notional,
+        "requested_base_qty": requested_base_qty,
+        "normalized_contract_amount": order_amount,
+        "normalized_base_qty": normalized_base_qty,
+        "normalized_notional": normalized_notional,
+        "contract_size": contract_size,
+        "max_open_normalization_upsize_bp": MAX_OPEN_NORMALIZATION_UPSIZE_BP,
+    }
+    if order_amount <= 0 or normalized_base_qty <= 0:
+        return {**out, "ok": False, "reason": "open_qty_zero_after_normalize"}
+    if normalized_notional > max_allowed:
+        return {
+            **out,
+            "ok": False,
+            "reason": "exchange_normalization_would_resize_strategy_leg",
+            "resize_bp": (normalized_notional - requested_notional) / max(requested_notional, 1e-12) * 10000.0,
+        }
+    return out
+
+
 def live_fetch_exchange_position(args: argparse.Namespace, client: CCXTFetcher, ccxt_symbol: str, side: str) -> Optional[Dict[str, Any]]:
     pos = _fetch_exchange_position(client, ccxt_symbol, side)
     if not isinstance(pos, dict):
@@ -1546,9 +1582,6 @@ def submit_open(args: argparse.Namespace, symbol: str, side: str, expected_price
     client = live_client(args)
     ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
     base_qty = float(notional) / max(float(expected_price), 1e-12)
-    min_base_qty = float(paper.CHAMPION_PARAMS.get("min_order_qty_hype") or 0.0) if str(args.symbol).upper() == "HYPEUSDT" else 0.0
-    if min_base_qty > 0:
-        base_qty = max(base_qty, min_base_qty)
     order_amount, expected_base_qty, contract_size = live_order_amount_from_base_qty(args, client, ccxt_symbol, base_qty, is_close=False)
     if order_amount <= 0:
         return {"ok": False, "error": "open_qty_zero_after_normalize", "qty": expected_base_qty, "order_amount": order_amount}
@@ -1798,8 +1831,19 @@ def live_add_fill(
             "failure": failure,
             "requested_notional": notional,
         }
+    preflight = live_open_order_preflight(args, trade["symbol"], expected_price, notional)
+    if not preflight.get("ok", True):
+        return {
+            "type": "live_entry_blocked",
+            "key": trade.get("key"),
+            "fill_type": fill_type,
+            "reason": str(preflight.get("reason") or "exchange_open_preflight_failed"),
+            "exchange_preflight": preflight,
+            "requested_notional": notional,
+        }
+    guard_notional = float(preflight.get("normalized_notional") or notional)
     ok, guard_reason, guard_detail = paper.guard_new_entry(
-        state, side=str(trade["side"]), add_notional=notional, mark=mark, now=now, args=args
+        state, side=str(trade["side"]), add_notional=guard_notional, mark=mark, now=now, args=args
     )
     if not ok:
         return {
@@ -1808,7 +1852,9 @@ def live_add_fill(
             "fill_type": fill_type,
             "reason": guard_reason,
             "guard": guard_detail,
+            "exchange_preflight": preflight,
             "requested_notional": notional,
+            "guard_notional": guard_notional,
         }
     client_order_id = stable_client_order_id(
         "entry",
@@ -1844,7 +1890,9 @@ def live_add_fill(
             "reason": reason,
             "error": error_text,
             "guard": guard_detail,
+            "exchange_preflight": preflight,
             "requested_notional": notional,
+            "guard_notional": guard_notional,
             "attempt_key": attempt_key,
             "backoff": backoff_payload,
             "entry_failure": failure_payload,
@@ -1882,6 +1930,7 @@ def live_add_fill(
         "live_notional": live_notional,
         "qty": qty,
         "requested_base_qty": submitted.get("requested_base_qty"),
+        "exchange_preflight": preflight,
         "normalized_contract_amount": submitted.get("normalized_contract_amount"),
         "filled_contracts": submitted.get("filled_contracts"),
         "filled_base_qty": submitted.get("filled_base_qty"),
@@ -1929,7 +1978,7 @@ def live_add_fill(
         status="FILLED",
         reason=reason,
         exchange_order_id=str(submitted.get("exchange_order_id") or ""),
-        extra={"fill": fill, "submitted": submitted},
+        extra={"fill": fill, "submitted": submitted, "exchange_preflight": preflight},
     )
     clear_order_error_backoff(state)
     clear_entry_failure(state, attempt_key)

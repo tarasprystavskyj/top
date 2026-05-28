@@ -52,18 +52,15 @@ class HypeCap100LiveDisabledCanaryTest(unittest.TestCase):
         old_mode = CHAMPION_PARAMS.get("dca_add_mode")
         old_fixed = CHAMPION_PARAMS.get("dca_add_notional_usdt")
         old_fresh = CHAMPION_PARAMS.get("fresh_base_pct")
-        old_min_qty = CHAMPION_PARAMS.get("min_order_qty_hype")
         try:
             CHAMPION_PARAMS["dca_add_mode"] = "fixed"
             CHAMPION_PARAMS["dca_add_notional_usdt"] = 2.5
             CHAMPION_PARAMS["fresh_base_pct"] = 30.0
-            CHAMPION_PARAMS["min_order_qty_hype"] = 0.0
             plan = build_plan(100.0, args, 50.0)
         finally:
             CHAMPION_PARAMS["dca_add_mode"] = old_mode
             CHAMPION_PARAMS["dca_add_notional_usdt"] = old_fixed
             CHAMPION_PARAMS["fresh_base_pct"] = old_fresh
-            CHAMPION_PARAMS["min_order_qty_hype"] = old_min_qty
         self.assertEqual(plan["base_notional"], 30.0)
         self.assertEqual(plan["dca_add_mode"], "fixed")
         self.assertEqual(plan["add_notionals"], [2.5, 2.5, 2.5, 2.5])
@@ -72,26 +69,24 @@ class HypeCap100LiveDisabledCanaryTest(unittest.TestCase):
         args = make_args(initial_equity=100.0, initial_target_notional=100.0, max_gross_notional_usdt=100.0)
         old_mode = CHAMPION_PARAMS.get("dca_add_mode")
         old_min = CHAMPION_PARAMS.get("dca_min_order_usdt")
-        old_min_qty = CHAMPION_PARAMS.get("min_order_qty_hype")
         try:
             CHAMPION_PARAMS["dca_add_mode"] = "min_order"
             CHAMPION_PARAMS["dca_min_order_usdt"] = 2.0
-            CHAMPION_PARAMS["min_order_qty_hype"] = 0.0
             plan = build_plan(100.0, args, 50.0)
         finally:
             CHAMPION_PARAMS["dca_add_mode"] = old_mode
             CHAMPION_PARAMS["dca_min_order_usdt"] = old_min
-            CHAMPION_PARAMS["min_order_qty_hype"] = old_min_qty
         self.assertEqual(plan["dca_add_mode"], "min_order")
         self.assertEqual(plan["add_notionals"], [2.0, 2.0, 2.0, 2.0])
 
-    def test_build_plan_applies_hype_quantity_minimum_to_base_and_dca(self):
+    def test_build_plan_preserves_candidate_189_proportional_sizing(self):
         args = make_args(initial_equity=30.0, initial_target_notional=30.0, max_gross_notional_usdt=30.0)
-        plan = build_plan(30.0, args, 62.0)
-        min_notional = 62.0 * 0.105
-        self.assertAlmostEqual(plan["min_order_notional"], min_notional)
-        self.assertGreaterEqual(plan["base_notional"], min_notional)
-        self.assertTrue(all(x >= min_notional for x in plan["add_notionals"]))
+        plan = build_plan(30.0, args, 58.887)
+        self.assertNotIn("min_order_qty_hype", CHAMPION_PARAMS)
+        self.assertEqual(plan["min_order_notional"], 0.0)
+        self.assertAlmostEqual(plan["base_notional"], 8.4)
+        self.assertEqual([round(x, 6) for x in plan["add_notionals"]], [3.2, 4.8, 8.8, 4.8])
+        self.assertAlmostEqual(plan["base_notional"] + sum(plan["add_notionals"]), 30.0)
 
     def test_over_cap_entry_is_rejected_by_gross_guard(self):
         args = make_args(initial_target_notional=120.0)

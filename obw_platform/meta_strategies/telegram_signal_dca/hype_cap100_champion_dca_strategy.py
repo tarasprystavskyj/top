@@ -14,7 +14,6 @@ CHAMPION_PARAMS = {
     "dca_add_notional_usdt": 2.0,
     "dca_profile": "default",
     "dca_min_order_usdt": 2.0,
-    "min_order_qty_hype": 0.105,
     "fresh_base_pct": 28.0,
     "fresh_callback_percent": 0.45,
     "fresh_tp_percent": 1.4,
@@ -39,13 +38,6 @@ def dca_levels(entry_price: float) -> List[float]:
 def build_plan(equity: float, args: Any, entry_price: float) -> Dict[str, Any]:
     target = min(float(args.initial_target_notional), float(args.max_gross_notional_usdt), max(equity, 0.0))
     base = min(target * CHAMPION_PARAMS["fresh_base_pct"] / 100.0, target)
-    min_order_notional = max(
-        0.0,
-        float(CHAMPION_PARAMS.get("dca_min_order_usdt") or 0.0),
-        float(CHAMPION_PARAMS.get("min_order_qty_hype") or 0.0) * max(float(entry_price or 0.0), 0.0),
-    )
-    if min_order_notional > 0:
-        base = min(target, max(base, min_order_notional))
     remaining = max(target - base, 0.0)
     dca_mode = str(CHAMPION_PARAMS.get("dca_add_mode") or "multiplier").strip().lower()
     if dca_mode == "fixed":
@@ -59,15 +51,12 @@ def build_plan(equity: float, args: Any, entry_price: float) -> Dict[str, Any]:
         raw_adds = [base * m for m in DCA_MULTIPLIERS]
     scale = min(1.0, remaining / max(sum(raw_adds), 1e-12))
     add_notionals = [x * scale for x in raw_adds]
-    if min_order_notional > 0:
-        add_notionals = [max(x, min_order_notional) if x > 0 else 0.0 for x in add_notionals]
     return {
         "target_notional": target,
         "base_notional": base,
         "add_notionals": add_notionals,
         "dca_add_mode": dca_mode,
-        "min_order_notional": min_order_notional,
-        "min_order_qty_hype": float(CHAMPION_PARAMS.get("min_order_qty_hype") or 0.0),
+        "min_order_notional": 0.0,
         "levels": dca_levels(entry_price),
         "candidate_index": CHAMPION_CANDIDATE_INDEX,
     }
