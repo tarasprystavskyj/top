@@ -3974,7 +3974,7 @@ def backtest_live_validation_live_session_status(path: str = Query(default="")):
 
 
 @app.get("/api/backtest_live_validation/live_session/chart")
-def backtest_live_validation_live_session_chart(path: str = Query(default=""), backtest_path: str = Query(default="")):
+def backtest_live_validation_live_session_chart(path: str = Query(default=""), backtest_path: str = Query(default=""), tv_path: str = Query(default="")):
     if not path:
         raise HTTPException(400, "path is required")
     session_dir = _resolve_live_session_path(path)
@@ -4010,7 +4010,8 @@ def backtest_live_validation_live_session_chart(path: str = Query(default=""), b
         base_realized = backtest_realized[0]["value"]
         backtest_realized = [{**point, "value": float(point["value"] - base_realized)} for point in backtest_realized]
     live_realized, live_realized_source = _live_realized_pnl_series(session_dir)
-    backtest_price = _tv_backtest_price_series(backtest_path)
+    selected_tv_path = backtest_path or tv_path
+    backtest_price = _tv_backtest_price_series(selected_tv_path)
     backtest_price_source = "TradingView CSV:Price USDT" if backtest_price else None
     if not backtest_price:
         backtest_price, backtest_price_source = _load_series_file_with_source(

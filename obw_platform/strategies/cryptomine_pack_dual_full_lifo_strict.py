@@ -6,6 +6,13 @@ import datetime as _dt
 import math
 import copy
 from typing import Any, Dict, List, Optional, Tuple
+try:
+    from obw_platform.runners.strategy_intents import StrategyRejectionBackoff
+except Exception:
+    try:
+        from runners.strategy_intents import StrategyRejectionBackoff
+    except Exception:
+        StrategyRejectionBackoff = None
 
 @dataclass
 class Sig:
@@ -139,6 +146,15 @@ class _PackAdaptiveBase:
         self._recent_hist_limit = max(0, int(math.ceil(180.0 / max(1, self._tf_sec_cached))) - 1)
         self._trend_tf_key = str(self.trend_ma_tf).strip().upper()
         self._trend_tf_sec_cached = self._parse_tf_seconds(str(self.trend_ma_tf).lower())
+        dca_order_type = sp.get('dcaOrderType', sp.get('dca_order_type', cfg.get('dca_open_order_type', 'market')))
+        self.dca_order_type = str(dca_order_type or 'market').lower().strip()
+        self.allow_entry_market_fallback = bool(sp.get('allowEntryMarketFallback', False))
+        self.entry_market_fallback_on_reject = bool(sp.get('entryMarketFallbackOnReject', False))
+        self.entry_market_fallback_on_timeout = bool(sp.get('entryMarketFallbackOnTimeout', False))
+        self.execution_backoff_max_failures = int(sp.get('executionBackoffMaxFailures', 1))
+        self.execution_backoff_cooldown_sec = float(sp.get('executionBackoffCooldownSec', 60.0))
+        self._execution_backoffs: Dict[str, Any] = {}
+        self._broker_min_order_usdt_by_symbol: Dict[str, Dict[str, Any]] = {}
         self._live_start_epoch_s = None
         if self.use_live_sync_start and self.live_start_time not in (None, 0, '0'):
             try:
@@ -319,6 +335,34 @@ class _PackAdaptiveBase:
         self._roll_bar(t)
         return self._live_now(t) and self._allow_this_bar(t) and (self._recent_history_fills + self._orders_this_bar) < self.max_orders_per_3min
     def _register_order(self): self._orders_this_bar += 1
+    def get_execution_policy(self, sym, event: str = ''):
+        ev = str(event or '').lower()
+        if ev == 'dca':
+            return {'order_type': self.dca_order_type}
+        if ev in {'open', 'entry', 'first'}:
+            return {
+                'allow_market_fallback': self.allow_entry_market_fallback,
+                'fallback_on_reject': self.entry_market_fallback_on_reject,
+                'fallback_on_timeout': self.entry_market_fallback_on_timeout,
+            }
+        return {}
+    def get_execution_backoff(self, sym):
+        if StrategyRejectionBackoff is None:
+            return None
+        key = str(sym or '')
+        if key not in self._execution_backoffs:
+            self._execution_backoffs[key] = StrategyRejectionBackoff(max_failures=self.execution_backoff_max_failures, cooldown_sec=self.execution_backoff_cooldown_sec)
+        return self._execution_backoffs[key]
+    def can_submit_order(self, sym, event: str = '', details=None):
+        if str(event or '').lower() in {'close', 'partial', 'reduce', 'tp', 'sl', 'exit'}:
+            return True
+        backoff = self.get_execution_backoff(sym)
+        return True if backoff is None else bool(backoff.can_submit())
+    def can_submit_close_order(self, sym, event: str = '', details=None):
+        return True
+    def set_broker_min_order_usdt(self, sym: str, value: float, meta=None):
+        self._broker_min_order_usdt_by_symbol[str(sym or '')] = {'value': float(value or 0.0), 'meta': dict(meta or {})}
+        self.min_order_usdt = max(float(self.min_order_usdt or 0.0), float(value or 0.0))
     def _get_step(self, num):
         nf=num+1
         return self.step1 if nf==2 else self.step2 if nf==3 else self.step3 if nf==4 else self.step4 if nf==5 else self.step5 if nf==6 else self.linear_step_percent

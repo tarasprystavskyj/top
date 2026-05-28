@@ -15,6 +15,25 @@ from .common import (
     make_bot_id, read_hour_cache_row, save_positions, write_config_snapshot,
     write_equity,
 )
+from .strategy_intents import (
+    INTENT_ADD,
+    INTENT_CLOSE,
+    INTENT_HOLD,
+    INTENT_OPEN,
+    INTENT_PARTIAL_CLOSE,
+    INTENT_SYNC_STATE,
+    entry_intent_from_signal,
+    manage_intent_from_result,
+    notify_strategy_filled,
+    notify_strategy_rejected,
+    strategy_can_submit,
+)
+from .legacy_strategy_adapter import (
+    call_manage_position,
+    legacy_execution_policy,
+    legacy_policy_from_config,
+    normalize_legacy_entry_signal,
+)
 try:
     from .exchange_trace_layer import ExchangeTraceProxy, ensure_exchange_trace_db
 except Exception:
@@ -465,6 +484,459 @@ def _stop_new_orders_active(results_dir: str) -> Tuple[bool, str]:
     return False, ''
 
 
+PENDING_ENTRIES_FILENAME = 'live_pending_entries.json'
+
+
+def _pending_entries_path(results_dir: str) -> Path:
+    return Path(results_dir or '.') / PENDING_ENTRIES_FILENAME
+
+
+def _pending_entry_public(pend: dict) -> dict:
+    return {
+        'symbol': str((pend or {}).get('symbol') or ''),
+        'side': str((pend or {}).get('side') or '').upper(),
+        'exchange_order_id': str((pend or {}).get('exchange_order_id') or ''),
+        'created_bar_iso': str((pend or {}).get('created_bar_iso') or ''),
+        'limit_price': _num_or_none((pend or {}).get('limit_price')),
+        'delta_qty': _num_or_none((pend or {}).get('delta_qty')),
+        'applied_filled_qty': _num_or_none((pend or {}).get('applied_filled_qty')) or 0.0,
+        'status': str((pend or {}).get('status') or ''),
+        'last_order': _json_safe_value((pend or {}).get('last_order') or {}, max_items=30),
+        'strategy_snapshot': _json_safe_value((pend or {}).get('strategy_snapshot'), max_items=None),
+        'intent': _json_safe_value((pend or {}).get('intent') or {}, max_items=40),
+    }
+
+
+def ensure_pending_entry_orders_db(db_path: str) -> None:
+    if not db_path:
+        return
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("""CREATE TABLE IF NOT EXISTS pending_entry_orders (
+            key TEXT PRIMARY KEY,
+            run_id TEXT,
+            symbol TEXT,
+            side TEXT,
+            exchange_order_id TEXT,
+            created_bar_iso TEXT,
+            limit_price REAL,
+            delta_qty REAL,
+            applied_filled_qty REAL,
+            status TEXT,
+            last_order_json TEXT,
+            strategy_snapshot_json TEXT,
+            intent_json TEXT,
+            updated_ts_utc TEXT,
+            removed_ts_utc TEXT,
+            remove_reason TEXT
+        )""")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pending_entry_orders_order_id ON pending_entry_orders(exchange_order_id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pending_entry_orders_status ON pending_entry_orders(status, removed_ts_utc)")
+        con.commit()
+    finally:
+        con.close()
+
+
+class PendingEntryPersistenceError(RuntimeError):
+    pass
+
+
+def _db_upsert_pending_entry(db_path: str, key: str, pend: dict, *, run_id: str = '') -> None:
+    if not db_path or not key or not pend:
+        return
+    ensure_pending_entry_orders_db(db_path)
+    public = _pending_entry_public(pend)
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            """INSERT OR REPLACE INTO pending_entry_orders
+            (key, run_id, symbol, side, exchange_order_id, created_bar_iso, limit_price, delta_qty,
+             applied_filled_qty, status, last_order_json, strategy_snapshot_json, intent_json,
+             updated_ts_utc, removed_ts_utc, remove_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)""",
+            (
+                key, run_id, public['symbol'], public['side'], public['exchange_order_id'],
+                public['created_bar_iso'], public['limit_price'], public['delta_qty'],
+                public['applied_filled_qty'], public['status'],
+                json.dumps(public.get('last_order') or {}, ensure_ascii=False, sort_keys=True),
+                json.dumps(public.get('strategy_snapshot'), ensure_ascii=False, sort_keys=True),
+                json.dumps(public.get('intent') or {}, ensure_ascii=False, sort_keys=True),
+                _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            )
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _db_remove_pending_entry(db_path: str, key: str, *, status: str, reason: str = '') -> None:
+    if not db_path or not key:
+        return
+    ensure_pending_entry_orders_db(db_path)
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "UPDATE pending_entry_orders SET status=?, removed_ts_utc=?, remove_reason=?, updated_ts_utc=? WHERE key=?",
+            (status, _dt.datetime.now(_dt.timezone.utc).isoformat(), reason, _dt.datetime.now(_dt.timezone.utc).isoformat(), key),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _load_pending_entries_from_db(db_path: str) -> dict:
+    if not db_path:
+        return {}
+    ensure_pending_entry_orders_db(db_path)
+    con = sqlite3.connect(db_path)
+    try:
+        rows = con.execute("""SELECT key, symbol, side, exchange_order_id, created_bar_iso, limit_price, delta_qty,
+                                     applied_filled_qty, status, last_order_json, strategy_snapshot_json, intent_json
+                              FROM pending_entry_orders
+                              WHERE removed_ts_utc IS NULL
+                                AND COALESCE(status, '') NOT IN ('closed', 'canceled', 'cancelled', 'removed')""").fetchall()
+    finally:
+        con.close()
+    out = {}
+    for row in rows:
+        key, sym, side, order_id, created, limit_px, delta_qty, applied, status, last_json, snap_json, intent_json = row
+        try:
+            last_order = json.loads(last_json) if last_json else {}
+        except Exception as e:
+            raise PendingEntryPersistenceError(f'pending DB last_order JSON decode failed for {key}: {e}') from e
+        try:
+            snapshot = json.loads(snap_json) if snap_json else None
+        except Exception as e:
+            raise PendingEntryPersistenceError(f'pending DB snapshot JSON decode failed for {key}: {e}') from e
+        try:
+            intent = json.loads(intent_json) if intent_json else {}
+        except Exception as e:
+            raise PendingEntryPersistenceError(f'pending DB intent JSON decode failed for {key}: {e}') from e
+        out[str(key)] = {
+            'symbol': sym,
+            'side': str(side or '').upper(),
+            'exchange_order_id': order_id,
+            'created_bar_iso': created,
+            'limit_price': limit_px,
+            'delta_qty': delta_qty,
+            'applied_filled_qty': applied or 0.0,
+            'status': status or '',
+            'last_order': last_order,
+            'strategy_snapshot': snapshot,
+            'intent': intent,
+            'restart_loaded': True,
+            'snapshot_recoverable': snapshot is not None,
+        }
+    return out
+
+
+def _load_pending_entries_hybrid(results_dir: str, session_db_path: str) -> dict:
+    db_entries = _load_pending_entries_from_db(session_db_path)
+    json_entries = _load_pending_entries(results_dir)
+    merged = dict(json_entries or {})
+    for key, pend in (db_entries or {}).items():
+        existing = merged.get(key)
+        existing_oid = str((existing or {}).get('exchange_order_id') or '')
+        db_oid = str((pend or {}).get('exchange_order_id') or '')
+        if existing and existing_oid and db_oid and existing_oid != db_oid:
+            merged[_pending_collision_key(key, existing_oid, 'json')] = existing
+        merged[key] = pend
+    return merged
+
+
+def _pending_collision_key(base_key: str, order_id: str, source: str) -> str:
+    return f"{base_key}#pending#{source}:{str(order_id or '')}"
+
+
+def _pending_position_key(key: str, pend: dict) -> str:
+    sym = str((pend or {}).get('symbol') or '')
+    side = str((pend or {}).get('side') or '').upper()
+    if sym and side:
+        return pos_key(sym, side)
+    return str(key or '').split('#pending#', 1)[0]
+
+
+def _pending_entry_is_unresolved(pend: dict) -> bool:
+    status = str((pend or {}).get('status') or '').lower()
+    return status not in {'closed', 'canceled', 'cancelled', 'filled', 'rejected', 'expired', 'removed'}
+
+
+def _pending_entries_for_leg(pending_entries: dict, sym: str, side: str) -> list:
+    target = pos_key(sym, side)
+    out = []
+    for key, pend in (pending_entries or {}).items():
+        if _pending_position_key(str(key), pend) == target and _pending_entry_is_unresolved(pend):
+            out.append((str(key), pend))
+    return out
+
+
+def _has_unresolved_pending_entry(pending_entries: dict, sym: str, side: str) -> bool:
+    return bool(_pending_entries_for_leg(pending_entries, sym, side))
+
+
+def _save_pending_entries(results_dir: str, pending_entries: dict, *, run_id: str = '', session_db_path: str = '') -> None:
+    path = _pending_entries_path(results_dir)
+    payload = {
+        'schema': 'live_pending_entries_v1',
+        'run_id': run_id,
+        'ts_utc': _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        'entries': {str(k): _pending_entry_public(v) for k, v in (pending_entries or {}).items()},
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding='utf-8')
+    except Exception as e:
+        raise PendingEntryPersistenceError(f'pending JSON save failed: {e}') from e
+    for key, pend in (pending_entries or {}).items():
+        try:
+            _db_upsert_pending_entry(session_db_path, str(key), pend, run_id=run_id)
+        except Exception as e:
+            raise PendingEntryPersistenceError(f'pending DB upsert failed for {key}: {e}') from e
+
+
+def _load_pending_entries(results_dir: str) -> dict:
+    path = _pending_entries_path(results_dir)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding='utf-8'))
+    except Exception as e:
+        raise PendingEntryPersistenceError(f'pending JSON load failed: {e}') from e
+    entries = raw.get('entries') if isinstance(raw, dict) else {}
+    out = {}
+    for key, val in (entries or {}).items():
+        if not isinstance(val, dict):
+            continue
+        sym = str(val.get('symbol') or '')
+        side = str(val.get('side') or '').upper()
+        order_id = str(val.get('exchange_order_id') or '')
+        if not sym or not side or not order_id:
+            continue
+        out[str(key or pos_key(sym, side))] = {
+            **val,
+            'symbol': sym,
+            'side': side,
+            'exchange_order_id': order_id,
+            'strategy_snapshot': val.get('strategy_snapshot'),
+            'intent': val.get('intent') or {},
+            'restart_loaded': True,
+            'snapshot_recoverable': val.get('strategy_snapshot') is not None,
+        }
+    return out
+
+
+def _fetch_open_strategy_orders(fetcher, symbols=None) -> list:
+    ex = getattr(fetcher, 'ex', fetcher)
+    resolver = getattr(fetcher, 'resolve_symbol', None)
+    orders = []
+    targets = list(symbols or [])
+    seen_ids = set()
+    ex_id = str(getattr(ex, 'id', '') or getattr(ex, 'name', '') or '').lower()
+    swap_params = {}
+    if ex_id in {'bingx', 'gate', 'gateio', 'okx', 'binance'}:
+        swap_params['type'] = 'swap'
+    if ex_id in {'gate', 'gateio'}:
+        swap_params['settle'] = 'usdt'
+    if ex_id == 'bybit':
+        swap_params['category'] = 'linear'
+    def _extend(got):
+        for od in got or []:
+            oid = _open_order_id(od)
+            marker = oid or json.dumps(_json_safe_value(od, max_items=20), sort_keys=True)
+            if marker in seen_ids:
+                continue
+            seen_ids.add(marker)
+            orders.append(od)
+    def _order_symbol(od):
+        return str((od or {}).get('symbol') or '')
+    def _fetch(symbol=None):
+        if swap_params:
+            try:
+                if symbol is None:
+                    return ex.fetch_open_orders(None, None, None, dict(swap_params))
+                return ex.fetch_open_orders(symbol, None, None, dict(swap_params))
+            except TypeError:
+                pass
+        if symbol is None:
+            return ex.fetch_open_orders()
+        return ex.fetch_open_orders(symbol)
+    try:
+        if hasattr(ex, 'fetch_open_orders'):
+            got = _fetch()
+            sleep_ms(RATE_MS)
+            _extend(got or [])
+            returned_symbols = {_order_symbol(od) for od in got or [] if _order_symbol(od)}
+            missing_targets = [sym for sym in targets if sym not in returned_symbols]
+            if not targets or (got and not missing_targets):
+                return orders
+    except TypeError:
+        pass
+    except Exception:
+        raise
+    for sym in targets:
+        ccxt_sym = sym
+        if callable(resolver):
+            try:
+                ccxt_sym = resolver(sym) or sym
+            except Exception:
+                ccxt_sym = sym
+        try:
+            got = _fetch(ccxt_sym)
+            sleep_ms(RATE_MS)
+            _extend(got or [])
+        except TypeError:
+            got = _fetch()
+            sleep_ms(RATE_MS)
+            _extend(got or [])
+            break
+        except Exception:
+            raise
+    return orders
+
+
+def _open_order_id(order: dict) -> str:
+    return str((order or {}).get('id') or (order or {}).get('orderId') or (order or {}).get('clientOrderId') or '')
+
+
+def _first_float(*values):
+    for v in values:
+        if v in (None, ''):
+            continue
+        try:
+            return float(v)
+        except Exception:
+            continue
+    return None
+
+
+def _order_filled_qty(order: dict) -> float:
+    if not isinstance(order, dict):
+        return 0.0
+    info = order.get('info') if isinstance(order.get('info'), dict) else {}
+    raw = order.get('raw') if isinstance(order.get('raw'), dict) else {}
+    val = _first_float(
+        order.get('filled'),
+        order.get('filledQty'),
+        order.get('filled_qty'),
+        order.get('executedQty'),
+        order.get('cumExecQty'),
+        order.get('cumFilledQty'),
+        order.get('dealSize'),
+        info.get('filled'),
+        info.get('filledQty'),
+        info.get('filled_qty'),
+        info.get('executedQty'),
+        info.get('cumExecQty'),
+        info.get('cumFilledQty'),
+        info.get('dealSize'),
+        info.get('accFillSz'),
+        info.get('fillSz'),
+        raw.get('filled'),
+        raw.get('executedQty'),
+        raw.get('cumExecQty'),
+    )
+    return float(val or 0.0)
+
+
+def _is_reduce_or_close_order(order: dict) -> bool:
+    info = (order or {}).get('info') if isinstance(order, dict) else {}
+    if not isinstance(info, dict):
+        info = {}
+    initial = (order or {}).get('initial') if isinstance(order, dict) else {}
+    if not isinstance(initial, dict):
+        initial = {}
+    params = (order or {}).get('params') if isinstance(order, dict) else {}
+    if not isinstance(params, dict):
+        params = {}
+    vals = [
+        order.get('reduceOnly') if isinstance(order, dict) else None,
+        order.get('reduce_only') if isinstance(order, dict) else None,
+        order.get('is_reduce_only') if isinstance(order, dict) else None,
+        info.get('reduceOnly'),
+        info.get('reduce_only'),
+        info.get('is_reduce_only'),
+        info.get('closePosition'),
+        initial.get('reduceOnly'),
+        initial.get('reduce_only'),
+        initial.get('is_reduce_only'),
+        params.get('reduceOnly'),
+        params.get('reduce_only'),
+    ]
+    return any(str(v).lower() in {'true', '1', 'yes'} for v in vals)
+
+
+def _validate_pending_entries_restart_guard(fetcher, pending_entries: dict, positions: dict, *, results_dir: str, session_db_path: str, run_id: str, symbols=None) -> dict:
+    pending_ids = {str((v or {}).get('exchange_order_id') or '') for v in (pending_entries or {}).values()}
+    pending_ids.discard('')
+    symbols = sorted(
+        {str(s or '') for s in (symbols or []) if str(s or '')}
+        | {split_pos_key(k)[0] for k in (positions or {}).keys()}
+        | {str((v or {}).get('symbol') or '') for v in (pending_entries or {}).values() if (v or {}).get('symbol')}
+    )
+    try:
+        open_orders = _fetch_open_strategy_orders(fetcher, symbols=symbols)
+    except Exception as e:
+        payload = {'ok': False, 'reason': 'fetch_open_orders_failed', 'error': str(e), 'pending_order_ids': sorted(pending_ids)}
+        _emit_runtime_debug(session_db_path, run_id, 'pending_entries_restart_guard_block', payload, level='ERROR', fg='red')
+        return payload
+    missing_tracked = []
+    ex = getattr(fetcher, 'ex', fetcher)
+    resolver = getattr(fetcher, 'resolve_symbol', None)
+    open_ids = {_open_order_id(od) for od in open_orders or [] if _open_order_id(od)}
+    for key, pend in (pending_entries or {}).items():
+        oid = str((pend or {}).get('exchange_order_id') or '')
+        if not oid or oid in open_ids:
+            continue
+        sym = str((pend or {}).get('symbol') or '')
+        ccxt_sym = sym
+        if callable(resolver):
+            try:
+                ccxt_sym = resolver(sym) or sym
+            except Exception:
+                ccxt_sym = sym
+        try:
+            fetched = ex.fetch_order(oid, ccxt_sym) if hasattr(ex, 'fetch_order') else None
+            sleep_ms(RATE_MS)
+        except Exception as e:
+            missing_tracked.append({'key': str(key), 'id': oid, 'symbol': sym, 'error': str(e)})
+            continue
+        if not fetched or not _open_order_id(fetched):
+            missing_tracked.append({'key': str(key), 'id': oid, 'symbol': sym, 'error': 'empty_fetch_order'})
+    relevant = []
+    for od in open_orders or []:
+        oid = _open_order_id(od)
+        status = str((od or {}).get('status') or '').lower()
+        if not oid or status in {'closed', 'canceled', 'cancelled', 'filled'}:
+            continue
+        if _is_reduce_or_close_order(od):
+            continue
+        info = (od or {}).get('info') if isinstance(od, dict) else {}
+        if not isinstance(info, dict):
+            info = {}
+        params = (od or {}).get('params') if isinstance(od, dict) else {}
+        if not isinstance(params, dict):
+            params = {}
+        position_side = (
+            (od or {}).get('positionSide')
+            or (od or {}).get('position_side')
+            or info.get('positionSide')
+            or info.get('position_side')
+            or info.get('posSide')
+            or info.get('positionIdx')
+            or params.get('positionSide')
+            or params.get('position_side')
+            or ''
+        )
+        relevant.append({'id': oid, 'symbol': str((od or {}).get('symbol') or ''), 'type': str((od or {}).get('type') or ''), 'side': str((od or {}).get('side') or ''), 'positionSide': str(position_side or ''), 'status': status or 'open'})
+    untracked = [od for od in relevant if od.get('id') not in pending_ids]
+    payload = {'ok': not bool(untracked or missing_tracked), 'pending_order_ids': sorted(pending_ids), 'open_orders': relevant, 'untracked_open_orders': untracked, 'missing_tracked_pending_orders': missing_tracked}
+    if missing_tracked:
+        payload['reason'] = 'tracked_pending_order_missing_from_exchange'
+    event = 'pending_entries_restart_guard_ok' if payload['ok'] else 'pending_entries_restart_guard_block'
+    _emit_runtime_debug(session_db_path, run_id, event, payload, level='INFO' if payload['ok'] else 'ERROR', fg='cyan' if payload['ok'] else 'red')
+    return payload
+
+
 def _write_live_heartbeat(results_dir: str, session_db_path: str, run_id: str, *, now, last_bar_ts, positions_count: int, stop_new_orders: bool, stop_reason: str):
     try:
         payload = {
@@ -522,8 +994,12 @@ def _apply_dynamic_min_order_floor(fetcher, cfg: dict, sym: str, row: dict, stra
         current = _safe_float(getattr(strat, 'min_order_usdt', 0.0), 0.0) or 0.0
         effective, meta = _dynamic_min_order_floor(fetcher, sym, cfg, price, current)
         if meta.get('enabled') and effective > 0:
+            fn = getattr(strat, 'set_broker_min_order_usdt', None)
             try:
-                setattr(strat, 'min_order_usdt', float(effective))
+                if callable(fn):
+                    fn(sym, float(effective), meta)
+                else:
+                    setattr(strat, 'min_order_usdt', float(effective))
             except Exception:
                 pass
         status[side.lower()] = {**meta, 'previous_strategy_min_order_usdt': current, 'strategy_min_order_usdt': float(getattr(strat, 'min_order_usdt', effective) or 0.0)}
@@ -746,13 +1222,25 @@ def place_open_qty_limit(fetcher: CCXTFetcher, sym: str, side: str, qty: float, 
 
 
 
-def _place_market_fallback_open(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, snapshot=None, pre_snapshot=None, fallback_reason='limit_no_fill', strategy_event='open'):
+def _place_market_fallback_open(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, snapshot=None, pre_snapshot=None, fallback_reason='limit_no_fill', strategy_event='open', allow_market_fallback=False):
     stop_active, stop_reason = _stop_new_orders_active(results_dir)
     if stop_active:
         _exec_metric_inc(sym, side, 'OPEN', 'market_fallback', 'blocked_stop_new_orders', 1.0)
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='SKIPPED', reason=f'stop_new_orders:{stop_reason}', run_id=run_id, extra={'order_type': 'market_fallback', 'fallback_reason': fallback_reason})
         _emit_runtime_debug(session_db_path, run_id, 'market_fallback_blocked_stop_new_orders', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': stop_reason}, level='WARNING', fg='yellow')
         return False, {'error': 'stop_new_orders', 'reason': stop_reason}
+    if not bool(allow_market_fallback):
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='SKIPPED', reason='market_fallback_not_strategy_allowed', run_id=run_id, extra={'order_type': 'market_fallback', 'fallback_reason': fallback_reason})
+        _emit_runtime_debug(session_db_path, run_id, 'market_fallback_blocked_intent_policy', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fallback_reason}, level='WARNING', fg='yellow')
+        if snapshot is not None:
+            _strategy_restore(strat, sym, snapshot)
+        return False, {'error': 'market_fallback_not_strategy_allowed', 'reason': fallback_reason}
+    if not _strategy_can_submit(strat, sym, 'open_market_fallback', {'reason': fallback_reason, 'qty': qty}):
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='SKIPPED', reason='strategy_execution_backoff', run_id=run_id, extra={'order_type': 'market_fallback', 'fallback_reason': fallback_reason})
+        _emit_runtime_debug(session_db_path, run_id, 'market_fallback_blocked_strategy_backoff', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fallback_reason}, level='WARNING', fg='yellow')
+        if snapshot is not None:
+            _strategy_restore(strat, sym, snapshot)
+        return False, {'error': 'strategy_execution_backoff', 'reason': fallback_reason}
     _emit_runtime_debug(
         session_db_path, run_id, 'entry_limit_fallback_market',
         {
@@ -816,6 +1304,99 @@ def _place_market_fallback_open(fetcher, strat, *, sym, side, requested_px, qty,
     return _finalize_open_success(fetcher, strat, rec, sym=sym, side=side, requested_px=requested_px, qty_requested=qty, ex_order_id=ex_order_id, bar_close=bar_close, fill_px=fill_px, fill_dt=fill_dt, session_db_path=session_db_path, bot_id=bot_id, results_dir=results_dir, positions=positions, run_id=run_id, position_mode=position_mode, strategy_event=strategy_event)
 
 
+def _apply_pending_entry_order_state(*, key: str, pend: dict, od: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, strat, current_bar_iso: str, run_id: str) -> str:
+    sym = pend.get('symbol')
+    side = str(pend.get('side', 'LONG')).upper()
+    position_key = _pending_position_key(key, pend)
+    order_id = pend.get('exchange_order_id')
+    status = str((od or {}).get('status') or pend.get('status') or '').lower()
+    filled = _order_filled_qty(od or {})
+    already_applied = float(pend.get('applied_filled_qty') or 0.0)
+    delta_filled = max(0.0, filled - already_applied)
+    rec = positions.get(position_key)
+    applied_without_existing_position = False
+    if delta_filled > 1e-12 and pend.get('restart_loaded'):
+        if not pend.get('snapshot_recoverable') and pend.get('strategy_snapshot') is None:
+            pend['last_order'] = od or pend.get('last_order') or {}
+            pend['status'] = 'recovery_blocked_no_snapshot'
+            _db_upsert_pending_entry(session_db_path, key, pend, run_id=run_id)
+            _emit_runtime_debug(session_db_path, run_id, 'pending_entry_recovery_blocked_no_snapshot_fill', {'symbol': sym, 'side': side, 'order_id': order_id, 'filled': filled}, level='ERROR', fg='red')
+            return pend['status']
+        _strategy_restore(strat, sym, pend.get('strategy_snapshot'))
+        pend['snapshot_restored_before_fill'] = True
+    if delta_filled > 1e-12 and not rec:
+        intent = pend.get('intent') or {}
+        intent_kind = str(intent.get('kind') or '').upper()
+        strategy_event = str(intent.get('strategy_event') or intent.get('event') or '').lower()
+        if intent_kind == INTENT_OPEN or strategy_event in {'first', 'open'}:
+            fill_px = _safe_order_average(od, fallback=pend.get('limit_price'))
+            entry = float(fill_px or pend.get('limit_price') or 0.0)
+            rec = {
+                'symbol': sym,
+                'side': side,
+                'qty': delta_filled,
+                'entry': entry,
+                'tp_price': intent.get('tp_price'),
+                'sl_price': intent.get('sl_price'),
+                'ts_open': current_bar_iso,
+                'run_id': run_id,
+                'order_id': str(uuid.uuid4()),
+                'exchange_order_id': order_id,
+                'entry_order_type': 'limit',
+                'entry_fill': fill_px,
+                'entry_fill_ts': _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            }
+            positions[position_key] = rec
+            save_positions(results_dir, positions)
+            try:
+                db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN'})
+            except Exception:
+                pass
+            _record_order(session_db_path, bar_time=current_bar_iso, symbol=sym, side=side, type_='OPEN', price=float(pend.get('limit_price') or entry or 0.0), qty=delta_filled, status='FILLED', reason='first_limit_late_fill', run_id=run_id, exchange_order_id=order_id, extra={'fill': fill_px, 'strategy_event': 'first_limit_late_fill', 'filled_total': filled, 'applied_before': already_applied})
+            _strategy_sync_after_fill(strat, sym, qty=delta_filled, entry=entry, fill_price=float(fill_px or entry or 0.0), delta_qty=delta_filled, event='first_limit_late_fill', bar_time=current_bar_iso, extra={'exchange_order_id': order_id, 'limit_price': pend.get('limit_price'), 'filled_total': filled, 'applied_before': already_applied})
+            notify_strategy_filled(strat, sym, event='first')
+            pend['applied_filled_qty'] = already_applied + delta_filled
+            applied_without_existing_position = True
+            rec = positions.get(position_key)
+        else:
+            pend['last_order'] = od or pend.get('last_order') or {}
+            pend['status'] = 'recovery_blocked_missing_position_after_fill'
+            _db_upsert_pending_entry(session_db_path, key, pend, run_id=run_id)
+            _emit_runtime_debug(session_db_path, run_id, 'pending_entry_recovery_blocked_missing_position_after_fill', {'symbol': sym, 'side': side, 'order_id': order_id, 'filled': filled, 'applied_before': already_applied}, level='ERROR', fg='red')
+            return pend['status']
+    if delta_filled > 1e-12 and rec and not applied_without_existing_position:
+        fill_px = _safe_order_average(od, fallback=pend.get('limit_price'))
+        old_qty = float(rec.get('qty', 0.0) or 0.0)
+        old_entry = float(rec.get('entry', 0.0) or 0.0)
+        new_qty = old_qty + delta_filled
+        if fill_px is not None and old_qty > 0:
+            rec['entry'] = ((old_qty * old_entry) + (delta_filled * float(fill_px))) / max(new_qty, 1e-12)
+        elif fill_px is not None:
+            rec['entry'] = float(fill_px)
+        rec['qty'] = new_qty
+        positions[position_key] = rec
+        save_positions(results_dir, positions)
+        try:
+            db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN', 'entry_fill': fill_px, 'entry_fill_ts': _dt.datetime.now(_dt.timezone.utc).isoformat()})
+        except Exception:
+            pass
+        _record_order(session_db_path, bar_time=current_bar_iso, symbol=sym, side=side, type_='OPEN', price=float(pend.get('limit_price') or 0.0), qty=delta_filled, status='FILLED', reason='dca_limit_fill', run_id=run_id, exchange_order_id=order_id, extra={'fill': fill_px, 'strategy_event': 'dca_limit_fill', 'filled_total': filled, 'applied_before': already_applied})
+        _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=float(rec.get('entry') or 0.0), fill_price=float(fill_px or rec.get('entry') or 0.0), delta_qty=delta_filled, event='dca_limit_fill', bar_time=current_bar_iso, extra={'exchange_order_id': order_id, 'limit_price': pend.get('limit_price'), 'filled_total': filled, 'applied_before': already_applied})
+        pend['applied_filled_qty'] = already_applied + delta_filled
+    pend['last_order'] = od or pend.get('last_order') or {}
+    pend['status'] = status
+    _db_upsert_pending_entry(session_db_path, key, pend, run_id=run_id)
+    return status
+
+
+def _fetch_pending_order_state(fetcher, sym: str, order_id: str, fallback=None):
+    try:
+        od = fetcher.ex.fetch_order(order_id, fetcher.resolve_symbol(sym) or sym); sleep_ms(RATE_MS)
+        return od
+    except Exception:
+        return fallback or {}
+
+
 def _sync_pending_entry_orders(fetcher, pending_entries: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, strat_long, strat_short, current_bar_iso: str, run_id: str = ''):
     for key, pend in list((pending_entries or {}).items()):
         sym = pend.get('symbol')
@@ -823,49 +1404,41 @@ def _sync_pending_entry_orders(fetcher, pending_entries: dict, positions: dict, 
         strat = strat_long if side == 'LONG' else strat_short
         order_id = pend.get('exchange_order_id')
         created_iso = str(pend.get('created_bar_iso') or '')
-        if created_iso != str(current_bar_iso):
-            try:
-                fetcher.ex.cancel_order(order_id, fetcher.resolve_symbol(sym) or sym); sleep_ms(RATE_MS)
-            except Exception:
-                pass
-            if float(pend.get('applied_filled_qty') or 0.0) <= 1e-12:
-                _strategy_restore(strat, sym, pend.get('strategy_snapshot'))
-                _strategy_rejected(strat, sym, 'dca_limit_timeout', {'order_id': order_id, 'limit_price': pend.get('limit_price')})
-            pending_entries.pop(key, None)
-            continue
-        try:
-            od = fetcher.ex.fetch_order(order_id, fetcher.resolve_symbol(sym) or sym); sleep_ms(RATE_MS)
-        except Exception:
-            od = pend.get('last_order') or {}
+        od = _fetch_pending_order_state(fetcher, sym, order_id, fallback=pend.get('last_order') or {})
         status = str((od or {}).get('status') or pend.get('status') or '').lower()
-        filled = float((od or {}).get('filled') or 0.0)
-        already_applied = float(pend.get('applied_filled_qty') or 0.0)
-        delta_filled = max(0.0, filled - already_applied)
-        rec = positions.get(key)
-        if delta_filled > 1e-12 and rec:
-            fill_px = _safe_order_average(od, fallback=pend.get('limit_price'))
-            old_qty = float(rec.get('qty', 0.0) or 0.0)
-            old_entry = float(rec.get('entry', 0.0) or 0.0)
-            new_qty = old_qty + delta_filled
-            if fill_px is not None and old_qty > 0:
-                rec['entry'] = ((old_qty * old_entry) + (delta_filled * float(fill_px))) / max(new_qty, 1e-12)
-            elif fill_px is not None:
-                rec['entry'] = float(fill_px)
-            rec['qty'] = new_qty
-            positions[key] = rec
-            save_positions(results_dir, positions)
-            try:
-                db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN', 'entry_fill': fill_px, 'entry_fill_ts': _dt.datetime.now(_dt.timezone.utc).isoformat()})
-            except Exception:
-                pass
-            _record_order(session_db_path, bar_time=current_bar_iso, symbol=sym, side=side, type_='OPEN', price=float(pend.get('limit_price') or 0.0), qty=delta_filled, status='FILLED', reason='dca_limit_fill', run_id=run_id, exchange_order_id=order_id, extra={'fill': fill_px, 'strategy_event': 'dca_limit_fill', 'filled_total': filled, 'applied_before': already_applied})
-            _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=float(rec.get('entry') or 0.0), fill_price=float(fill_px or rec.get('entry') or 0.0), delta_qty=delta_filled, event='dca_limit_fill', bar_time=current_bar_iso, extra={'exchange_order_id': order_id, 'limit_price': pend.get('limit_price'), 'filled_total': filled, 'applied_before': already_applied})
-            pend['applied_filled_qty'] = already_applied + delta_filled
+        status = _apply_pending_entry_order_state(key=key, pend=pend, od=od, positions=positions, results_dir=results_dir, session_db_path=session_db_path, bot_id=bot_id, strat=strat, current_bar_iso=current_bar_iso, run_id=run_id)
+        if created_iso != str(current_bar_iso):
+            if status != 'closed':
+                try:
+                    pend['status'] = 'cancel_requested'
+                    _db_upsert_pending_entry(session_db_path, key, pend, run_id=run_id)
+                    fetcher.ex.cancel_order(order_id, fetcher.resolve_symbol(sym) or sym); sleep_ms(RATE_MS)
+                except Exception:
+                    pass
+                final_od = _fetch_pending_order_state(fetcher, sym, order_id, fallback=pend.get('last_order') or od or {})
+                status = _apply_pending_entry_order_state(key=key, pend=pend, od=final_od, positions=positions, results_dir=results_dir, session_db_path=session_db_path, bot_id=bot_id, strat=strat, current_bar_iso=current_bar_iso, run_id=run_id)
+            if status in {'closed', 'canceled', 'cancelled'}:
+                if float(pend.get('applied_filled_qty') or 0.0) <= 1e-12:
+                    if pend.get('restart_loaded') and not pend.get('snapshot_recoverable') and pend.get('strategy_snapshot') is None:
+                        pend['status'] = 'recovery_blocked_no_snapshot'
+                        _db_upsert_pending_entry(session_db_path, key, pend, run_id=run_id)
+                        _save_pending_entries(results_dir, pending_entries, run_id=run_id, session_db_path=session_db_path)
+                        _emit_runtime_debug(session_db_path, run_id, 'pending_entry_recovery_blocked_no_snapshot', {'symbol': sym, 'side': side, 'order_id': order_id, 'status': status}, level='ERROR', fg='red')
+                        continue
+                    _strategy_restore(strat, sym, pend.get('strategy_snapshot'))
+                    _strategy_rejected(strat, sym, 'dca_limit_timeout', {'order_id': order_id, 'limit_price': pend.get('limit_price')})
+                pending_entries.pop(key, None)
+                _db_remove_pending_entry(session_db_path, key, status=status or 'removed', reason='stale_pending_final')
+                _save_pending_entries(results_dir, pending_entries, run_id=run_id, session_db_path=session_db_path)
+                continue
+            _save_pending_entries(results_dir, pending_entries, run_id=run_id, session_db_path=session_db_path)
+            continue
         if status == 'closed':
             pending_entries.pop(key, None)
+            _db_remove_pending_entry(session_db_path, key, status='closed', reason='pending_order_closed')
+            _save_pending_entries(results_dir, pending_entries, run_id=run_id, session_db_path=session_db_path)
             continue
-        pend['last_order'] = od
-        pend['status'] = status
+    _save_pending_entries(results_dir, pending_entries, run_id=run_id, session_db_path=session_db_path)
 
 
 def _sync_close_local_only(strat, key: str, rec: dict, positions: dict, results_dir: str, session_db_path: str, bot_id: str, run_id: str, reason: str):
@@ -962,17 +1535,55 @@ def _strategy_restore(strat, sym: str, snapshot):
         pass
 
 
+def _intent_contract_rejected(intent) -> bool:
+    try:
+        return bool((getattr(intent, 'extra', None) or {}).get('rejected_contract'))
+    except Exception:
+        return False
+
+
 def _strategy_rejected(strat, sym: str, event: str, details=None):
-    fn = getattr(strat, 'on_order_rejected', None)
+    notify_strategy_rejected(strat, sym, event, details)
+
+
+def _strategy_can_submit(strat, sym: str, event: str, details=None) -> bool:
+    return strategy_can_submit(strat, sym, event, details)
+
+
+def _strategy_execution_policy(strat, sym: str, event: str, default=None) -> dict:
+    default = dict(default or {})
+    fn = getattr(strat, 'get_execution_policy', None)
     if callable(fn):
         try:
-            fn(sym, event=event, details=details)
+            pol = fn(sym, event=event) or {}
+            if isinstance(pol, dict):
+                return {**default, **pol}
         except Exception:
-            pass
+            return default
+    pol = getattr(strat, 'execution_policy', None)
+    if isinstance(pol, dict):
+        event_pol = pol.get(event) or pol.get(str(event).lower()) or {}
+        if isinstance(event_pol, dict):
+            return {**default, **event_pol}
+        return {**default, **pol}
+    return default
+
+
+def _strategy_can_submit_close(strat, sym: str, event: str, details=None) -> bool:
+    policy = _strategy_execution_policy(strat, sym, event)
+    if bool(policy.get('block_close', False)):
+        return False
+    fn = getattr(strat, 'can_submit_close_order', None)
+    if callable(fn):
+        try:
+            return bool(fn(sym, event=event, details=details))
+        except Exception:
+            return False
+    return True
 
 
 
-def _json_safe_value(value, max_items: int = 50):
+def _json_safe_value(value, max_items: Optional[int] = 50):
     """Convert dataclass/state/exchange-ish values into bounded JSON-safe objects."""
     try:
         if value is None or isinstance(value, (str, int, float, bool)):
@@ -984,15 +1595,16 @@ def _json_safe_value(value, max_items: int = 50):
         if isinstance(value, dict):
             out = {}
             for i, (k, v) in enumerate(value.items()):
-                if i >= max_items:
+                if max_items is not None and i >= max_items:
                     out['_truncated'] = True
                     break
                 out[str(k)] = _json_safe_value(v, max_items=max_items)
             return out
         if isinstance(value, (list, tuple, set, deque)):
             arr = list(value)
-            out = [_json_safe_value(v, max_items=max_items) for v in arr[:max_items]]
-            if len(arr) > max_items:
+            selected = arr if max_items is None else arr[:max_items]
+            out = [_json_safe_value(v, max_items=max_items) for v in selected]
+            if max_items is not None and len(arr) > max_items:
                 out.append({'_truncated_count': len(arr) - max_items})
             return out
         if hasattr(value, '__dict__'):
@@ -2074,6 +2686,7 @@ def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_
     order_qty = float(qty_requested or qty or 0.0)
     _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=order_qty, status='FILLED', reason='open', run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'entry': entry, 'strategy_event': strategy_event, 'order_qty': order_qty, 'position_qty_after': qty, 'position_entry_after': entry})
     _strategy_sync_after_fill(strat, sym, qty=qty, entry=entry, fill_price=fill, delta_qty=order_qty, event=strategy_event, bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'order_type': rec.get('entry_order_type') or 'market', 'order_qty': order_qty, 'position_qty_after': qty, 'position_entry_after': entry})
+    notify_strategy_filled(strat, sym, event=strategy_event)
     try:
         _place_tp_sl_after_open(fetcher, sym, side, qty, rec.get('tp_price'), rec.get('sl_price'), position_mode)
     except Exception:
@@ -2083,7 +2696,7 @@ def _finalize_open_success(fetcher, strat, rec, *, sym, side, requested_px, qty_
     return True, rec
 
 
-def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, snapshot, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, order_type='market', limit_price=None, post_only=True, strategy_event='open'):
+def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty, bar_close, position_mode, snapshot, session_db_path, run_id, bot_id, results_dir, positions, tp_price=None, sl_price=None, order_type='market', limit_price=None, post_only=True, strategy_event='open', allow_market_fallback=False, fallback_on_reject=False, fallback_on_timeout=False, sizing_policy='explicit_qty', pending_entries=None):
     pre_book = safe_fetch_order_book(fetcher, sym, limit=10)
     pre_snapshot = record_pretrade_snapshot(
         session_db_path,
@@ -2124,15 +2737,21 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
                 },
                 level='INFO', fg='cyan'
             )
+        if not _strategy_can_submit(strat, sym, f'{strategy_event}_limit_submit', {'qty': qty, 'order_type': order_type_norm}):
+            _strategy_restore(strat, sym, snapshot)
+            return False, {'error': 'strategy_execution_backoff'}
         res = place_open_qty_limit(fetcher, sym, side, qty, float(safe_limit_price), position_mode, post_only=bool(post_only))
     else:
+        if not _strategy_can_submit(strat, sym, f'{strategy_event}_market_submit', {'qty': qty, 'order_type': order_type_norm}):
+            _strategy_restore(strat, sym, snapshot)
+            return False, {'error': 'strategy_execution_backoff'}
         res = place_open_qty(fetcher, sym, side, qty, position_mode)
     if not res.get('ok'):
         fail_reason = str(res.get('error') or res.get('skip_reason') or 'open_fail')
         _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'rejected', 1.0)
-        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id, extra={'order_type': order_type_norm})
-        if order_type_norm == 'limit' and ENTRY_LIMIT_FALLBACK_TO_MARKET and ENTRY_LIMIT_FALLBACK_ON_REJECT:
-            return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_reject:{fail_reason}', strategy_event=strategy_event)
+        _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='REJECTED', reason=fail_reason, run_id=run_id, extra={'order_type': order_type_norm, 'sizing_policy': sizing_policy})
+        if order_type_norm == 'limit' and ENTRY_LIMIT_FALLBACK_TO_MARKET and ENTRY_LIMIT_FALLBACK_ON_REJECT and bool(allow_market_fallback) and bool(fallback_on_reject):
+            return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_reject:{fail_reason}', strategy_event=strategy_event, allow_market_fallback=allow_market_fallback)
         _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', res)
         _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_fail')
         _emit_runtime_debug(session_db_path, run_id, 'open_fail', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': fail_reason, 'exchange_response': res, 'order_type': order_type_norm}, level='ERROR', fg='red')
@@ -2150,11 +2769,38 @@ def _execute_open_with_rollback(fetcher, strat, *, sym, side, requested_px, qty,
         else:
             reason = str(((cancel_od or od or {}).get('info') or {}).get('reason') or (cancel_od or od or {}).get('status') or f'timeout_no_fill:{cancel_state}')
             _exec_metric_inc(sym, side, 'OPEN', order_type_norm, 'canceled_no_fill', 1.0)
-            _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED' if cancel_state == 'canceled' else 'UNKNOWN', reason=reason, run_id=run_id, exchange_order_id=ex_order_id, extra={'order_type': order_type_norm, 'cancel_state': cancel_state})
-            if cancel_state == 'canceled' and order_type_norm == 'limit' and ENTRY_LIMIT_FALLBACK_TO_MARKET and ENTRY_LIMIT_FALLBACK_ON_TIMEOUT:
-                return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_timeout:{reason}', strategy_event=strategy_event)
+            _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=qty, status='CANCELED' if cancel_state == 'canceled' else 'UNKNOWN', reason=reason, run_id=run_id, exchange_order_id=ex_order_id, extra={'order_type': order_type_norm, 'cancel_state': cancel_state, 'sizing_policy': sizing_policy})
+            if cancel_state == 'canceled' and order_type_norm == 'limit' and ENTRY_LIMIT_FALLBACK_TO_MARKET and ENTRY_LIMIT_FALLBACK_ON_TIMEOUT and bool(allow_market_fallback) and bool(fallback_on_timeout):
+                return _place_market_fallback_open(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=bar_close, position_mode=position_mode, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=tp_price, sl_price=sl_price, snapshot=snapshot, pre_snapshot=pre_snapshot, fallback_reason=f'limit_timeout:{reason}', strategy_event=strategy_event, allow_market_fallback=allow_market_fallback)
             # If cancel is not confirmed, do NOT market fallback. Otherwise we risk double-entry:
             # old limit fills late + fallback market also opens.
+            if order_type_norm == 'limit' and cancel_state not in {'canceled', 'cancelled', 'filled', 'closed', 'rejected', 'expired'} and pending_entries is not None:
+                key = pos_key(sym, side)
+                pending_entries[key] = {
+                    'symbol': sym,
+                    'side': side,
+                    'exchange_order_id': ex_order_id,
+                    'created_bar_iso': bar_close.isoformat(),
+                    'limit_price': float(limit_price if limit_price not in (None, '') else requested_px),
+                    'delta_qty': float(qty or 0.0),
+                    'strategy_snapshot': snapshot,
+                    'intent': {
+                        'kind': INTENT_OPEN,
+                        'source': 'entry_signal',
+                        'reason': strategy_event,
+                        'strategy_event': strategy_event,
+                        'order_type': order_type_norm,
+                        'limit_price': limit_price,
+                        'qty': qty,
+                        'sizing_policy': sizing_policy,
+                        'tp_price': tp_price,
+                        'sl_price': sl_price,
+                    },
+                    'applied_filled_qty': 0.0,
+                    'last_order': cancel_od or od or res.get('order') or {},
+                    'status': 'cancel_requested' if cancel_state == 'unknown' else str(cancel_state or 'cancel_requested').lower(),
+                }
+                _save_pending_entries(results_dir, pending_entries, run_id=run_id, session_db_path=session_db_path)
             _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'open', {'reason': reason, 'order_id': ex_order_id, 'cancel_state': cancel_state})
             _write_exec_metrics(results_dir, session_db_path, run_id, event_type='execution_metrics_open_nofill')
             _emit_runtime_debug(session_db_path, run_id, 'open_nofill', {'symbol': sym, 'side': side, 'qty': qty, 'requested_px': requested_px, 'reason': reason, 'order_id': ex_order_id, 'cancel_state': cancel_state, 'order_type': order_type_norm}, level='ERROR', fg='red')
@@ -2254,6 +2900,7 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
         db_mark_closed(session_db_path, bot_id, rec.get('order_id'), _dt.datetime.now(_dt.timezone.utc).isoformat(), exit_fill=fill, exit_fill_ts=fill_dt.isoformat() if fill_dt else None, exit_slip_bp=_signed_slip_bp(side, requested_px, fill, is_close=True), exit_lag_sec=(fill_dt - bar_close).total_seconds() if fill_dt else None, exit_mark_price=fetcher.fetch_mark_price(sym), close_reason=_normalize_close_reason(close_reason, 'close'))
         _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'closed': True, 'strategy_event': 'close', 'pnl': pnl_event})
         _strategy_sync_after_fill(strat, sym, qty=0.0, entry=0.0, fill_price=fill, delta_qty=qty, event='close', bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'closed': True})
+        notify_strategy_filled(strat, sym, event='close')
         _emit_runtime_debug(session_db_path, run_id, 'close_ok', {'symbol': sym, 'side': side, 'qty': qty, 'fill': fill, 'closed': True, 'close_reason': _normalize_close_reason(close_reason, 'close')}, level='INFO', fg='green')
         return True, {'closed': True}
     new_qty = float(ex_pos['qty']); new_entry = float(ex_pos['entry'])
@@ -2262,6 +2909,7 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
     db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN', 'close_reason': _normalize_close_reason(close_reason)})
     _record_order(session_db_path, bar_time=bar_close, symbol=sym, side=side, type_='CLOSE_PARTIAL' if partial else 'CLOSE', price=requested_px, qty=qty, status='FILLED', reason=_normalize_close_reason(close_reason, 'close'), run_id=run_id, exchange_order_id=ex_order_id, extra={'fill': fill, 'remaining_qty': new_qty, 'remaining_entry': new_entry, 'strategy_event': 'partial' if partial else 'close', 'pnl': pnl_event})
     _strategy_sync_after_fill(strat, sym, qty=new_qty, entry=new_entry, fill_price=fill, delta_qty=qty, event='partial' if partial else 'close', bar_time=bar_close, extra={'exchange_order_id': ex_order_id, 'requested_px': requested_px, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'closed': False, 'remaining_qty': new_qty, 'remaining_entry': new_entry})
+    notify_strategy_filled(strat, sym, event='partial' if partial else 'close')
     _emit_runtime_debug(session_db_path, run_id, 'close_ok', {'symbol': sym, 'side': side, 'qty': qty, 'fill': fill, 'closed': False, 'remaining_qty': new_qty, 'remaining_entry': new_entry, 'close_reason': _normalize_close_reason(close_reason, 'close'), 'partial': partial}, level='INFO', fg='green')
     return True, {'closed': False, 'qty': new_qty, 'entry': new_entry}
 
@@ -2269,46 +2917,97 @@ def _execute_reduce_with_rollback(fetcher, strat, *, sym, side, qty, requested_p
 def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, positions: dict, results_dir: str, position_mode: str, session_db_path: str, bot_id: str, run_id: str, *, cfg: dict = None, pending_entries: dict = None):
     pending_entries = pending_entries if pending_entries is not None else {}
     sym, side = split_pos_key(key)
+    legacy_policy = legacy_policy_from_config(cfg)
     pos_before = _PosLike(rec)
     qty_before, entry_before = float(pos_before.qty), float(pos_before.entry)
     snapshot = _strategy_snapshot(strat, sym)
-    ex_sig = strat.manage_position(sym, row, pos_before, ctx={})
-    action = str(getattr(ex_sig, 'action', '') or '').upper()
-    reason = _normalize_close_reason(getattr(ex_sig, 'reason', None), action.lower())
+    ex_sig = call_manage_position(strat, sym, row, pos_before, {}, legacy_policy)
+    qty_after, entry_after = float(pos_before.qty), float(pos_before.entry)
+    dca_policy = _strategy_execution_policy(strat, sym, 'dca')
+    legacy_dca_policy = legacy_execution_policy(legacy_policy, 'dca')
+    if legacy_dca_policy and not str(dca_policy.get('order_type') or '').strip():
+        dca_policy = {**dca_policy, **legacy_dca_policy}
+    intent = manage_intent_from_result(
+        symbol=sym,
+        side=side,
+        result=ex_sig,
+        qty_before=qty_before,
+        entry_before=entry_before,
+        qty_after=qty_after,
+        entry_after=entry_after,
+        default_order_type=dca_policy.get('order_type'),
+        default_limit_price=dca_policy.get('limit_price'),
+    )
+    if intent.kind == INTENT_HOLD and _intent_contract_rejected(intent):
+        _strategy_restore(strat, sym, snapshot)
+        _strategy_rejected(strat, sym, getattr(intent, 'extra', {}).get('rejected_contract') or intent.reason, {'intent_source': intent.source, 'reason': intent.reason})
+        return False
+    reason = _normalize_close_reason(intent.reason, intent.kind.lower())
     bar_dt = _dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00'))
     requested_px = _choose_requested_price(fetcher, sym, float(row.get('close') or 0.0))
-    if action in {'TP', 'SL', 'EXIT'}:
-        qty_close = float(rec.get('qty', 0.0) or 0.0)
+    if intent.kind == INTENT_CLOSE:
+        if not _strategy_can_submit_close(strat, sym, 'close', {'intent': intent.extra, 'reason': reason}):
+            _strategy_restore(strat, sym, snapshot); return False
+        qty_close = float(intent.qty or rec.get('qty', 0.0) or 0.0)
         if qty_close <= 0:
             _strategy_restore(strat, sym, snapshot); return False
         pending_entries.pop(key, None)
+        _db_remove_pending_entry(session_db_path, key, status='removed', reason='position_close')
+        _save_pending_entries(results_dir, pending_entries, run_id=run_id, session_db_path=session_db_path)
         return _execute_reduce_with_rollback(fetcher, strat, sym=sym, side=side, qty=qty_close, requested_px=requested_px, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, close_reason=reason, rec=rec, positions=positions, results_dir=results_dir, bot_id=bot_id, event_type='close', partial=False)[0]
-    if action == 'TP_PARTIAL':
-        qty_frac = max(0.0, min(1.0, float(getattr(ex_sig, 'qty_frac', 0.0) or 0.0)))
-        qty_close = float(rec.get('qty', 0.0) or 0.0) * qty_frac
+    if intent.kind == INTENT_PARTIAL_CLOSE:
+        if not _strategy_can_submit_close(strat, sym, 'partial', {'intent': intent.extra, 'reason': reason}):
+            _strategy_restore(strat, sym, snapshot); return False
+        qty_close = float(intent.qty or 0.0)
         if qty_close <= 0:
             _strategy_restore(strat, sym, snapshot); return False
-        return _execute_reduce_with_rollback(fetcher, strat, sym=sym, side=side, qty=qty_close, requested_px=requested_px, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, close_reason=reason or action.lower(), rec=rec, positions=positions, results_dir=results_dir, bot_id=bot_id, event_type='partial', partial=True)[0]
-    qty_after, entry_after = float(pos_before.qty), float(pos_before.entry)
-    if qty_after > qty_before + 1e-12:
+        return _execute_reduce_with_rollback(fetcher, strat, sym=sym, side=side, qty=qty_close, requested_px=requested_px, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, close_reason=reason, rec=rec, positions=positions, results_dir=results_dir, bot_id=bot_id, event_type='partial', partial=True)[0]
+    if intent.kind == INTENT_ADD:
+        if _has_unresolved_pending_entry(pending_entries or {}, sym, side):
+            _strategy_restore(strat, sym, snapshot)
+            _record_order(session_db_path, bar_time=bar_dt, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=float(intent.qty or 0.0), status='SKIPPED', reason='pending_order_active', run_id=run_id, extra={'strategy_event': 'dca', 'pending': [k for k, _ in _pending_entries_for_leg(pending_entries or {}, sym, side)]})
+            _emit_runtime_debug(session_db_path, run_id, 'dca_blocked_pending_order', {'symbol': sym, 'side': side, 'pending': [k for k, _ in _pending_entries_for_leg(pending_entries or {}, sym, side)]}, level='WARNING', fg='yellow')
+            return False
         stop_active, stop_reason = _stop_new_orders_active(results_dir)
         if stop_active:
-            delta_qty = qty_after - qty_before
+            delta_qty = float(intent.qty or 0.0)
             _strategy_restore(strat, sym, snapshot)
             _strategy_rejected(strat, sym, 'dca_stop_new_orders', {'reason': stop_reason})
             _exec_metric_inc(sym, side, 'OPEN', 'dca', 'blocked_stop_new_orders', 1.0)
             _record_order(session_db_path, bar_time=bar_dt, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=delta_qty, status='SKIPPED', reason=f'stop_new_orders:{stop_reason}', run_id=run_id, extra={'strategy_event': 'dca'})
             _emit_runtime_debug(session_db_path, run_id, 'dca_blocked_stop_new_orders', {'symbol': sym, 'side': side, 'qty': delta_qty, 'reason': stop_reason}, level='WARNING', fg='yellow')
             return False
-        delta_qty = qty_after - qty_before
-        if _pending_entry_order_type(cfg or {}) in {'limit', 'maker', 'maker_limit'}:
-            limit_px = _snapshot_limit_price(snapshot, requested_px)
+        if not _strategy_can_submit(strat, sym, 'dca', {'intent': intent.extra, 'reason': reason}):
+            delta_qty = float(intent.qty or 0.0)
+            _strategy_restore(strat, sym, snapshot)
+            _record_order(session_db_path, bar_time=bar_dt, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=delta_qty, status='SKIPPED', reason='strategy_execution_backoff', run_id=run_id, extra={'strategy_event': 'dca'})
+            _emit_runtime_debug(session_db_path, run_id, 'dca_blocked_strategy_backoff', {'symbol': sym, 'side': side, 'qty': delta_qty}, level='WARNING', fg='yellow')
+            return False
+        delta_qty = float(intent.qty or 0.0)
+        dca_order_type = str(intent.order_type or '').lower().strip()
+        if not dca_order_type:
+            _strategy_restore(strat, sym, snapshot)
+            _strategy_rejected(strat, sym, 'dca_missing_order_style', {'intent_source': intent.source})
+            _record_order(session_db_path, bar_time=bar_dt, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=delta_qty, status='SKIPPED', reason='dca_missing_order_style', run_id=run_id, extra={'strategy_event': 'dca', 'intent_source': intent.source})
+            return False
+        if dca_order_type in {'limit', 'maker', 'maker_limit'}:
+            limit_px = intent.limit_price if intent.limit_price not in (None, '') else _snapshot_limit_price(snapshot, requested_px)
+            if limit_px in (None, ''):
+                _strategy_restore(strat, sym, snapshot)
+                _strategy_rejected(strat, sym, 'dca_missing_limit_price', {'intent_source': intent.source})
+                _record_order(session_db_path, bar_time=bar_dt, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=delta_qty, status='SKIPPED', reason='dca_missing_limit_price', run_id=run_id, extra={'strategy_event': 'dca', 'intent_source': intent.source, 'order_type': dca_order_type})
+                return False
+            if not _strategy_can_submit(strat, sym, 'dca_limit_submit', {'intent_source': intent.source, 'qty': delta_qty}):
+                _strategy_restore(strat, sym, snapshot)
+                _record_order(session_db_path, bar_time=bar_dt, symbol=sym, side=side, type_='OPEN', price=requested_px, qty=delta_qty, status='SKIPPED', reason='strategy_execution_backoff', run_id=run_id, extra={'strategy_event': 'dca', 'intent_source': intent.source, 'order_type': dca_order_type})
+                return False
             res = place_open_qty_limit(fetcher, sym, side, delta_qty, limit_px, position_mode)
             if not res.get('ok'):
                 _strategy_restore(strat, sym, snapshot); _strategy_rejected(strat, sym, 'dca_limit_open', res)
                 return False
             ex_order_id = _extract_order_id(res.get('order'))
-            pending_entries[key] = {'symbol': sym, 'side': side, 'exchange_order_id': ex_order_id, 'created_bar_iso': bar_dt.isoformat(), 'limit_price': float(limit_px), 'delta_qty': float(delta_qty), 'strategy_snapshot': snapshot, 'applied_filled_qty': 0.0, 'last_order': res.get('order'), 'status': str((res.get('order') or {}).get('status') or '').lower()}
+            pending_entries[key] = {'symbol': sym, 'side': side, 'exchange_order_id': ex_order_id, 'created_bar_iso': bar_dt.isoformat(), 'limit_price': float(limit_px), 'delta_qty': float(delta_qty), 'strategy_snapshot': snapshot, 'intent': {'kind': intent.kind, 'source': intent.source, 'reason': intent.reason, 'order_type': intent.order_type, 'limit_price': intent.limit_price, 'qty': intent.qty, 'sizing_policy': intent.sizing_policy}, 'applied_filled_qty': 0.0, 'last_order': res.get('order'), 'status': str((res.get('order') or {}).get('status') or '').lower()}
+            _save_pending_entries(results_dir, pending_entries, run_id=run_id, session_db_path=session_db_path)
             _sync_pending_entry_orders(fetcher, pending_entries, positions, results_dir, session_db_path, bot_id, strat, strat, bar_dt.isoformat(), run_id=run_id)
             pend = pending_entries.get(key)
             if pend is None and float(positions.get(key, rec).get('qty', 0.0) or 0.0) > qty_before + 1e-12:
@@ -2316,8 +3015,10 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
                 save_positions(results_dir, positions)
                 db_upsert_open_position(session_db_path, bot_id, {**positions[key], 'status': 'OPEN'})
                 return True
+            if pend is not None and float(positions.get(key, rec).get('qty', 0.0) or 0.0) <= qty_before + 1e-12:
+                _strategy_restore(strat, sym, snapshot)
             return False
-        ok, _ = _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=delta_qty, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=rec.get('tp_price'), sl_price=rec.get('sl_price'), strategy_event='dca')
+        ok, _ = _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=delta_qty, bar_close=bar_dt, position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=rec.get('tp_price'), sl_price=rec.get('sl_price'), order_type=dca_order_type, limit_price=intent.limit_price, strategy_event='dca', allow_market_fallback=intent.allow_market_fallback, fallback_on_reject=intent.fallback_on_reject, fallback_on_timeout=intent.fallback_on_timeout, sizing_policy=intent.sizing_policy)
         if ok:
             new_rec = positions[pos_key(sym, side)]
             new_rec['order_id'] = rec.get('order_id') or new_rec.get('order_id')
@@ -2326,13 +3027,16 @@ def _maybe_apply_manage_result(fetcher, key: str, rec: dict, row: dict, strat, p
             # State sync is already performed inside _finalize_open_success with strategy_event='dca'.
             pass
         return ok
-    if abs(entry_after - entry_before) > 1e-12:
+    if intent.kind == INTENT_SYNC_STATE:
         rec['entry'] = entry_after; positions[key] = rec; save_positions(results_dir, positions); db_upsert_open_position(session_db_path, bot_id, {**rec, 'status': 'OPEN'}); return True
     return False
 
 
-def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: dict, results_dir: str, position_mode: str, session_db_path: str, bot_id: str, run_id: str, *, notional_long: float, notional_short: float):
+def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: dict, results_dir: str, position_mode: str, session_db_path: str, bot_id: str, run_id: str, *, notional_long: float, notional_short: float, cfg: dict = None, pending_entries: dict = None):
     if pos_key(sym, side) in positions:
+        return False
+    if _has_unresolved_pending_entry(pending_entries or {}, sym, side):
+        _emit_runtime_debug(session_db_path, run_id, 'entry_blocked_pending_order', {'symbol': sym, 'side': side, 'pending': [k for k, _ in _pending_entries_for_leg(pending_entries or {}, sym, side)]}, level='WARNING', fg='yellow')
         return False
     stop_active, stop_reason = _stop_new_orders_active(results_dir)
     if stop_active:
@@ -2342,14 +3046,25 @@ def _attempt_entry(fetcher, sym: str, side: str, strat, row: dict, positions: di
     sig = strat.entry_signal(True, sym, row, ctx={})
     if sig is None:
         return False
+    legacy_policy = legacy_policy_from_config(cfg)
+    sig = normalize_legacy_entry_signal(sig, legacy_policy)
     requested_px = _choose_requested_price(fetcher, sym, float(row.get('close') or 0.0))
-    qty = _compute_entry_qty(sig, side, requested_px, notional_long, notional_short)
-    order_type = str(_sig_get(sig, 'order_type', 'market') or 'market').lower().strip()
-    limit_price = _sig_get(sig, 'limit_price', None)
-    post_only = bool(_sig_get(sig, 'entry_limit_post_only', True))
-    if limit_price in (None, '') and order_type in {'limit', 'maker', 'maker_limit'}:
-        limit_price = requested_px
-    return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=_sig_get(sig, 'tp'), sl_price=_sig_get(sig, 'sl'), order_type=order_type, limit_price=limit_price, post_only=post_only, strategy_event='first')[0]
+    intent = entry_intent_from_signal(symbol=sym, side=side, signal=sig, requested_price=requested_px, notional_long=notional_long, notional_short=notional_short)
+    if intent.kind != INTENT_OPEN:
+        if _intent_contract_rejected(intent):
+            _strategy_restore(strat, sym, snapshot)
+            _strategy_rejected(strat, sym, getattr(intent, 'extra', {}).get('rejected_contract') or intent.reason, {'intent_source': intent.source, 'reason': intent.reason})
+        return False
+    entry_policy = _strategy_execution_policy(strat, sym, 'open')
+    allow_market_fallback = bool(intent.allow_market_fallback or entry_policy.get('allow_market_fallback', False))
+    fallback_on_reject = bool(intent.fallback_on_reject or entry_policy.get('fallback_on_reject', False))
+    fallback_on_timeout = bool(intent.fallback_on_timeout or entry_policy.get('fallback_on_timeout', False))
+    if not _strategy_can_submit(strat, sym, 'open', {'reason': intent.reason}):
+        _strategy_restore(strat, sym, snapshot)
+        _record_order(session_db_path, bar_time=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), symbol=sym, side=side, type_='OPEN', price=requested_px, qty=intent.qty, status='SKIPPED', reason='strategy_execution_backoff', run_id=run_id, extra={'strategy_event': 'first'})
+        _emit_runtime_debug(session_db_path, run_id, 'entry_blocked_strategy_backoff', {'symbol': sym, 'side': side, 'qty': intent.qty}, level='WARNING', fg='yellow')
+        return False
+    return _execute_open_with_rollback(fetcher, strat, sym=sym, side=side, requested_px=requested_px, qty=intent.qty, bar_close=_dt.datetime.fromisoformat(str(row['datetime_utc']).replace('Z', '+00:00')), position_mode=position_mode, snapshot=snapshot, session_db_path=session_db_path, run_id=run_id, bot_id=bot_id, results_dir=results_dir, positions=positions, tp_price=intent.tp_price, sl_price=intent.sl_price, order_type=intent.order_type, limit_price=intent.limit_price, post_only=intent.post_only, strategy_event='first', allow_market_fallback=allow_market_fallback, fallback_on_reject=fallback_on_reject, fallback_on_timeout=fallback_on_timeout, sizing_policy=intent.sizing_policy, pending_entries=pending_entries)[0]
 
 
 
@@ -2494,17 +3209,35 @@ def run_live(cfg: dict, args):
     except Exception:
         pass
     positions = load_positions(args.results_dir)
-    pending_entries = {}
     bot_id = make_bot_id(args.results_dir, args.exchange, tf)
+    ensure_pending_entry_orders_db(session_db_path)
+    pending_entries = _load_pending_entries_hybrid(args.results_dir, session_db_path)
     try:
         db_positions = db_load_open_positions(session_db_path, bot_id, include_side_in_key=True)
         if db_positions:
             positions = db_positions
     except Exception:
         pass
+    guard_allow = []
+    try:
+        allow_env = os.getenv('RS_UNIVERSE_ALLOW', '')
+        if allow_env:
+            guard_allow = [s.strip() for s in allow_env.split(',') if s.strip()]
+        if not guard_allow:
+            guard_allow = list((cfg.get('universe', {}) or {}).get('allow', []) or [])
+    except Exception:
+        guard_allow = []
+    try:
+        guard_symbols = [s for s in sorted(set(fetcher.by_base.values())) if (not guard_allow or s in guard_allow)]
+    except Exception:
+        guard_symbols = []
+    restart_guard = _validate_pending_entries_restart_guard(fetcher, pending_entries, positions, results_dir=args.results_dir, session_db_path=session_db_path, run_id=run_id, symbols=guard_symbols)
+    if not restart_guard.get('ok', False):
+        raise RuntimeError(f"pending_entries_restart_guard_block: {restart_guard.get('reason') or restart_guard.get('untracked_open_orders')}")
     if ENABLE_STARTUP_RECONCILE:
         try:
-            _sync_pending_entry_orders(fetcher, pending_entries, positions, args.results_dir, session_db_path, bot_id, strat_long, strat_short, bar_close.isoformat(), run_id=run_id)
+            startup_bar_close = _align_bar_close(_dt.datetime.now(_dt.timezone.utc), tf_sec)
+            _sync_pending_entry_orders(fetcher, pending_entries, positions, args.results_dir, session_db_path, bot_id, strat_long, strat_short, startup_bar_close.isoformat(), run_id=run_id)
             for key, rec in list(positions.items()):
                 sym0, side0 = split_pos_key(key)
                 strat0 = strat_long if side0 == 'LONG' else strat_short
@@ -2595,8 +3328,8 @@ def run_live(cfg: dict, args):
             for sym in ranked:
                 row = md.get(sym)
                 if row is None: continue
-                _attempt_entry(fetcher, sym, 'LONG', strat_long, row, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id, notional_long=notional_long, notional_short=notional_short)
-                _attempt_entry(fetcher, sym, 'SHORT', strat_short, row, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id, notional_long=notional_long, notional_short=notional_short)
+                _attempt_entry(fetcher, sym, 'LONG', strat_long, row, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id, notional_long=notional_long, notional_short=notional_short, cfg=cfg, pending_entries=pending_entries)
+                _attempt_entry(fetcher, sym, 'SHORT', strat_short, row, positions, args.results_dir, position_mode, session_db_path, bot_id, run_id, notional_long=notional_long, notional_short=notional_short, cfg=cfg, pending_entries=pending_entries)
             try: write_equity(session_db_path, bot_id, now, _calc_equity_snapshot(fetcher, session_db_path, run_id))
             except Exception as e: _dbg('write_equity_failed', str(e))
             _write_exec_metrics(args.results_dir, session_db_path, run_id, event_type='execution_metrics_bar')
