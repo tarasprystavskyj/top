@@ -1,6 +1,5 @@
 # FastAPI MVP backend
 import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re, sys, sqlite3
-from collections import deque
 from typing import Any, Dict, Optional, List, Tuple
 from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -3091,6 +3090,37 @@ def _sqlite_live_equity_series(session_dir: str) -> List[Dict[str, Any]]:
     return [{"ts": row["ts"].isoformat(), "value": float(row["equity"] - base)} for _, row in out.iterrows()]
 
 
+def _sqlite_live_equity_snapshot_series(session_dir: str) -> List[Dict[str, Any]]:
+    db_path = _live_session_sqlite_path(session_dir)
+    if not db_path:
+        return []
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        try:
+            existing = set(_sqlite_table_names(db_path))
+            if "equity" not in existing:
+                return []
+            cols = [r[1] for r in con.execute('PRAGMA table_info("equity")').fetchall()]
+            time_col = next((c for c in ("ts_utc", "ts", "timestamp", "time") if c in cols), None)
+            value_col = next((c for c in ("equity_usdt", "equity", "value") if c in cols), None)
+            if not time_col or not value_col:
+                return []
+            df = pd.read_sql(f'SELECT "{time_col}" AS ts, "{value_col}" AS equity FROM "equity" ORDER BY "{time_col}"', con)
+        finally:
+            con.close()
+    except Exception:
+        return []
+    if df.empty:
+        return []
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
+    df["equity"] = pd.to_numeric(df["equity"], errors="coerce")
+    df = df.dropna(subset=["ts", "equity"]).sort_values("ts")
+    if df.empty:
+        return []
+    base = float(df["equity"].iloc[0])
+    return [{"ts": row["ts"].isoformat(), "value": float(row["equity"] - base)} for _, row in df.iterrows()]
+
+
 def _tv_backtest_price_series(tv_path: Optional[str]) -> List[Dict[str, Any]]:
     if not tv_path:
         return []
@@ -3124,50 +3154,181 @@ def _latest_live_telemetry_path(session_dir: str) -> Optional[str]:
     return candidates[0] if candidates else None
 
 
-def _live_mark_points_from_telemetry(session_dir: str, max_lines: int = 8000) -> List[Dict[str, Any]]:
-    path = _latest_live_telemetry_path(session_dir)
-    if not path:
-        return []
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            lines = deque(fh, maxlen=max_lines)
-    except Exception:
-        return []
-    out: List[Dict[str, Any]] = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
+_LIVE_TELEMETRY_MARK_CACHE: Dict[str, Tuple[Tuple[Tuple[str, int, int], ...], List[Dict[str, Any]]]] = {}
+MAX_TELEMETRY_BYTES_FOR_CHART = 80 * 1024 * 1024
+
+
+def _live_telemetry_paths(session_dir: str) -> List[str]:
+    return sorted(
+        glob.glob(os.path.join(session_dir, "run_telemetry_*.jsonl")),
+        key=lambda p: (os.path.basename(p), os.path.getmtime(p) if os.path.exists(p) else 0),
+    )
+
+
+def _live_telemetry_signature(paths: List[str]) -> Tuple[Tuple[str, int, int], ...]:
+    signature = []
+    for path in paths:
         try:
-            row = json.loads(line)
+            st = os.stat(path)
+            signature.append((path, int(st.st_size), int(st.st_mtime_ns)))
         except Exception:
             continue
-        if not isinstance(row, dict):
+    return tuple(signature)
+
+
+def _live_telemetry_total_bytes(paths: List[str]) -> int:
+    total = 0
+    for path in paths:
+        try:
+            total += int(os.path.getsize(path))
+        except Exception:
             continue
-        status = row.get("status") if isinstance(row.get("status"), dict) else {}
-        input_meta = row.get("input_meta") if isinstance(row.get("input_meta"), dict) else {}
-        if not input_meta and isinstance(status.get("input_meta"), dict):
-            input_meta = status.get("input_meta") or {}
-        market = input_meta.get("market") if isinstance(input_meta.get("market"), dict) else {}
-        mark = market.get("mark")
-        ts = row.get("ts") or row.get("utc") or row.get("timestamp")
-        if ts is None:
-            ts = status.get("utc") or status.get("timestamp")
-        point = _coerce_point(ts, mark)
-        if point:
-            out.append(point)
+    return total
+
+
+def _extract_mark_point_from_telemetry_line(line: str) -> Optional[Dict[str, Any]]:
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        row = json.loads(line)
+    except Exception:
+        return None
+    if not isinstance(row, dict):
+        return None
+    status = row.get("status") if isinstance(row.get("status"), dict) else {}
+    input_meta = row.get("input_meta") if isinstance(row.get("input_meta"), dict) else {}
+    if not input_meta and isinstance(status.get("input_meta"), dict):
+        input_meta = status.get("input_meta") or {}
+    market = input_meta.get("market") if isinstance(input_meta.get("market"), dict) else {}
+    mark = market.get("mark")
+    ts = row.get("ts") or row.get("utc") or row.get("timestamp")
+    if ts is None:
+        ts = status.get("utc") or status.get("timestamp")
+    return _coerce_point(ts, mark)
+
+
+def _live_mark_points_from_telemetry_raw(session_dir: str) -> List[Dict[str, Any]]:
+    paths = _live_telemetry_paths(session_dir)
+    if not paths:
+        return []
+    if _live_telemetry_total_bytes(paths) > MAX_TELEMETRY_BYTES_FOR_CHART:
+        latest = _latest_live_telemetry_path(session_dir)
+        paths = [latest] if latest else []
+    if not paths:
+        return []
+    signature = _live_telemetry_signature(paths)
+    cached = _LIVE_TELEMETRY_MARK_CACHE.get(session_dir)
+    if cached and cached[0] == signature:
+        return list(cached[1])
+
     dedup: Dict[str, Dict[str, Any]] = {}
-    for point in out:
-        dedup[point["ts"]] = point
-    return sorted(dedup.values(), key=lambda x: x["ts"])
+    for path in paths:
+        try:
+            fh = open(path, "r", encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        with fh:
+            for line in fh:
+                point = _extract_mark_point_from_telemetry_line(line)
+                if point:
+                    dedup[point["ts"]] = point
+    points = sorted(dedup.values(), key=lambda x: x["ts"])
+    _LIVE_TELEMETRY_MARK_CACHE[session_dir] = (signature, points)
+    return list(points)
+
+
+def _mark_points_to_minute_bars(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    buckets: Dict[int, Dict[str, Any]] = {}
+    for point in points:
+        try:
+            ts = pd.to_datetime(point.get("ts"), utc=True, errors="coerce")
+            value = float(point.get("value"))
+        except Exception:
+            continue
+        if pd.isna(ts) or not np.isfinite(value):
+            continue
+        bucket = int(ts.timestamp() // 60) * 60
+        existing = buckets.get(bucket)
+        if not existing:
+            buckets[bucket] = {"open": value, "high": value, "low": value, "close": value}
+            continue
+        existing["high"] = max(float(existing["high"]), value)
+        existing["low"] = min(float(existing["low"]), value)
+        existing["close"] = value
+    out: List[Dict[str, Any]] = []
+    for bucket in sorted(buckets):
+        row = buckets[bucket]
+        out.append(
+            {
+                "ts": pd.to_datetime(bucket, unit="s", utc=True).isoformat(),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            }
+        )
+    return out
+
+
+def _live_mark_points_from_telemetry(session_dir: str) -> List[Dict[str, Any]]:
+    bars = _mark_points_to_minute_bars(_live_mark_points_from_telemetry_raw(session_dir))
+    return [{"ts": row["ts"], "value": float(row["close"])} for row in bars]
+
+
+def _series_start_ts(series: List[Dict[str, Any]]) -> Optional[pd.Timestamp]:
+    if not series:
+        return None
+    try:
+        ts = pd.to_datetime(series[0].get("ts"), utc=True, errors="coerce")
+        return ts if pd.notna(ts) else None
+    except Exception:
+        return None
+
+
+def _minute_close_series(series: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not series:
+        return []
+    try:
+        df = pd.DataFrame(series)
+    except Exception:
+        return []
+    if df.empty or "ts" not in df.columns or "value" not in df.columns:
+        return []
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["ts", "value"]).sort_values("ts")
+    if df.empty:
+        return []
+    df["bucket"] = df["ts"].dt.floor("min")
+    out = df.groupby("bucket", sort=True)["value"].last().reset_index()
+    return [{"ts": row["bucket"].isoformat(), "value": float(row["value"])} for _, row in out.iterrows()]
+
+
+def _prefer_broader_live_series(
+    primary: List[Dict[str, Any]],
+    primary_source: Optional[str],
+    fallback: List[Dict[str, Any]],
+    fallback_source: Optional[str],
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    if not fallback:
+        return primary, primary_source
+    if not primary:
+        return fallback, fallback_source
+    primary_start = _series_start_ts(primary)
+    fallback_start = _series_start_ts(fallback)
+    if fallback_start is not None and (primary_start is None or fallback_start < primary_start):
+        return fallback, fallback_source
+    return primary, primary_source
 
 
 def _live_ohlcv_bars_from_npz(session_dir: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     candidates = sorted(
         glob.glob(os.path.join(session_dir, "*ohlcv*.npz")),
-        key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
-        reverse=True,
+        key=lambda p: os.path.basename(p),
     )
+    by_time: Dict[str, Dict[str, Any]] = {}
+    sources: List[str] = []
     for path in candidates:
         try:
             data = np.load(path, allow_pickle=True)
@@ -3178,7 +3339,7 @@ def _live_ohlcv_bars_from_npz(session_dir: str) -> Tuple[List[Dict[str, Any]], O
             closes = data["close"]
         except Exception:
             continue
-        rows: List[Dict[str, Any]] = []
+        added = 0
         for idx in range(len(timestamps)):
             try:
                 ts = pd.to_datetime(int(timestamps[idx]), unit="s", utc=True).isoformat()
@@ -3192,10 +3353,13 @@ def _live_ohlcv_bars_from_npz(session_dir: str) -> Tuple[List[Dict[str, Any]], O
             except Exception:
                 continue
             if all(np.isfinite(row[k]) for k in ("open", "high", "low", "close")):
-                rows.append(row)
-        if rows:
-            return rows, os.path.basename(path)
-    return [], None
+                by_time[ts] = row
+                added += 1
+        if added:
+            sources.append(os.path.basename(path))
+
+    rows = sorted(by_time.values(), key=lambda x: x["ts"])
+    return rows, "+".join(sources) if rows and sources else None
 
 
 def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
@@ -3732,14 +3896,24 @@ def backtest_live_validation_live_session_chart(path: str = Query(default=""), b
     session_dir = _resolve_live_session_path(path)
     sources: Dict[str, Any] = {}
     warnings: List[str] = []
-    live, live_source = _load_series_file_with_source(session_dir, ["live_equity.csv", "live_pnl.csv", "equity.csv", "equity_curve.csv"])
-    if not live:
-        live = _sqlite_live_equity_series(session_dir)
-        if live:
-            live_source = "session.sqlite:equity"
+    sqlite_snapshot_live = _sqlite_live_equity_snapshot_series(session_dir)
+    if sqlite_snapshot_live:
+        live, live_source = sqlite_snapshot_live, "session.sqlite:equity"
+    else:
+        live, live_source = _load_series_file_with_source(session_dir, ["live_equity.csv", "live_pnl.csv", "equity.csv", "equity_curve.csv"])
+        sqlite_live = _sqlite_live_equity_series(session_dir)
+        live, live_source = _prefer_broader_live_series(
+            live,
+            live_source,
+            sqlite_live,
+            "session.sqlite:equity" if sqlite_live else None,
+        )
+    if live:
+        live = _minute_close_series(live)
     if not live:
         live = _sqlite_live_order_series(session_dir)
         if live:
+            live = _minute_close_series(live)
             live_source = "session.sqlite:orders"
             warnings.append("Live chart uses filled order notional only; this is approximate and not real PnL.")
     backtest, backtest_source = _load_series_file_with_source(session_dir, ["backtest_equity.csv", "backtest_pnl.csv", "equity_backtest.csv"])
@@ -3773,12 +3947,16 @@ def backtest_live_validation_live_session_chart(path: str = Query(default=""), b
     price_bars, price_bars_source = _live_ohlcv_bars_from_npz(session_dir)
     mark = _live_mark_points_from_telemetry(session_dir)
     markers = _live_event_markers(session_dir)
+    telemetry_paths = _live_telemetry_paths(session_dir)
+    telemetry_is_heavy = _live_telemetry_total_bytes(telemetry_paths) > MAX_TELEMETRY_BYTES_FOR_CHART
+    if telemetry_is_heavy:
+        warnings.append("Telemetry JSONL is too large for request-time full parsing; chart uses compact OHLCV artifacts plus latest telemetry mark line.")
     anchor_time = None
     anchor_price: Optional[float] = None
     if mark:
         anchor_time = mark[-1]["ts"]
         anchor_price = float(mark[-1]["value"])
-        sources["mark"] = os.path.basename(_latest_live_telemetry_path(session_dir) or "run_telemetry_*.jsonl")
+        sources["mark"] = "latest run_telemetry_*.jsonl:1m" if telemetry_is_heavy else "run_telemetry_*.jsonl:1m"
     elif live:
         anchor_time = live[-1]["ts"]
         anchor_price = float(live[-1]["value"])

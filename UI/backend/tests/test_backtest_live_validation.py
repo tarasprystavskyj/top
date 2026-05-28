@@ -494,6 +494,44 @@ def test_live_session_chart_prefers_live_equity_artifact(monkeypatch, tmp_path):
     assert body.get("backtest")
 
 
+def test_live_session_chart_prefers_broader_sqlite_equity(monkeypatch, tmp_path):
+    live_root = tmp_path / "_reports" / "_live"
+    session = _create_valid_live_session(live_root, "hype_canary_with_broader_sqlite")
+    pd.DataFrame(
+        [
+            {"ts": "2026-05-28T08:49:00Z", "value": 4.0, "equity": 104.0},
+            {"ts": "2026-05-28T08:50:00Z", "value": 5.0, "equity": 105.0},
+        ]
+    ).to_csv(session / "live_equity.csv", index=False)
+    con = sqlite3.connect(session / "session.sqlite")
+    try:
+        con.execute("CREATE TABLE equity (run_id TEXT, ts_utc TEXT, equity_usdt REAL)")
+        con.executemany(
+            "INSERT INTO equity VALUES ('run-1', ?, ?)",
+            [
+                ("2026-05-26T07:49:10Z", 100.0),
+                ("2026-05-26T07:49:40Z", 101.0),
+                ("2026-05-28T08:50:00Z", 106.0),
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+
+    client = TestClient(api_main.app)
+    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session)})
+
+    assert chart.status_code == 200
+    body = chart.json()
+    assert body["sources"]["live"] == "session.sqlite:equity"
+    assert body["live"][0]["ts"] == "2026-05-26T07:49:00+00:00"
+    assert body["live"][-1]["value"] == 6.0
+
+
 def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tmp_path):
     tv_src = tmp_path / "TV_backtest_source"
     tv_src.mkdir()
@@ -584,7 +622,7 @@ def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tm
 
     assert chart.status_code == 200
     body = chart.json()
-    assert body["sources"]["mark"].startswith("run_telemetry_")
+    assert body["sources"]["mark"] == "run_telemetry_*.jsonl:1m"
     assert [p["value"] for p in body["mark"]] == [59.5, 59.8]
     assert len(body["price_bars"]) == 2
     assert body["price_bars"][0]["open"] == 59.5
