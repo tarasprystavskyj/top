@@ -1,5 +1,6 @@
 # FastAPI MVP backend
 import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re, sys, sqlite3
+from datetime import datetime
 from typing import Any, Dict, Optional, List, Tuple
 from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -2366,6 +2367,25 @@ def _looks_like_live_session_dir(session_dir: str) -> bool:
     return bool(glob.glob(os.path.join(session_dir, "live_stdout_*.log")))
 
 
+def _has_live_runner_artifact(session_dir: str) -> bool:
+    name = os.path.basename(os.path.abspath(session_dir)).lower()
+    if "live" in name or "canary" in name:
+        return True
+    markers = (
+        "RUN_STATUS.json",
+        "ACTIVE_STATUS_PATH.txt",
+        "ACTIVE_SESSION_DB_PATH.txt",
+        "live_equity.csv",
+        "live_chart_events.csv",
+        "live_chart_events.jsonl",
+        "live_mark_ohlcv.npz",
+    )
+    if any(os.path.exists(os.path.join(session_dir, marker)) for marker in markers):
+        return True
+    patterns = ("live_stdout_*.log", "run_telemetry_*.jsonl", "*ohlcv*.npz")
+    return any(glob.glob(os.path.join(session_dir, pattern)) for pattern in patterns)
+
+
 def _validation_source_candidates() -> List[str]:
     env_override = os.environ.get("TV_BACKTEST_SOURCE_DIR")
     candidates = [
@@ -2562,7 +2582,7 @@ def _find_live_match_ready_csv(live_path: str, symbol: Optional[str]) -> Optiona
 
 def _safe_read_json(path: str) -> Any:
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             return json.load(fh)
     except Exception:
         return None
@@ -2993,6 +3013,78 @@ def _load_series_file_with_source(session_dir: str, candidates: List[str]) -> Tu
     return [], None
 
 
+def _last_csv_ts(session_dir: str, candidates: List[str]) -> Optional[str]:
+    for rel in candidates:
+        full = os.path.join(session_dir, rel)
+        if not os.path.isfile(full):
+            continue
+        try:
+            with open(full, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                pos = fh.tell()
+                chunk = b""
+                while pos > 0 and chunk.count(b"\n") < 2:
+                    step = min(4096, pos)
+                    pos -= step
+                    fh.seek(pos)
+                    chunk = fh.read(step) + chunk
+                lines = [line for line in chunk.decode("utf-8", errors="replace").splitlines() if line.strip()]
+            if len(lines) < 2:
+                continue
+            ts = lines[-1].split(",", 1)[0].strip()
+            return _to_iso_from_any(ts) or ts
+        except Exception:
+            continue
+    return None
+
+
+def _load_series_column_file_with_source(session_dir: str, candidates: List[str], value_columns: List[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    for rel in candidates:
+        full = os.path.join(session_dir, rel)
+        if not os.path.isfile(full):
+            continue
+        try:
+            df = pd.read_csv(full)
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        time_col = next((c for c in ("ts", "timestamp", "time", "dt", "Date and time") if c in df.columns), None)
+        value_col = next((c for c in value_columns if c in df.columns), None)
+        if not time_col or not value_col:
+            continue
+        out: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            point = _coerce_point(row.get(time_col), row.get(value_col))
+            if point:
+                out.append(point)
+        if out:
+            return sorted(out, key=lambda x: x["ts"]), rel
+    return [], None
+
+
+def _live_realized_pnl_series(session_dir: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    full = os.path.join(session_dir, "live_chart_events.csv")
+    if not os.path.isfile(full):
+        return [], None
+    try:
+        df = pd.read_csv(full)
+    except Exception:
+        return [], None
+    if df.empty or "ts" not in df.columns or "pnl" not in df.columns:
+        return [], None
+    out: List[Dict[str, Any]] = []
+    realized = 0.0
+    for _, row in df.sort_values("ts").iterrows():
+        ts = _to_iso_from_any(row.get("ts"))
+        pnl = _safe_float(row.get("pnl"))
+        if not ts or pnl == 0.0:
+            continue
+        realized += pnl
+        out.append({"ts": ts, "value": float(realized)})
+    return out, "live_chart_events.csv" if out else None
+
+
 def _sqlite_live_equity_series(session_dir: str) -> List[Dict[str, Any]]:
     db_path = _live_session_sqlite_path(session_dir)
     if not db_path:
@@ -3016,6 +3108,804 @@ def _sqlite_live_equity_series(session_dir: str) -> List[Dict[str, Any]]:
     except Exception:
         base = float(out["equity"].iloc[0])
     return [{"ts": row["ts"].isoformat(), "value": float(row["equity"] - base)} for _, row in out.iterrows()]
+
+
+def _sqlite_live_equity_snapshot_series(session_dir: str) -> List[Dict[str, Any]]:
+    db_path = _live_session_sqlite_path(session_dir)
+    if not db_path:
+        return []
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        try:
+            existing = set(_sqlite_table_names(db_path))
+            if "equity" not in existing:
+                return []
+            cols = [r[1] for r in con.execute('PRAGMA table_info("equity")').fetchall()]
+            time_col = next((c for c in ("ts_utc", "ts", "timestamp", "time") if c in cols), None)
+            value_col = next((c for c in ("equity_usdt", "equity", "value") if c in cols), None)
+            if not time_col or not value_col:
+                return []
+            base_row = con.execute(
+                f'SELECT "{value_col}" FROM "equity" WHERE "{time_col}" IS NOT NULL AND "{value_col}" IS NOT NULL ORDER BY "{time_col}" LIMIT 1'
+            ).fetchone()
+            try:
+                rows = con.execute(
+                    f'''
+                    SELECT e."{time_col}" AS ts, e."{value_col}" AS equity
+                    FROM "equity" e
+                    JOIN (
+                        SELECT substr("{time_col}", 1, 16) AS bucket, max(rowid) AS rid
+                        FROM "equity"
+                        WHERE "{time_col}" IS NOT NULL AND "{value_col}" IS NOT NULL
+                        GROUP BY bucket
+                    ) m ON e.rowid = m.rid
+                    ORDER BY e."{time_col}"
+                    '''
+                ).fetchall()
+            except Exception:
+                rows = con.execute(
+                    f'SELECT "{time_col}" AS ts, "{value_col}" AS equity FROM "equity" ORDER BY "{time_col}"'
+                ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return []
+    if not rows:
+        return []
+    df = pd.DataFrame(rows, columns=["ts", "equity"])
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
+    df["equity"] = pd.to_numeric(df["equity"], errors="coerce")
+    df = df.dropna(subset=["ts", "equity"]).sort_values("ts")
+    if df.empty:
+        return []
+    try:
+        base = float(base_row[0]) if base_row else float(df["equity"].iloc[0])
+    except Exception:
+        base = float(df["equity"].iloc[0])
+    return [{"ts": row["ts"].isoformat(), "value": float(row["equity"] - base)} for _, row in df.iterrows()]
+
+
+def _tv_backtest_price_series(tv_path: Optional[str]) -> List[Dict[str, Any]]:
+    if not tv_path:
+        return []
+    abs_path = os.path.abspath(str(tv_path))
+    if not _is_allowed_validation_path(abs_path) or not os.path.isfile(abs_path):
+        return []
+    try:
+        df = _read_tv_csv(abs_path)
+    except Exception:
+        return []
+    price_col = next((c for c in ("Price USDT", "price", "Price", "close", "Close") if c in df.columns), None)
+    if not price_col:
+        return []
+    out = df.copy()
+    out[price_col] = pd.to_numeric(out[price_col], errors="coerce")
+    out = out.dropna(subset=["dt", price_col]).sort_values("dt")
+    if out.empty:
+        return []
+    points: List[Dict[str, Any]] = []
+    for _, row in out.iterrows():
+        points.append({"ts": row["dt"].isoformat(), "value": float(row[price_col])})
+    return points
+
+
+def _latest_live_telemetry_path(session_dir: str) -> Optional[str]:
+    candidates = sorted(
+        glob.glob(os.path.join(session_dir, "run_telemetry_*.jsonl")),
+        key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+_LIVE_TELEMETRY_MARK_CACHE: Dict[str, Tuple[Tuple[Tuple[str, int, int], ...], List[Dict[str, Any]]]] = {}
+_LIVE_TELEMETRY_OHLCV_CACHE: Dict[str, Tuple[Tuple[Tuple[str, int, int], ...], List[Dict[str, Any]]]] = {}
+MAX_TELEMETRY_BYTES_FOR_CHART = 80 * 1024 * 1024
+_TELEMETRY_MARK_RE = re.compile(r'"mark"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)')
+_TELEMETRY_UTC_RE = re.compile(r'"utc"\s*:\s*"([^"]+)"')
+
+
+def _live_telemetry_paths(session_dir: str) -> List[str]:
+    return sorted(
+        glob.glob(os.path.join(session_dir, "run_telemetry_*.jsonl")),
+        key=lambda p: (os.path.basename(p), os.path.getmtime(p) if os.path.exists(p) else 0),
+    )
+
+
+def _live_telemetry_signature(paths: List[str]) -> Tuple[Tuple[str, int, int], ...]:
+    signature = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+            signature.append((path, int(st.st_size), int(st.st_mtime_ns)))
+        except Exception:
+            continue
+    return tuple(signature)
+
+
+def _live_telemetry_total_bytes(paths: List[str]) -> int:
+    total = 0
+    for path in paths:
+        try:
+            total += int(os.path.getsize(path))
+        except Exception:
+            continue
+    return total
+
+
+def _extract_mark_point_from_telemetry_line(line: str) -> Optional[Dict[str, Any]]:
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        row = json.loads(line)
+    except Exception:
+        return None
+    if not isinstance(row, dict):
+        return None
+    status = row.get("status") if isinstance(row.get("status"), dict) else {}
+    input_meta = row.get("input_meta") if isinstance(row.get("input_meta"), dict) else {}
+    if not input_meta and isinstance(status.get("input_meta"), dict):
+        input_meta = status.get("input_meta") or {}
+    market = input_meta.get("market") if isinstance(input_meta.get("market"), dict) else {}
+    mark = market.get("mark")
+    ts = row.get("ts") or row.get("utc") or row.get("timestamp")
+    if ts is None:
+        ts = status.get("utc") or status.get("timestamp")
+    return _coerce_point(ts, mark)
+
+
+def _extract_mark_point_from_telemetry_line_fast(line: str) -> Optional[Dict[str, Any]]:
+    if '"mark"' not in line:
+        return None
+    mark_match = _TELEMETRY_MARK_RE.search(line)
+    if not mark_match:
+        return _extract_mark_point_from_telemetry_line(line)
+    utc_matches = list(_TELEMETRY_UTC_RE.finditer(line))
+    if not utc_matches:
+        return _extract_mark_point_from_telemetry_line(line)
+    return _coerce_point(utc_matches[-1].group(1), mark_match.group(1))
+
+
+def _iso_to_epoch_seconds_fast(value: Any) -> Optional[float]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        raw = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(raw).timestamp()
+    except Exception:
+        try:
+            ts = pd.to_datetime(value, utc=True, errors="coerce")
+            if pd.isna(ts):
+                return None
+            return float(ts.timestamp())
+        except Exception:
+            return None
+
+
+def _extract_mark_bucket_from_telemetry_line_fast(line: str) -> Optional[Tuple[int, float]]:
+    if '"mark"' not in line:
+        return None
+    mark_match = _TELEMETRY_MARK_RE.search(line)
+    if not mark_match:
+        point = _extract_mark_point_from_telemetry_line(line)
+        if not point:
+            return None
+        ts_seconds = _iso_to_epoch_seconds_fast(point.get("ts"))
+        value = _safe_float(point.get("value"))
+    else:
+        utc_matches = list(_TELEMETRY_UTC_RE.finditer(line))
+        if not utc_matches:
+            point = _extract_mark_point_from_telemetry_line(line)
+            if not point:
+                return None
+            ts_seconds = _iso_to_epoch_seconds_fast(point.get("ts"))
+            value = _safe_float(point.get("value"))
+        else:
+            ts_seconds = _iso_to_epoch_seconds_fast(utc_matches[-1].group(1))
+            value = _safe_float(mark_match.group(1))
+    if ts_seconds is None or value is None or not np.isfinite(value):
+        return None
+    return int(ts_seconds // 60) * 60, float(value)
+
+
+def _live_mark_points_from_telemetry_raw(session_dir: str) -> List[Dict[str, Any]]:
+    paths = _live_telemetry_paths(session_dir)
+    if not paths:
+        return []
+    if _live_telemetry_total_bytes(paths) > MAX_TELEMETRY_BYTES_FOR_CHART:
+        latest = _latest_live_telemetry_path(session_dir)
+        paths = [latest] if latest else []
+    if not paths:
+        return []
+    signature = _live_telemetry_signature(paths)
+    cached = _LIVE_TELEMETRY_MARK_CACHE.get(session_dir)
+    if cached and cached[0] == signature:
+        return list(cached[1])
+
+    dedup: Dict[str, Dict[str, Any]] = {}
+    for path in paths:
+        try:
+            fh = open(path, "r", encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        with fh:
+            for line in fh:
+                point = _extract_mark_point_from_telemetry_line_fast(line)
+                if point:
+                    dedup[point["ts"]] = point
+    points = sorted(dedup.values(), key=lambda x: x["ts"])
+    _LIVE_TELEMETRY_MARK_CACHE[session_dir] = (signature, points)
+    return list(points)
+
+
+def _mark_points_to_minute_bars(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    buckets: Dict[int, Dict[str, Any]] = {}
+    for point in points:
+        try:
+            ts = pd.to_datetime(point.get("ts"), utc=True, errors="coerce")
+            value = float(point.get("value"))
+        except Exception:
+            continue
+        if pd.isna(ts) or not np.isfinite(value):
+            continue
+        bucket = int(ts.timestamp() // 60) * 60
+        existing = buckets.get(bucket)
+        if not existing:
+            buckets[bucket] = {"open": value, "high": value, "low": value, "close": value}
+            continue
+        existing["high"] = max(float(existing["high"]), value)
+        existing["low"] = min(float(existing["low"]), value)
+        existing["close"] = value
+    out: List[Dict[str, Any]] = []
+    for bucket in sorted(buckets):
+        row = buckets[bucket]
+        out.append(
+            {
+                "ts": pd.to_datetime(bucket, unit="s", utc=True).isoformat(),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            }
+        )
+    return out
+
+
+def _live_telemetry_ohlcv_bars(session_dir: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    paths = _live_telemetry_paths(session_dir)
+    if not paths:
+        return [], None
+    signature = _live_telemetry_signature(paths)
+    cached = _LIVE_TELEMETRY_OHLCV_CACHE.get(session_dir)
+    if cached and cached[0] == signature:
+        return list(cached[1]), "run_telemetry_*.jsonl:mark_ohlc_1m"
+
+    buckets: Dict[int, Dict[str, Any]] = {}
+    for path in paths:
+        try:
+            fh = open(path, "r", encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        with fh:
+            for line in fh:
+                bucket_point = _extract_mark_bucket_from_telemetry_line_fast(line)
+                if not bucket_point:
+                    continue
+                bucket, value = bucket_point
+                existing = buckets.get(bucket)
+                if not existing:
+                    buckets[bucket] = {"open": value, "high": value, "low": value, "close": value}
+                    continue
+                existing["high"] = max(float(existing["high"]), value)
+                existing["low"] = min(float(existing["low"]), value)
+                existing["close"] = value
+
+    rows: List[Dict[str, Any]] = []
+    for bucket in sorted(buckets):
+        row = buckets[bucket]
+        rows.append(
+            {
+                "ts": pd.to_datetime(bucket, unit="s", utc=True).isoformat(),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            }
+        )
+    _LIVE_TELEMETRY_OHLCV_CACHE[session_dir] = (signature, rows)
+    return list(rows), "run_telemetry_*.jsonl:mark_ohlc_1m" if rows else None
+
+
+def _live_mark_points_from_telemetry(session_dir: str) -> List[Dict[str, Any]]:
+    bars = _mark_points_to_minute_bars(_live_mark_points_from_telemetry_raw(session_dir))
+    return [{"ts": row["ts"], "value": float(row["close"])} for row in bars]
+
+
+def _series_start_ts(series: List[Dict[str, Any]]) -> Optional[pd.Timestamp]:
+    if not series:
+        return None
+    try:
+        ts = pd.to_datetime(series[0].get("ts"), utc=True, errors="coerce")
+        return ts if pd.notna(ts) else None
+    except Exception:
+        return None
+
+
+def _minute_close_series(series: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not series:
+        return []
+    try:
+        df = pd.DataFrame(series)
+    except Exception:
+        return []
+    if df.empty or "ts" not in df.columns or "value" not in df.columns:
+        return []
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["ts", "value"]).sort_values("ts")
+    if df.empty:
+        return []
+    df["bucket"] = df["ts"].dt.floor("min")
+    out = df.groupby("bucket", sort=True)["value"].last().reset_index()
+    return [{"ts": row["bucket"].isoformat(), "value": float(row["value"])} for _, row in out.iterrows()]
+
+
+def _prefer_broader_live_series(
+    primary: List[Dict[str, Any]],
+    primary_source: Optional[str],
+    fallback: List[Dict[str, Any]],
+    fallback_source: Optional[str],
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    if not fallback:
+        return primary, primary_source
+    if not primary:
+        return fallback, fallback_source
+    primary_start = _series_start_ts(primary)
+    fallback_start = _series_start_ts(fallback)
+    if fallback_start is not None and (primary_start is None or fallback_start < primary_start):
+        return fallback, fallback_source
+    return primary, primary_source
+
+
+def _live_ohlcv_bars_from_npz(session_dir: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    candidates = sorted(
+        glob.glob(os.path.join(session_dir, "*ohlcv*.npz")),
+        key=lambda p: os.path.basename(p),
+    )
+    by_time: Dict[str, Dict[str, Any]] = {}
+    sources: List[str] = []
+    for path in candidates:
+        try:
+            data = np.load(path, allow_pickle=True)
+            timestamps = data["timestamp_s"]
+            opens = data["open"]
+            highs = data["high"]
+            lows = data["low"]
+            closes = data["close"]
+        except Exception:
+            continue
+        added = 0
+        for idx in range(len(timestamps)):
+            try:
+                ts = pd.to_datetime(int(timestamps[idx]), unit="s", utc=True).isoformat()
+                row = {
+                    "ts": ts,
+                    "open": float(opens[idx]),
+                    "high": float(highs[idx]),
+                    "low": float(lows[idx]),
+                    "close": float(closes[idx]),
+                }
+            except Exception:
+                continue
+            if all(np.isfinite(row[k]) for k in ("open", "high", "low", "close")):
+                by_time[ts] = row
+                added += 1
+        if added:
+            sources.append(os.path.basename(path))
+
+    rows = sorted(by_time.values(), key=lambda x: x["ts"])
+    return rows, "+".join(sources) if rows and sources else None
+
+
+def _has_price_bar_gap(rows: List[Dict[str, Any]], max_gap_seconds: int = 120) -> bool:
+    if len(rows) < 2:
+        return False
+    prev: Optional[pd.Timestamp] = None
+    for row in rows:
+        ts = pd.to_datetime(row.get("ts"), utc=True, errors="coerce")
+        if pd.isna(ts):
+            continue
+        if prev is not None and (ts - prev).total_seconds() > max_gap_seconds:
+            return True
+        prev = ts
+    return False
+
+
+def _merge_price_bars(primary: List[Dict[str, Any]], fallback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_time: Dict[str, Dict[str, Any]] = {}
+    for row in fallback:
+        ts = str(row.get("ts") or "")
+        if ts:
+            by_time[ts] = row
+    for row in primary:
+        ts = str(row.get("ts") or "")
+        if ts:
+            by_time[ts] = row
+    return sorted(by_time.values(), key=lambda x: x["ts"])
+
+
+def _fill_short_price_bar_gaps(rows: List[Dict[str, Any]], max_gap_seconds: int = 600) -> Tuple[List[Dict[str, Any]], int]:
+    if len(rows) < 2:
+        return rows, 0
+    filled: List[Dict[str, Any]] = []
+    inserted = 0
+    for row in rows:
+        if not filled:
+            filled.append(row)
+            continue
+        prev = filled[-1]
+        prev_seconds = _iso_to_epoch_seconds_fast(prev.get("ts"))
+        row_seconds = _iso_to_epoch_seconds_fast(row.get("ts"))
+        if prev_seconds is not None and row_seconds is not None:
+            gap = row_seconds - prev_seconds
+            if 120 < gap <= max_gap_seconds:
+                close = _safe_float(prev.get("close"))
+                if close is not None:
+                    next_ts = int(prev_seconds // 60) * 60 + 60
+                    while next_ts < int(row_seconds):
+                        filled.append(
+                            {
+                                "ts": pd.to_datetime(next_ts, unit="s", utc=True).isoformat(),
+                                "open": close,
+                                "high": close,
+                                "low": close,
+                                "close": close,
+                            }
+                        )
+                        inserted += 1
+                        next_ts += 60
+        filled.append(row)
+    return filled, inserted
+
+
+def _chart_point_budget(raw: Any, default: int = 1800) -> int:
+    try:
+        value = int(raw)
+    except Exception:
+        value = default
+    return max(300, min(5000, value))
+
+
+def _downsample_price_bars(rows: List[Dict[str, Any]], max_points: int) -> Tuple[List[Dict[str, Any]], int]:
+    if len(rows) <= max_points:
+        return rows, 0
+    step = int(np.ceil(len(rows) / max_points))
+    out: List[Dict[str, Any]] = []
+    for idx in range(0, len(rows), step):
+        chunk = rows[idx : idx + step]
+        if not chunk:
+            continue
+        try:
+            opens = [_safe_float(row.get("open")) for row in chunk]
+            highs = [_safe_float(row.get("high")) for row in chunk]
+            lows = [_safe_float(row.get("low")) for row in chunk]
+            closes = [_safe_float(row.get("close")) for row in chunk]
+            highs_f = [v for v in highs if v is not None]
+            lows_f = [v for v in lows if v is not None]
+            open_v = next((v for v in opens if v is not None), None)
+            close_v = next((v for v in reversed(closes) if v is not None), None)
+        except Exception:
+            continue
+        if open_v is None or close_v is None or not highs_f or not lows_f:
+            continue
+        out.append(
+            {
+                "ts": chunk[0].get("ts"),
+                "open": float(open_v),
+                "high": float(max(highs_f)),
+                "low": float(min(lows_f)),
+                "close": float(close_v),
+            }
+        )
+    return out, len(rows) - len(out)
+
+
+def _point_xy(point: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    ts_seconds = _iso_to_epoch_seconds_fast(point.get("ts"))
+    value = _safe_float(point.get("value"))
+    if ts_seconds is None or value is None or not np.isfinite(value):
+        return None
+    return ts_seconds, float(value)
+
+
+def _downsample_line_series_lttb(series: List[Dict[str, Any]], max_points: int) -> Tuple[List[Dict[str, Any]], int]:
+    if len(series) <= max_points or max_points < 3:
+        return series, 0
+    points = [point for point in series if _point_xy(point) is not None]
+    if len(points) <= max_points:
+        return points, len(series) - len(points)
+    threshold = max_points
+    every = (len(points) - 2) / float(threshold - 2)
+    sampled: List[Dict[str, Any]] = [points[0]]
+    a_idx = 0
+    for i in range(threshold - 2):
+        avg_start = int(np.floor((i + 1) * every)) + 1
+        avg_end = int(np.floor((i + 2) * every)) + 1
+        avg_end = min(avg_end, len(points))
+        avg_range = points[avg_start:avg_end] or [points[-1]]
+        avg_xy = [_point_xy(point) for point in avg_range]
+        avg_xy = [xy for xy in avg_xy if xy is not None]
+        if not avg_xy:
+            continue
+        avg_x = sum(x for x, _ in avg_xy) / len(avg_xy)
+        avg_y = sum(y for _, y in avg_xy) / len(avg_xy)
+
+        range_start = int(np.floor(i * every)) + 1
+        range_end = int(np.floor((i + 1) * every)) + 1
+        range_end = min(range_end, len(points) - 1)
+        a_xy = _point_xy(points[a_idx])
+        if a_xy is None:
+            continue
+        ax, ay = a_xy
+        best_idx = range_start
+        best_area = -1.0
+        for idx in range(range_start, max(range_start + 1, range_end)):
+            current_xy = _point_xy(points[idx])
+            if current_xy is None:
+                continue
+            cx, cy = current_xy
+            area = abs((ax - avg_x) * (cy - ay) - (ax - cx) * (avg_y - ay))
+            if area > best_area:
+                best_area = area
+                best_idx = idx
+        sampled.append(points[best_idx])
+        a_idx = best_idx
+    sampled.append(points[-1])
+    return sampled, len(series) - len(sampled)
+
+
+def _downsample_live_chart_payload(payload: Dict[str, Any], max_points: int) -> None:
+    stats: Dict[str, Dict[str, int]] = {}
+    for key in ("live", "backtest", "live_realized", "backtest_realized", "backtest_price", "distance", "mark"):
+        rows = payload.get(key)
+        if isinstance(rows, list) and len(rows) > max_points:
+            downsampled, dropped = _downsample_line_series_lttb(rows, max_points)
+            payload[key] = downsampled
+            if dropped:
+                stats[key] = {"from": len(rows), "to": len(downsampled)}
+    rows = payload.get("price_bars")
+    if isinstance(rows, list) and len(rows) > max_points:
+        downsampled, dropped = _downsample_price_bars(rows, max_points)
+        payload["price_bars"] = downsampled
+        if dropped:
+            stats["price_bars"] = {"from": len(rows), "to": len(downsampled)}
+    if stats:
+        payload["downsampled"] = {"max_points": max_points, "series": stats}
+
+
+def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
+    order_type = str(row.get("type") or "").upper()
+    reason = str(row.get("reason") or "")
+    extra = row.get("extra")
+    fill_type = ""
+    if isinstance(extra, str) and extra.strip():
+        try:
+            extra = json.loads(extra)
+        except Exception:
+            extra = {}
+    if isinstance(extra, dict):
+        fill = extra.get("fill") if isinstance(extra.get("fill"), dict) else {}
+        fill_type = str(fill.get("fill_type") or "")
+    reason_l = reason.lower()
+    fill_l = fill_type.lower()
+    if order_type in {"CLOSE", "EXIT"}:
+        return "Meta strategy full close", "meta_close", "#F87171"
+    if "mark_crossed_dca_level" in reason_l or fill_l.startswith("dca_add"):
+        return "DCA buy", "dca_buy", "#22C55E"
+    if "lead_open_position_detected" in reason_l or fill_l == "base_entry":
+        return "Meta strategy open", "meta_open", "#38BDF8"
+    side = str(row.get("side") or "").upper()
+    if order_type == "OPEN" and side in {"LONG", "BUY"}:
+        return "DCA buy", "dca_buy", "#22C55E"
+    if order_type == "OPEN":
+        return "Meta strategy open", "meta_open", "#38BDF8"
+    return "DCA sell", "dca_sell", "#F59E0B"
+
+
+def _live_event_markers(session_dir: str) -> List[Dict[str, Any]]:
+    rows = _sqlite_live_order_rows(session_dir, limit=10000)
+    out: List[Dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        ts = _to_iso_from_any(row.get("ts_utc") or row.get("bar_time_utc") or row.get("timestamp"))
+        price = _safe_float(row.get("price"))
+        if not ts or price <= 0:
+            continue
+        text, kind, color = _label_from_live_order(row)
+        is_close = kind in {"meta_close", "dca_sell"}
+        out.append(
+            {
+                "id": str(row.get("order_id") or f"order-{idx}"),
+                "time": ts,
+                "price": float(price),
+                "text": text,
+                "kind": kind,
+                "layer": "events",
+                "color": color,
+                "shape": "arrowDown" if is_close else "arrowUp",
+                "position": "atPriceTop" if is_close else "atPriceBottom",
+            }
+        )
+    closed_positions = _sqlite_rows_for_live_table(session_dir, "open_positions", limit=10000)
+    for idx, row in enumerate(closed_positions):
+        status = str(row.get("status") or "").upper()
+        ts = _to_iso_from_any(row.get("exit_fill_ts") or row.get("close_ts") or row.get("closed_at"))
+        price = _safe_float(row.get("exit_fill") or row.get("exit") or row.get("close_price"))
+        if status != "CLOSED" or not ts or price <= 0:
+            continue
+        marker_id = f"position-close-{idx}"
+        if any(m["time"] == ts and abs(float(m["price"]) - price) < 1e-9 for m in out):
+            continue
+        out.append(
+            {
+                "id": marker_id,
+                "time": ts,
+                "price": float(price),
+                "text": "Meta strategy full close",
+                "kind": "meta_close",
+                "layer": "events",
+                "color": "#F87171",
+                "shape": "arrowDown",
+                "position": "atPriceTop",
+            }
+        )
+    return sorted(out, key=lambda x: x["time"])
+
+
+def _live_strategy_labels(session_dir: str, anchor_time: Optional[str], anchor_price: Optional[float]) -> List[Dict[str, Any]]:
+    status = _safe_read_json(os.path.join(session_dir, "RUN_STATUS.json"))
+    params = status.get("candidate_params") if isinstance(status, dict) else None
+    if not isinstance(params, dict) or not anchor_time or anchor_price is None:
+        return []
+    preferred = [
+        "fresh_base_pct",
+        "normal_base_pct",
+        "fresh_tp_percent",
+        "fresh_callback_percent",
+        "max_position_cost_pct",
+        "dca_profile",
+    ]
+    labels: List[Dict[str, Any]] = []
+    for idx, key in enumerate(preferred):
+        if key not in params:
+            continue
+        value = params.get(key)
+        price = float(anchor_price) * (1.0 + (idx + 1) * 0.0015)
+        labels.append(
+            {
+                "id": f"param-{key}",
+                "time": anchor_time,
+                "price": price,
+                "text": f"{key}: {value}",
+                "layer": "parameters",
+                "color": "#22D3EE",
+            }
+        )
+    return labels
+
+
+def _live_target_price_lines(session_dir: str) -> List[Dict[str, Any]]:
+    status = _safe_read_json(os.path.join(session_dir, "RUN_STATUS.json"))
+    params = status.get("candidate_params") if isinstance(status, dict) else None
+    tp_pct = _safe_float(params.get("fresh_tp_percent")) if isinstance(params, dict) else 0.0
+    rows = _sqlite_live_order_rows(session_dir, limit=10000)
+    if not rows:
+        return []
+
+    context: Optional[Dict[str, Any]] = None
+    side = "LONG"
+    for row in reversed(rows):
+        extra = row.get("extra")
+        if isinstance(extra, str) and extra.strip():
+            try:
+                extra = json.loads(extra)
+            except Exception:
+                extra = {}
+        if not isinstance(extra, dict):
+            continue
+        closed = extra.get("closed")
+        if isinstance(closed, dict):
+            context = closed
+            side = str(closed.get("side") or row.get("side") or side).upper()
+            break
+
+    if not isinstance(context, dict):
+        return []
+
+    direction = -1.0 if side == "SHORT" else 1.0
+    lines: List[Dict[str, Any]] = []
+    seen = set()
+
+    def add_line(kind: str, price: float, text: str, color: str, width: int = 1) -> None:
+        price = _safe_float(price)
+        if price <= 0:
+            return
+        key = (kind, round(price, 8), text)
+        if key in seen:
+            return
+        seen.add(key)
+        lines.append(
+            {
+                "id": f"{kind}-{len(lines)}",
+                "price": float(price),
+                "text": text,
+                "kind": kind,
+                "layer": "targets",
+                "color": color,
+                "lineStyle": "dashed",
+                "lineWidth": width,
+            }
+        )
+
+    levels = context.get("levels")
+    next_idx_raw = context.get("next_level_idx")
+    if next_idx_raw is not None:
+        next_idx = int(_safe_float(next_idx_raw))
+        if isinstance(levels, list) and 0 <= next_idx < len(levels):
+            add_line("next_dca_buy", levels[next_idx], "Next DCA buy", "#22C55E", 2)
+
+    if tp_pct > 0:
+        fills = context.get("fills")
+        if isinstance(fills, list):
+            for fill in fills:
+                if not isinstance(fill, dict):
+                    continue
+                fill_type = str(fill.get("fill_type") or "")
+                if not fill_type.startswith("dca_add"):
+                    continue
+                fill_price = _safe_float(fill.get("live_fill_price") or fill.get("expected_price"))
+                if fill_price <= 0:
+                    continue
+                target = fill_price * (1.0 + direction * tp_pct / 100.0)
+                suffix = fill_type.replace("dca_add_", "#")
+                add_line("dca_sell_target", target, f"DCA sell TP {suffix}", "#F59E0B")
+
+        avg_entry = _safe_float(context.get("avg_entry") or context.get("entry"))
+        explicit_tp = _safe_float(context.get("tp_price") or context.get("take_profit_price"))
+        full_tp = explicit_tp if explicit_tp > 0 else avg_entry * (1.0 + direction * tp_pct / 100.0) if avg_entry > 0 else 0.0
+        add_line("full_sell_tp", full_tp, "Full sell TP", "#F87171", 2)
+
+    return lines[:12]
+
+
+def _live_snapshot_chart_payload(session_dir: str) -> Optional[Dict[str, Any]]:
+    chart_path = os.path.join(session_dir, "chart.json")
+    if not os.path.isfile(chart_path):
+        return None
+    data = _safe_read_json(chart_path)
+    if not isinstance(data, dict):
+        return None
+    useful_keys = {
+        "live",
+        "backtest",
+        "live_realized",
+        "backtest_realized",
+        "backtest_price",
+        "price_bars",
+        "distance",
+        "mark",
+        "markers",
+        "labels",
+        "price_lines",
+    }
+    if not any(isinstance(data.get(key), list) and data.get(key) for key in useful_keys):
+        return None
+    out = dict(data)
+    sources = out.get("sources") if isinstance(out.get("sources"), dict) else {}
+    sources = dict(sources)
+    sources.setdefault("snapshot", "chart.json")
+    out["sources"] = sources
+    return out
 
 
 def _resolve_live_session_path(raw_path: str) -> str:
@@ -3084,15 +3974,15 @@ def _annotate_live_sessions(sessions: List[Dict[str, Any]]) -> List[Dict[str, An
     return sorted(sessions, key=_live_session_sort_key, reverse=True)
 
 
-def _build_live_session_summary(session_dir: str) -> Dict[str, Any]:
+def _build_live_session_summary(session_dir: str, light: bool = False) -> Dict[str, Any]:
     st = os.stat(session_dir)
     meta_list = _session_meta_candidates(session_dir)
     meta = _extract_meta_fields(meta_list)
-    if meta["open_legs"] is None:
+    if meta["open_legs"] is None and not light:
         meta["open_legs"] = len(_session_table_rows(session_dir, "open_positions", limit=1000))
-    if meta["filled_orders"] is None:
+    if meta["filled_orders"] is None and not light:
         meta["filled_orders"] = len(_session_table_rows(session_dir, "orders", limit=10000))
-    if meta["last_debug_event"] is None:
+    if meta["last_debug_event"] is None and not light:
         debug_rows = _session_table_rows(session_dir, "debug_events", limit=1)
         if debug_rows:
             top = debug_rows[-1]
@@ -3102,9 +3992,12 @@ def _build_live_session_summary(session_dir: str) -> Dict[str, Any]:
                 "ts": top.get("ts") if isinstance(top, dict) else None,
             }
     if meta["last_equity_ts"] is None:
-        live = _load_series_file(session_dir, ["equity.csv", "live_equity.csv", "equity_curve.csv"])
-        if live:
-            meta["last_equity_ts"] = live[-1]["ts"]
+        if light:
+            meta["last_equity_ts"] = _last_csv_ts(session_dir, ["equity.csv", "live_equity.csv", "equity_curve.csv"])
+        else:
+            live = _load_series_file(session_dir, ["equity.csv", "live_equity.csv", "equity_curve.csv"])
+            if live:
+                meta["last_equity_ts"] = live[-1]["ts"]
     updated_at = meta["updated_at"] or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime))
     status = _infer_live_status(meta["status"], session_dir, updated_at, meta["last_debug_event"])
     return {
@@ -3382,8 +4275,10 @@ def backtest_live_validation_live_sessions():
         for entry in sorted(os.scandir(root), key=lambda e: e.name.lower()):
             if not entry.is_dir() or not _looks_like_live_session_dir(entry.path):
                 continue
+            if os.path.abspath(root) == os.path.abspath(LIVE_REPO_REPORTS_DIR) and not _has_live_runner_artifact(entry.path):
+                continue
             try:
-                summary = _build_live_session_summary(entry.path)
+                summary = _build_live_session_summary(entry.path, light=True)
                 summary["root"] = root
                 sessions.append(summary)
             except Exception:
@@ -3433,23 +4328,58 @@ def backtest_live_validation_live_session_status(path: str = Query(default="")):
 
 
 @app.get("/api/backtest_live_validation/live_session/chart")
-def backtest_live_validation_live_session_chart(path: str = Query(default="")):
+def backtest_live_validation_live_session_chart(
+    path: str = Query(default=""),
+    backtest_path: str = Query(default=""),
+    tv_path: str = Query(default=""),
+    max_points: int = Query(default=1800),
+):
     if not path:
         raise HTTPException(400, "path is required")
     session_dir = _resolve_live_session_path(path)
+    snapshot_payload = _live_snapshot_chart_payload(session_dir)
+    if snapshot_payload is not None:
+        return snapshot_payload
     sources: Dict[str, Any] = {}
     warnings: List[str] = []
-    live, live_source = _load_series_file_with_source(session_dir, ["live_equity.csv", "live_pnl.csv", "equity.csv", "equity_curve.csv"])
-    if not live:
-        live = _sqlite_live_equity_series(session_dir)
-        if live:
-            live_source = "session.sqlite:equity"
+    sqlite_snapshot_live = _sqlite_live_equity_snapshot_series(session_dir)
+    if sqlite_snapshot_live:
+        live, live_source = sqlite_snapshot_live, "session.sqlite:equity"
+    else:
+        live, live_source = _load_series_file_with_source(session_dir, ["live_equity.csv", "live_pnl.csv", "equity.csv", "equity_curve.csv"])
+        sqlite_live = _sqlite_live_equity_series(session_dir)
+        live, live_source = _prefer_broader_live_series(
+            live,
+            live_source,
+            sqlite_live,
+            "session.sqlite:equity" if sqlite_live else None,
+        )
+    if live:
+        live = _minute_close_series(live)
     if not live:
         live = _sqlite_live_order_series(session_dir)
         if live:
+            live = _minute_close_series(live)
             live_source = "session.sqlite:orders"
             warnings.append("Live chart uses filled order notional only; this is approximate and not real PnL.")
     backtest, backtest_source = _load_series_file_with_source(session_dir, ["backtest_equity.csv", "backtest_pnl.csv", "equity_backtest.csv"])
+    backtest_realized, backtest_realized_source = _load_series_column_file_with_source(
+        session_dir,
+        ["backtest_equity.csv", "backtest_pnl.csv", "equity_backtest.csv"],
+        ["realized_pnl", "realized_value", "realized_equity"],
+    )
+    if backtest_realized and backtest_realized_source == "backtest_equity.csv":
+        base_realized = backtest_realized[0]["value"]
+        backtest_realized = [{**point, "value": float(point["value"] - base_realized)} for point in backtest_realized]
+    live_realized, live_realized_source = _live_realized_pnl_series(session_dir)
+    selected_tv_path = backtest_path or tv_path
+    backtest_price = _tv_backtest_price_series(selected_tv_path)
+    backtest_price_source = "TradingView CSV:Price USDT" if backtest_price else None
+    if not backtest_price:
+        backtest_price, backtest_price_source = _load_series_file_with_source(
+            session_dir,
+            ["backtest_price.csv", "price_backtest.csv", "backtest_mark.csv"],
+        )
     distance, distance_source = _load_series_file_with_source(session_dir, ["distance.csv", "absolute_distance.csv"])
     if not distance and live and backtest:
         bt_map = {row["ts"]: row["value"] for row in backtest}
@@ -3461,6 +4391,34 @@ def backtest_live_validation_live_session_chart(path: str = Query(default="")):
         distance = computed
         if distance:
             distance_source = "computed"
+    price_bars, price_bars_source = _live_ohlcv_bars_from_npz(session_dir)
+    if _has_price_bar_gap(price_bars):
+        telemetry_price_bars, telemetry_price_source = _live_telemetry_ohlcv_bars(session_dir)
+        if telemetry_price_bars:
+            price_bars = _merge_price_bars(price_bars, telemetry_price_bars)
+            price_bars, short_gap_fills = _fill_short_price_bar_gaps(price_bars)
+            price_bars_source = "+".join([s for s in (price_bars_source, telemetry_price_source) if s])
+            warnings.append("Compact OHLCV artifacts have time gaps; missing 1m price bars were filled from telemetry mark data.")
+            if short_gap_fills:
+                price_bars_source = "+".join([s for s in (price_bars_source, "short_flat_gap_fill") if s])
+                warnings.append(f"Filled {short_gap_fills} short residual price-bar gap(s) with flat close bars.")
+    mark = _live_mark_points_from_telemetry(session_dir)
+    markers = _live_event_markers(session_dir)
+    telemetry_paths = _live_telemetry_paths(session_dir)
+    telemetry_is_heavy = _live_telemetry_total_bytes(telemetry_paths) > MAX_TELEMETRY_BYTES_FOR_CHART
+    if telemetry_is_heavy:
+        warnings.append("Telemetry JSONL is too large for request-time full parsing; chart uses compact OHLCV artifacts plus latest telemetry mark line.")
+    anchor_time = None
+    anchor_price: Optional[float] = None
+    if mark:
+        anchor_time = mark[-1]["ts"]
+        anchor_price = float(mark[-1]["value"])
+        sources["mark"] = "latest run_telemetry_*.jsonl:1m" if telemetry_is_heavy else "run_telemetry_*.jsonl:1m"
+    elif live:
+        anchor_time = live[-1]["ts"]
+        anchor_price = float(live[-1]["value"])
+    labels = _live_strategy_labels(session_dir, anchor_time, anchor_price)
+    price_lines = _live_target_price_lines(session_dir)
     payload: Dict[str, Any] = {}
     if live:
         payload["live"] = live
@@ -3468,14 +4426,35 @@ def backtest_live_validation_live_session_chart(path: str = Query(default="")):
     if backtest:
         payload["backtest"] = backtest
         sources["backtest"] = backtest_source
+    if live_realized:
+        payload["live_realized"] = live_realized
+        sources["live_realized"] = live_realized_source
+    if backtest_realized:
+        payload["backtest_realized"] = backtest_realized
+        sources["backtest_realized"] = backtest_realized_source
+    if backtest_price:
+        payload["backtest_price"] = backtest_price
+        sources["backtest_price"] = backtest_price_source
     if distance:
         payload["distance"] = distance
         sources["distance"] = distance_source
+    if mark:
+        payload["mark"] = mark
+    if price_bars:
+        payload["price_bars"] = price_bars
+        sources["price_bars"] = price_bars_source
+    if markers:
+        payload["markers"] = markers
+    if labels:
+        payload["labels"] = labels
+    if price_lines:
+        payload["price_lines"] = price_lines
     if sources:
         payload["sources"] = sources
     if warnings:
         payload["warnings"] = warnings
         payload["approximate"] = True
+    _downsample_live_chart_payload(payload, _chart_point_budget(max_points))
     return payload
 
 

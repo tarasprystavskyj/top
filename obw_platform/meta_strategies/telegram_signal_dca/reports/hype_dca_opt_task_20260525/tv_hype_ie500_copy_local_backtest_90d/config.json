@@ -1,0 +1,42 @@
+{
+  "name": "C - LONG - MA driven HYPE ie500 fixed champion copy defaults",
+  "initial_capital": 500.0,
+  "commission_pct": 0.05,
+  "use_strategy_equity_for_sizing": true,
+  "base_order_pct_eq": 16.0,
+  "equity_for_sizing_usdt": 500.0,
+  "tp_percent": 0.52,
+  "callback_percent": 0.1,
+  "margin_call_limit": 4,
+  "linear_drop_percent": 1.2,
+  "auto_merge": false,
+  "sub_sell_tp_percent": 0.65,
+  "require_close_above_full_tp": true,
+  "sub_sell_close_confirm_mode": "breakeven",
+  "require_close_below_dca_level": true,
+  "block_dca_on_tp_touch": false,
+  "drops_pct": [
+    0.25,
+    0.35,
+    0.55,
+    3.0,
+    4.0
+  ],
+  "multipliers": [
+    1.0,
+    1.5,
+    2.75,
+    1.5
+  ],
+  "max_fills_per_bar": 2,
+  "max_sub_sells_per_bar": 5,
+  "use_high_low_touch": true,
+  "max_orders_per_3min": 6,
+  "liquidation_line_pct": -100.0,
+  "use_trend_adaptive_sizing": false,
+  "hard_breakeven_deleverage_pct": 25.0,
+  "max_position_cost_pct": 100.0,
+  "hard_max_total_dd_pct": 50.0,
+  "tv_max_drawdown_stop_pct": 50.0,
+  "anchor_year": 2026
+}

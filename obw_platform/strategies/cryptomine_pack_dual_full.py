@@ -6,6 +6,13 @@ import datetime as _dt
 import math
 import copy
 from typing import Any, Dict, List, Optional, Tuple
+try:
+    from obw_platform.runners.strategy_intents import StrategyRejectionBackoff
+except Exception:
+    try:
+        from runners.strategy_intents import StrategyRejectionBackoff
+    except Exception:
+        StrategyRejectionBackoff = None
 
 @dataclass
 class Sig:
@@ -14,6 +21,13 @@ class Sig:
     sl: Optional[float] = None
     reason: str = ""
     qty: Optional[float] = None
+    order_type: str = "market"
+    limit_price: Optional[float] = None
+    entry_limit_post_only: bool = True
+    allow_market_fallback: bool = False
+    fallback_on_reject: bool = False
+    fallback_on_timeout: bool = False
+    sizing_policy: str = "explicit_qty"
 
 @dataclass
 class ExitSig:
@@ -187,6 +201,15 @@ class _PackAdaptiveBase:
         self._orders_this_bar = 0
         self._recent_bar_fills = deque()
         self._recent_history_fills = 0
+        self._broker_min_order_usdt_by_symbol: Dict[str, Dict[str, Any]] = {}
+        dca_order_type = sp.get('dcaOrderType', sp.get('dca_order_type', cfg.get('dca_open_order_type', 'market')))
+        self.dca_order_type = str(dca_order_type or 'market').lower().strip()
+        self.allow_entry_market_fallback = bool(sp.get('allowEntryMarketFallback', False))
+        self.entry_market_fallback_on_reject = bool(sp.get('entryMarketFallbackOnReject', False))
+        self.entry_market_fallback_on_timeout = bool(sp.get('entryMarketFallbackOnTimeout', False))
+        self.execution_backoff_max_failures = int(sp.get('executionBackoffMaxFailures', 1))
+        self.execution_backoff_cooldown_sec = float(sp.get('executionBackoffCooldownSec', 60.0))
+        self._execution_backoffs: Dict[str, Any] = {}
 
     def universe(self, t, md_map): return list(md_map.keys())
     def rank(self, t, md_map, universe_syms): return list(universe_syms)
@@ -229,6 +252,36 @@ class _PackAdaptiveBase:
         self._roll_bar(t)
         return self._live_now(t) and self._allow_this_bar(t) and (self._recent_history_fills + self._orders_this_bar) < self.max_orders_per_3min
     def _register_order(self): self._orders_this_bar += 1
+    def get_execution_policy(self, sym, event: str = ''):
+        ev = str(event or '').lower()
+        if ev == 'dca':
+            return {'order_type': self.dca_order_type}
+        if ev in {'open', 'entry', 'first'}:
+            return {
+                'allow_market_fallback': self.allow_entry_market_fallback,
+                'fallback_on_reject': self.entry_market_fallback_on_reject,
+                'fallback_on_timeout': self.entry_market_fallback_on_timeout,
+            }
+        return {}
+    def get_execution_backoff(self, sym):
+        if StrategyRejectionBackoff is None:
+            return None
+        key = str(sym or '')
+        if key not in self._execution_backoffs:
+            self._execution_backoffs[key] = StrategyRejectionBackoff(max_failures=self.execution_backoff_max_failures, cooldown_sec=self.execution_backoff_cooldown_sec)
+        return self._execution_backoffs[key]
+    def can_submit_order(self, sym, event: str = '', details=None):
+        if str(event or '').lower() in {'close', 'partial', 'reduce', 'tp', 'sl', 'exit'}:
+            return True
+        backoff = self.get_execution_backoff(sym)
+        return True if backoff is None else bool(backoff.can_submit())
+    def can_submit_close_order(self, sym, event: str = '', details=None):
+        return True
+    def on_order_rejected(self, sym: str, event: str = '', details=None):
+        return None
+    def set_broker_min_order_usdt(self, sym: str, value: float, meta=None):
+        self._broker_min_order_usdt_by_symbol[str(sym or '')] = {'value': float(value or 0.0), 'meta': dict(meta or {})}
+        self.min_order_usdt = max(float(self.min_order_usdt or 0.0), float(value or 0.0))
     def _get_step(self, num):
         nf=num+1
         base = self.step1 if nf==2 else self.step2 if nf==3 else self.step3 if nf==4 else self.step4 if nf==5 else self.step5 if nf==6 else self.linear_step_percent
@@ -347,14 +400,37 @@ class _PackAdaptiveBase:
         return price*(1.0+tp/100.0) if self.SIDE=='LONG' else price*(1.0-tp/100.0)
     def _order_value_ok(self, price, qty):
         return (price * qty) >= self.min_order_usdt - 1e-12
+    _SNAPSHOT_FIELDS = (
+        'pos_size', 'pos_value_usdt', 'avg_price', 'num_fills',
+        'last_fill_price', 'next_level_price', 'lots',
+        'trailing_active', 'trailing_ref', 'reset_pending',
+        'cycle_base_qty_coin', 'pending_new_entry',
+        'tp_levels_done', 'cycle_start_ts', 'last_fill_ts',
+    )
+
     def export_state_snapshot(self, sym):
-        return copy.deepcopy(self._states.get(sym))
+        st = self._states.get(sym)
+        if st is None:
+            return None
+        snap = {}
+        for k in self._SNAPSHOT_FIELDS:
+            v = getattr(st, k, None)
+            if k in ('lots', 'tp_levels_done'):
+                snap[k] = list(v or [])
+            else:
+                snap[k] = v
+        return snap
 
     def restore_state_snapshot(self, sym, snapshot):
         if snapshot is None:
             self._states.pop(sym, None)
         else:
-            self._states[sym] = copy.deepcopy(snapshot)
+            st = self._get_state(sym)
+            for k, v in dict(snapshot).items():
+                if k in ('lots', 'tp_levels_done'):
+                    setattr(st, k, list(v or []))
+                else:
+                    setattr(st, k, v)
 
     def is_warm_ready(self, sym):
         st = self._get_state(sym)
@@ -496,7 +572,7 @@ class _PackAdaptiveBase:
             st.cycle_start_ts = _ts_now
             st.last_fill_ts = _ts_now
             self._register_order()
-            return Sig(side=self.SIDE, tp=self._entry_tp(close), sl=None, reason='First', qty=qty0)
+            return Sig(side=self.SIDE, tp=self._entry_tp(close), sl=None, reason='First', qty=qty0, allow_market_fallback=self.allow_entry_market_fallback, fallback_on_reject=self.entry_market_fallback_on_reject, fallback_on_timeout=self.entry_market_fallback_on_timeout)
         return None
     def manage_position(self,sym,row,pos,ctx=None):
         t=row.get('datetime_utc'); self._roll_bar(t)

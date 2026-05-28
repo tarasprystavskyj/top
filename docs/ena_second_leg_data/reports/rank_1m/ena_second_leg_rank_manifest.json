@@ -1,0 +1,10 @@
+{
+  "ena_npz": "C:\\python_scripts\\top_1\\DB\\ena_ohlcv_1m_1y_from_30s_compat_np1.npz",
+  "base_symbol": "ENA/USDT:USDT",
+  "base_rows": 526865,
+  "candidate_paths": [
+    "C:\\python_scripts\\top_1\\DB\\ohlcv_1m_ena_second_leg_candidates_1y.npz"
+  ],
+  "ranked_candidates": 5,
+  "errors": []
+}

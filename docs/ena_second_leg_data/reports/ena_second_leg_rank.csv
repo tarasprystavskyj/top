@@ -1,0 +1,1 @@
+score,candidate_symbol,candidate_path,overlap_rows,coverage_ena,coverage_candidate,from_utc,to_utc,median_step_s,gap_ratio_gt_step,return_corr,hedge_beta,rolling_beta_cv,rolling_beta_windows,adf_t_stat,half_life_bars,zero_crosses_per_day,median_quote_volume_30s

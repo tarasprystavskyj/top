@@ -1,0 +1,42 @@
+{
+  "signals_total": 312,
+  "ok_with_market": 305,
+  "bad_or_missing": 7,
+  "rows_csv": "obw_platform\\meta_strategies\\telegram_dca_mvp\\reports\\all_signals_mfe_vs_tp1_rows.csv",
+  "h1": {
+    "count": 305,
+    "max_mfe_vs_tp1_pct": 506.9767441860462,
+    "median_mfe_vs_tp1_pct": 83.83518225039616,
+    "p25": 73.2946298984034,
+    "p75": 94.66019417475707,
+    "tp1_reached_count": 63,
+    "tp1_reached_rate": 0.20655737704918034
+  },
+  "h24": {
+    "count": 305,
+    "max_mfe_vs_tp1_pct": 576.5227021040971,
+    "median_mfe_vs_tp1_pct": 116.4461247637052,
+    "p25": 91.5555555555555,
+    "p75": 160.053619302949,
+    "tp1_reached_count": 202,
+    "tp1_reached_rate": 0.6622950819672131
+  },
+  "h72": {
+    "count": 305,
+    "max_mfe_vs_tp1_pct": 841.5512465373967,
+    "median_mfe_vs_tp1_pct": 147.16981132075483,
+    "p25": 104.42600276625156,
+    "p75": 229.3015949734173,
+    "tp1_reached_count": 238,
+    "tp1_reached_rate": 0.780327868852459
+  },
+  "full": {
+    "count": 305,
+    "max_mfe_vs_tp1_pct": 1687.1962616822402,
+    "median_mfe_vs_tp1_pct": 343.503937007874,
+    "p25": 195.94405594405578,
+    "p75": 724.710424710424,
+    "tp1_reached_count": 285,
+    "tp1_reached_rate": 0.9344262295081968
+  }
+}

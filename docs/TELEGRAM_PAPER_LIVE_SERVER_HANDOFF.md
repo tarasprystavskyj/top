@@ -184,6 +184,20 @@ sqlite3 runs/telegram_paper/paper_live.sqlite \
 tail -f runs/telegram_paper/darkknighttrade_signals.jsonl
 ```
 
+Runner-style paper-live status/equity export:
+
+```bash
+python obw_platform/telegram_signal_tools/telegram_paper_live_status.py \
+  --db runs/telegram_paper/paper_live.sqlite \
+  --initial-equity 1000 \
+  --out-json runs/telegram_paper/paper_live_status.json \
+  --write-session-db runs/telegram_paper/session.sqlite
+```
+
+This is read-only against the Telegram paper DB except for the explicit output
+files. Use `--fetch-marks` only when current BingX MTM marks are needed;
+otherwise open positions use entry-price fallback for zero unrealized PnL.
+
 ## Safety
 
 - Do not run `bt_live_paper_runner.py --mode live` for this Telegram flow.
