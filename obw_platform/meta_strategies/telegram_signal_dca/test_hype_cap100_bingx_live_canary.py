@@ -584,6 +584,111 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(event["type"], "live_exit_synced")
         self.assertTrue(closed["live_exit_synced_only"])
 
+    def test_stale_source_history_is_not_attached_to_closed_trade_or_slip(self):
+        with tempfile.TemporaryDirectory() as td:
+            session_db = str(Path(td) / "session.sqlite")
+            live.ensure_session_dbs(td, session_db)
+            live.ensure_orders_db(session_db)
+            args = make_args(out_dir=td, session_db=session_db, run_id="run-history")
+            trade = open_trade()
+            trade["detected_at_ms"] = int(NOW.timestamp() * 1000)
+            state = {"open_trades": {trade["key"]: trade}, "equity": 30.0}
+            stale_history = [
+                {
+                    "id": trade["lead_position_id"],
+                    "key": trade["key"],
+                    "opened_ms": int((NOW.timestamp() - 7 * 3600) * 1000),
+                    "opened_utc": "2026-05-25T14:00:00+00:00",
+                    "closed_ms": int(NOW.timestamp() * 1000),
+                    "closed_utc": live.paper.iso(NOW),
+                    "avg_cost": 59.5773,
+                    "avg_close_price": 60.352,
+                }
+            ]
+            with patch.object(
+                live,
+                "submit_close",
+                return_value={
+                    "ok": True,
+                    "order": {"id": "close-stale", "average": 58.245},
+                    "qty": trade["qty"],
+                    "fill_price": 58.245,
+                    "fill_dt": live.paper.iso(NOW),
+                    "exchange_order_id": "close-stale",
+                },
+            ):
+                events = live.apply_live_snapshot(state, [], stale_history, 58.245, NOW, args, allow_dca=False)
+
+            self.assertEqual(events[0]["type"], "live_exit")
+            closed = state["closed_trades"][0]
+            self.assertIsNone(closed["history_exit"])
+            self.assertEqual(closed["exit_reason"], "lead_position_disappeared_mark_fallback")
+            self.assertAlmostEqual(closed["exit_expected_price"], 58.245)
+            self.assertAlmostEqual(closed["exit_slip_bp"], 0.0)
+            con = sqlite3.connect(session_db)
+            try:
+                row = con.execute(
+                    "SELECT source_history_valid, source_history_reject_reason, source_avg_close, exchange_fill_price, signal_price, exchange_vs_signal_bp FROM order_execution_comparisons WHERE action='CLOSE'"
+                ).fetchone()
+            finally:
+                con.close()
+            self.assertEqual(row[0], 0)
+            self.assertIn(row[1], {"missing_history", "no_valid_history_match"})
+            self.assertIsNone(row[2])
+            self.assertAlmostEqual(row[3], 58.245)
+            self.assertAlmostEqual(row[4], 58.245)
+            self.assertAlmostEqual(row[5], 0.0)
+
+    def test_valid_source_history_attaches_and_records_execution_comparison(self):
+        with tempfile.TemporaryDirectory() as td:
+            session_db = str(Path(td) / "session.sqlite")
+            live.ensure_session_dbs(td, session_db)
+            live.ensure_orders_db(session_db)
+            args = make_args(out_dir=td, session_db=session_db, run_id="run-history-valid")
+            trade = open_trade()
+            trade["detected_at_ms"] = int(NOW.timestamp() * 1000)
+            state = {"open_trades": {trade["key"]: trade}, "equity": 30.0}
+            valid_history = [
+                {
+                    "id": trade["lead_position_id"],
+                    "key": trade["key"],
+                    "opened_ms": int(NOW.timestamp() * 1000),
+                    "opened_utc": live.paper.iso(NOW),
+                    "closed_ms": int(NOW.timestamp() * 1000),
+                    "closed_utc": live.paper.iso(NOW),
+                    "avg_cost": 50.0,
+                    "avg_close_price": 52.0,
+                }
+            ]
+            with patch.object(
+                live,
+                "submit_close",
+                return_value={
+                    "ok": True,
+                    "order": {"id": "close-valid", "average": 52.0},
+                    "qty": trade["qty"],
+                    "fill_price": 52.0,
+                    "fill_dt": live.paper.iso(NOW),
+                    "exchange_order_id": "close-valid",
+                },
+            ):
+                live.apply_live_snapshot(state, [], valid_history, 51.5, NOW, args, allow_dca=False)
+
+            closed = state["closed_trades"][0]
+            self.assertEqual(closed["history_exit"]["avg_close_price"], 52.0)
+            self.assertEqual(closed["exit_reason"], "position_history_closed")
+            con = sqlite3.connect(session_db)
+            try:
+                row = con.execute(
+                    "SELECT source_history_valid, source_avg_cost, source_avg_close, exchange_vs_signal_bp FROM order_execution_comparisons WHERE action='CLOSE'"
+                ).fetchone()
+            finally:
+                con.close()
+            self.assertEqual(row[0], 1)
+            self.assertAlmostEqual(row[1], 50.0)
+            self.assertAlmostEqual(row[2], 52.0)
+            self.assertAlmostEqual(row[3], 0.0)
+
     def test_live_close_trade_respects_order_error_backoff_before_submit(self):
         args = make_args()
         trade = open_trade()
