@@ -670,6 +670,44 @@ def test_live_session_chart_fills_ohlcv_gaps_from_telemetry(monkeypatch, tmp_pat
     assert any("time gaps" in warning for warning in body["warnings"])
 
 
+def test_live_session_chart_downsamples_large_payload(monkeypatch, tmp_path):
+    live_root = tmp_path / "_reports" / "_live"
+    session = live_root / "hype_canary_downsample"
+    session.mkdir(parents=True)
+    _write_json(session / "RUN_STATUS.json", {"status": "stopped", "utc": "2026-05-26T06:00:00Z"})
+    base_ts = pd.Timestamp("2026-05-26T00:00:00Z")
+    rows = [
+        {"ts": (base_ts + pd.Timedelta(minutes=idx)).isoformat(), "value": float(idx % 17)}
+        for idx in range(360)
+    ]
+    pd.DataFrame(rows).to_csv(session / "live_equity.csv", index=False)
+    timestamps = np.array([int((base_ts + pd.Timedelta(minutes=idx)).timestamp()) for idx in range(360)])
+    prices = np.linspace(58.0, 62.0, 360)
+    np.savez(
+        session / "live_hype_1m_ohlcv_full_session.npz",
+        timestamp_s=timestamps,
+        open=prices,
+        high=prices + 0.2,
+        low=prices - 0.2,
+        close=prices + 0.05,
+    )
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+
+    client = TestClient(api_main.app)
+    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session), "max_points": 300})
+
+    assert chart.status_code == 200
+    body = chart.json()
+    assert len(body["live"]) <= 300
+    assert len(body["price_bars"]) <= 300
+    assert body["downsampled"]["max_points"] == 300
+    assert body["downsampled"]["series"]["live"] == {"from": 360, "to": 300}
+    assert body["downsampled"]["series"]["price_bars"]["from"] == 360
+
+
 def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tmp_path):
     tv_src = tmp_path / "TV_backtest_source"
     tv_src.mkdir()

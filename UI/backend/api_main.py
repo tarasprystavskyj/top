@@ -3125,19 +3125,43 @@ def _sqlite_live_equity_snapshot_series(session_dir: str) -> List[Dict[str, Any]
             value_col = next((c for c in ("equity_usdt", "equity", "value") if c in cols), None)
             if not time_col or not value_col:
                 return []
-            df = pd.read_sql(f'SELECT "{time_col}" AS ts, "{value_col}" AS equity FROM "equity" ORDER BY "{time_col}"', con)
+            base_row = con.execute(
+                f'SELECT "{value_col}" FROM "equity" WHERE "{time_col}" IS NOT NULL AND "{value_col}" IS NOT NULL ORDER BY "{time_col}" LIMIT 1'
+            ).fetchone()
+            try:
+                rows = con.execute(
+                    f'''
+                    SELECT e."{time_col}" AS ts, e."{value_col}" AS equity
+                    FROM "equity" e
+                    JOIN (
+                        SELECT substr("{time_col}", 1, 16) AS bucket, max(rowid) AS rid
+                        FROM "equity"
+                        WHERE "{time_col}" IS NOT NULL AND "{value_col}" IS NOT NULL
+                        GROUP BY bucket
+                    ) m ON e.rowid = m.rid
+                    ORDER BY e."{time_col}"
+                    '''
+                ).fetchall()
+            except Exception:
+                rows = con.execute(
+                    f'SELECT "{time_col}" AS ts, "{value_col}" AS equity FROM "equity" ORDER BY "{time_col}"'
+                ).fetchall()
         finally:
             con.close()
     except Exception:
         return []
-    if df.empty:
+    if not rows:
         return []
+    df = pd.DataFrame(rows, columns=["ts", "equity"])
     df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
     df["equity"] = pd.to_numeric(df["equity"], errors="coerce")
     df = df.dropna(subset=["ts", "equity"]).sort_values("ts")
     if df.empty:
         return []
-    base = float(df["equity"].iloc[0])
+    try:
+        base = float(base_row[0]) if base_row else float(df["equity"].iloc[0])
+    except Exception:
+        base = float(df["equity"].iloc[0])
     return [{"ts": row["ts"].isoformat(), "value": float(row["equity"] - base)} for _, row in df.iterrows()]
 
 
@@ -3543,6 +3567,121 @@ def _fill_short_price_bar_gaps(rows: List[Dict[str, Any]], max_gap_seconds: int 
                         next_ts += 60
         filled.append(row)
     return filled, inserted
+
+
+def _chart_point_budget(raw: Any, default: int = 1800) -> int:
+    try:
+        value = int(raw)
+    except Exception:
+        value = default
+    return max(300, min(5000, value))
+
+
+def _downsample_price_bars(rows: List[Dict[str, Any]], max_points: int) -> Tuple[List[Dict[str, Any]], int]:
+    if len(rows) <= max_points:
+        return rows, 0
+    step = int(np.ceil(len(rows) / max_points))
+    out: List[Dict[str, Any]] = []
+    for idx in range(0, len(rows), step):
+        chunk = rows[idx : idx + step]
+        if not chunk:
+            continue
+        try:
+            opens = [_safe_float(row.get("open")) for row in chunk]
+            highs = [_safe_float(row.get("high")) for row in chunk]
+            lows = [_safe_float(row.get("low")) for row in chunk]
+            closes = [_safe_float(row.get("close")) for row in chunk]
+            highs_f = [v for v in highs if v is not None]
+            lows_f = [v for v in lows if v is not None]
+            open_v = next((v for v in opens if v is not None), None)
+            close_v = next((v for v in reversed(closes) if v is not None), None)
+        except Exception:
+            continue
+        if open_v is None or close_v is None or not highs_f or not lows_f:
+            continue
+        out.append(
+            {
+                "ts": chunk[0].get("ts"),
+                "open": float(open_v),
+                "high": float(max(highs_f)),
+                "low": float(min(lows_f)),
+                "close": float(close_v),
+            }
+        )
+    return out, len(rows) - len(out)
+
+
+def _point_xy(point: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    ts_seconds = _iso_to_epoch_seconds_fast(point.get("ts"))
+    value = _safe_float(point.get("value"))
+    if ts_seconds is None or value is None or not np.isfinite(value):
+        return None
+    return ts_seconds, float(value)
+
+
+def _downsample_line_series_lttb(series: List[Dict[str, Any]], max_points: int) -> Tuple[List[Dict[str, Any]], int]:
+    if len(series) <= max_points or max_points < 3:
+        return series, 0
+    points = [point for point in series if _point_xy(point) is not None]
+    if len(points) <= max_points:
+        return points, len(series) - len(points)
+    threshold = max_points
+    every = (len(points) - 2) / float(threshold - 2)
+    sampled: List[Dict[str, Any]] = [points[0]]
+    a_idx = 0
+    for i in range(threshold - 2):
+        avg_start = int(np.floor((i + 1) * every)) + 1
+        avg_end = int(np.floor((i + 2) * every)) + 1
+        avg_end = min(avg_end, len(points))
+        avg_range = points[avg_start:avg_end] or [points[-1]]
+        avg_xy = [_point_xy(point) for point in avg_range]
+        avg_xy = [xy for xy in avg_xy if xy is not None]
+        if not avg_xy:
+            continue
+        avg_x = sum(x for x, _ in avg_xy) / len(avg_xy)
+        avg_y = sum(y for _, y in avg_xy) / len(avg_xy)
+
+        range_start = int(np.floor(i * every)) + 1
+        range_end = int(np.floor((i + 1) * every)) + 1
+        range_end = min(range_end, len(points) - 1)
+        a_xy = _point_xy(points[a_idx])
+        if a_xy is None:
+            continue
+        ax, ay = a_xy
+        best_idx = range_start
+        best_area = -1.0
+        for idx in range(range_start, max(range_start + 1, range_end)):
+            current_xy = _point_xy(points[idx])
+            if current_xy is None:
+                continue
+            cx, cy = current_xy
+            area = abs((ax - avg_x) * (cy - ay) - (ax - cx) * (avg_y - ay))
+            if area > best_area:
+                best_area = area
+                best_idx = idx
+        sampled.append(points[best_idx])
+        a_idx = best_idx
+    sampled.append(points[-1])
+    return sampled, len(series) - len(sampled)
+
+
+def _downsample_live_chart_payload(payload: Dict[str, Any], max_points: int) -> None:
+    stats: Dict[str, Dict[str, int]] = {}
+    for key in ("live", "backtest", "live_realized", "backtest_realized", "backtest_price", "distance", "mark"):
+        rows = payload.get(key)
+        if isinstance(rows, list) and len(rows) > max_points:
+            downsampled, dropped = _downsample_line_series_lttb(rows, max_points)
+            payload[key] = downsampled
+            if dropped:
+                stats[key] = {"from": len(rows), "to": len(downsampled)}
+    rows = payload.get("price_bars")
+    if isinstance(rows, list) and len(rows) > max_points:
+        downsampled, dropped = _downsample_price_bars(rows, max_points)
+        payload["price_bars"] = downsampled
+        if dropped:
+            stats["price_bars"] = {"from": len(rows), "to": len(downsampled)}
+    if stats:
+        payload["downsampled"] = {"max_points": max_points, "series": stats}
 
 
 def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
@@ -4189,7 +4328,12 @@ def backtest_live_validation_live_session_status(path: str = Query(default="")):
 
 
 @app.get("/api/backtest_live_validation/live_session/chart")
-def backtest_live_validation_live_session_chart(path: str = Query(default=""), backtest_path: str = Query(default=""), tv_path: str = Query(default="")):
+def backtest_live_validation_live_session_chart(
+    path: str = Query(default=""),
+    backtest_path: str = Query(default=""),
+    tv_path: str = Query(default=""),
+    max_points: int = Query(default=1800),
+):
     if not path:
         raise HTTPException(400, "path is required")
     session_dir = _resolve_live_session_path(path)
@@ -4310,6 +4454,7 @@ def backtest_live_validation_live_session_chart(path: str = Query(default=""), b
     if warnings:
         payload["warnings"] = warnings
         payload["approximate"] = True
+    _downsample_live_chart_payload(payload, _chart_point_budget(max_points))
     return payload
 
 
