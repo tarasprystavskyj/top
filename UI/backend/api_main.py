@@ -2366,6 +2366,25 @@ def _looks_like_live_session_dir(session_dir: str) -> bool:
     return bool(glob.glob(os.path.join(session_dir, "live_stdout_*.log")))
 
 
+def _has_live_runner_artifact(session_dir: str) -> bool:
+    name = os.path.basename(os.path.abspath(session_dir)).lower()
+    if "live" in name or "canary" in name:
+        return True
+    markers = (
+        "RUN_STATUS.json",
+        "ACTIVE_STATUS_PATH.txt",
+        "ACTIVE_SESSION_DB_PATH.txt",
+        "live_equity.csv",
+        "live_chart_events.csv",
+        "live_chart_events.jsonl",
+        "live_mark_ohlcv.npz",
+    )
+    if any(os.path.exists(os.path.join(session_dir, marker)) for marker in markers):
+        return True
+    patterns = ("live_stdout_*.log", "run_telemetry_*.jsonl", "*ohlcv*.npz")
+    return any(glob.glob(os.path.join(session_dir, pattern)) for pattern in patterns)
+
+
 def _validation_source_candidates() -> List[str]:
     env_override = os.environ.get("TV_BACKTEST_SOURCE_DIR")
     candidates = [
@@ -2562,7 +2581,7 @@ def _find_live_match_ready_csv(live_path: str, symbol: Optional[str]) -> Optiona
 
 def _safe_read_json(path: str) -> Any:
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             return json.load(fh)
     except Exception:
         return None
@@ -3556,6 +3575,36 @@ def _live_target_price_lines(session_dir: str) -> List[Dict[str, Any]]:
     return lines[:12]
 
 
+def _live_snapshot_chart_payload(session_dir: str) -> Optional[Dict[str, Any]]:
+    chart_path = os.path.join(session_dir, "chart.json")
+    if not os.path.isfile(chart_path):
+        return None
+    data = _safe_read_json(chart_path)
+    if not isinstance(data, dict):
+        return None
+    useful_keys = {
+        "live",
+        "backtest",
+        "live_realized",
+        "backtest_realized",
+        "backtest_price",
+        "price_bars",
+        "distance",
+        "mark",
+        "markers",
+        "labels",
+        "price_lines",
+    }
+    if not any(isinstance(data.get(key), list) and data.get(key) for key in useful_keys):
+        return None
+    out = dict(data)
+    sources = out.get("sources") if isinstance(out.get("sources"), dict) else {}
+    sources = dict(sources)
+    sources.setdefault("snapshot", "chart.json")
+    out["sources"] = sources
+    return out
+
+
 def _resolve_live_session_path(raw_path: str) -> str:
     abs_path = os.path.abspath(raw_path or "")
     if not abs_path or not _is_within_live_results_root(abs_path):
@@ -3923,6 +3972,8 @@ def backtest_live_validation_live_sessions():
         for entry in sorted(os.scandir(root), key=lambda e: e.name.lower()):
             if not entry.is_dir() or not _looks_like_live_session_dir(entry.path):
                 continue
+            if os.path.abspath(root) == os.path.abspath(LIVE_REPO_REPORTS_DIR) and not _has_live_runner_artifact(entry.path):
+                continue
             try:
                 summary = _build_live_session_summary(entry.path, light=True)
                 summary["root"] = root
@@ -3978,6 +4029,9 @@ def backtest_live_validation_live_session_chart(path: str = Query(default=""), b
     if not path:
         raise HTTPException(400, "path is required")
     session_dir = _resolve_live_session_path(path)
+    snapshot_payload = _live_snapshot_chart_payload(session_dir)
+    if snapshot_payload is not None:
+        return snapshot_payload
     sources: Dict[str, Any] = {}
     warnings: List[str] = []
     sqlite_snapshot_live = _sqlite_live_equity_snapshot_series(session_dir)

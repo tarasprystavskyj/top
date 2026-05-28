@@ -351,6 +351,34 @@ def test_live_session_endpoint_validation(monkeypatch, tmp_path):
     assert missing_path.status_code == 400
 
 
+def test_live_session_chart_reads_api_snapshot_chart_json(monkeypatch, tmp_path):
+    live_root = tmp_path / "_reports" / "_live"
+    session = live_root / "hype_canary_server_api_snapshot"
+    session.mkdir(parents=True)
+    _write_json(session / "status.json", {"status": "stopped", "updated_at": "2026-05-28T08:50:00Z"})
+    _write_json(
+        session / "chart.json",
+        {
+            "live": [{"ts": "2026-05-28T08:50:00Z", "value": 1.0}],
+            "price_bars": [{"ts": "2026-05-28T08:50:00Z", "open": 58.0, "high": 59.0, "low": 57.0, "close": 58.5}],
+            "price_lines": [{"price": 56.4, "text": "Next DCA buy", "kind": "next_dca_buy"}],
+        },
+    )
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+
+    client = TestClient(api_main.app)
+    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session)})
+
+    assert chart.status_code == 200
+    body = chart.json()
+    assert body["live"][0]["value"] == 1.0
+    assert body["price_lines"][0]["text"] == "Next DCA buy"
+    assert body["sources"]["snapshot"] == "chart.json"
+
+
 def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
     legacy_root = tmp_path / "obw_platform" / "_reports" / "_live"
     top_live_reports = tmp_path / "_reports" / "_live"
@@ -363,6 +391,9 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
     unrelated = repo_reports / "not_a_live_session"
     unrelated.mkdir()
     (unrelated / "notes.txt").write_text("ignore me\n", encoding="utf-8")
+    generic_report = repo_reports / "binance_copy_4751838302089254401_20260519"
+    generic_report.mkdir()
+    _write_json(generic_report / "summary.json", {"not": "a live runner session"})
 
     session = repo_reports / "hype_canary_bingx_live_20260525"
     session.mkdir()
@@ -418,6 +449,7 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
     assert str(top_live_reports) in payload["roots"]
     assert str(repo_reports) in payload["roots"]
     assert str(sibling_reports) in payload["roots"]
+    assert "binance_copy_4751838302089254401_20260519" not in {s["name"] for s in payload["sessions"]}
     names = [item["name"] for item in payload["sessions"]]
     assert names == ["hype_canary_bingx_live_20260525"]
     summary = payload["sessions"][0]
