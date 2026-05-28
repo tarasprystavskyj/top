@@ -65,6 +65,7 @@ test('live chart payload preserves source metadata and approximate fallback flag
     mark: [{ ts: '2026-01-01T00:00:00Z', value: 100 }],
     markers: [{ time: '2026-01-01T00:00:00Z', price: 100, text: 'DCA buy', kind: 'dca_buy' }],
     labels: [{ time: '2026-01-01T00:00:00Z', price: 101, text: 'fresh_tp_percent: 1.4', layer: 'parameters' }],
+    price_lines: [{ price: 99, text: 'Next DCA buy', kind: 'next_dca_buy', color: '#22C55E', lineWidth: 2 }],
     sources: { live: 'session.sqlite:orders' },
     warnings: ['approximate'],
   });
@@ -78,6 +79,8 @@ test('live chart payload preserves source metadata and approximate fallback flag
   assert.equal(normalized.price_bars[0].close, 100);
   assert.equal(normalized.markers[0].text, 'DCA buy');
   assert.equal(normalized.labels[0].layer, 'parameters');
+  assert.equal(normalized.price_lines[0].kind, 'next_dca_buy');
+  assert.equal(normalized.price_lines[0].lineWidth, 2);
 });
 
 test('live table panels empty and tabular helpers', () => {

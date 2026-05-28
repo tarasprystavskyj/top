@@ -604,6 +604,24 @@ def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tm
             "INSERT INTO orders VALUES ('order-dca', '2026-05-26T08:59:30Z', '2026-05-26T08:59:00Z', 'LIVE', 'HYPE-USDT', 'LONG', 'OPEN', 59.4, 0.1, 'FILLED', 'mark_crossed_dca_level', 'run-1', ?)",
             (json.dumps({"fill": {"fill_type": "dca_add_1"}}),),
         )
+        con.execute(
+            "INSERT INTO orders VALUES ('order-close', '2026-05-26T09:00:30Z', '2026-05-26T09:00:00Z', 'LIVE', 'HYPE-USDT', 'LONG', 'CLOSE', 60.1, 0.2, 'FILLED', 'position_history_closed', 'run-1', ?)",
+            (
+                json.dumps(
+                    {
+                        "closed": {
+                            "avg_entry": 59.5,
+                            "levels": [59.4, 58.9],
+                            "next_level_idx": 1,
+                            "fills": [
+                                {"fill_type": "base_entry", "live_fill_price": 59.6},
+                                {"fill_type": "dca_add_1", "live_fill_price": 59.4},
+                            ],
+                        }
+                    }
+                ),
+            ),
+        )
         con.commit()
     finally:
         con.close()
@@ -631,6 +649,8 @@ def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tm
     assert body["backtest_realized"][0]["value"] == 0.0
     assert {m["text"] for m in body["markers"]} >= {"Meta strategy open", "DCA buy"}
     assert any(label["text"].startswith("fresh_tp_percent") for label in body["labels"])
+    assert {line["kind"] for line in body["price_lines"]} >= {"next_dca_buy", "dca_sell_target", "full_sell_tp"}
+    assert any(line["text"] == "Next DCA buy" and line["price"] == 58.9 for line in body["price_lines"])
     assert [p["value"] for p in body["backtest_price"]] == [100.0, 95.0, 98.0]
     assert body["sources"]["backtest_price"] == "TradingView CSV:Price USDT"
 

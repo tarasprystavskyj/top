@@ -3472,6 +3472,90 @@ def _live_strategy_labels(session_dir: str, anchor_time: Optional[str], anchor_p
     return labels
 
 
+def _live_target_price_lines(session_dir: str) -> List[Dict[str, Any]]:
+    status = _safe_read_json(os.path.join(session_dir, "RUN_STATUS.json"))
+    params = status.get("candidate_params") if isinstance(status, dict) else None
+    tp_pct = _safe_float(params.get("fresh_tp_percent")) if isinstance(params, dict) else 0.0
+    rows = _sqlite_live_order_rows(session_dir, limit=10000)
+    if not rows:
+        return []
+
+    context: Optional[Dict[str, Any]] = None
+    side = "LONG"
+    for row in reversed(rows):
+        extra = row.get("extra")
+        if isinstance(extra, str) and extra.strip():
+            try:
+                extra = json.loads(extra)
+            except Exception:
+                extra = {}
+        if not isinstance(extra, dict):
+            continue
+        closed = extra.get("closed")
+        if isinstance(closed, dict):
+            context = closed
+            side = str(closed.get("side") or row.get("side") or side).upper()
+            break
+
+    if not isinstance(context, dict):
+        return []
+
+    direction = -1.0 if side == "SHORT" else 1.0
+    lines: List[Dict[str, Any]] = []
+    seen = set()
+
+    def add_line(kind: str, price: float, text: str, color: str, width: int = 1) -> None:
+        price = _safe_float(price)
+        if price <= 0:
+            return
+        key = (kind, round(price, 8), text)
+        if key in seen:
+            return
+        seen.add(key)
+        lines.append(
+            {
+                "id": f"{kind}-{len(lines)}",
+                "price": float(price),
+                "text": text,
+                "kind": kind,
+                "layer": "targets",
+                "color": color,
+                "lineStyle": "dashed",
+                "lineWidth": width,
+            }
+        )
+
+    levels = context.get("levels")
+    next_idx_raw = context.get("next_level_idx")
+    if next_idx_raw is not None:
+        next_idx = int(_safe_float(next_idx_raw))
+        if isinstance(levels, list) and 0 <= next_idx < len(levels):
+            add_line("next_dca_buy", levels[next_idx], "Next DCA buy", "#22C55E", 2)
+
+    if tp_pct > 0:
+        fills = context.get("fills")
+        if isinstance(fills, list):
+            for fill in fills:
+                if not isinstance(fill, dict):
+                    continue
+                fill_type = str(fill.get("fill_type") or "")
+                if not fill_type.startswith("dca_add"):
+                    continue
+                fill_price = _safe_float(fill.get("live_fill_price") or fill.get("expected_price"))
+                if fill_price <= 0:
+                    continue
+                target = fill_price * (1.0 + direction * tp_pct / 100.0)
+                suffix = fill_type.replace("dca_add_", "#")
+                add_line("dca_sell_target", target, f"DCA sell TP {suffix}", "#F59E0B")
+
+        avg_entry = _safe_float(context.get("avg_entry") or context.get("entry"))
+        explicit_tp = _safe_float(context.get("tp_price") or context.get("take_profit_price"))
+        full_tp = explicit_tp if explicit_tp > 0 else avg_entry * (1.0 + direction * tp_pct / 100.0) if avg_entry > 0 else 0.0
+        add_line("full_sell_tp", full_tp, "Full sell TP", "#F87171", 2)
+
+    return lines[:12]
+
+
 def _resolve_live_session_path(raw_path: str) -> str:
     abs_path = os.path.abspath(raw_path or "")
     if not abs_path or not _is_within_live_results_root(abs_path):
@@ -3961,6 +4045,7 @@ def backtest_live_validation_live_session_chart(path: str = Query(default=""), b
         anchor_time = live[-1]["ts"]
         anchor_price = float(live[-1]["value"])
     labels = _live_strategy_labels(session_dir, anchor_time, anchor_price)
+    price_lines = _live_target_price_lines(session_dir)
     payload: Dict[str, Any] = {}
     if live:
         payload["live"] = live
@@ -3989,6 +4074,8 @@ def backtest_live_validation_live_session_chart(path: str = Query(default=""), b
         payload["markers"] = markers
     if labels:
         payload["labels"] = labels
+    if price_lines:
+        payload["price_lines"] = price_lines
     if sources:
         payload["sources"] = sources
     if warnings:
