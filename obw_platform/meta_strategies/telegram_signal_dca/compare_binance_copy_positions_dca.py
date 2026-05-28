@@ -184,7 +184,9 @@ def dca_plan(side: str, entry_px: float, policy: Dict[str, Any], count: int) -> 
     return levels, [float(x) for x in side_policy["adds"][:count]]
 
 
-def touched(side: str, candle: Dict[str, float], level: float) -> bool:
+def touched(side: str, candle: Dict[str, float], level: float, *, fill_mode: str = "touch") -> bool:
+    if fill_mode in {"close_beyond", "close_beyond_skip_boundary"}:
+        return candle["close"] <= level if side == "LONG" else candle["close"] >= level
     return candle["low"] <= level if side == "LONG" else candle["high"] >= level
 
 
@@ -194,6 +196,8 @@ def simulate_position(
     *,
     policy: Dict[str, Any],
     dca_count: int,
+    fill_mode: str = "touch",
+    min_order_usd: float = 2.0,
 ) -> Dict[str, Any]:
     fee = float(policy["fee"])
     slip = float(policy["slippage"])
@@ -204,8 +208,15 @@ def simulate_position(
     fills = 0
     levels, adds = dca_plan(pos.side, pos.entry, policy, dca_count)
     fill_rows: List[Dict[str, Any]] = []
-    for candle in candles:
-        while fills < len(levels) and touched(pos.side, candle, levels[fills]):
+    min_mtm = 0.0
+    min_mtm_pct_on_notional = 0.0
+    skip_boundary = fill_mode in {"touch_skip_boundary", "close_beyond_skip_boundary"}
+    for i, candle in enumerate(candles):
+        can_fill = not (skip_boundary and (i == 0 or i == len(candles) - 1))
+        fills_this_candle = 0
+        while can_fill and fills < len(levels) and touched(pos.side, candle, levels[fills], fill_mode=fill_mode):
+            if fills_this_candle >= 1 and skip_boundary:
+                break
             add_notional = adds[fills]
             old_qty = notional / max(avg_entry, 1e-12)
             add_qty = add_notional / max(levels[fills], 1e-12)
@@ -213,10 +224,19 @@ def simulate_position(
             avg_entry = notional / max(old_qty + add_qty, 1e-12)
             fill_rows.append({"level": levels[fills], "notional": add_notional, "t": candle["t"]})
             fills += 1
+            fills_this_candle += 1
+        if skip_boundary and (i == 0 or i == len(candles) - 1):
+            continue
+        mark = float(candle["low"] if pos.side == "LONG" else candle["high"])
+        mtm_ret = ret_for(pos.side, avg_entry, mark) - 2 * fee - 2 * slip
+        mtm = mtm_ret * notional
+        min_mtm = min(min_mtm, mtm)
+        min_mtm_pct_on_notional = min(min_mtm_pct_on_notional, 100.0 * mtm / max(notional, 1e-12))
     gross_ret = ret_for(pos.side, avg_entry, pos.exit)
     net_ret = gross_ret - 2 * fee - 2 * slip
     pnl = net_ret * notional
     plain_ret = ret_for(pos.side, pos.entry, pos.exit)
+    min_order = min([base_notional, *adds[:dca_count]]) if dca_count > 0 else base_notional
     return {
         "id": pos.id,
         "symbol": pos.symbol,
@@ -231,10 +251,15 @@ def simulate_position(
         "notional": notional,
         "dca_fills": fills,
         "pnl": pnl,
+        "min_mtm": min_mtm,
+        "min_mtm_pct_on_notional": min_mtm_pct_on_notional,
+        "min_order_usd": min_order,
+        "min_order_ok": min_order >= min_order_usd,
         "ret_on_max_capital_pct": 100.0 * pnl / max(float(policy["target_notional"]), 1e-12),
         "lead_pnl": pos.lead_pnl,
         "lead_roi": pos.lead_roi,
         "candles": len(candles),
+        "fill_mode": fill_mode,
         "fills_json": json.dumps(fill_rows, separators=(",", ":")),
     }
 
@@ -243,7 +268,9 @@ def summarize(rows: List[Dict[str, Any]], initial_equity: float, start: datetime
     pnl_values = [float(r["pnl"]) for r in rows]
     equity = initial_equity
     curve = [equity]
-    for pnl in pnl_values:
+    mtm_curve = [equity]
+    for row, pnl in zip(rows, pnl_values):
+        mtm_curve.append(equity + min(float(row.get("min_mtm", 0.0)), 0.0))
         equity += pnl
         curve.append(equity)
     days = max((end - start).total_seconds() / 86400.0, 1e-12)
@@ -265,7 +292,14 @@ def summarize(rows: List[Dict[str, Any]], initial_equity: float, start: datetime
         "win_rate_pct": 100.0 * wins / max(1, len(rows)),
         "pf": pos / abs(neg) if neg < 0 else 0.0,
         "max_dd_pct": 100.0 * max_drawdown(curve),
+        "max_mtm_dd_pct": 100.0 * max_drawdown(mtm_curve),
+        "min_trade_mtm_pct_equity": 100.0
+        * min((float(r.get("min_mtm", 0.0)) for r in rows), default=0.0)
+        / max(initial_equity, 1e-12),
         "avg_dca_fills": sum(float(r["dca_fills"]) for r in rows) / max(1, len(rows)),
+        "avg_notional": sum(float(r["notional"]) for r in rows) / max(1, len(rows)),
+        "max_notional": max((float(r["notional"]) for r in rows), default=0.0),
+        "min_order_ok": all(str(r.get("min_order_ok", "True")) == "True" for r in rows),
     }
 
 
@@ -289,8 +323,13 @@ def main() -> None:
     ap.add_argument("--v21-config", default="obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml")
     ap.add_argument("--out-dir", default="obw_platform/meta_strategies/telegram_signal_dca/reports/binance_copy_4728671486012660992_20260519/backtest")
     ap.add_argument("--target-notional", type=float, default=100.0)
-    ap.add_argument("--initial-equity", type=float, default=10000.0)
+    ap.add_argument("--initial-equity", type=float, default=500.0)
     ap.add_argument("--dca-counts", default="0,1,2,3")
+    ap.add_argument(
+        "--fill-mode",
+        default="close_beyond_skip_boundary",
+        choices=("touch", "touch_skip_boundary", "close_beyond", "close_beyond_skip_boundary"),
+    )
     ap.add_argument("--sleep-sec", type=float, default=0.08)
     ap.add_argument("--max-retries", type=int, default=5)
     args = ap.parse_args()
@@ -328,7 +367,10 @@ def main() -> None:
     for raw_count in args.dca_counts.split(","):
         count = int(raw_count.strip())
         policy = policy_for_capital_mode(policy0, count, args.target_notional, "same_max")
-        rows = [simulate_position(p, candles, policy=policy, dca_count=count) for p, candles in eligible]
+        rows = [
+            simulate_position(p, candles, policy=policy, dca_count=count, fill_mode=args.fill_mode)
+            for p, candles in eligible
+        ]
         label = "plain" if count == 0 else f"dca{count}"
         write_csv(out_dir / f"{label}_trades.csv", rows)
         summary = summarize(rows, args.initial_equity, start, end)
@@ -340,6 +382,7 @@ def main() -> None:
                 "capital_mode": "same_max",
                 "fee": policy["fee"],
                 "slippage_per_side": policy["slippage"],
+                "fill_mode": args.fill_mode,
             }
         )
         summaries[label] = summary
@@ -349,12 +392,17 @@ def main() -> None:
     md = ["# Binance Copy Position History: Plain vs V21 DCA", ""]
     md.append(f"Positions loaded: {len(positions)}; tested: {len(eligible)}; skipped: {len(skipped)}")
     md.append("")
-    md.append("| variant | positions | net % | /30d % | win % | PF | max DD % | avg DCA fills |")
-    md.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    md.append(f"Initial equity: {args.initial_equity:.2f}. Target notional is planned max position notional, not account equity.")
+    md.append(f"Fill mode: `{args.fill_mode}`.")
+    md.append("")
+    md.append("| variant | positions | net % | /30d % | win % | PF | max MTM DD % | min trade MTM % eq | avg/max notional | avg DCA fills |")
+    md.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for label, s in summaries.items():
         md.append(
             f"| {label} | {s['positions']} | {s['net_pct']:.2f} | {s['net_pct_per_30d']:.2f} | "
-            f"{s['win_rate_pct']:.1f} | {s['pf']:.2f} | {s['max_dd_pct']:.2f} | {s['avg_dca_fills']:.2f} |"
+            f"{s['win_rate_pct']:.1f} | {s['pf']:.2f} | {s['max_mtm_dd_pct']:.2f} | "
+            f"{s['min_trade_mtm_pct_equity']:.2f} | {s['avg_notional']:.1f}/{s['max_notional']:.1f} | "
+            f"{s['avg_dca_fills']:.2f} |"
         )
     md.append("")
     md.append("Entry/exit are the Binance lead position avg entry and avg close. DCA fills use 1m Binance Futures candles between those timestamps.")

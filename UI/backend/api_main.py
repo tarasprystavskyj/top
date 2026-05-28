@@ -2359,6 +2359,9 @@ def _parse_bingx_datetime_series(series: pd.Series) -> pd.Series:
         out.loc[mask] = pd.to_datetime(s.loc[mask], format="%d/%m/%y %H:%M", errors="coerce", utc=True)
     mask = out.isna()
     if mask.any():
+        out.loc[mask] = pd.to_datetime(s.loc[mask], format="%Y-%m-%d %H:%M:%S", errors="coerce", utc=True)
+    mask = out.isna()
+    if mask.any():
         out.loc[mask] = pd.to_datetime(s.loc[mask], errors="coerce", dayfirst=True, utc=True)
     return out
 

@@ -314,6 +314,15 @@ def test_live_chart_uses_selected_tv_and_session_sqlite(monkeypatch, tmp_path):
     assert body["backtest"][0]["value"] == 5.0
 
 
+def test_bingx_datetime_parser_prefers_iso_before_dayfirst():
+    parsed = api_main._parse_bingx_datetime_series(
+        pd.Series(["2026-04-12 00:35:16", "2026-04-13 00:08:46"])
+    )
+    assert parsed.notna().all()
+    assert parsed.iloc[0].isoformat().startswith("2026-04-12T00:35:16")
+    assert parsed.iloc[1].isoformat().startswith("2026-04-13T00:08:46")
+
+
 def test_live_session_endpoint_validation(monkeypatch, tmp_path):
     live_root = tmp_path / "_reports" / "_live"
     session = _create_valid_live_session(live_root, "session_guardrails")

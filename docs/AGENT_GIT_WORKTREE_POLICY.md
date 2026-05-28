@@ -13,10 +13,15 @@ C:\python_scripts\.codex_CLI_laptop_local_philosofy\AGENT_GIT_WORKTREE_POLICY.md
 - Use one owner branch per non-trivial agent task.
 - Worker branches promote to the parent/coordinator branch before `dev`.
 - Use PRs or PR-style handoffs for completed production-grade work.
+- Use machine-prefixed agent display names in new handoffs, branch slugs, and
+  commit trailers:
+  - `л_` laptop agent on Taras's Windows laptop;
+  - `с_` server/VPS agent;
+  - `а_` Arch Linux agent.
 - Add agent attribution trailers to new commits:
 
 ```text
-Agent: <agent-name>
+Agent: <machine-prefixed-agent-name>
 Agent-Session: <codex-session-id>
 Parent-Agent: <parent-or-coordinator>
 Worktree: <absolute-worktree-path>
@@ -53,4 +58,3 @@ purpose:
 safe to delete when:
 do not delete because:
 ```
-

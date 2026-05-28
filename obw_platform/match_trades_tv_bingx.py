@@ -66,6 +66,31 @@ BINGX_REQUIRED_COLS = {
     "Ордер №",
 }
 
+MATCHED_ORDER_COLUMNS = [
+    "side",
+    "real_time",
+    "tv_time",
+    "time_diff_min",
+    "real_qty",
+    "tv_qty",
+    "qty_diff",
+    "real_price",
+    "tv_price",
+    "price_diff",
+    "signed_slippage_pct",
+    "abs_slippage_pct",
+    "signed_slippage_bps",
+    "abs_slippage_bps",
+    "real_closed_pnl",
+    "real_fee",
+    "real_net_pnl",
+    "tv_net_pnl",
+    "tv_signal",
+    "tv_trade_ids",
+    "confidence",
+    "real_order_no",
+]
+
 
 MATCHED_ORDER_COLUMNS = [
     "side",
@@ -355,7 +380,9 @@ def match_orders(real_df: pd.DataFrame, tv_packed: pd.DataFrame, config: MatchCo
             matched_real_rows.add(int(rr["real_row"]))
             matched_tv_rows.add(int(tt["tv_row"]))
 
-    matched_df = pd.DataFrame(matches).sort_values(["real_time", "side"]).reset_index(drop=True)
+    matched_df = pd.DataFrame(matches, columns=MATCHED_ORDER_COLUMNS)
+    if not matched_df.empty:
+        matched_df = matched_df.sort_values(["real_time", "side"]).reset_index(drop=True)
     unmatched_real = real_df.loc[~real_df.index.isin(matched_real_rows)].copy().sort_values("dt")
     unmatched_tv = tv_packed.loc[~tv_packed.index.isin(matched_tv_rows)].copy().sort_values("dt")
     return matched_df, unmatched_real, unmatched_tv

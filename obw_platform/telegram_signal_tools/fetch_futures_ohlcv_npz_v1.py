@@ -18,6 +18,7 @@ Example:
 import argparse
 import math
 import sys
+from datetime import datetime, timezone
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -122,12 +123,34 @@ def timeframe_ms(ex, timeframe: str) -> int:
         return val * mult
 
 
-def fetch_ohlcv_window(ex, symbol: str, timeframe: str, bars: int, sleep_sec: float, max_empty: int = 3) -> List[List[float]]:
+def parse_utc_ms(raw: str) -> Optional[int]:
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.astimezone(timezone.utc).timestamp() * 1000)
+
+
+def fetch_ohlcv_window(
+    ex,
+    symbol: str,
+    timeframe: str,
+    bars: int,
+    sleep_sec: float,
+    max_empty: int = 3,
+    since_ms: Optional[int] = None,
+    until_ms: Optional[int] = None,
+) -> List[List[float]]:
     tf_ms = timeframe_ms(ex, timeframe)
     limit = min(1000, max(10, bars))
     now_ms = int(ex.milliseconds()) if hasattr(ex, "milliseconds") else int(time.time() * 1000)
     # Start slightly earlier to survive missing bars and exchange rounding.
-    since = now_ms - int(bars * tf_ms * 1.25) - 20 * tf_ms
+    since = since_ms if since_ms is not None else now_ms - int(bars * tf_ms * 1.25) - 20 * tf_ms
+    stop_ms = until_ms if until_ms is not None else now_ms + tf_ms
     rows: List[List[float]] = []
     last_ts: Optional[int] = None
     empty_count = 0
@@ -139,6 +162,8 @@ def fetch_ohlcv_window(ex, symbol: str, timeframe: str, bars: int, sleep_sec: fl
             if empty_count >= max_empty:
                 break
             since += limit * tf_ms
+            if since >= stop_ms:
+                break
             time.sleep(sleep_sec)
             continue
         empty_count = 0
@@ -152,9 +177,9 @@ def fetch_ohlcv_window(ex, symbol: str, timeframe: str, bars: int, sleep_sec: fl
         rows.extend(clean)
         last_ts = int(clean[-1][0])
         since = last_ts + tf_ms
-        if len(clean) < limit:
+        if len(clean) < limit and until_ms is None:
             break
-        if since >= now_ms + tf_ms:
+        if since >= stop_ms:
             break
         time.sleep(sleep_sec)
 
@@ -201,6 +226,9 @@ def main() -> None:
     ap.add_argument("--sleep-sec", type=float, default=0.12)
     ap.add_argument("--min-bars", type=int, default=1000)
     ap.add_argument("--max-symbols", type=int, default=0)
+    ap.add_argument("--since-utc", default="", help="Optional UTC start, e.g. 2025-11-01T00:00:00Z")
+    ap.add_argument("--until-utc", default="", help="Optional UTC end, defaults to exchange now")
+    ap.add_argument("--max-empty", type=int, default=3, help="Consecutive empty batches before skipping a symbol")
     args = ap.parse_args()
 
     ex = build_exchange(args.exchange)
@@ -219,12 +247,28 @@ def main() -> None:
     markets = sorted(set(markets))
     if args.max_symbols and args.max_symbols > 0:
         markets = markets[: args.max_symbols]
-    print(f"[cfg] exchange={args.exchange} timeframe={args.timeframe} bars={args.bars} markets={len(markets)} out={args.out}", flush=True)
+    since_ms = parse_utc_ms(args.since_utc)
+    until_ms = parse_utc_ms(args.until_utc)
+    print(
+        f"[cfg] exchange={args.exchange} timeframe={args.timeframe} bars={args.bars} "
+        f"markets={len(markets)} since_utc={args.since_utc or '-'} until_utc={args.until_utc or '-'} "
+        f"out={args.out}",
+        flush=True,
+    )
 
     by_symbol: Dict[str, List[List[float]]] = {}
     for i, market in enumerate(markets, 1):
         try:
-            rows = fetch_ohlcv_window(ex, market, args.timeframe, args.bars, args.sleep_sec)
+            rows = fetch_ohlcv_window(
+                ex,
+                market,
+                args.timeframe,
+                args.bars,
+                args.sleep_sec,
+                max_empty=args.max_empty,
+                since_ms=since_ms,
+                until_ms=until_ms,
+            )
             if len(rows) < args.min_bars:
                 print(f"[skip] {i}/{len(markets)} {market} too_few_bars={len(rows)}", flush=True)
                 continue
