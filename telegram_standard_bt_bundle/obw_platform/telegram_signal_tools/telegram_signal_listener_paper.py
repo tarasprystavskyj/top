@@ -1,51 +1,54 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Paper-mode Telegram signal listener skeleton.
 
 Requires: pip install telethon pyyaml
 It does NOT place live orders. It appends parsed signals to JSONL.
 For live trading, connect this output to your existing runner only after paper validation.
 """
-import os, re, json, asyncio, datetime as dt
+import os, json, asyncio
 from pathlib import Path
 from telethon import TelegramClient, events
 
-NUM_RE = r'[-+]?\d+(?:[\.,]\d+)?'
-SIG_RE = re.compile(r'заходжу\s+в\s+([a-z0-9]{2,30})\s+(long|short)\s+(\d{1,3})x', re.I)
-ENTRY_RE = re.compile(r'точка\s+входу\s*[:：]?\s*('+NUM_RE+r')\s*[-–—]\s*('+NUM_RE+r')', re.I)
-TP_RE = re.compile(r'тейк[-\s]?профіт\s*[:：]?\s*([^\n]+)', re.I)
-SL_RE = re.compile(r'стоп[-\s]?лосс\s*[:：]?\s*('+NUM_RE+r')', re.I)
+try:
+    from .telegram_signal_schema import normalize_telegram_channel, parse_signal_text
+except ImportError:
+    from telegram_signal_schema import normalize_telegram_channel, parse_signal_text
 
-def f(x): return float(x.replace(',', '.'))
 
 def parse_signal(text):
-    low=text.lower()
-    sm=SIG_RE.search(low); em=ENTRY_RE.search(low); tm=TP_RE.search(low); slm=SL_RE.search(low)
-    if not (sm and em and tm and slm):
-        return None
-    tps=[f(x) for x in re.findall(NUM_RE, tm.group(1))[:3]]
-    if len(tps)<3: return None
-    a,b=f(em.group(1)),f(em.group(2))
-    return {
-        'ts_utc': dt.datetime.now(dt.timezone.utc).isoformat(),
-        'symbol': sm.group(1).upper() + '/USDT:USDT',
-        'side': sm.group(2).lower(),
-        'leverage_claimed': int(sm.group(3)),
-        'entry_low': min(a,b), 'entry_high': max(a,b),
-        'tp': tps, 'sl': f(slm.group(1)),
-        'raw_text': text,
-        'mode': 'paper_signal_only'
-    }
+    return parse_signal_text(text)
+
+
+def load_env_file(path='C:/python_scripts/top_1/.env'):
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+    for raw in env_path.read_text(encoding='utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 async def main():
+    load_env_file(os.environ.get('TG_ENV_FILE', 'C:/python_scripts/top_1/.env'))
     api_id=int(os.environ['TG_API_ID'])
     api_hash=os.environ['TG_API_HASH']
-    channel=os.environ['TG_CHANNEL']
-    out=Path(os.environ.get('TG_SIGNAL_OUT','telegram_signals_live.jsonl'))
-    client=TelegramClient(os.environ.get('TG_SESSION','signal_listener'), api_id, api_hash)
+    channel=normalize_telegram_channel(os.environ.get('TG_CHANNEL') or os.environ.get('TG_CHANNEL_URL') or 'https://t.me/darkknighttrade')
+    out=Path(os.environ.get('TG_SIGNAL_OUT','runs/telegram_paper/darkknighttrade_signals.jsonl'))
+    session=Path(os.environ.get('TG_SESSION','runs/telegram_paper/darkknighttrade_session'))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    session.parent.mkdir(parents=True, exist_ok=True)
+    client=TelegramClient(str(session), api_id, api_hash)
     @client.on(events.NewMessage(chats=channel))
     async def handler(event):
         sig=parse_signal(event.raw_text or '')
         if sig:
+            sig['source_channel'] = channel
+            sig['telegram_message_id'] = getattr(event.message, 'id', None)
+            msg_date = getattr(event.message, 'date', None)
+            if msg_date is not None:
+                sig['telegram_message_date'] = msg_date.isoformat()
             with out.open('a', encoding='utf-8') as fp:
                 fp.write(json.dumps(sig, ensure_ascii=False)+'\n')
             print('PARSED_SIGNAL', sig['symbol'], sig['side'], sig['entry_low'], sig['entry_high'])

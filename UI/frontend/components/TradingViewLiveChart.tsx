@@ -4,6 +4,7 @@ import {
   ColorType,
   CrosshairMode,
   LineSeries,
+  LineStyle,
   PriceScaleMode,
   createChart,
   createSeriesMarkers,
@@ -30,6 +31,16 @@ type ChartLabel = {
   layer: string;
   color: string;
 };
+type PriceLine = {
+  id: string;
+  price: number;
+  text: string;
+  kind: string;
+  layer: string;
+  color: string;
+  lineStyle?: string;
+  lineWidth?: number;
+};
 type LiveChartPayload = {
   live?: Point[];
   backtest?: Point[];
@@ -41,13 +52,14 @@ type LiveChartPayload = {
   mark?: Point[];
   markers?: ChartMarker[];
   labels?: ChartLabel[];
+  price_lines?: PriceLine[];
   sources?: Record<string, string | null>;
   warnings?: string[];
   approximate?: boolean;
 };
 
 type BarSize = '1m' | '5m' | '15m' | '1h';
-type PriceLayerKey = 'livePrice' | 'backtestPrice' | 'telemetryMark' | 'events' | 'labels' | 'parameters';
+type PriceLayerKey = 'livePrice' | 'backtestPrice' | 'telemetryMark' | 'events' | 'targets' | 'labels' | 'parameters';
 type PnlLayerKey = 'livePnl' | 'backtestPnl' | 'liveRealized' | 'backtestRealized';
 
 const colors = {
@@ -245,6 +257,7 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
     backtestPrice: true,
     telemetryMark: true,
     events: true,
+    targets: true,
     labels: true,
     parameters: false,
   });
@@ -264,6 +277,7 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
   const backtestRealized = Array.isArray(payload?.backtest_realized) ? payload.backtest_realized : [];
   const markers = Array.isArray(payload?.markers) ? payload.markers : [];
   const labels = Array.isArray(payload?.labels) ? payload.labels : [];
+  const priceLines = Array.isArray(payload?.price_lines) ? payload.price_lines : [];
 
   const liveCandles = useMemo(() => aggregateBars(priceBars, BAR_SECONDS[barSize]), [priceBars, barSize]);
   const barSeconds = BAR_SECONDS[barSize];
@@ -394,6 +408,19 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
         { zOrder: 'top' } as any,
       );
     }
+    if (anchorSeries && priceLayers.targets && priceLines.length) {
+      priceLines.slice(0, 12).forEach((line) => {
+        const lineStyle = line.lineStyle === 'solid' ? LineStyle.Solid : line.lineStyle === 'dotted' ? LineStyle.Dotted : LineStyle.Dashed;
+        anchorSeries.createPriceLine({
+          price: Number(line.price),
+          color: line.color || colors.amber,
+          lineWidth: Math.max(1, Math.min(4, Number(line.lineWidth) || 1)) as any,
+          lineStyle,
+          axisLabelVisible: true,
+          title: line.text,
+        });
+      });
+    }
 
     const visibleLabels = labels.filter((label) => (label.layer === 'parameters' ? priceLayers.parameters : priceLayers.labels));
     if (anchorSeries && visibleLabels.length) {
@@ -498,6 +525,7 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
     markers,
     pnlLayers,
     priceLayers,
+    priceLines,
     sharedLogicalRange,
     sharedTimeScale,
     syncTime,
@@ -538,6 +566,7 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
           ['backtestPrice', 'backtest price'],
           ['telemetryMark', 'mark'],
           ['events', 'events'],
+          ['targets', 'targets'],
           ['labels', 'labels'],
           ['parameters', 'parameters'],
         ] as [PriceLayerKey, string][]).map(([key, label]) => (
@@ -547,7 +576,7 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
           </label>
         ))}
         <span style={{ marginLeft: 'auto', color: colors.muted, fontSize: 12 }}>
-          interval: {barSize} | events: {markers.length} | labels: {labels.length}
+          interval: {barSize} | events: {markers.length} | targets: {priceLines.length} | labels: {labels.length}
         </span>
       </div>
       <div ref={priceRef} data-testid="live-price-chart" style={{ width: '100%', height: 520, minWidth: 0 }} />

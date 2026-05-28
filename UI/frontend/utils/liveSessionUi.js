@@ -81,6 +81,20 @@ export function normalizeLiveChartPayload(raw) {
         }))
         .filter((label) => label.time && Number.isFinite(label.price) && label.text)
     : [];
+  const price_lines = Array.isArray(raw?.price_lines)
+    ? raw.price_lines
+        .map((line, idx) => ({
+          id: String(line?.id || `price-line-${idx}`),
+          price: Number(line?.price),
+          text: String(line?.text || line?.label || ''),
+          kind: String(line?.kind || 'target'),
+          layer: String(line?.layer || 'targets'),
+          color: String(line?.color || '#F59E0B'),
+          lineStyle: String(line?.lineStyle || 'dashed'),
+          lineWidth: Number(line?.lineWidth) || 1,
+        }))
+        .filter((line) => Number.isFinite(line.price) && line.price > 0 && line.text)
+    : [];
   return {
     live: normalizeChartSeries(raw?.live || []),
     backtest: normalizeChartSeries(raw?.backtest || []),
@@ -92,6 +106,7 @@ export function normalizeLiveChartPayload(raw) {
     mark: normalizeChartSeries(raw?.mark || []),
     markers,
     labels,
+    price_lines,
     sources,
     warnings,
     approximate: !!raw?.approximate || sources.live === 'session.sqlite:orders',

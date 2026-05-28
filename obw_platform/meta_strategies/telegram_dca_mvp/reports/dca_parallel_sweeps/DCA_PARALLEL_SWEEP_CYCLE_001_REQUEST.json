@@ -1,0 +1,74 @@
+{
+  "cycle_id": "telegram_dca_parallel_sweep_001",
+  "mode": "paper_only_backtest_research",
+  "ready_for_live": false,
+  "safety_invariants": {
+    "paper_only": true,
+    "signed_transactions": false,
+    "broadcast_enabled": false,
+    "private_key_loaded": false,
+    "human_approval_required_for_live": true,
+    "no_dca_first": false,
+    "dca_research_allowed": true
+  },
+  "forbidden_paths": [
+    "live",
+    "daemon",
+    "broker",
+    "order_execution",
+    "signed_transactions",
+    "api_keys",
+    "private_keys",
+    "deploy_state",
+    "paper_live_processes"
+  ],
+  "fixed_paths": {
+    "dca_runner": "obw_platform/meta_strategies/telegram_dca_mvp/run_telegram_dca_mvp_npz.py",
+    "npz": "DB/telegram_signals_1m_event_windows_720h_bingx.npz",
+    "all_signals": "DB/telegram_signal_standard_bt/telegram_signals_extracted.csv",
+    "oracle_reference": "obw_platform/meta_strategies/telegram_dca_mvp/reports/telegram_signals_raw_edge_min5.csv",
+    "events": "DB/telegram_signal_standard_bt/telegram_channel_exit_events.csv",
+    "output_root": "obw_platform/meta_strategies/telegram_dca_mvp/reports/dca_parallel_sweeps/cycle_001"
+  },
+  "max_parallelism": 4,
+  "phase1_supported_runner_grid": {
+    "filter_branch": "all_49",
+    "entry_mode": ["close_in_zone"],
+    "exit_at_tp": [1, 2, 3],
+    "tp_margin_weights": ["edge_in_zone", "0.5,0.5,0", "0.33,0.33,0.34"],
+    "meta_dca_adds": [0, 1, 2],
+    "meta_dca_total_notional_mult": [1.0, 1.5, 2.0],
+    "signal_ttl_hours": [72],
+    "signal_hard_ttl_sec": [3600],
+    "move_meta_stop_after_tp": [true],
+    "load_only_signal_symbols": true,
+    "expected_runs": 81
+  },
+  "diagnostic_filter_csvs_to_generate": [
+    "all_49",
+    "longs_only",
+    "shorts_only",
+    "toxic_symbols_only",
+    "no_toxic_symbols",
+    "rr_tp1_sl_ge_1",
+    "zone_pct_le_8",
+    "zone_pct_le_10",
+    "per_symbol_min5"
+  ],
+  "symbol_cohorts": {
+    "oracle_good_reference": ["DOT", "ORDI", "JUP", "NEAR", "AAVE", "ADA", "ENS", "APT", "OP"],
+    "toxic_symbols": ["VET", "SUI", "LINK", "JTO", "INJ"]
+  },
+  "stop_rules": [
+    "stop if liquidation_count > 0",
+    "stop if opened_trades < 50 and branch is not per-symbol exploratory",
+    "stop if result is positive only on raw_edge_min5 oracle and negative elsewhere",
+    "narrow only after a non-oracle branch improves against the full-universe DCA control"
+  ],
+  "blocked_claims": [
+    "live_readiness",
+    "deployability",
+    "signed_or_broadcast_execution",
+    "oracle_filter_is_causal"
+  ]
+}

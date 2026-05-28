@@ -1,0 +1,7 @@
+reports/
+logs/
+*.sqlite
+*.db
+*.npz
+__pycache__/
+*.pyc

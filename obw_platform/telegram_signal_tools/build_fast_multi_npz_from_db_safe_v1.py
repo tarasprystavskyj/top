@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Convert standard SQLite OHLCV DB to multi-symbol NPZ, with a hard truncation check.
 
@@ -8,8 +8,6 @@ Expected standard table:
 This script refuses truncated SQLite files. It is intentional: a half-uploaded DB can
 silently produce fake/incomplete backtests if you try to ignore corruption.
 """
-from __future__ import annotations
-
 import argparse
 import os
 import sqlite3

@@ -645,7 +645,9 @@ export default function BacktestLiveValidationPage() {
     setLiveChartError(null);
     try {
       const backtestParam = selectedPath ? `&backtest_path=${encodeURIComponent(selectedPath)}` : '';
-      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?path=${encodeURIComponent(path)}${backtestParam}`);
+      const viewportWidth = typeof window === 'undefined' ? 1200 : window.innerWidth || 1200;
+      const maxPoints = Math.max(600, Math.min(2400, Math.ceil(viewportWidth * 1.5)));
+      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?path=${encodeURIComponent(path)}${backtestParam}&max_points=${maxPoints}`);
       if (!r.ok) throw new Error('Live chart failed');
       setLiveCharts(normalizeLiveChartPayload(await r.json()));
       setLiveLastRefreshTs(new Date().toISOString());
