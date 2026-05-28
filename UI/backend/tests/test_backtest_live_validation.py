@@ -617,6 +617,59 @@ def test_live_session_chart_prefers_broader_sqlite_equity(monkeypatch, tmp_path)
     assert body["live"][-1]["value"] == 6.0
 
 
+def test_live_session_chart_fills_ohlcv_gaps_from_telemetry(monkeypatch, tmp_path):
+    live_root = tmp_path / "_reports" / "_live"
+    session = live_root / "hype_canary_gap_fill"
+    session.mkdir(parents=True)
+    _write_json(session / "RUN_STATUS.json", {"status": "stopped", "utc": "2026-05-26T00:04:00Z"})
+    pd.DataFrame([{"ts": "2026-05-26T00:00:00Z", "value": 0.0}]).to_csv(session / "live_equity.csv", index=False)
+    np.savez(
+        session / "a_ohlcv.npz",
+        timestamp_s=np.array([1779753600]),
+        open=np.array([58.0]),
+        high=np.array([58.2]),
+        low=np.array([57.9]),
+        close=np.array([58.1]),
+    )
+    np.savez(
+        session / "z_ohlcv.npz",
+        timestamp_s=np.array([1779753840]),
+        open=np.array([58.5]),
+        high=np.array([58.8]),
+        low=np.array([58.4]),
+        close=np.array([58.7]),
+    )
+    (session / "run_telemetry_gap.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"utc": "2026-05-26T00:01:10Z", "input_meta": {"market": {"mark": 58.2}}}),
+                json.dumps({"utc": "2026-05-26T00:02:10Z", "input_meta": {"market": {"mark": 58.3}}}),
+                json.dumps({"utc": "2026-05-26T00:03:10Z", "input_meta": {"market": {"mark": 58.4}}}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+
+    client = TestClient(api_main.app)
+    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session)})
+
+    assert chart.status_code == 200
+    body = chart.json()
+    assert [row["ts"] for row in body["price_bars"]] == [
+        "2026-05-26T00:00:00+00:00",
+        "2026-05-26T00:01:00+00:00",
+        "2026-05-26T00:02:00+00:00",
+        "2026-05-26T00:03:00+00:00",
+        "2026-05-26T00:04:00+00:00",
+    ]
+    assert "run_telemetry_*.jsonl:mark_ohlc_1m" in body["sources"]["price_bars"]
+    assert any("time gaps" in warning for warning in body["warnings"])
+
+
 def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tmp_path):
     tv_src = tmp_path / "TV_backtest_source"
     tv_src.mkdir()

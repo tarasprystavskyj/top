@@ -1,5 +1,6 @@
 # FastAPI MVP backend
 import os, json, uuid, subprocess, threading, queue, time, shutil, yaml, glob, itertools, copy, re, sys, sqlite3
+from datetime import datetime
 from typing import Any, Dict, Optional, List, Tuple
 from fastapi import FastAPI, HTTPException, Body, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -3174,7 +3175,10 @@ def _latest_live_telemetry_path(session_dir: str) -> Optional[str]:
 
 
 _LIVE_TELEMETRY_MARK_CACHE: Dict[str, Tuple[Tuple[Tuple[str, int, int], ...], List[Dict[str, Any]]]] = {}
+_LIVE_TELEMETRY_OHLCV_CACHE: Dict[str, Tuple[Tuple[Tuple[str, int, int], ...], List[Dict[str, Any]]]] = {}
 MAX_TELEMETRY_BYTES_FOR_CHART = 80 * 1024 * 1024
+_TELEMETRY_MARK_RE = re.compile(r'"mark"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)')
+_TELEMETRY_UTC_RE = re.compile(r'"utc"\s*:\s*"([^"]+)"')
 
 
 def _live_telemetry_paths(session_dir: str) -> List[str]:
@@ -3227,6 +3231,60 @@ def _extract_mark_point_from_telemetry_line(line: str) -> Optional[Dict[str, Any
     return _coerce_point(ts, mark)
 
 
+def _extract_mark_point_from_telemetry_line_fast(line: str) -> Optional[Dict[str, Any]]:
+    if '"mark"' not in line:
+        return None
+    mark_match = _TELEMETRY_MARK_RE.search(line)
+    if not mark_match:
+        return _extract_mark_point_from_telemetry_line(line)
+    utc_matches = list(_TELEMETRY_UTC_RE.finditer(line))
+    if not utc_matches:
+        return _extract_mark_point_from_telemetry_line(line)
+    return _coerce_point(utc_matches[-1].group(1), mark_match.group(1))
+
+
+def _iso_to_epoch_seconds_fast(value: Any) -> Optional[float]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        raw = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(raw).timestamp()
+    except Exception:
+        try:
+            ts = pd.to_datetime(value, utc=True, errors="coerce")
+            if pd.isna(ts):
+                return None
+            return float(ts.timestamp())
+        except Exception:
+            return None
+
+
+def _extract_mark_bucket_from_telemetry_line_fast(line: str) -> Optional[Tuple[int, float]]:
+    if '"mark"' not in line:
+        return None
+    mark_match = _TELEMETRY_MARK_RE.search(line)
+    if not mark_match:
+        point = _extract_mark_point_from_telemetry_line(line)
+        if not point:
+            return None
+        ts_seconds = _iso_to_epoch_seconds_fast(point.get("ts"))
+        value = _safe_float(point.get("value"))
+    else:
+        utc_matches = list(_TELEMETRY_UTC_RE.finditer(line))
+        if not utc_matches:
+            point = _extract_mark_point_from_telemetry_line(line)
+            if not point:
+                return None
+            ts_seconds = _iso_to_epoch_seconds_fast(point.get("ts"))
+            value = _safe_float(point.get("value"))
+        else:
+            ts_seconds = _iso_to_epoch_seconds_fast(utc_matches[-1].group(1))
+            value = _safe_float(mark_match.group(1))
+    if ts_seconds is None or value is None or not np.isfinite(value):
+        return None
+    return int(ts_seconds // 60) * 60, float(value)
+
+
 def _live_mark_points_from_telemetry_raw(session_dir: str) -> List[Dict[str, Any]]:
     paths = _live_telemetry_paths(session_dir)
     if not paths:
@@ -3249,7 +3307,7 @@ def _live_mark_points_from_telemetry_raw(session_dir: str) -> List[Dict[str, Any
             continue
         with fh:
             for line in fh:
-                point = _extract_mark_point_from_telemetry_line(line)
+                point = _extract_mark_point_from_telemetry_line_fast(line)
                 if point:
                     dedup[point["ts"]] = point
     points = sorted(dedup.values(), key=lambda x: x["ts"])
@@ -3288,6 +3346,51 @@ def _mark_points_to_minute_bars(points: List[Dict[str, Any]]) -> List[Dict[str, 
             }
         )
     return out
+
+
+def _live_telemetry_ohlcv_bars(session_dir: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    paths = _live_telemetry_paths(session_dir)
+    if not paths:
+        return [], None
+    signature = _live_telemetry_signature(paths)
+    cached = _LIVE_TELEMETRY_OHLCV_CACHE.get(session_dir)
+    if cached and cached[0] == signature:
+        return list(cached[1]), "run_telemetry_*.jsonl:mark_ohlc_1m"
+
+    buckets: Dict[int, Dict[str, Any]] = {}
+    for path in paths:
+        try:
+            fh = open(path, "r", encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        with fh:
+            for line in fh:
+                bucket_point = _extract_mark_bucket_from_telemetry_line_fast(line)
+                if not bucket_point:
+                    continue
+                bucket, value = bucket_point
+                existing = buckets.get(bucket)
+                if not existing:
+                    buckets[bucket] = {"open": value, "high": value, "low": value, "close": value}
+                    continue
+                existing["high"] = max(float(existing["high"]), value)
+                existing["low"] = min(float(existing["low"]), value)
+                existing["close"] = value
+
+    rows: List[Dict[str, Any]] = []
+    for bucket in sorted(buckets):
+        row = buckets[bucket]
+        rows.append(
+            {
+                "ts": pd.to_datetime(bucket, unit="s", utc=True).isoformat(),
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            }
+        )
+    _LIVE_TELEMETRY_OHLCV_CACHE[session_dir] = (signature, rows)
+    return list(rows), "run_telemetry_*.jsonl:mark_ohlc_1m" if rows else None
 
 
 def _live_mark_points_from_telemetry(session_dir: str) -> List[Dict[str, Any]]:
@@ -3379,6 +3482,67 @@ def _live_ohlcv_bars_from_npz(session_dir: str) -> Tuple[List[Dict[str, Any]], O
 
     rows = sorted(by_time.values(), key=lambda x: x["ts"])
     return rows, "+".join(sources) if rows and sources else None
+
+
+def _has_price_bar_gap(rows: List[Dict[str, Any]], max_gap_seconds: int = 120) -> bool:
+    if len(rows) < 2:
+        return False
+    prev: Optional[pd.Timestamp] = None
+    for row in rows:
+        ts = pd.to_datetime(row.get("ts"), utc=True, errors="coerce")
+        if pd.isna(ts):
+            continue
+        if prev is not None and (ts - prev).total_seconds() > max_gap_seconds:
+            return True
+        prev = ts
+    return False
+
+
+def _merge_price_bars(primary: List[Dict[str, Any]], fallback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_time: Dict[str, Dict[str, Any]] = {}
+    for row in fallback:
+        ts = str(row.get("ts") or "")
+        if ts:
+            by_time[ts] = row
+    for row in primary:
+        ts = str(row.get("ts") or "")
+        if ts:
+            by_time[ts] = row
+    return sorted(by_time.values(), key=lambda x: x["ts"])
+
+
+def _fill_short_price_bar_gaps(rows: List[Dict[str, Any]], max_gap_seconds: int = 600) -> Tuple[List[Dict[str, Any]], int]:
+    if len(rows) < 2:
+        return rows, 0
+    filled: List[Dict[str, Any]] = []
+    inserted = 0
+    for row in rows:
+        if not filled:
+            filled.append(row)
+            continue
+        prev = filled[-1]
+        prev_seconds = _iso_to_epoch_seconds_fast(prev.get("ts"))
+        row_seconds = _iso_to_epoch_seconds_fast(row.get("ts"))
+        if prev_seconds is not None and row_seconds is not None:
+            gap = row_seconds - prev_seconds
+            if 120 < gap <= max_gap_seconds:
+                close = _safe_float(prev.get("close"))
+                if close is not None:
+                    next_ts = int(prev_seconds // 60) * 60 + 60
+                    while next_ts < int(row_seconds):
+                        filled.append(
+                            {
+                                "ts": pd.to_datetime(next_ts, unit="s", utc=True).isoformat(),
+                                "open": close,
+                                "high": close,
+                                "low": close,
+                                "close": close,
+                            }
+                        )
+                        inserted += 1
+                        next_ts += 60
+        filled.append(row)
+    return filled, inserted
 
 
 def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
@@ -4084,6 +4248,16 @@ def backtest_live_validation_live_session_chart(path: str = Query(default=""), b
         if distance:
             distance_source = "computed"
     price_bars, price_bars_source = _live_ohlcv_bars_from_npz(session_dir)
+    if _has_price_bar_gap(price_bars):
+        telemetry_price_bars, telemetry_price_source = _live_telemetry_ohlcv_bars(session_dir)
+        if telemetry_price_bars:
+            price_bars = _merge_price_bars(price_bars, telemetry_price_bars)
+            price_bars, short_gap_fills = _fill_short_price_bar_gaps(price_bars)
+            price_bars_source = "+".join([s for s in (price_bars_source, telemetry_price_source) if s])
+            warnings.append("Compact OHLCV artifacts have time gaps; missing 1m price bars were filled from telemetry mark data.")
+            if short_gap_fills:
+                price_bars_source = "+".join([s for s in (price_bars_source, "short_flat_gap_fill") if s])
+                warnings.append(f"Filled {short_gap_fills} short residual price-bar gap(s) with flat close bars.")
     mark = _live_mark_points_from_telemetry(session_dir)
     markers = _live_event_markers(session_dir)
     telemetry_paths = _live_telemetry_paths(session_dir)
