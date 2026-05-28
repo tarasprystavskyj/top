@@ -24,12 +24,17 @@ if str(SCRIPT_DIR) not in sys.path:
 from paper_live_binance_copy_public_positions import (  # noqa: E402
     fetch_open_positions,
     fetch_position_history,
-    find_history_exit,
     iso,
     parse_float,
     ret_for,
     utc_now,
 )
+try:
+    from . import hype_cap100_champion_dca_strategy as champion_dca  # noqa: E402
+    from . import hype_copy_signal_meta_strategy as copy_signal_meta  # noqa: E402
+except ImportError:  # pragma: no cover - script import path
+    import hype_cap100_champion_dca_strategy as champion_dca  # noqa: E402
+    import hype_copy_signal_meta_strategy as copy_signal_meta  # noqa: E402
 
 
 DEFAULT_PORTFOLIO_ID = "4300516091842181632"
@@ -37,23 +42,10 @@ DEFAULT_SYMBOL = "HYPEUSDT"
 DEFAULT_OUT_DIR = Path("reports/hype_canary_live_disabled_20260525")
 DEFAULT_DEADLINE_UTC = "2026-05-26T09:00:00Z"
 
-CHAMPION_CANDIDATE_INDEX = 189
-CHAMPION_PARAMS = {
-    "dca_add_mode": "multiplier",
-    "dca_add_notional_usdt": 2.0,
-    "dca_profile": "default",
-    "dca_min_order_usdt": 2.0,
-    "min_order_qty_hype": 0.105,
-    "fresh_base_pct": 28.0,
-    "fresh_callback_percent": 0.45,
-    "fresh_tp_percent": 1.4,
-    "freshness_ms": 259200000,
-    "max_position_cost_pct": 100.0,
-    "normal_base_pct": 10.0,
-    "tp_freshness_ms": 345600000,
-}
-DCA_DROPS_PCT = (0.25, 0.35, 0.55, 3.00)
-DCA_MULTIPLIERS = (1.0, 1.5, 2.75, 1.5)
+CHAMPION_CANDIDATE_INDEX = champion_dca.CHAMPION_CANDIDATE_INDEX
+CHAMPION_PARAMS = champion_dca.CHAMPION_PARAMS
+DCA_DROPS_PCT = champion_dca.DCA_DROPS_PCT
+DCA_MULTIPLIERS = champion_dca.DCA_MULTIPLIERS
 FEE_RATE = 0.0005
 SLIPPAGE_BP = 4.25
 SLIPPAGE_RATE = SLIPPAGE_BP / 10_000.0
@@ -163,48 +155,11 @@ def recent_new_orders(state: Dict[str, Any], now: datetime) -> int:
 
 
 def dca_levels(entry_price: float) -> List[float]:
-    levels: List[float] = []
-    last = entry_price
-    for drop in DCA_DROPS_PCT:
-        last *= 1.0 - drop / 100.0
-        levels.append(last)
-    return levels
+    return champion_dca.dca_levels(entry_price)
 
 
 def build_plan(equity: float, args: argparse.Namespace, entry_price: float) -> Dict[str, Any]:
-    target = min(float(args.initial_target_notional), float(args.max_gross_notional_usdt), max(equity, 0.0))
-    base = min(target * CHAMPION_PARAMS["fresh_base_pct"] / 100.0, target)
-    min_order_notional = max(
-        0.0,
-        float(CHAMPION_PARAMS.get("dca_min_order_usdt") or 0.0),
-        float(CHAMPION_PARAMS.get("min_order_qty_hype") or 0.0) * max(float(entry_price or 0.0), 0.0),
-    )
-    if min_order_notional > 0:
-        base = min(target, max(base, min_order_notional))
-    remaining = max(target - base, 0.0)
-    dca_mode = str(CHAMPION_PARAMS.get("dca_add_mode") or "multiplier").strip().lower()
-    if dca_mode == "fixed":
-        fixed = max(0.0, float(CHAMPION_PARAMS.get("dca_add_notional_usdt") or 0.0))
-        raw_adds = [fixed for _ in DCA_MULTIPLIERS]
-    elif dca_mode == "min_order":
-        min_order = max(0.0, float(CHAMPION_PARAMS.get("dca_min_order_usdt") or 0.0))
-        raw_adds = [min_order for _ in DCA_MULTIPLIERS]
-    else:
-        dca_mode = "multiplier"
-        raw_adds = [base * m for m in DCA_MULTIPLIERS]
-    scale = min(1.0, remaining / max(sum(raw_adds), 1e-12))
-    add_notionals = [x * scale for x in raw_adds]
-    if min_order_notional > 0:
-        add_notionals = [max(x, min_order_notional) if x > 0 else 0.0 for x in add_notionals]
-    return {
-        "target_notional": target,
-        "base_notional": base,
-        "add_notionals": add_notionals,
-        "dca_add_mode": dca_mode,
-        "min_order_notional": min_order_notional,
-        "min_order_qty_hype": float(CHAMPION_PARAMS.get("min_order_qty_hype") or 0.0),
-        "levels": dca_levels(entry_price),
-    }
+    return champion_dca.build_plan(equity, args, entry_price)
 
 
 def guard_new_entry(
@@ -365,86 +320,50 @@ def load_inputs(args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], List[Di
 
 
 def apply_snapshot(state: Dict[str, Any], positions: List[Dict[str, Any]], history: List[Dict[str, Any]], mark: Optional[float], now: datetime, args: argparse.Namespace) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    filtered = []
-    for pos in positions:
-        if pos.get("symbol") != args.symbol:
-            continue
-        if str(pos.get("side")) == "SHORT" and args.long_only:
-            events.append({"type": "signal_ignored", "reason": "long_only", "key": pos.get("key")})
-            continue
-        filtered.append(pos)
-    current = {f"{p['symbol']}:{p['side']}": p for p in filtered}
+    plan = copy_signal_meta.build_strategy_intents(state, positions, history, mark, now, args, allow_dca=True, iso_fn=iso)
+    events: List[Dict[str, Any]] = list(plan.get("events") or [])
     open_trades: Dict[str, Dict[str, Any]] = state.setdefault("open_trades", {})
+    dca_blocked_keys = set()
 
-    for key, pos in sorted(current.items()):
-        side = str(pos["side"])
-        entry = float(pos["entry_price"])
-        if key not in open_trades:
-            plan = build_plan(float(state.get("equity") or args.initial_equity), args, entry)
-            trade = {
-                "key": key,
-                "lead_position_id": pos.get("id"),
-                "symbol": pos["symbol"],
-                "side": side,
-                "opened_at_utc": iso(now),
-                "detected_at_ms": int(now.timestamp() * 1000),
-                "lead_entry_price": entry,
-                "target_notional": plan["target_notional"],
-                "base_notional": plan["base_notional"],
-                "add_notionals": plan["add_notionals"],
-                "levels": plan["levels"],
-                "next_level_idx": 0,
-                "qty": 0.0,
-                "notional": 0.0,
-                "avg_entry": 0.0,
-                "fees_paid": 0.0,
-                "last_mark": mark,
-                "last_seen_utc": iso(now),
-            }
-            event = add_fill(state, trade, now=now, expected_price=entry, notional=float(plan["base_notional"]), fill_type="base_entry", reason="lead_open_position_detected", mark=mark, args=args)
-            if event["type"] == "paper_fill":
+    for intent in plan.get("intents") or []:
+        key = str(intent.get("key") or "")
+        if intent.get("action") == "OPEN":
+            if intent.get("intent_type") == "dca_entry" and key in dca_blocked_keys:
+                continue
+            trade = intent["trade"]
+            if intent.get("intent_type") == "dca_entry" and key not in open_trades:
+                events.append({"type": "paper_entry_blocked", "key": key, "fill_type": intent.get("fill_type"), "reason": "strategy_intent_without_open_trade"})
+                dca_blocked_keys.add(key)
+                continue
+            event = add_fill(
+                state,
+                trade,
+                now=now,
+                expected_price=float(intent["expected_price"]),
+                notional=float(intent["notional"]),
+                fill_type=str(intent["fill_type"]),
+                reason=str(intent["reason"]),
+                mark=mark,
+                args=args,
+            )
+            events.append(event)
+            if event["type"] == "paper_fill" and intent.get("intent_type") == "open_entry":
                 open_trades[key] = trade
-            events.append(event)
-        else:
-            trade = open_trades[key]
-            trade["last_seen_utc"] = iso(now)
-            trade["last_mark"] = mark
-
-        if key not in open_trades:
+            if event["type"] == "paper_fill" and intent.get("intent_type") == "dca_entry":
+                trade["next_level_idx"] = int(intent.get("level_idx") or 0) + 1
+            elif event["type"] != "paper_fill":
+                dca_blocked_keys.add(key)
             continue
-        trade = open_trades[key]
-        while int(trade.get("next_level_idx") or 0) < len(trade.get("levels") or []):
-            idx = int(trade.get("next_level_idx") or 0)
-            level = float(trade["levels"][idx])
-            if mark is None or mark > level:
-                break
-            notional = float(trade["add_notionals"][idx])
-            event = add_fill(state, trade, now=now, expected_price=level, notional=notional, fill_type=f"dca_add_{idx + 1}", reason="mark_crossed_dca_level", mark=mark, args=args)
-            events.append(event)
-            if event["type"] != "paper_fill":
-                break
-            trade["next_level_idx"] = idx + 1
-
-    keys_to_close = set(open_trades) - set(current)
-    for key in set(open_trades) & set(current):
-        hist = find_history_exit(open_trades[key], history)
-        if hist and hist.get("avg_close_price"):
-            keys_to_close.add(key)
-    for key in sorted(keys_to_close):
-        trade = open_trades[key]
-        hist = find_history_exit(trade, history)
-        if hist and hist.get("avg_close_price"):
-            exit_price = float(hist["avg_close_price"])
-            reason = "position_history_closed"
-        else:
-            exit_price = float(mark or trade.get("last_mark") or trade["lead_entry_price"])
-            reason = "lead_position_disappeared_mark_fallback"
-        closed = close_trade(trade, now=now, expected_exit=exit_price, mark=mark, reason=reason, history_row=hist)
+        if intent.get("action") != "CLOSE":
+            events.append({"type": "strategy_intent_ignored", "key": key, "reason": "unsupported_intent", "intent": intent})
+            continue
+        trade = intent["trade"]
+        closed = close_trade(trade, now=now, expected_exit=float(intent["expected_exit"]), mark=mark, reason=str(intent["reason"]), history_row=intent.get("history_row"))
         state["equity"] = float(state.get("equity") or args.initial_equity) + float(closed["paper_pnl_usdt"])
         state.setdefault("closed_trades", []).append(closed)
-        del open_trades[key]
-        events.append({"type": "paper_exit", "key": key, "pnl": closed["paper_pnl_usdt"], "reason": reason})
+        if key in open_trades:
+            del open_trades[key]
+        events.append({"type": "paper_exit", "key": key, "pnl": closed["paper_pnl_usdt"], "reason": intent.get("reason"), "strategy_policy": intent.get("strategy_policy")})
 
     return events
 

@@ -30,7 +30,12 @@ if str(ROOT) not in sys.path:
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-import hype_cap100_live_disabled_canary as paper  # noqa: E402
+try:
+    from . import hype_cap100_live_disabled_canary as paper  # noqa: E402
+    from . import hype_copy_signal_meta_strategy as copy_signal_meta  # noqa: E402
+except ImportError:  # pragma: no cover - script import path
+    import hype_cap100_live_disabled_canary as paper  # noqa: E402
+    import hype_copy_signal_meta_strategy as copy_signal_meta  # noqa: E402
 from obw_platform.runners.common import CCXTFetcher  # noqa: E402
 from obw_platform.runners.common import (  # noqa: E402
     db_upsert_open_position,
@@ -243,8 +248,6 @@ DEFAULT_ORDER_ERROR_BACKOFF_SEC = 300.0
 DEFAULT_ORDER_ERROR_CIRCUIT_SEC = 1800.0
 DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE = 3
 DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC = 3600.0
-SOURCE_HISTORY_OPEN_TOLERANCE_SEC = 2 * 60 * 60
-SOURCE_HISTORY_CLOSE_TOLERANCE_SEC = 30 * 60
 
 
 def stable_client_order_id(*parts: Any) -> str:
@@ -408,34 +411,15 @@ def ensure_order_execution_comparisons_db(db_path: str) -> None:
 
 
 def _parse_iso_dt(raw: Any) -> Optional[datetime]:
-    if raw in (None, ""):
-        return None
-    try:
-        text = str(raw)
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        dt = datetime.fromisoformat(text)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
+    return copy_signal_meta.parse_iso_dt(raw)
 
 
 def _ms_to_dt(raw: Any) -> Optional[datetime]:
-    try:
-        ms = int(raw or 0)
-    except Exception:
-        return None
-    if ms <= 0:
-        return None
-    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+    return copy_signal_meta.ms_to_dt(raw)
 
 
 def _time_lag_sec(a: Optional[datetime], b: Optional[datetime]) -> Optional[float]:
-    if not a or not b:
-        return None
-    return abs((a - b).total_seconds())
+    return copy_signal_meta.time_lag_sec(a, b)
 
 
 def _bp_delta(ref_price: Any, test_price: Any, side: str = "LONG", *, is_close: bool = False) -> Optional[float]:
@@ -443,56 +427,19 @@ def _bp_delta(ref_price: Any, test_price: Any, side: str = "LONG", *, is_close: 
 
 
 def _source_history_open_dt(row: Dict[str, Any]) -> Optional[datetime]:
-    return _parse_iso_dt(row.get("opened_utc")) or _ms_to_dt(row.get("opened_ms"))
+    return copy_signal_meta.source_history_open_dt(row)
 
 
 def _source_history_close_dt(row: Dict[str, Any]) -> Optional[datetime]:
-    return _parse_iso_dt(row.get("closed_utc")) or _ms_to_dt(row.get("closed_ms"))
+    return copy_signal_meta.source_history_close_dt(row)
 
 
 def validate_source_history_match(trade: Dict[str, Any], row: Optional[Dict[str, Any]], close_time: datetime) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-    if not row:
-        return None, {"valid": False, "reason": "missing_history"}
-    key = str(trade.get("key") or "")
-    if row.get("key") and str(row.get("key")) != key:
-        return None, {"valid": False, "reason": "key_mismatch", "history_key": row.get("key"), "trade_key": key}
-    lead_id = str(trade.get("lead_position_id") or "")
-    hist_id = str(row.get("id") or "")
-    if lead_id and hist_id and lead_id != hist_id:
-        return None, {"valid": False, "reason": "position_id_mismatch", "history_id": hist_id, "lead_position_id": lead_id}
-    opened_ref = _ms_to_dt(trade.get("detected_at_ms")) or _parse_iso_dt(trade.get("opened_at_utc"))
-    hist_open = _source_history_open_dt(row)
-    open_lag = _time_lag_sec(opened_ref, hist_open)
-    if open_lag is None:
-        return None, {"valid": False, "reason": "missing_open_time", "history_opened_utc": row.get("opened_utc"), "trade_opened_at_utc": trade.get("opened_at_utc")}
-    if open_lag > SOURCE_HISTORY_OPEN_TOLERANCE_SEC:
-        return None, {"valid": False, "reason": "open_time_mismatch", "open_lag_sec": open_lag, "history_opened_utc": row.get("opened_utc"), "trade_opened_at_utc": trade.get("opened_at_utc")}
-    hist_close = _source_history_close_dt(row)
-    close_lag = _time_lag_sec(close_time, hist_close)
-    if close_lag is None:
-        return None, {"valid": False, "reason": "missing_close_time", "history_closed_utc": row.get("closed_utc"), "close_event_utc": paper.iso(close_time)}
-    if close_lag > SOURCE_HISTORY_CLOSE_TOLERANCE_SEC:
-        return None, {"valid": False, "reason": "close_time_mismatch", "close_lag_sec": close_lag, "history_closed_utc": row.get("closed_utc"), "close_event_utc": paper.iso(close_time)}
-    if not row.get("avg_close_price"):
-        return None, {"valid": False, "reason": "missing_avg_close_price"}
-    return row, {"valid": True, "open_lag_sec": open_lag, "close_lag_sec": close_lag}
+    return copy_signal_meta.validate_source_history_match(trade, row, close_time, iso_fn=paper.iso)
 
 
 def find_valid_source_history_exit(trade: Dict[str, Any], history: List[Dict[str, Any]], close_time: datetime) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-    candidates = [row for row in (history or []) if row.get("key") == trade.get("key") and row.get("avg_close_price")]
-    lead_id = str(trade.get("lead_position_id") or "")
-    if lead_id:
-        exact = [row for row in candidates if str(row.get("id") or "") == lead_id]
-        if exact:
-            candidates = exact
-    ranked = sorted(candidates, key=lambda row: (_time_lag_sec(close_time, _source_history_close_dt(row)) if _source_history_close_dt(row) else float("inf")))
-    rejects = []
-    for row in ranked:
-        valid, meta = validate_source_history_match(trade, row, close_time)
-        if valid:
-            return valid, {**meta, "candidate_count": len(candidates)}
-        rejects.append(meta)
-    return None, {"valid": False, "reason": "no_valid_history_match", "candidate_count": len(candidates), "rejects": rejects[:5]}
+    return copy_signal_meta.find_valid_source_history_exit(trade, history, close_time, iso_fn=paper.iso)
 
 
 def record_order_execution_comparison(
@@ -2120,108 +2067,72 @@ def apply_live_snapshot(
     args: argparse.Namespace,
     allow_dca: bool,
 ) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    filtered = []
-    for pos in positions:
-        if pos.get("symbol") != args.symbol:
-            continue
-        if str(pos.get("side")) == "SHORT" and args.long_only:
-            events.append({"type": "signal_ignored", "reason": "long_only", "key": pos.get("key")})
-            continue
-        filtered.append(pos)
-    current = {f"{p['symbol']}:{p['side']}": p for p in filtered}
+    plan = copy_signal_meta.build_strategy_intents(state, positions, history, mark, now, args, allow_dca=allow_dca, iso_fn=paper.iso)
+    events: List[Dict[str, Any]] = list(plan.get("events") or [])
+    current_keys = set(plan.get("current_keys") or set())
     open_trades: Dict[str, Dict[str, Any]] = state.setdefault("open_trades", {})
+    dca_blocked_keys = set()
 
-    for key, pos in sorted(current.items()):
-        side = str(pos["side"])
-        entry = float(pos["entry_price"])
-        if key not in open_trades:
-            plan = paper.build_plan(float(state.get("equity") or args.initial_equity), args, entry)
-            trade = {
-                "key": key,
-                "lead_position_id": pos.get("id"),
-                "symbol": pos["symbol"],
-                "side": side,
-                "opened_at_utc": paper.iso(now),
-                "detected_at_ms": int(now.timestamp() * 1000),
-                "lead_entry_price": entry,
-                "target_notional": plan["target_notional"],
-                "base_notional": plan["base_notional"],
-                "add_notionals": plan["add_notionals"],
-                "levels": plan["levels"],
-                "next_level_idx": 0,
-                "qty": 0.0,
-                "notional": 0.0,
-                "avg_entry": 0.0,
-                "fees_paid": 0.0,
-                "last_mark": mark,
-                "last_seen_utc": paper.iso(now),
-            }
+    for key in sorted(current_keys & set(open_trades)):
+        trade = open_trades[key]
+        sync_meta = sync_trade_from_exchange(args, trade)
+        if sync_meta.get("synced"):
+            events.append({"type": "exchange_position_synced", "key": key, **sync_meta})
+
+    for intent in plan.get("intents") or []:
+        key = str(intent.get("key") or "")
+        if intent.get("action") == "OPEN":
+            if intent.get("intent_type") == "dca_entry" and key in dca_blocked_keys:
+                continue
+            trade = intent["trade"]
+            if intent.get("intent_type") == "dca_entry" and key not in open_trades:
+                events.append({"type": "live_entry_blocked", "key": key, "fill_type": intent.get("fill_type"), "reason": "strategy_intent_without_open_trade"})
+                dca_blocked_keys.add(key)
+                continue
             event = live_add_fill(
                 state,
                 trade,
                 now=now,
-                expected_price=entry,
-                notional=float(plan["base_notional"]),
-                fill_type="base_entry",
-                reason="lead_open_position_detected",
+                expected_price=float(intent["expected_price"]),
+                notional=float(intent["notional"]),
+                fill_type=str(intent["fill_type"]),
+                reason=str(intent["reason"]),
                 mark=mark,
                 args=args,
             )
-            if event["type"] == "live_fill":
+            if event["type"] == "live_fill" and intent.get("intent_type") == "open_entry":
                 open_trades[key] = trade
+            if event["type"] == "live_fill" and intent.get("intent_type") == "dca_entry":
+                trade["next_level_idx"] = int(intent.get("level_idx") or 0) + 1
+            elif event["type"] != "live_fill":
+                dca_blocked_keys.add(key)
             events.append(event)
-        else:
-            trade = open_trades[key]
-            trade["last_seen_utc"] = paper.iso(now)
-            trade["last_mark"] = mark
-            sync_meta = sync_trade_from_exchange(args, trade)
-            if sync_meta.get("synced"):
-                events.append({"type": "exchange_position_synced", "key": key, **sync_meta})
-
-        if key not in open_trades:
             continue
-        trade = open_trades[key]
-        while allow_dca and int(trade.get("next_level_idx") or 0) < len(trade.get("levels") or []):
-            idx = int(trade.get("next_level_idx") or 0)
-            level = float(trade["levels"][idx])
-            if mark is None or mark > level:
-                break
-            notional = float(trade["add_notionals"][idx])
-            event = live_add_fill(
-                state,
-                trade,
-                now=now,
-                expected_price=level,
-                notional=notional,
-                fill_type=f"dca_add_{idx + 1}",
-                reason="mark_crossed_dca_level",
-                mark=mark,
-                args=args,
-            )
+        if intent.get("action") != "CLOSE":
+            events.append({"type": "strategy_intent_ignored", "key": key, "reason": "unsupported_intent", "intent": intent})
+            continue
+        trade = intent["trade"]
+        closed, event = live_close_trade(
+            state,
+            trade,
+            now=now,
+            expected_exit=float(intent["expected_exit"]),
+            mark=mark,
+            reason=str(intent["reason"]),
+            history_row=intent.get("history_row"),
+            args=args,
+        )
+        if event.get("type") == "live_exit":
+            event["strategy_policy"] = intent.get("strategy_policy")
             events.append(event)
-            if event["type"] != "live_fill":
-                break
-            trade["next_level_idx"] = idx + 1
-
-    keys_to_close = set(open_trades) - set(current)
-    for key in sorted(keys_to_close):
-        trade = open_trades[key]
-        hist, hist_meta = find_valid_source_history_exit(trade, history, now)
-        if hist and hist.get("avg_close_price"):
-            exit_price = float(hist["avg_close_price"])
-            reason = "position_history_closed"
         else:
-            exit_price = float(mark or trade.get("last_mark") or trade["lead_entry_price"])
-            reason = "lead_position_disappeared_mark_fallback"
-            trade["last_history_match_reject"] = hist_meta
-        closed, event = live_close_trade(state, trade, now=now, expected_exit=exit_price, mark=mark, reason=reason, history_row=hist, args=args)
-        events.append(event)
+            events.append(event)
         if closed is None:
             continue
         state["equity"] = float(state.get("equity") or args.initial_equity) + float(closed["paper_pnl_usdt"])
         state.setdefault("closed_trades", []).append(closed)
-        del open_trades[key]
+        if key in open_trades:
+            del open_trades[key]
     return events
 
 
