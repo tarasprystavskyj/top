@@ -3376,10 +3376,17 @@ def _live_telemetry_ohlcv_bars(session_dir: str) -> Tuple[List[Dict[str, Any]], 
     paths = _live_telemetry_paths(session_dir)
     if not paths:
         return [], None
+    source = "run_telemetry_*.jsonl:mark_ohlc_1m"
+    if _live_telemetry_total_bytes(paths) > MAX_TELEMETRY_BYTES_FOR_CHART:
+        latest = _latest_live_telemetry_path(session_dir)
+        paths = [latest] if latest else []
+        source = "latest run_telemetry_*.jsonl:mark_ohlc_1m"
+    if not paths:
+        return [], None
     signature = _live_telemetry_signature(paths)
     cached = _LIVE_TELEMETRY_OHLCV_CACHE.get(session_dir)
     if cached and cached[0] == signature:
-        return list(cached[1]), "run_telemetry_*.jsonl:mark_ohlc_1m"
+        return list(cached[1]), source
 
     buckets: Dict[int, Dict[str, Any]] = {}
     for path in paths:
@@ -3414,7 +3421,7 @@ def _live_telemetry_ohlcv_bars(session_dir: str) -> Tuple[List[Dict[str, Any]], 
             }
         )
     _LIVE_TELEMETRY_OHLCV_CACHE[session_dir] = (signature, rows)
-    return list(rows), "run_telemetry_*.jsonl:mark_ohlc_1m" if rows else None
+    return list(rows), source if rows else None
 
 
 def _live_mark_points_from_telemetry(session_dir: str) -> List[Dict[str, Any]]:
