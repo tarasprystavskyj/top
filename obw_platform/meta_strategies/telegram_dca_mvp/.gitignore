@@ -1,0 +1,34 @@
+# Keep this lane commit-safe. Large research/runtime artifacts stay local.
+reports/
+worker_bundle/
+external_handoffs/
+events/
+telegram_dca_next_agent_bundle/reports/
+telegram_dca_next_agent_bundle/charts/
+telegram_dca_next_agent_bundle/**/*.csv
+telegram_dca_next_agent_bundle/**/*.json
+telegram_dca_next_agent_bundle/**/*.png
+telegram_dca_next_agent_bundle/**/*.npz
+telegram_dca_next_agent_bundle/**/*.part*
+*.db
+*.sqlite
+*.npz
+*.part*
+*.zip
+*.tar
+*.gz
+*.png
+*.log
+__pycache__/
+*.pyc
+
+# Preserve compact, human-readable state files explicitly staged by agents.
+!README.md
+!AUTONOMOUS_DISCOVERY_CONTRACT.json
+!*.py
+!telegram_dca_next_agent_bundle/
+!telegram_dca_next_agent_bundle/*.md
+!telegram_dca_next_agent_bundle/*.sh
+!telegram_dca_next_agent_bundle/research/
+!telegram_dca_next_agent_bundle/research/*.py
+!telegram_dca_next_agent_bundle/research/*.sh

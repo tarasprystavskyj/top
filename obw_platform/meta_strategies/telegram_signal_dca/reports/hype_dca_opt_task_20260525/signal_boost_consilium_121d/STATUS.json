@@ -1,0 +1,10 @@
+{
+  "updated_utc": "2026-05-25T13:00:55.330489Z",
+  "rows": 333,
+  "wave": 8,
+  "target_net_pct": 200.0,
+  "goal_hit": false,
+  "best_net_pct": 148.99652413514173,
+  "best_max_dd_pct": -31.38958612375098,
+  "best_params": "{\"fresh_base_pct\": 28.0, \"fresh_callback_percent\": 0.35, \"fresh_tp_percent\": 1.6, \"freshness_ms\": 259200000, \"normal_base_pct\": 10.0, \"tp_freshness_ms\": 43200000}"
+}

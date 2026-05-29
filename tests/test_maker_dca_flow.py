@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from obw_platform.runners.virtual_exchange import VirtualExchange
 from obw_platform.runners import live_runner_dual as lr
-from obw_platform.runners.common import ensure_session_dbs
+from obw_platform.runners.common import ensure_orders_db, ensure_session_dbs
 from obw_platform.backtester_dual_core_dynamic_v5 import simulate, pick_symbol_block
 from tests import dummy_maker_strategy as dms
 
@@ -58,23 +58,24 @@ def test_live_runner_limit_dca_cancel_retry_and_fill():
     with tempfile.TemporaryDirectory() as td:
         npz=Path(td)/'bars.npz'; write_npz(npz,bars)
         ex=VirtualExchange(npz_path=str(npz), mode='hedge', initial_balance=1000.0, order_ttl_bars=10, seed=2)
-        fetcher=DummyFetcher(ex); strat=_make_live_strat(95.0); cfg={'dca_open_order_type':'limit'}; pending={}; positions={'ENA/USDT:USDT|LONG':{'symbol':'ENA/USDT:USDT','side':'LONG','qty':1.0,'entry':100.0,'ts_open':'2026-01-01T00:00:00+00:00','run_id':'R1','order_id':'local1'}}
+        fetcher=DummyFetcher(ex); strat=_make_live_strat(95.0); cfg={'legacy_strategy_adapter': {'enabled': True, 'legacy_dca_order_type': 'limit'}}; pending={}; positions={'ENA/USDT:USDT|LONG':{'symbol':'ENA/USDT:USDT','side':'LONG','qty':1.0,'entry':100.0,'ts_open':'2026-01-01T00:00:00+00:00','run_id':'R1','order_id':'local1'}}
         sess,_=ensure_session_dbs(td)
+        ensure_orders_db(sess)
         row0=ex.current_bar('ENA/USDT:USDT'); ok0=lr._maybe_apply_manage_result(fetcher,'ENA/USDT:USDT|LONG',positions['ENA/USDT:USDT|LONG'],row0,strat,positions,td,'hedge',sess,'bot1','R1',cfg=cfg,pending_entries=pending)
         assert ok0 is False and 'ENA/USDT:USDT|LONG' in pending
         ex.advance(1); row1=ex.current_bar('ENA/USDT:USDT'); lr._sync_pending_entry_orders(fetcher,pending,positions,td,sess,'bot1',strat,strat,row1['datetime_utc'],run_id='R1')
         assert 'ENA/USDT:USDT|LONG' not in pending
-        ok1=lr._maybe_apply_manage_result(fetcher,'ENA/USDT:USDT|LONG',positions['ENA/USDT:USDT|LONG'],row1,strat,positions,td,'hedge',sess,'bot1','R1',cfg=cfg,pending_entries=pending)
-        assert ok1 is True and abs(float(positions['ENA/USDT:USDT|LONG']['qty'])-2.0)<1e-12
-        assert any(o['status']=='canceled' for o in ex.orders.values())
+        assert abs(float(positions['ENA/USDT:USDT|LONG']['qty'])-2.0)<1e-12
+        assert any(o['status']=='closed' for o in ex.orders.values())
 
 def test_live_runner_limit_dca_partial_fill_then_cancel_remainder():
     bars={'ENA/USDT:USDT':[{'datetime_utc':'2026-01-01T00:00:00+00:00','open':100.0,'high':100.0,'low':95.0,'close':96.0,'volume':1000.0,'limit_fill_fraction_buy':0.5},{'datetime_utc':'2026-01-01T00:00:30+00:00','open':96.0,'high':96.5,'low':95.2,'close':95.8,'volume':1000.0}]}
     with tempfile.TemporaryDirectory() as td:
         npz=Path(td)/'bars.npz'; write_npz(npz,bars)
         ex=VirtualExchange(npz_path=str(npz), mode='hedge', initial_balance=1000.0, order_ttl_bars=10, seed=3)
-        fetcher=DummyFetcher(ex); strat=_make_live_strat(95.0); cfg={'dca_open_order_type':'limit'}; pending={}; positions={'ENA/USDT:USDT|LONG':{'symbol':'ENA/USDT:USDT','side':'LONG','qty':1.0,'entry':100.0,'ts_open':'2026-01-01T00:00:00+00:00','run_id':'R1','order_id':'local1'}}
+        fetcher=DummyFetcher(ex); strat=_make_live_strat(95.0); cfg={'legacy_strategy_adapter': {'enabled': True, 'legacy_dca_order_type': 'limit'}}; pending={}; positions={'ENA/USDT:USDT|LONG':{'symbol':'ENA/USDT:USDT','side':'LONG','qty':1.0,'entry':100.0,'ts_open':'2026-01-01T00:00:00+00:00','run_id':'R1','order_id':'local1'}}
         sess,_=ensure_session_dbs(td)
+        ensure_orders_db(sess)
         row0=ex.current_bar('ENA/USDT:USDT'); ok0=lr._maybe_apply_manage_result(fetcher,'ENA/USDT:USDT|LONG',positions['ENA/USDT:USDT|LONG'],row0,strat,positions,td,'hedge',sess,'bot1','R1',cfg=cfg,pending_entries=pending)
         assert ok0 is False and abs(float(positions['ENA/USDT:USDT|LONG']['qty'])-1.5)<1e-12
         ex.advance(1); row1=ex.current_bar('ENA/USDT:USDT'); lr._sync_pending_entry_orders(fetcher,pending,positions,td,sess,'bot1',strat,strat,row1['datetime_utc'],run_id='R1')

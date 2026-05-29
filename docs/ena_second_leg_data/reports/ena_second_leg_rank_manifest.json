@@ -1,0 +1,16 @@
+{
+  "ena_npz": "DB\\ena_ohlcv_30s_1y_from_ticks_compat_np1.npz",
+  "base_symbol": "ENA/USDT:USDT",
+  "base_rows": 1049326,
+  "candidate_paths": [
+    "DB\\ena_ohlcv_30s_1y_from_ticks.npz",
+    "DB\\fast_cache_30s_ENA_1y.npz"
+  ],
+  "ranked_candidates": 0,
+  "errors": [
+    {
+      "path": "DB\\fast_cache_30s_ENA_1y.npz",
+      "error": "DB\\fast_cache_30s_ENA_1y.npz missing required keys: ['offsets', 'symbols', 'volume']"
+    }
+  ]
+}

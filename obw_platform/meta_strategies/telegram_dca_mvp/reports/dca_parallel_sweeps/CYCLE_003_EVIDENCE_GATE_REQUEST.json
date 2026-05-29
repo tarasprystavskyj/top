@@ -1,0 +1,90 @@
+{
+  "cycle_id": "telegram_dca_evidence_gate_003",
+  "date": "2026-05-17",
+  "mode": "paper_only_evidence_gate",
+  "ready_for_live": false,
+  "safety_invariants": {
+    "paper_only": true,
+    "signed_transactions": false,
+    "broadcast_enabled": false,
+    "private_key_loaded": false,
+    "human_approval_required_for_live": true,
+    "no_dca_first": false,
+    "dca_research_allowed": true
+  },
+  "current_verdict": {
+    "branch_state": "BLOCKED_BY_DATA",
+    "data_gate_status": "FAIL",
+    "promotion": "closed",
+    "primary_candidate": "rolling240d_symbol_side_min3_positive",
+    "primary_candidate_execution": "base no-DCA TP1",
+    "reason": "The best rolling symbol-side candidate is positive on split60 and split70 but opens only 30 and 23 trades, below the >=50 validation split gate. No larger local Telegram signal history was found."
+  },
+  "do_not_do": [
+    "do not rerun old Cycle 002 broad/prior-only DCA sweep",
+    "do not expand full-universe DCA grid",
+    "do not run additional backtests on the same 312 extracted signals",
+    "do not treat raw_edge_min5 or full-sample exclusions as deployable",
+    "do not touch live execution, paper-live daemon, broker/order execution, API keys, private keys, deploy state, or paper-live processes"
+  ],
+  "required_latest_artifacts": [
+    "cycle_001/cycle_002_audit/cycle_002_pre_run_audit.md",
+    "cycle_001/symbol_side_prior_analysis/SYMBOL_SIDE_PRIOR_NEXT_ACTION.md",
+    "cycle_001/prior_filter_runs/PRIOR_FILTER_SWEEP_RESULTS.md",
+    "cycle_001/prior_oos_time_split/TIME_SPLIT_PRIOR_FILTER_RESULTS.md",
+    "cycle_001/rolling_symbol_state_analysis/ROLLING_SYMBOL_STATE_RESULTS.md",
+    "cycle_001/rolling_neighbor_variants/ROLLING_NEIGHBOR_VARIANTS_RESULTS.md",
+    "cycle_001/DATA_AVAILABILITY_GATE.md",
+    "cycle_001/ROLLING240D_SYMBOL_SIDE_MIN3_CANDIDATE_SPEC.md",
+    "cycle_001/latest_artifact_manifest.json",
+    "cycle_001/latest_evidence_digest.md",
+    "cycle_001/latest_metrics_extract.csv",
+    "cycle_001/data_gate_verdict.json",
+    "cycle_001/branch_verdict.json",
+    "cycle_001/exact_missing_data_fields.json",
+    "cycle_001/required_data_window.md",
+    "cycle_001/blocked_backtests_until_data_gate_passes.txt"
+  ],
+  "required_outputs_already_present": [
+    "cycle_001/latest_artifact_manifest.json",
+    "cycle_001/latest_evidence_digest.md",
+    "cycle_001/latest_metrics_extract.csv",
+    "cycle_001/data_gate_verdict.json",
+    "cycle_001/branch_verdict.json"
+  ],
+  "branch_verdict_rules": {
+    "ACTIVE": [
+      "non-oracle filter has opened_trades >= 50",
+      "non-oracle filter improves over all_49 control",
+      "time split/OOS result passes",
+      "rolling state or rolling neighbor result passes",
+      "DATA_AVAILABILITY_GATE passes",
+      "liquidation_count == 0"
+    ],
+    "BLOCKED_BY_DATA": [
+      "DATA_AVAILABILITY_GATE fails",
+      "continuous/static signal history insufficient for proposed validation",
+      "best validation split opened trades < 50"
+    ],
+    "EXHAUSTED_FOR_NOW": [
+      "all non-oracle filters fail OOS/time split",
+      "rolling variants fail",
+      "only oracle raw_edge_min5 remains positive",
+      "no material improvement over all_49 control"
+    ],
+    "FAILED_SAFETY": [
+      "signed_transactions != false",
+      "broadcast_enabled != false",
+      "private_key_loaded != false",
+      "live/order/deploy/paper-live path touched"
+    ]
+  },
+  "next_action_by_verdict": {
+    "ACTIVE": "create max-24-run Cycle 003 narrow sweep around best non-oracle rolling/time-split survivor",
+    "BLOCKED_BY_DATA": "stop backtests and wait for more historical Telegram signals",
+    "EXHAUSTED_FOR_NOW": "freeze Telegram DCA branch and request next candidate family",
+    "FAILED_SAFETY": "stop immediately"
+  },
+  "allowed_next_action": "Only ingest evidence and repeat the BLOCKED_BY_DATA verdict until new Telegram signal history is added.",
+  "blocked_until": "data_gate_verdict == PASS and validation opened trades >= 50"
+}

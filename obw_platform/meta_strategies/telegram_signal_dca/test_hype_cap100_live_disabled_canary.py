@@ -3,7 +3,9 @@ import unittest
 from datetime import datetime, timezone
 
 from obw_platform.meta_strategies.telegram_signal_dca.hype_cap100_live_disabled_canary import (
+    CHAMPION_PARAMS,
     apply_snapshot,
+    build_plan,
     default_state,
     guard_new_entry,
     status_payload,
@@ -42,6 +44,50 @@ def mock_long(entry=50.0, mark=50.0):
 
 
 class HypeCap100LiveDisabledCanaryTest(unittest.TestCase):
+    def test_current_champion_params_use_96h_tp_freshness(self):
+        self.assertEqual(CHAMPION_PARAMS["tp_freshness_ms"], 345600000)
+
+    def test_build_plan_supports_fixed_dca_adds_independent_from_base_entry(self):
+        args = make_args(initial_equity=100.0, initial_target_notional=100.0, max_gross_notional_usdt=100.0)
+        old_mode = CHAMPION_PARAMS.get("dca_add_mode")
+        old_fixed = CHAMPION_PARAMS.get("dca_add_notional_usdt")
+        old_fresh = CHAMPION_PARAMS.get("fresh_base_pct")
+        try:
+            CHAMPION_PARAMS["dca_add_mode"] = "fixed"
+            CHAMPION_PARAMS["dca_add_notional_usdt"] = 2.5
+            CHAMPION_PARAMS["fresh_base_pct"] = 30.0
+            plan = build_plan(100.0, args, 50.0)
+        finally:
+            CHAMPION_PARAMS["dca_add_mode"] = old_mode
+            CHAMPION_PARAMS["dca_add_notional_usdt"] = old_fixed
+            CHAMPION_PARAMS["fresh_base_pct"] = old_fresh
+        self.assertEqual(plan["base_notional"], 30.0)
+        self.assertEqual(plan["dca_add_mode"], "fixed")
+        self.assertEqual(plan["add_notionals"], [2.5, 2.5, 2.5, 2.5])
+
+    def test_build_plan_supports_min_order_dca_adds(self):
+        args = make_args(initial_equity=100.0, initial_target_notional=100.0, max_gross_notional_usdt=100.0)
+        old_mode = CHAMPION_PARAMS.get("dca_add_mode")
+        old_min = CHAMPION_PARAMS.get("dca_min_order_usdt")
+        try:
+            CHAMPION_PARAMS["dca_add_mode"] = "min_order"
+            CHAMPION_PARAMS["dca_min_order_usdt"] = 2.0
+            plan = build_plan(100.0, args, 50.0)
+        finally:
+            CHAMPION_PARAMS["dca_add_mode"] = old_mode
+            CHAMPION_PARAMS["dca_min_order_usdt"] = old_min
+        self.assertEqual(plan["dca_add_mode"], "min_order")
+        self.assertEqual(plan["add_notionals"], [2.0, 2.0, 2.0, 2.0])
+
+    def test_build_plan_preserves_candidate_189_proportional_sizing(self):
+        args = make_args(initial_equity=30.0, initial_target_notional=30.0, max_gross_notional_usdt=30.0)
+        plan = build_plan(30.0, args, 58.887)
+        self.assertNotIn("min_order_qty_hype", CHAMPION_PARAMS)
+        self.assertEqual(plan["min_order_notional"], 0.0)
+        self.assertAlmostEqual(plan["base_notional"], 8.4)
+        self.assertEqual([round(x, 6) for x in plan["add_notionals"]], [3.2, 4.8, 8.8, 4.8])
+        self.assertAlmostEqual(plan["base_notional"] + sum(plan["add_notionals"]), 30.0)
+
     def test_over_cap_entry_is_rejected_by_gross_guard(self):
         args = make_args(initial_target_notional=120.0)
         state = default_state(args)
