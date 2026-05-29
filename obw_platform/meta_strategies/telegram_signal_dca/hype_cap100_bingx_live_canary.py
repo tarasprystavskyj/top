@@ -2209,6 +2209,94 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     return payload
 
 
+def _compact_control_for_telemetry(control: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "hot_stop": bool(control.get("hot_stop")),
+        "kill": bool(control.get("kill")),
+        "stop_new_orders": bool(control.get("stop_new_orders")),
+    }
+
+
+def _compact_auth_probe_for_telemetry(auth_probe: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "exchange": auth_probe.get("exchange"),
+        "credentials_present": bool(auth_probe.get("credentials_present")),
+        "fetch_balance_ok": bool(auth_probe.get("fetch_balance_ok")),
+    }
+
+
+def _compact_entry_failures_for_telemetry(entry_failures: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(entry_failures, dict) or not entry_failures:
+        return {}
+    keys = sorted(str(key) for key in entry_failures.keys())
+    return {"count": len(keys), "keys": keys[:8]}
+
+
+def _compact_input_meta_for_telemetry(input_meta: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(input_meta, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    market = input_meta.get("market") if isinstance(input_meta.get("market"), dict) else {}
+    if market:
+        out["market"] = {
+            key: market.get(key)
+            for key in ("mark", "cached_mark", "premium_ok", "book_ok", "last_mark_poll_utc", "error")
+            if market.get(key) is not None
+        }
+    for name in ("positions", "history"):
+        meta = input_meta.get(name) if isinstance(input_meta.get(name), dict) else {}
+        compact = {
+            key: meta.get(key)
+            for key in ("cached_rows", "last_positions_poll_utc", "last_history_poll_utc", "history_poll_interval_sec", "skipped", "error")
+            if meta.get(key) is not None
+        }
+        if compact:
+            out[name] = compact
+    if input_meta.get("mock") is not None:
+        out["mock"] = bool(input_meta.get("mock"))
+    if input_meta.get("mode") is not None:
+        out["mode"] = input_meta.get("mode")
+    return out
+
+
+def compact_status_for_telemetry(status: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep per-poll telemetry small while RUN_STATUS.json remains full fidelity."""
+    control = status.get("control") if isinstance(status.get("control"), dict) else {}
+    auth_probe_data = status.get("auth_probe") if isinstance(status.get("auth_probe"), dict) else {}
+    entry_failures = status.get("entry_failures") if isinstance(status.get("entry_failures"), dict) else {}
+    input_meta = status.get("input_meta") if isinstance(status.get("input_meta"), dict) else {}
+    out: Dict[str, Any] = {
+        "schema": "hype_live_poll_compact_v1",
+        "utc": status.get("utc"),
+        "paper_only": status.get("paper_only"),
+        "live_order_code_present": status.get("live_order_code_present"),
+        "candidate_index": status.get("candidate_index"),
+        "portfolio_id": status.get("portfolio_id"),
+        "symbol": status.get("symbol"),
+        "long_only": status.get("long_only"),
+        "deadline_utc": status.get("deadline_utc"),
+        "guards": status.get("guards") if isinstance(status.get("guards"), dict) else {},
+        "open_paper_trades": status.get("open_paper_trades") if isinstance(status.get("open_paper_trades"), list) else [],
+        "closed_paper_trades": status.get("closed_paper_trades"),
+        "events": status.get("events") if isinstance(status.get("events"), list) else [],
+        "input_meta": _compact_input_meta_for_telemetry(input_meta),
+        "live_exchange": status.get("live_exchange"),
+        "live_symbol": status.get("live_symbol"),
+        "live_exchange_profile": status.get("live_exchange_profile"),
+        "position_mode": status.get("position_mode"),
+        "copy_poll_interval_sec": status.get("copy_poll_interval_sec"),
+        "dca_eval_interval_sec": status.get("dca_eval_interval_sec"),
+        "history_poll_interval_sec": status.get("history_poll_interval_sec"),
+        "dca_eval_meta": status.get("dca_eval_meta") if isinstance(status.get("dca_eval_meta"), dict) else {},
+        "control": _compact_control_for_telemetry(control),
+        "run_id": status.get("run_id"),
+        "auth_probe": _compact_auth_probe_for_telemetry(auth_probe_data),
+        "order_error_backoff": status.get("order_error_backoff") if isinstance(status.get("order_error_backoff"), dict) else {},
+        "entry_failures": _compact_entry_failures_for_telemetry(entry_failures),
+    }
+    return {key: value for key, value in out.items() if value not in (None, {}, [])}
+
+
 def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     now = paper.utc_now()
     write_active_pointers(args)
@@ -2235,7 +2323,7 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     state["events"] = state["events"][-args.max_events :]
     paper.write_json(Path(args.state_path), state)
     paper.write_json(Path(args.status_path), status)
-    paper.append_jsonl(Path(args.telemetry_path), {"event": "poll", "status": status})
+    paper.append_jsonl(Path(args.telemetry_path), {"event": "poll", "status": compact_status_for_telemetry(status)})
     for event in events:
         paper.append_jsonl(Path(args.telemetry_path), {"event": "live_event", "utc": paper.iso(now), **event})
     return status
@@ -2328,7 +2416,9 @@ def main() -> None:
     args._exchange_switch_reset = reset_exchange_failures_on_switch(args)
     args._auth_probe = auth_probe(args)
     while True:
-        print(json.dumps(poll_once(args), ensure_ascii=False, indent=2, sort_keys=True), flush=True)
+        status = poll_once(args)
+        stdout_status = compact_status_for_telemetry(status) if args.loop else status
+        print(json.dumps(stdout_status, ensure_ascii=False, indent=2, sort_keys=True), flush=True)
         if not args.loop:
             break
         if paper.utc_now() >= paper.parse_utc(args.deadline_utc):

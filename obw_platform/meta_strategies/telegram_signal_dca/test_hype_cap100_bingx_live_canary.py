@@ -761,6 +761,44 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(payload["copy_poll_interval_sec"], 1.0)
         self.assertEqual(payload["dca_eval_interval_sec"], 60.0)
 
+    def test_compact_status_for_telemetry_drops_bulky_static_fields_and_keeps_mark(self):
+        status = {
+            "utc": live.paper.iso(NOW),
+            "candidate_index": 12,
+            "candidate_params": {"large": ["repeated"] * 100},
+            "state_path": r"C:\very\long\state\path\state.json",
+            "telemetry_path": r"C:\very\long\telemetry\path\telemetry.jsonl",
+            "session_db": r"C:\very\long\db\path\session.sqlite",
+            "ui_artifacts": {"live_chart_events_jsonl": r"C:\very\long\chart\events.jsonl"},
+            "active_pointers": {"pointers": {"telemetry_path": r"C:\very\long\telemetry\path\telemetry.jsonl"}},
+            "auth_probe": {
+                "exchange": "bingx",
+                "credentials_present": True,
+                "fetch_balance_ok": True,
+                "debug_credentials_report": {"key_found": True, "secret_found": True, "env_paths": ["x" * 500]},
+            },
+            "input_meta": {
+                "market": {"mark": 50.25, "premium_ok": True, "book_ok": True, "raw": {"large": "x" * 1000}},
+                "positions": {"cached_rows": 1, "raw": [{"large": "x" * 1000}]},
+                "history": {"skipped": True, "cached_rows": 10, "raw": [{"large": "x" * 1000}]},
+            },
+            "open_paper_trades": [{"key": "HYPEUSDT:LONG", "last_mark": 50.25}],
+            "events": [{"type": "heartbeat"}],
+            "control": {"hot_stop": False, "kill": False, "stop_new_orders": False, "kill_path": r"C:\very\long\KILL"},
+        }
+
+        compact = live.compact_status_for_telemetry(status)
+
+        self.assertEqual(compact["schema"], "hype_live_poll_compact_v1")
+        self.assertEqual(compact["utc"], live.paper.iso(NOW))
+        self.assertEqual(compact["input_meta"]["market"]["mark"], 50.25)
+        self.assertEqual(compact["auth_probe"], {"exchange": "bingx", "credentials_present": True, "fetch_balance_ok": True})
+        for dropped in ("candidate_params", "state_path", "telemetry_path", "session_db", "ui_artifacts", "active_pointers"):
+            self.assertNotIn(dropped, compact)
+        self.assertNotIn("raw", compact["input_meta"]["market"])
+        self.assertNotIn("kill_path", compact["control"])
+        self.assertLess(len(json.dumps(compact, sort_keys=True)), 1200)
+
     def test_poll_once_checks_kill_file_and_updates_dca_bucket(self):
         with tempfile.TemporaryDirectory() as td:
             args = make_args(out_dir=td)
@@ -770,10 +808,20 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
                 live.poll_once(args)
             Path(td, "KILL").unlink()
             with patch.object(live.paper, "utc_now", return_value=NOW), patch.object(
-                live, "load_inputs_live", return_value=([lead_long()], [], 50.0, {"mock": True})
+                live, "load_inputs_live", return_value=([lead_long()], [], 50.0, {"market": {"mark": 50.0, "premium_ok": True, "book_ok": True}})
             ), patch.object(live, "apply_live_snapshot", return_value=[]):
                 status = live.poll_once(args)
-        self.assertEqual(status["dca_eval_meta"]["dca_eval_bucket"], int(NOW.timestamp() // 60))
+            self.assertEqual(status["dca_eval_meta"]["dca_eval_bucket"], int(NOW.timestamp() // 60))
+            telemetry_rows = [json.loads(line) for line in Path(args.telemetry_path).read_text(encoding="utf-8").splitlines() if line.strip()]
+            poll_status = telemetry_rows[-1]["status"]
+            run_status = live.paper.load_json(Path(args.status_path), {})
+            self.assertEqual(poll_status["input_meta"]["market"]["mark"], 50.0)
+            self.assertNotIn("ui_artifacts", poll_status)
+            self.assertNotIn("active_pointers", poll_status)
+            self.assertNotIn("candidate_params", poll_status)
+            self.assertIn("ui_artifacts", run_status)
+            self.assertIn("active_pointers", run_status)
+            self.assertIn("candidate_params", run_status)
 
     def test_hot_stop_writes_snapshot_without_loading_inputs(self):
         with tempfile.TemporaryDirectory() as td:
