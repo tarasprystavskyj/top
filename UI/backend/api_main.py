@@ -3425,7 +3425,9 @@ def _live_telemetry_ohlcv_bars(session_dir: str) -> Tuple[List[Dict[str, Any]], 
 
 
 def _live_mark_points_from_telemetry(session_dir: str) -> List[Dict[str, Any]]:
-    bars = _mark_points_to_minute_bars(_live_mark_points_from_telemetry_raw(session_dir))
+    bars, _source = _live_telemetry_ohlcv_bars(session_dir)
+    if not bars:
+        bars = _mark_points_to_minute_bars(_live_mark_points_from_telemetry_raw(session_dir))
     return [{"ts": row["ts"], "value": float(row["close"])} for row in bars]
 
 
