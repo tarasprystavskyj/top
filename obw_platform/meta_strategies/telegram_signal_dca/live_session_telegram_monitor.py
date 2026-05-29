@@ -164,7 +164,7 @@ def open_positions(db_path: Path) -> List[Dict[str, Any]]:
         cols = sqlite_columns(con, "open_positions")
         if not cols:
             return []
-        selected = [c for c in ("symbol", "side", "qty", "entry", "status", "exchange", "entry_fill", "exit_fill") if c in cols]
+        selected = [c for c in ("bot_id", "symbol", "side", "qty", "entry", "status", "exchange", "entry_fill", "exit_fill") if c in cols]
         if not selected:
             return []
         rows = con.execute(f"SELECT {', '.join(selected)} FROM open_positions").fetchall()
@@ -213,14 +213,36 @@ def parse_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def monitor_title(kind: str, text: str) -> str:
+    icons = {
+        "ok": "🟢",
+        "warn": "🟠",
+        "bad": "🔴",
+        "control": "🛑",
+        "wait": "⏳",
+        "info": "🔵",
+    }
+    return f"{icons.get(kind, '🔵')} HYPE {text}"
+
+
 def summarize_order(order: Dict[str, Any]) -> str:
     reason = str(order.get("reason") or "")
     if len(reason) > 260:
         reason = reason[:260] + "..."
+    status = str(order.get("status") or "")
+    status_icon = {
+        "FILLED": "🟢",
+        "REJECTED": "🔴",
+        "CANCELED": "🟠",
+        "CANCELLED": "🟠",
+        "EXPIRED": "🟠",
+    }.get(status.upper(), "🔵")
     return (
-        f"{order.get('ts_utc')} {order.get('status')} {order.get('mode') or ''} {order.get('type')} "
-        f"{order.get('symbol')} {order.get('side')} qty={order.get('qty')} "
-        f"price={order.get('price')} id={order.get('order_id')} reason={reason}"
+        f"{status_icon} {status} {order.get('type')} {order.get('symbol')} {order.get('side')}\n"
+        f"📅 {order.get('ts_utc')}\n"
+        f"📦 qty={order.get('qty')}  💰 price={order.get('price')}\n"
+        f"🧾 id={order.get('order_id')}\n"
+        f"💬 {reason}"
     )
 
 
@@ -236,12 +258,18 @@ def order_attempt_kind(order: Dict[str, Any]) -> str:
     return "unknown"
 
 
-def active_position_notional_sum(positions: List[Dict[str, Any]]) -> float:
+def active_position_notional_sum(positions: List[Dict[str, Any]], *, expected_exchange: str = "", live_dir: str = "") -> float:
     total = 0.0
     for pos in positions:
         status = str(pos.get("status") or "").upper()
         if status and status not in {"OPEN", "ACTIVE", "FILLED"}:
             continue
+        if expected_exchange and str(pos.get("exchange") or "").lower() != str(expected_exchange).lower():
+            continue
+        if live_dir:
+            bot_id = str(pos.get("bot_id") or "")
+            if bot_id and str(live_dir) not in bot_id:
+                continue
         qty = parse_float(pos.get("qty"))
         entry = parse_float(pos.get("entry_fill"), parse_float(pos.get("entry")))
         exit_fill = parse_float(pos.get("exit_fill"))
@@ -261,7 +289,7 @@ def collect_alerts(args: argparse.Namespace, state: Dict[str, Any], now: datetim
     if not status:
         key = issue_key("missing_status", status_path(live_dir))
         if key not in alerted_issue_keys:
-            alerts.append(f"[HYPE live monitor] RUN_STATUS missing: {status_path(live_dir)}")
+            alerts.append(f"{monitor_title('bad', 'RUN_STATUS missing')}\n📄 {status_path(live_dir)}")
             alerted_issue_keys.add(key)
     else:
         age = status_age_sec(status, now)
@@ -269,13 +297,13 @@ def collect_alerts(args: argparse.Namespace, state: Dict[str, Any], now: datetim
         if age is None or age > float(args.max_status_age_sec):
             key = issue_key("stale_status", f"{status.get('utc')}:{int(age or -1)//60}")
             if key not in alerted_issue_keys:
-                alerts.append(f"[HYPE live monitor] stale RUN_STATUS utc={status.get('utc')} age_sec={age}")
+                alerts.append(f"{monitor_title('warn', 'stale RUN_STATUS')}\n📅 utc={status.get('utc')}\n⏱ age_sec={age}")
                 alerted_issue_keys.add(key)
 
         if args.expected_live_exchange and status.get("live_exchange") != args.expected_live_exchange:
             key = issue_key("exchange_mismatch", status.get("live_exchange"))
             if key not in alerted_issue_keys:
-                alerts.append(f"[HYPE live monitor] live_exchange={status.get('live_exchange')} expected={args.expected_live_exchange}")
+                alerts.append(f"{monitor_title('warn', 'exchange mismatch')}\n📍 live={status.get('live_exchange')}\n🎯 expected={args.expected_live_exchange}")
                 alerted_issue_keys.add(key)
 
         control = status.get("control") if isinstance(status.get("control"), dict) else {}
@@ -283,21 +311,21 @@ def collect_alerts(args: argparse.Namespace, state: Dict[str, Any], now: datetim
             if control.get(flag):
                 key = issue_key(f"control_{flag}", control.get(f"{flag}_path") or flag)
                 if key not in alerted_issue_keys:
-                    alerts.append(f"[HYPE live monitor] control flag active: {flag} path={control.get(f'{flag}_path')}")
+                    alerts.append(f"{monitor_title('control', 'control flag active')}\n🚦 {flag}\n📄 {control.get(f'{flag}_path')}")
                     alerted_issue_keys.add(key)
 
         backoff = status.get("order_error_backoff") if isinstance(status.get("order_error_backoff"), dict) else {}
         if backoff.get("last_error") or parse_float(backoff.get("consecutive")) > 0 or parse_float(backoff.get("until_ts")) > now.timestamp():
             key = issue_key("order_backoff", backoff.get("last_error") or backoff.get("until_utc") or backoff.get("consecutive"))
             if key not in alerted_issue_keys:
-                alerts.append(f"[HYPE live monitor] order_error_backoff active: {json.dumps(backoff, ensure_ascii=False)[:900]}")
+                alerts.append(f"{monitor_title('wait', 'order backoff active')}\n{json.dumps(backoff, ensure_ascii=False)[:900]}")
                 alerted_issue_keys.add(key)
 
         failures = status.get("entry_failures") if isinstance(status.get("entry_failures"), dict) else {}
         for failure_key, failure in failures.items():
             key = issue_key("entry_failure", f"{failure_key}:{failure.get('last_error') if isinstance(failure, dict) else failure}")
             if key not in alerted_issue_keys:
-                alerts.append(f"[HYPE live monitor] entry_failure {failure_key}: {json.dumps(failure, ensure_ascii=False)[:900]}")
+                alerts.append(f"{monitor_title('bad', 'entry failure')}\n🔑 {failure_key}\n{json.dumps(failure, ensure_ascii=False)[:900]}")
                 alerted_issue_keys.add(key)
 
         guards = status.get("guards") if isinstance(status.get("guards"), dict) else {}
@@ -307,13 +335,13 @@ def collect_alerts(args: argparse.Namespace, state: Dict[str, Any], now: datetim
         if open_trades and abs(gross - trade_sum) > float(args.notional_mismatch_tolerance):
             key = issue_key("notional_mismatch", f"{gross:.6f}:{trade_sum:.6f}")
             if key not in alerted_issue_keys:
-                alerts.append(f"[HYPE live monitor] notional mismatch guards.gross={gross} open_trades_sum={trade_sum}")
+                alerts.append(f"{monitor_title('warn', 'notional mismatch')}\n🛡 guards.gross={gross}\n📊 open_trades_sum={trade_sum}")
                 alerted_issue_keys.add(key)
 
     if not has_live_process(live_dir, process_pattern=str(args.process_pattern)):
         key = issue_key("process_missing", live_dir)
         if key not in alerted_issue_keys:
-            alerts.append(f"[HYPE live monitor] live process missing for live_dir={live_dir}")
+            alerts.append(f"{monitor_title('bad', 'live process missing')}\n📂 {live_dir}")
             alerted_issue_keys.add(key)
 
     db_path = session_db_path(live_dir, status if isinstance(status, dict) else {})
@@ -324,11 +352,15 @@ def collect_alerts(args: argparse.Namespace, state: Dict[str, Any], now: datetim
     if status:
         guards = status.get("guards") if isinstance(status.get("guards"), dict) else {}
         gross = parse_float(guards.get("gross_open_notional"))
-        db_notional = active_position_notional_sum(positions)
+        db_notional = active_position_notional_sum(
+            positions,
+            expected_exchange=str(status.get("live_exchange") or args.expected_live_exchange or ""),
+            live_dir=str(live_dir),
+        )
         if db_notional > 0 and abs(gross - db_notional) > float(args.notional_mismatch_tolerance):
             key = issue_key("db_notional_mismatch", f"{gross:.6f}:{db_notional:.6f}")
             if key not in alerted_issue_keys:
-                alerts.append(f"[HYPE live monitor] position/notional mismatch RUN_STATUS.gross={gross} session_db_open_positions={db_notional}")
+                alerts.append(f"{monitor_title('warn', 'position/notional mismatch')}\n🛡 RUN_STATUS.gross={gross}\n🗄 session_db_open_positions={db_notional}")
                 alerted_issue_keys.add(key)
     seen_order_ids = set(state.get("seen_order_ids", []))
     new_orders = [o for o in orders if o.get("order_id") and str(o.get("order_id")) not in seen_order_ids]
@@ -344,27 +376,30 @@ def collect_alerts(args: argparse.Namespace, state: Dict[str, Any], now: datetim
         seen_order_ids.add(str(order.get("order_id")))
         status_text = str(order.get("status") or "").upper()
         if status_text == "FILLED":
-            alerts.append("[HYPE live order FILLED]\n" + summarize_order(order))
+            alerts.append(monitor_title("ok", "order filled") + "\n" + summarize_order(order))
         elif status_text in {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED"}:
-            alerts.append("[HYPE live order suspicious]\n" + summarize_order(order))
+            alerts.append(monitor_title("bad", "order suspicious") + "\n" + summarize_order(order))
 
-    rejected_recent = [o for o in orders if str(o.get("status") or "").upper() == "REJECTED"]
+    # Cluster alerts are about newly observed suspicious orders. Historical
+    # rejected rows are kept for forensics but should not page the operator on
+    # every scan after a known incident.
+    rejected_recent = [o for o in new_orders if str(o.get("status") or "").upper() == "REJECTED"]
     if len(rejected_recent) >= int(args.rejected_recent_threshold):
         latest = rejected_recent[0]
         key = issue_key("rejected_cluster", f"{len(rejected_recent)}:{latest.get('ts_utc')}:{latest.get('reason')}")
         if key not in alerted_issue_keys:
-            alerts.append(f"[HYPE live monitor] rejected order cluster in scan: count={len(rejected_recent)} latest={summarize_order(latest)}")
+            alerts.append(f"{monitor_title('bad', 'rejected order cluster')}\n🔢 count={len(rejected_recent)}\n{summarize_order(latest)}")
             alerted_issue_keys.add(key)
 
     suspicious_statuses = {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED"}
-    suspicious_recent = [o for o in orders if str(o.get("status") or "").upper() in suspicious_statuses]
+    suspicious_recent = [o for o in new_orders if str(o.get("status") or "").upper() in suspicious_statuses]
     for kind in ("open", "close"):
         attempts = [o for o in suspicious_recent if order_attempt_kind(o) == kind]
         if len(attempts) >= int(args.repeated_attempt_threshold):
             latest = attempts[0]
             key = issue_key(f"{kind}_attempt_cluster", f"{len(attempts)}:{latest.get('ts_utc')}:{latest.get('reason')}")
             if key not in alerted_issue_keys:
-                alerts.append(f"[HYPE live monitor] repeated {kind} attempts with suspicious outcomes: count={len(attempts)} latest={summarize_order(latest)}")
+                alerts.append(f"{monitor_title('bad', f'repeated {kind} attempts')}\n🔢 count={len(attempts)}\n{summarize_order(latest)}")
                 alerted_issue_keys.add(key)
 
     state["seen_order_ids"] = list(seen_order_ids)
@@ -398,7 +433,7 @@ def run_check(args: argparse.Namespace) -> Dict[str, Any]:
     token, chat_id = telegram_credentials(Path(args.env_file))
     sent = 0
     if args.send_startup and not state.get("startup_sent"):
-        alerts.insert(0, f"[HYPE live monitor] started utc={iso(now)} live_dir={args.live_dir} interval_sec={args.interval_sec}")
+        alerts.insert(0, f"{monitor_title('info', 'monitor started')}\n📅 utc={iso(now)}\n📂 {args.live_dir}\n⏱ interval_sec={args.interval_sec}")
         state["startup_sent"] = True
     if args.dry_run:
         for alert in alerts:
