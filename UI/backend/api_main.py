@@ -3189,10 +3189,42 @@ def _tv_backtest_price_series(tv_path: Optional[str]) -> List[Dict[str, Any]]:
     return points
 
 
+def _active_live_telemetry_path(session_dir: str) -> Optional[str]:
+    pointer = os.path.join(session_dir, "ACTIVE_TELEMETRY_PATH.txt")
+    try:
+        raw = Path(pointer).read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    path = raw if os.path.isabs(raw) else os.path.join(session_dir, raw)
+    try:
+        session_root = os.path.abspath(session_dir)
+        candidate = os.path.abspath(path)
+        if os.path.commonpath([session_root, candidate]) != session_root:
+            return None
+    except Exception:
+        return None
+    if os.path.isfile(path) and path.lower().endswith(".jsonl"):
+        return path
+    return None
+
+
 def _latest_live_telemetry_path(session_dir: str) -> Optional[str]:
+    active = _active_live_telemetry_path(session_dir)
+
+    def score(path: str) -> Tuple[int, int]:
+        try:
+            mtime = int(os.path.getmtime(path))
+        except Exception:
+            mtime = 0
+        basename = os.path.basename(path)
+        priority = 2 if active and os.path.abspath(path) == os.path.abspath(active) else 1 if basename == "telemetry.jsonl" else 0
+        return mtime, priority
+
     candidates = sorted(
-        glob.glob(os.path.join(session_dir, "run_telemetry_*.jsonl")),
-        key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+        _live_telemetry_paths(session_dir),
+        key=score,
         reverse=True,
     )
     return candidates[0] if candidates else None
@@ -3206,8 +3238,16 @@ _TELEMETRY_UTC_RE = re.compile(r'"utc"\s*:\s*"([^"]+)"')
 
 
 def _live_telemetry_paths(session_dir: str) -> List[str]:
+    candidates = list(glob.glob(os.path.join(session_dir, "run_telemetry_*.jsonl")))
+    compact = os.path.join(session_dir, "telemetry.jsonl")
+    if os.path.isfile(compact):
+        candidates.append(compact)
+    active = _active_live_telemetry_path(session_dir)
+    if active:
+        candidates.append(active)
+    deduped = {os.path.abspath(path): path for path in candidates}
     return sorted(
-        glob.glob(os.path.join(session_dir, "run_telemetry_*.jsonl")),
+        deduped.values(),
         key=lambda p: (os.path.basename(p), os.path.getmtime(p) if os.path.exists(p) else 0),
     )
 
@@ -3376,11 +3416,11 @@ def _live_telemetry_ohlcv_bars(session_dir: str) -> Tuple[List[Dict[str, Any]], 
     paths = _live_telemetry_paths(session_dir)
     if not paths:
         return [], None
-    source = "run_telemetry_*.jsonl:mark_ohlc_1m"
+    source = "live telemetry jsonl:mark_ohlc_1m"
     if _live_telemetry_total_bytes(paths) > MAX_TELEMETRY_BYTES_FOR_CHART:
         latest = _latest_live_telemetry_path(session_dir)
         paths = [latest] if latest else []
-        source = "latest run_telemetry_*.jsonl:mark_ohlc_1m"
+        source = "latest live telemetry jsonl:mark_ohlc_1m"
     if not paths:
         return [], None
     signature = _live_telemetry_signature(paths)
@@ -3515,6 +3555,44 @@ def _live_ohlcv_bars_from_npz(session_dir: str) -> Tuple[List[Dict[str, Any]], O
 
     rows = sorted(by_time.values(), key=lambda x: x["ts"])
     return rows, "+".join(sources) if rows and sources else None
+
+
+def _live_ohlcv_bars_from_csv(session_dir: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    path = os.path.join(session_dir, "live_candles.csv")
+    if not os.path.exists(path):
+        return [], None
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return [], None
+    if df.empty or "ts" not in df.columns:
+        return [], None
+    value_cols = [col for col in ("open", "high", "low", "close") if col in df.columns]
+    if not value_cols:
+        return [], None
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    for col in value_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["ts", *value_cols]).sort_values("ts")
+    if df.empty:
+        return [], None
+    df["bucket"] = df["ts"].dt.floor("min")
+    rows: List[Dict[str, Any]] = []
+    for bucket, group in df.groupby("bucket", sort=True):
+        opens = group["open"] if "open" in group.columns else group[value_cols[0]]
+        highs = group["high"] if "high" in group.columns else group[value_cols[0]]
+        lows = group["low"] if "low" in group.columns else group[value_cols[0]]
+        closes = group["close"] if "close" in group.columns else group[value_cols[0]]
+        row = {
+            "ts": bucket.isoformat(),
+            "open": float(opens.iloc[0]),
+            "high": float(highs.max()),
+            "low": float(lows.min()),
+            "close": float(closes.iloc[-1]),
+        }
+        if all(np.isfinite(row[col]) for col in ("open", "high", "low", "close")):
+            rows.append(row)
+    return rows, "live_candles.csv" if rows else None
 
 
 def _has_price_bar_gap(rows: List[Dict[str, Any]], max_gap_seconds: int = 120) -> bool:
@@ -4401,6 +4479,10 @@ def backtest_live_validation_live_session_chart(
         if distance:
             distance_source = "computed"
     price_bars, price_bars_source = _live_ohlcv_bars_from_npz(session_dir)
+    csv_price_bars, csv_price_source = _live_ohlcv_bars_from_csv(session_dir)
+    if csv_price_bars:
+        price_bars = _merge_price_bars(price_bars, csv_price_bars)
+        price_bars_source = "+".join([s for s in (price_bars_source, csv_price_source) if s])
     if _has_price_bar_gap(price_bars):
         telemetry_price_bars, telemetry_price_source = _live_telemetry_ohlcv_bars(session_dir)
         if telemetry_price_bars:
@@ -4422,7 +4504,7 @@ def backtest_live_validation_live_session_chart(
     if mark:
         anchor_time = mark[-1]["ts"]
         anchor_price = float(mark[-1]["value"])
-        sources["mark"] = "latest run_telemetry_*.jsonl:1m" if telemetry_is_heavy else "run_telemetry_*.jsonl:1m"
+        sources["mark"] = "latest live telemetry jsonl:1m" if telemetry_is_heavy else "live telemetry jsonl:1m"
     elif live:
         anchor_time = live[-1]["ts"]
         anchor_price = float(live[-1]["value"])

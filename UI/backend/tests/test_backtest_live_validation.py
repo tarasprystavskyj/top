@@ -666,8 +666,82 @@ def test_live_session_chart_fills_ohlcv_gaps_from_telemetry(monkeypatch, tmp_pat
         "2026-05-26T00:03:00+00:00",
         "2026-05-26T00:04:00+00:00",
     ]
-    assert "run_telemetry_*.jsonl:mark_ohlc_1m" in body["sources"]["price_bars"]
+    assert "live telemetry jsonl:mark_ohlc_1m" in body["sources"]["price_bars"]
     assert any("time gaps" in warning for warning in body["warnings"])
+
+
+def test_live_session_chart_uses_active_compact_telemetry_when_raw_runs_are_heavy(monkeypatch, tmp_path):
+    live_root = tmp_path / "_reports" / "_live"
+    session = live_root / "hype_canary_active_telemetry"
+    session.mkdir(parents=True)
+    _write_json(session / "RUN_STATUS.json", {"status": "stopped", "utc": "2026-05-30T21:49:00Z"})
+    pd.DataFrame([{"ts": "2026-05-30T21:49:00Z", "value": 0.0}]).to_csv(session / "live_equity.csv", index=False)
+    (session / "run_telemetry_old.jsonl").write_text(
+        json.dumps({"utc": "2026-05-30T07:01:00Z", "input_meta": {"market": {"mark": 62.0}}}) + "\n",
+        encoding="utf-8",
+    )
+    compact = session / "telemetry.jsonl"
+    compact.write_text(
+        "\n".join(
+            [
+                json.dumps({"event": "poll", "status": {"utc": "2026-05-30T21:48:00Z", "input_meta": {"market": {"mark": 67.1}}}}),
+                json.dumps({"event": "poll", "status": {"utc": "2026-05-30T21:49:00Z", "input_meta": {"market": {"mark": 67.3}}}}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (session / "ACTIVE_TELEMETRY_PATH.txt").write_text(str(compact), encoding="utf-8")
+    monkeypatch.setattr(api_main, "MAX_TELEMETRY_BYTES_FOR_CHART", 1)
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+    api_main._LIVE_TELEMETRY_MARK_CACHE.clear()
+    api_main._LIVE_TELEMETRY_OHLCV_CACHE.clear()
+
+    client = TestClient(api_main.app)
+    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session)})
+
+    assert chart.status_code == 200
+    body = chart.json()
+    assert body["sources"]["mark"] == "latest live telemetry jsonl:1m"
+    assert body["mark"][-1] == {"ts": "2026-05-30T21:49:00+00:00", "value": 67.3}
+
+
+def test_live_session_chart_merges_live_candles_csv_into_price_bars(monkeypatch, tmp_path):
+    live_root = tmp_path / "_reports" / "_live"
+    session = live_root / "hype_canary_live_candles"
+    session.mkdir(parents=True)
+    _write_json(session / "RUN_STATUS.json", {"status": "running", "utc": "2026-05-30T21:53:00Z"})
+    pd.DataFrame([{"ts": "2026-05-30T21:53:00Z", "value": 0.0}]).to_csv(session / "live_equity.csv", index=False)
+    np.savez(
+        session / "live_mark_ohlcv.npz",
+        timestamp_s=np.array([int(pd.Timestamp("2026-05-30T21:50:00Z").timestamp())]),
+        open=np.array([67.0]),
+        high=np.array([67.2]),
+        low=np.array([66.9]),
+        close=np.array([67.1]),
+    )
+    pd.DataFrame(
+        [
+            {"ts": "2026-05-30T21:52:03Z", "open": 67.2, "high": 67.2, "low": 67.2, "close": 67.2},
+            {"ts": "2026-05-30T21:52:50Z", "open": 67.3, "high": 67.3, "low": 67.3, "close": 67.3},
+            {"ts": "2026-05-30T21:53:02Z", "open": 67.4, "high": 67.4, "low": 67.4, "close": 67.4},
+        ]
+    ).to_csv(session / "live_candles.csv", index=False)
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+
+    client = TestClient(api_main.app)
+    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session)})
+
+    assert chart.status_code == 200
+    body = chart.json()
+    assert body["price_bars"][-1]["ts"] == "2026-05-30T21:53:00+00:00"
+    assert body["price_bars"][-1]["close"] == 67.4
+    assert "live_candles.csv" in body["sources"]["price_bars"]
 
 
 def test_live_session_chart_downsamples_large_payload(monkeypatch, tmp_path):
@@ -816,7 +890,7 @@ def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tm
 
     assert chart.status_code == 200
     body = chart.json()
-    assert body["sources"]["mark"] == "run_telemetry_*.jsonl:1m"
+    assert body["sources"]["mark"] == "live telemetry jsonl:1m"
     assert [p["value"] for p in body["mark"]] == [59.5, 59.8]
     assert len(body["price_bars"]) == 2
     assert body["price_bars"][0]["open"] == 59.5
