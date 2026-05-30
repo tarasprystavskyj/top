@@ -6,8 +6,11 @@ from obw_platform.meta_strategies.telegram_signal_dca.hype_cap100_live_disabled_
     CHAMPION_PARAMS,
     apply_snapshot,
     build_plan,
+    build_arg_parser,
+    deadline_reached,
     default_state,
     guard_new_entry,
+    parse_optional_deadline_utc,
     status_payload,
 )
 
@@ -44,6 +47,23 @@ def mock_long(entry=50.0, mark=50.0):
 
 
 class HypeCap100LiveDisabledCanaryTest(unittest.TestCase):
+    def test_deadline_is_disabled_by_default_and_when_empty(self):
+        args = build_arg_parser().parse_args([])
+        self.assertEqual(args.deadline_utc, "")
+        self.assertIsNone(parse_optional_deadline_utc(""))
+        self.assertIsNone(parse_optional_deadline_utc("never"))
+        self.assertFalse(deadline_reached(datetime(2026, 5, 30, 19, 39, tzinfo=timezone.utc), ""))
+
+    def test_guard_allows_entries_without_deadline_but_blocks_explicit_expired_deadline(self):
+        now = datetime(2026, 5, 30, 19, 39, tzinfo=timezone.utc)
+        state = default_state(make_args(deadline_utc=""))
+        ok, reason, _ = guard_new_entry(state, side="LONG", add_notional=1.0, mark=50.0, now=now, args=make_args(deadline_utc=""))
+        self.assertTrue(ok)
+        self.assertEqual(reason, "allowed")
+        ok, reason, _ = guard_new_entry(state, side="LONG", add_notional=1.0, mark=50.0, now=now, args=make_args(deadline_utc="2026-05-30T07:01:28Z"))
+        self.assertFalse(ok)
+        self.assertEqual(reason, "runtime_deadline_reached")
+
     def test_current_champion_params_use_96h_tp_freshness(self):
         self.assertEqual(CHAMPION_PARAMS["tp_freshness_ms"], 345600000)
 

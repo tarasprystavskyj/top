@@ -2331,7 +2331,7 @@ def main() -> None:
         print(json.dumps(poll_once(args), ensure_ascii=False, indent=2, sort_keys=True), flush=True)
         if not args.loop:
             break
-        if paper.utc_now() >= paper.parse_utc(args.deadline_utc):
+        if paper.deadline_reached(paper.utc_now(), args.deadline_utc):
             break
         sleep_until_next_poll(args.interval_sec)
 
