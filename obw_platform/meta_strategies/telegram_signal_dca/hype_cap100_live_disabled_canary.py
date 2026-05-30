@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - script import path
 DEFAULT_PORTFOLIO_ID = "4300516091842181632"
 DEFAULT_SYMBOL = "HYPEUSDT"
 DEFAULT_OUT_DIR = Path("reports/hype_canary_live_disabled_20260525")
-DEFAULT_DEADLINE_UTC = "2026-05-26T09:00:00Z"
+DEFAULT_DEADLINE_UTC = ""
 
 CHAMPION_CANDIDATE_INDEX = champion_dca.CHAMPION_CANDIDATE_INDEX
 CHAMPION_PARAMS = champion_dca.CHAMPION_PARAMS
@@ -79,6 +79,18 @@ def parse_utc(raw: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def parse_optional_deadline_utc(raw: str) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text or text.lower() in {"0", "none", "never", "disabled"}:
+        return None
+    return parse_utc(text)
+
+
+def deadline_reached(now: datetime, deadline_utc: str) -> bool:
+    deadline = parse_optional_deadline_utc(deadline_utc)
+    return bool(deadline and now >= deadline)
 
 
 def load_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -185,7 +197,7 @@ def guard_new_entry(
         "projected_gross_open_notional": projected_gross,
         "projected_one_side_open_notional": projected_side,
     }
-    if now >= parse_utc(args.deadline_utc):
+    if deadline_reached(now, args.deadline_utc):
         return False, "runtime_deadline_reached", detail
     if daily_pnl <= -abs(float(args.max_daily_loss_usdt)):
         return False, "daily_loss_guard", detail
@@ -446,7 +458,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-one-side-notional-usdt", type=float, default=30.0)
     ap.add_argument("--max-daily-loss-usdt", type=float, default=5.0)
     ap.add_argument("--max-orders-per-hour", type=int, default=20)
-    ap.add_argument("--deadline-utc", default=DEFAULT_DEADLINE_UTC)
+    ap.add_argument("--deadline-utc", default=DEFAULT_DEADLINE_UTC, help="Optional runtime stop time. Empty/none/never/disabled means run indefinitely.")
     ap.add_argument("--long-only", action="store_true", default=True)
     ap.add_argument("--history-page-size", type=int, default=50)
     ap.add_argument("--timeout-sec", type=float, default=20.0)
@@ -483,7 +495,7 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--max-orders-per-hour must be positive")
     if args.interval_sec <= 0:
         raise SystemExit("--interval-sec must be positive")
-    parse_utc(args.deadline_utc)
+    parse_optional_deadline_utc(args.deadline_utc)
 
 
 def main() -> None:
@@ -494,7 +506,7 @@ def main() -> None:
         print(json.dumps(poll_once(args), ensure_ascii=False, indent=2, sort_keys=True), flush=True)
         if not args.loop:
             break
-        if utc_now() >= parse_utc(args.deadline_utc):
+        if deadline_reached(utc_now(), args.deadline_utc):
             break
         time.sleep(args.interval_sec)
 
