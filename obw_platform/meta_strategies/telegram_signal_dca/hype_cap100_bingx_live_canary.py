@@ -248,7 +248,6 @@ DEFAULT_ORDER_ERROR_BACKOFF_SEC = 300.0
 DEFAULT_ORDER_ERROR_CIRCUIT_SEC = 1800.0
 DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE = 3
 DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC = 3600.0
-MAX_OPEN_NORMALIZATION_UPSIZE_BP = 1.0
 
 
 def stable_client_order_id(*parts: Any) -> str:
@@ -1538,7 +1537,7 @@ def live_open_order_preflight(args: argparse.Namespace, symbol: str, expected_pr
     requested_base_qty = requested_notional / max(expected_price, 1e-12)
     order_amount, normalized_base_qty, contract_size = live_order_amount_from_base_qty(args, client, ccxt_symbol, requested_base_qty, is_close=False)
     normalized_notional = normalized_base_qty * expected_price
-    max_allowed = requested_notional * (1.0 + MAX_OPEN_NORMALIZATION_UPSIZE_BP / 10000.0)
+    resize_bp = (normalized_notional - requested_notional) / max(requested_notional, 1e-12) * 10000.0
     out = {
         "ok": True,
         "available": True,
@@ -1549,17 +1548,10 @@ def live_open_order_preflight(args: argparse.Namespace, symbol: str, expected_pr
         "normalized_base_qty": normalized_base_qty,
         "normalized_notional": normalized_notional,
         "contract_size": contract_size,
-        "max_open_normalization_upsize_bp": MAX_OPEN_NORMALIZATION_UPSIZE_BP,
+        "normalization_resize_bp": resize_bp,
     }
     if order_amount <= 0 or normalized_base_qty <= 0:
         return {**out, "ok": False, "reason": "open_qty_zero_after_normalize"}
-    if normalized_notional > max_allowed:
-        return {
-            **out,
-            "ok": False,
-            "reason": "exchange_normalization_would_resize_strategy_leg",
-            "resize_bp": (normalized_notional - requested_notional) / max(requested_notional, 1e-12) * 10000.0,
-        }
     return out
 
 
@@ -1841,9 +1833,8 @@ def live_add_fill(
             "exchange_preflight": preflight,
             "requested_notional": notional,
         }
-    guard_notional = float(preflight.get("normalized_notional") or notional)
     ok, guard_reason, guard_detail = paper.guard_new_entry(
-        state, side=str(trade["side"]), add_notional=guard_notional, mark=mark, now=now, args=args
+        state, side=str(trade["side"]), add_notional=notional, mark=mark, now=now, args=args
     )
     if not ok:
         return {
@@ -1854,7 +1845,6 @@ def live_add_fill(
             "guard": guard_detail,
             "exchange_preflight": preflight,
             "requested_notional": notional,
-            "guard_notional": guard_notional,
         }
     client_order_id = stable_client_order_id(
         "entry",
@@ -1892,7 +1882,6 @@ def live_add_fill(
             "guard": guard_detail,
             "exchange_preflight": preflight,
             "requested_notional": notional,
-            "guard_notional": guard_notional,
             "attempt_key": attempt_key,
             "backoff": backoff_payload,
             "entry_failure": failure_payload,
