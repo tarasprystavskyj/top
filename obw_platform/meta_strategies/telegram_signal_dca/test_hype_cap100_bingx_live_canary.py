@@ -349,25 +349,26 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(contract_size, 0.1)
         self.assertAlmostEqual(base_qty, 0.2)
 
-    def test_live_open_preflight_blocks_exchange_lot_upsize_drift(self):
+    def test_live_open_preflight_reports_exchange_lot_upsize_without_blocking(self):
         args = make_args(live_exchange="gateio")
         args._live_client = FakeClient()
         with patch.object(live, "_normalize_order_qty", return_value=1.0):
             preflight = live.live_open_order_preflight(args, "HYPEUSDT", 58.887, 3.2)
-        self.assertFalse(preflight["ok"])
-        self.assertEqual(preflight["reason"], "exchange_normalization_would_resize_strategy_leg")
+        self.assertTrue(preflight["ok"])
         self.assertAlmostEqual(preflight["requested_base_qty"], 3.2 / 58.887)
         self.assertAlmostEqual(preflight["normalized_base_qty"], 0.1)
-        self.assertGreater(preflight["resize_bp"], 1000.0)
+        self.assertGreater(preflight["normalization_resize_bp"], 1000.0)
 
-    def test_live_add_fill_blocks_before_submit_when_exchange_lot_would_resize_leg(self):
+    def test_live_add_fill_submits_even_when_exchange_lot_resizes_leg(self):
         args = make_args(live_exchange="gateio")
         args._live_client = FakeClient()
-        with patch.object(live, "_normalize_order_qty", return_value=1.0), patch.object(live, "submit_open") as submit_open:
+        with patch.object(live, "_normalize_order_qty", return_value=1.0), patch.object(
+            live, "submit_open", return_value={"ok": False, "error": "synthetic_submit_reject"}
+        ) as submit_open:
             event = live.live_add_fill({}, open_trade(), now=NOW, expected_price=58.887, notional=3.2, fill_type="dca_add_1", reason="test", mark=58.8, args=args)
-        self.assertEqual(event["type"], "live_entry_blocked")
-        self.assertEqual(event["reason"], "exchange_normalization_would_resize_strategy_leg")
-        self.assertFalse(submit_open.called)
+        self.assertEqual(event["type"], "live_entry_failed")
+        self.assertEqual(event["error"], "synthetic_submit_reject")
+        self.assertTrue(submit_open.called)
 
     def test_submit_open_normalizes_qty_fetches_fill_and_reconciles_position(self):
         args = make_args()
