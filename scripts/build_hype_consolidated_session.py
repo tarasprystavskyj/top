@@ -28,6 +28,7 @@ DEFAULT_LIVE_ROOT = REPO_ROOT / "obw_platform" / "_reports" / "_live"
 DEFAULT_OUTPUT = DEFAULT_LIVE_ROOT / "hype_consolidated"
 DEFAULT_MAX_POINTS = 5000
 DEFAULT_MAX_TELEMETRY_BYTES = 20 * 1024 * 1024
+DEFAULT_GAP_CACHE = DEFAULT_LIVE_ROOT / "_market_cache" / "hype_usdt_1m_gap_fill.csv"
 _TELEMETRY_MARK_RE = re.compile(r'"mark"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)')
 _TELEMETRY_UTC_RE = re.compile(r'"utc"\s*:\s*"([^"]+)"')
 
@@ -276,6 +277,94 @@ def _merge_bars(*bar_groups: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(by_ts.values(), key=lambda x: x["ts"])
 
 
+def _bar_gaps(bars: List[Dict[str, Any]], min_missing_minutes: int = 1) -> List[Tuple[pd.Timestamp, pd.Timestamp, int]]:
+    gaps: List[Tuple[pd.Timestamp, pd.Timestamp, int]] = []
+    prev_ts: Optional[pd.Timestamp] = None
+    for row in bars:
+        row_ts = pd.to_datetime(row.get("ts"), utc=True, errors="coerce")
+        if pd.isna(row_ts):
+            continue
+        if prev_ts is not None:
+            missing = int((row_ts.floor("min") - prev_ts.floor("min")).total_seconds() // 60) - 1
+            if missing >= min_missing_minutes:
+                gaps.append((prev_ts.floor("min") + pd.Timedelta(minutes=1), row_ts.floor("min") - pd.Timedelta(minutes=1), missing))
+        prev_ts = row_ts
+    return gaps
+
+
+def _load_gap_cache(path: Path) -> List[Dict[str, Any]]:
+    return _read_candles_csv(path)
+
+
+def _write_gap_cache(path: Path, bars: List[Dict[str, Any]]) -> None:
+    if not bars:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    merged = _merge_bars(_load_gap_cache(path), bars)
+    _write_csv(path, merged, ["ts", "open", "high", "low", "close", "volume", "source"])
+
+
+def _fetch_real_ohlcv_bars(
+    gaps: List[Tuple[pd.Timestamp, pd.Timestamp, int]],
+    *,
+    exchange_id: str,
+    symbol: str,
+    sleep_sec: float,
+    batch_limit: int = 1000,
+) -> List[Dict[str, Any]]:
+    if not gaps:
+        return []
+    try:
+        import ccxt  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"ccxt unavailable for real OHLCV gap fill: {exc}") from exc
+    if not hasattr(ccxt, exchange_id):
+        raise RuntimeError(f"ccxt exchange is unavailable: {exchange_id}")
+    exchange = getattr(ccxt, exchange_id)({"enableRateLimit": True})
+    exchange.load_markets()
+    market = symbol
+    if market not in exchange.markets:
+        candidates = [symbol, symbol.replace("-", "/"), "HYPE/USDT:USDT", "HYPE/USDT"]
+        market = next((candidate for candidate in candidates if candidate in exchange.markets), symbol)
+    tf_ms = int(exchange.parse_timeframe("1m") * 1000)
+    rows: Dict[str, Dict[str, Any]] = {}
+    for start_ts, end_ts, _missing in gaps:
+        cursor = int(start_ts.timestamp() * 1000)
+        end_ms = int(end_ts.timestamp() * 1000)
+        while cursor <= end_ms:
+            batch = exchange.fetch_ohlcv(market, timeframe="1m", since=cursor, limit=batch_limit)
+            if not batch:
+                break
+            advanced = False
+            for item in batch:
+                ts_ms = int(item[0])
+                if ts_ms < cursor:
+                    continue
+                if ts_ms > end_ms:
+                    break
+                iso = pd.to_datetime(ts_ms, unit="ms", utc=True).floor("min").isoformat()
+                row = {
+                    "ts": iso,
+                    "open": float(item[1]),
+                    "high": float(item[2]),
+                    "low": float(item[3]),
+                    "close": float(item[4]),
+                    "volume": float(item[5]) if len(item) > 5 and item[5] is not None else None,
+                    "source": f"ccxt:{exchange_id}:{market}",
+                }
+                if all(np.isfinite(row[key]) for key in ("open", "high", "low", "close")):
+                    rows[iso] = row
+                cursor = max(cursor, ts_ms + tf_ms)
+                advanced = True
+            if not advanced:
+                cursor += batch_limit * tf_ms
+            if cursor <= end_ms:
+                import time
+
+                time.sleep(max(0.0, sleep_sec))
+    return sorted(rows.values(), key=lambda x: x["ts"])
+
+
 def _downsample_points(points: List[Dict[str, Any]], max_points: int) -> List[Dict[str, Any]]:
     if len(points) <= max_points:
         return points
@@ -307,6 +396,34 @@ def _downsample_bars(bars: List[Dict[str, Any]], max_points: int) -> List[Dict[s
             }
         )
     return out[:max_points]
+
+
+def _forward_fill_points_to_bars(points: List[Dict[str, Any]], bars: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+    if not points or not bars:
+        return points, 0
+    by_ts: Dict[str, float] = {}
+    for row in points:
+        ts = _to_iso(row.get("ts") or row.get("time"))
+        value = _safe_float(row.get("value"))
+        if ts and value is not None:
+            by_ts[pd.to_datetime(ts, utc=True).floor("min").isoformat()] = float(value)
+    if not by_ts:
+        return points, 0
+    out: List[Dict[str, Any]] = []
+    last_value: Optional[float] = None
+    inserted = 0
+    for bar in bars:
+        ts = pd.to_datetime(bar.get("ts"), utc=True, errors="coerce")
+        if pd.isna(ts):
+            continue
+        key = ts.floor("min").isoformat()
+        if key in by_ts:
+            last_value = by_ts[key]
+            out.append({"ts": key, "value": last_value})
+        elif last_value is not None:
+            out.append({"ts": key, "value": last_value, "forward_fill": True})
+            inserted += 1
+    return out if out else points, inserted
 
 
 def _fill_synthetic_flat_bar_gaps(bars: List[Dict[str, Any]], max_gap_minutes: int = 60 * 72) -> Tuple[List[Dict[str, Any]], int]:
@@ -651,6 +768,12 @@ def build_consolidated_session(
     server_chart_url: Optional[str] = None,
     max_points: int = DEFAULT_MAX_POINTS,
     force: bool = False,
+    gap_cache: Optional[Path] = DEFAULT_GAP_CACHE,
+    fetch_missing_ohlcv: bool = False,
+    fetch_exchange: str = "gateio",
+    fetch_symbol: str = "HYPE/USDT:USDT",
+    fetch_sleep_sec: float = 0.12,
+    forward_fill_equity: bool = True,
 ) -> Dict[str, Any]:
     source_dirs = _source_dirs(live_root, output, sources)
     if output.exists() and any(output.iterdir()) and not force:
@@ -722,13 +845,40 @@ def build_consolidated_session(
         price_line_groups.append(chart.get("price_lines", []))
 
     price_bars_raw = _merge_bars(*bar_groups)
-    price_bars_full, synthetic_gap_fills = _fill_synthetic_flat_bar_gaps(price_bars_raw)
+    real_gap_cache_bars = _load_gap_cache(gap_cache) if gap_cache else []
+    real_gap_fetch_bars: List[Dict[str, Any]] = []
+    initial_gaps = _bar_gaps(price_bars_raw)
+    fetch_error: Optional[str] = None
+    if fetch_missing_ohlcv and initial_gaps:
+        try:
+            real_gap_fetch_bars = _fetch_real_ohlcv_bars(
+                initial_gaps,
+                exchange_id=fetch_exchange,
+                symbol=fetch_symbol,
+                sleep_sec=fetch_sleep_sec,
+            )
+            if gap_cache and real_gap_fetch_bars:
+                _write_gap_cache(gap_cache, real_gap_fetch_bars)
+                real_gap_cache_bars = _load_gap_cache(gap_cache)
+        except Exception as exc:
+            fetch_error = f"{type(exc).__name__}: {exc}"
+    price_bars_real = _merge_bars(price_bars_raw, real_gap_cache_bars, real_gap_fetch_bars)
+    real_gap_fills = max(0, len(price_bars_real) - len(price_bars_raw))
+    remaining_real_gaps = _bar_gaps(price_bars_real)
+    price_bars_full, synthetic_gap_fills = _fill_synthetic_flat_bar_gaps(price_bars_real)
     mark_full = _merge_points(*mark_groups, [{"ts": row["ts"], "value": row["close"]} for row in price_bars_full])
     live_full = _merge_points(*live_series_groups)
     backtest_full = _merge_points(*backtest_groups)
     live_realized_full = _merge_points(*live_realized_groups)
     backtest_realized_full = _merge_points(*backtest_realized_groups)
     backtest_price_full = _merge_points(*backtest_price_groups)
+    ffilled_counts: Dict[str, int] = {}
+    if forward_fill_equity:
+        live_full, ffilled_counts["live"] = _forward_fill_points_to_bars(live_full, price_bars_full)
+        backtest_full, ffilled_counts["backtest"] = _forward_fill_points_to_bars(backtest_full, price_bars_full)
+        live_realized_full, ffilled_counts["live_realized"] = _forward_fill_points_to_bars(live_realized_full, price_bars_full)
+        backtest_realized_full, ffilled_counts["backtest_realized"] = _forward_fill_points_to_bars(backtest_realized_full, price_bars_full)
+        backtest_price_full, ffilled_counts["backtest_price"] = _forward_fill_points_to_bars(backtest_price_full, price_bars_full)
     markers = _merge_markers(*marker_groups)
     labels = _merge_labels(*label_groups)
     price_lines = _merge_price_lines(*price_line_groups)
@@ -741,19 +891,30 @@ def build_consolidated_session(
         "sources": {
             "snapshot": "chart.json",
             "live": "live_equity.csv + source chart snapshots",
-            "price_bars": "live_candles.csv + telemetry + source OHLCV/chart snapshots + synthetic flat gap fill",
+            "price_bars": "live_candles.csv + telemetry + source OHLCV/chart snapshots + real OHLCV gap cache/fetch + residual synthetic flat gap fill",
             "mark": "telemetry.jsonl from consolidated price_bars close",
             "markers": "live_chart_events.csv + session.sqlite filled orders + source chart snapshots",
         },
         "warnings": [],
     }
+    if real_gap_fills:
+        chart_payload["warnings"].append(
+            f"Synthetic consolidated HYPE view replaced {real_gap_fills} missing minute price bar(s) with real OHLCV from cache/fetch."
+        )
     if synthetic_gap_fills:
         chart_payload["warnings"].append(
             f"Synthetic consolidated HYPE view uses {synthetic_gap_fills} flat price-bar gap fill(s); it is for visual inspection only, not edge validation."
         )
+    if fetch_error:
+        chart_payload["warnings"].append(f"Real OHLCV fetch failed; used available cache/source bars only: {fetch_error}")
     if skipped_large_telemetry:
         chart_payload["warnings"].append(
             f"Skipped {len(skipped_large_telemetry)} large raw telemetry file(s) while building the compact synthetic view."
+        )
+    ffilled_total = sum(value for value in ffilled_counts.values() if value)
+    if ffilled_total:
+        chart_payload["warnings"].append(
+            f"Forward-filled {ffilled_total} sparse live/backtest point(s) on the recovered minute timeline for visual continuity."
         )
     series_plan = {
         "live": _downsample_points(live_full, max_points),
@@ -783,7 +944,12 @@ def build_consolidated_session(
         "mark": len(mark_full),
         "price_bars": len(price_bars_full),
         "price_bars_raw": len(price_bars_raw),
+        "real_gap_cache_bars": len(real_gap_cache_bars),
+        "real_gap_fetch_bars": len(real_gap_fetch_bars),
+        "real_gap_fills": real_gap_fills,
+        "remaining_real_gap_count": len(remaining_real_gaps),
         "synthetic_gap_fills": synthetic_gap_fills,
+        "forward_filled_points": ffilled_counts,
         "markers": len(markers),
         "orders": len(orders_by_id),
         "positions": len(positions),
@@ -887,6 +1053,11 @@ def build_consolidated_session(
         "server_chart_url_used": bool(server_chart_url),
         "counts_full": counts_full,
         "counts_output": {key: len(value) for key, value in chart_payload.items() if isinstance(value, list)},
+        "gap_cache": str(gap_cache) if gap_cache else None,
+        "fetch_missing_ohlcv": fetch_missing_ohlcv,
+        "fetch_exchange": fetch_exchange if fetch_missing_ohlcv else None,
+        "fetch_symbol": fetch_symbol if fetch_missing_ohlcv else None,
+        "fetch_error": fetch_error,
         "skipped_large_telemetry_files": skipped_large_telemetry,
         "files": sorted(p.name for p in output.iterdir() if p.is_file()),
     }
@@ -902,6 +1073,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--server-chart-url", default="", help="Optional public chart endpoint JSON to merge.")
     parser.add_argument("--max-points", type=int, default=DEFAULT_MAX_POINTS)
     parser.add_argument("--force", action="store_true", help="Replace generated compact output files if the output exists.")
+    parser.add_argument("--gap-cache", type=Path, default=DEFAULT_GAP_CACHE, help="CSV cache of real 1m OHLCV bars used to fill missing HYPE minutes.")
+    parser.add_argument("--no-gap-cache", action="store_true", help="Disable reading/writing the real OHLCV gap cache.")
+    parser.add_argument("--fetch-missing-ohlcv", action="store_true", help="Fetch missing 1m OHLCV bars through public CCXT and update the gap cache.")
+    parser.add_argument("--fetch-exchange", default="gateio", help="CCXT exchange id for missing OHLCV fetch.")
+    parser.add_argument("--fetch-symbol", default="HYPE/USDT:USDT", help="CCXT market symbol for missing OHLCV fetch.")
+    parser.add_argument("--fetch-sleep-sec", type=float, default=0.12)
+    parser.add_argument("--no-forward-fill-equity", action="store_true", help="Disable forward-filling sparse live/backtest series on the recovered minute timeline.")
     return parser.parse_args(argv)
 
 
@@ -914,6 +1092,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         server_chart_url=args.server_chart_url or None,
         max_points=max(300, args.max_points),
         force=args.force,
+        gap_cache=None if args.no_gap_cache else args.gap_cache,
+        fetch_missing_ohlcv=args.fetch_missing_ohlcv,
+        fetch_exchange=args.fetch_exchange,
+        fetch_symbol=args.fetch_symbol,
+        fetch_sleep_sec=args.fetch_sleep_sec,
+        forward_fill_equity=not args.no_forward_fill_equity,
     )
     print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
     return 0

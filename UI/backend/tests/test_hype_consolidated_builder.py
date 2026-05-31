@@ -116,6 +116,7 @@ def test_build_hype_consolidated_session_is_compact_and_api_readable(monkeypatch
         sources=[source_a, source_b],
         max_points=10,
         force=True,
+        gap_cache=None,
     )
 
     assert manifest["counts_full"]["price_bars_raw"] == 8
@@ -153,3 +154,53 @@ def test_build_hype_consolidated_session_is_compact_and_api_readable(monkeypatch
     assert body["price_bars"][-1]["close"] == 55.5
     assert any("flat price-bar gap fill" in warning for warning in body["warnings"])
     assert len(body["markers"]) == 2
+
+
+def test_build_hype_consolidated_session_uses_real_gap_cache(tmp_path):
+    live_root = tmp_path / "_live"
+    source_a = live_root / "hype_a"
+    source_b = live_root / "hype_b"
+    source_a.mkdir(parents=True)
+    source_b.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {"ts": "2026-05-25T00:00:00Z", "open": 10, "high": 11, "low": 9, "close": 10.5},
+            {"ts": "2026-05-25T00:01:00Z", "open": 10.5, "high": 11, "low": 10, "close": 10.8},
+        ]
+    ).to_csv(source_a / "live_candles.csv", index=False)
+    pd.DataFrame(
+        [
+            {"ts": "2026-05-25T00:04:00Z", "open": 12, "high": 13, "low": 11, "close": 12.5},
+            {"ts": "2026-05-25T00:05:00Z", "open": 12.5, "high": 13, "low": 12, "close": 12.8},
+        ]
+    ).to_csv(source_b / "live_candles.csv", index=False)
+    pd.DataFrame(
+        [
+            {"ts": "2026-05-25T00:02:00Z", "open": 10.8, "high": 11.4, "low": 10.7, "close": 11.2},
+            {"ts": "2026-05-25T00:03:00Z", "open": 11.2, "high": 12.1, "low": 11.1, "close": 12.0},
+        ]
+    ).to_csv(tmp_path / "gap_cache.csv", index=False)
+
+    manifest = build_consolidated_session(
+        live_root=live_root,
+        output=live_root / "hype_consolidated",
+        sources=[source_a, source_b],
+        max_points=100,
+        force=True,
+        gap_cache=tmp_path / "gap_cache.csv",
+        forward_fill_equity=False,
+    )
+
+    body = json.loads((live_root / "hype_consolidated" / "chart.json").read_text(encoding="utf-8"))
+    assert manifest["counts_full"]["price_bars_raw"] == 4
+    assert manifest["counts_full"]["real_gap_fills"] == 2
+    assert manifest["counts_full"]["synthetic_gap_fills"] == 0
+    assert [row["ts"] for row in body["price_bars"]] == [
+        "2026-05-25T00:00:00+00:00",
+        "2026-05-25T00:01:00+00:00",
+        "2026-05-25T00:02:00+00:00",
+        "2026-05-25T00:03:00+00:00",
+        "2026-05-25T00:04:00+00:00",
+        "2026-05-25T00:05:00+00:00",
+    ]
+    assert any("real OHLCV" in warning for warning in body["warnings"])
