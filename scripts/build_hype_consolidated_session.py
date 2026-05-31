@@ -309,6 +309,32 @@ def _downsample_bars(bars: List[Dict[str, Any]], max_points: int) -> List[Dict[s
     return out[:max_points]
 
 
+def _fill_synthetic_flat_bar_gaps(bars: List[Dict[str, Any]], max_gap_minutes: int = 60 * 72) -> Tuple[List[Dict[str, Any]], int]:
+    if len(bars) < 2:
+        return bars, 0
+    out: List[Dict[str, Any]] = []
+    inserted = 0
+    for row in bars:
+        if not out:
+            out.append(row)
+            continue
+        prev = out[-1]
+        prev_ts = pd.to_datetime(prev.get("ts"), utc=True, errors="coerce")
+        row_ts = pd.to_datetime(row.get("ts"), utc=True, errors="coerce")
+        close = _safe_float(prev.get("close"))
+        if pd.notna(prev_ts) and pd.notna(row_ts) and close is not None:
+            gap_minutes = int((row_ts - prev_ts).total_seconds() // 60)
+            if 1 < gap_minutes <= max_gap_minutes:
+                next_ts = prev_ts.floor("min") + pd.Timedelta(minutes=1)
+                while next_ts < row_ts.floor("min"):
+                    iso = next_ts.isoformat()
+                    out.append({"ts": iso, "open": close, "high": close, "low": close, "close": close, "synthetic_gap_fill": True})
+                    inserted += 1
+                    next_ts += pd.Timedelta(minutes=1)
+        out.append(row)
+    return out, inserted
+
+
 def _read_chart_snapshot(path: Path) -> Dict[str, List[Dict[str, Any]]]:
     data = _load_json(path)
     if not isinstance(data, dict):
@@ -645,6 +671,7 @@ def build_consolidated_session(
     orders_by_id: Dict[str, Dict[str, Any]] = {}
     positions: List[Dict[str, Any]] = []
     strategy_params: Optional[Any] = None
+    skipped_large_telemetry: List[str] = []
 
     for session_dir in source_dirs:
         chart = _read_chart_snapshot(session_dir / "chart.json")
@@ -660,6 +687,9 @@ def build_consolidated_session(
             bar_groups.append(_read_candles_npz(npz))
         telemetry_points: List[Dict[str, Any]] = []
         for telemetry_path in sorted([*session_dir.glob("run_telemetry_*.jsonl"), session_dir / "telemetry.jsonl"]):
+            if telemetry_path.exists() and telemetry_path.stat().st_size > DEFAULT_MAX_TELEMETRY_BYTES:
+                skipped_large_telemetry.append(str(telemetry_path))
+                continue
             telemetry_points.extend(_read_mark_points_from_telemetry(telemetry_path))
         if telemetry_points:
             telemetry_points = _merge_points(telemetry_points)
@@ -691,7 +721,8 @@ def build_consolidated_session(
         label_groups.append(chart.get("labels", []))
         price_line_groups.append(chart.get("price_lines", []))
 
-    price_bars_full = _merge_bars(*bar_groups)
+    price_bars_raw = _merge_bars(*bar_groups)
+    price_bars_full, synthetic_gap_fills = _fill_synthetic_flat_bar_gaps(price_bars_raw)
     mark_full = _merge_points(*mark_groups, [{"ts": row["ts"], "value": row["close"]} for row in price_bars_full])
     live_full = _merge_points(*live_series_groups)
     backtest_full = _merge_points(*backtest_groups)
@@ -710,11 +741,20 @@ def build_consolidated_session(
         "sources": {
             "snapshot": "chart.json",
             "live": "live_equity.csv + source chart snapshots",
-            "price_bars": "live_candles.csv + source OHLCV/chart snapshots",
+            "price_bars": "live_candles.csv + telemetry + source OHLCV/chart snapshots + synthetic flat gap fill",
             "mark": "telemetry.jsonl from consolidated price_bars close",
             "markers": "live_chart_events.csv + session.sqlite filled orders + source chart snapshots",
         },
+        "warnings": [],
     }
+    if synthetic_gap_fills:
+        chart_payload["warnings"].append(
+            f"Synthetic consolidated HYPE view uses {synthetic_gap_fills} flat price-bar gap fill(s); it is for visual inspection only, not edge validation."
+        )
+    if skipped_large_telemetry:
+        chart_payload["warnings"].append(
+            f"Skipped {len(skipped_large_telemetry)} large raw telemetry file(s) while building the compact synthetic view."
+        )
     series_plan = {
         "live": _downsample_points(live_full, max_points),
         "backtest": _downsample_points(backtest_full, max_points),
@@ -742,9 +782,12 @@ def build_consolidated_session(
         "backtest_price": len(backtest_price_full),
         "mark": len(mark_full),
         "price_bars": len(price_bars_full),
+        "price_bars_raw": len(price_bars_raw),
+        "synthetic_gap_fills": synthetic_gap_fills,
         "markers": len(markers),
         "orders": len(orders_by_id),
         "positions": len(positions),
+        "skipped_large_telemetry_files": len(skipped_large_telemetry),
     }
     chart_payload["consolidated_counts"] = counts_full
     downsampled = {
@@ -808,8 +851,9 @@ def build_consolidated_session(
 
     if strategy_params is not None:
         _write_json(output / "live_strategy_params.json", strategy_params)
-    started_at = min((row["ts"] for row in chart_payload.get("price_bars", []) if row.get("ts")), default=None)
-    updated_at = max((row["ts"] for row in chart_payload.get("price_bars", []) if row.get("ts")), default=_utc_now())
+    data_started_at = min((row["ts"] for row in chart_payload.get("price_bars", []) if row.get("ts")), default=None)
+    data_updated_at = max((row["ts"] for row in chart_payload.get("price_bars", []) if row.get("ts")), default=None)
+    status_updated_at = chart_payload["generated_at"]
     status = {
         "schema": "hype_consolidated_status_v1",
         "status": "stopped",
@@ -819,9 +863,11 @@ def build_consolidated_session(
         "exchange": "mixed",
         "live_exchange": "mixed",
         "timeframe": "1m",
-        "started_at": started_at,
-        "updated_at": updated_at,
-        "utc": updated_at,
+        "started_at": data_started_at,
+        "updated_at": status_updated_at,
+        "utc": status_updated_at,
+        "data_started_at": data_started_at,
+        "data_updated_at": data_updated_at,
         "open_legs": 0,
         "filled_orders": len(orders),
         "source_sessions": [p.name for p in source_dirs],
@@ -841,6 +887,7 @@ def build_consolidated_session(
         "server_chart_url_used": bool(server_chart_url),
         "counts_full": counts_full,
         "counts_output": {key: len(value) for key, value in chart_payload.items() if isinstance(value, list)},
+        "skipped_large_telemetry_files": skipped_large_telemetry,
         "files": sorted(p.name for p in output.iterdir() if p.is_file()),
     }
     _write_json(output / "MANIFEST.json", manifest)

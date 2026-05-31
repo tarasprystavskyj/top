@@ -118,11 +118,18 @@ def test_build_hype_consolidated_session_is_compact_and_api_readable(monkeypatch
         force=True,
     )
 
-    assert manifest["counts_full"]["price_bars"] == 8
+    assert manifest["counts_full"]["price_bars_raw"] == 8
+    assert manifest["counts_full"]["synthetic_gap_fills"] > 0
+    assert manifest["counts_full"]["skipped_large_telemetry_files"] == 0
     assert (output / "chart.json").exists()
     assert (output / "telemetry.jsonl").exists()
     assert not list(output.glob("run_telemetry_*.jsonl"))
     assert not list(output.glob("live_stdout_*.log"))
+    status = json.loads((output / "RUN_STATUS.json").read_text(encoding="utf-8"))
+    chart_json = json.loads((output / "chart.json").read_text(encoding="utf-8"))
+    body_last_ts = max(row["ts"] for row in chart_json["price_bars"])
+    assert status["updated_at"] == manifest["generated_at"]
+    assert status["data_updated_at"] == body_last_ts
 
     telemetry_line = (output / "telemetry.jsonl").read_text(encoding="utf-8").splitlines()[0]
     assert "hype_live_poll_compact_v1" in telemetry_line
@@ -142,6 +149,7 @@ def test_build_hype_consolidated_session_is_compact_and_api_readable(monkeypatch
     assert chart.status_code == 200
     body = chart.json()
     assert body["schema"] == "hype_consolidated_chart_v1"
-    assert len(body["price_bars"]) == 8
+    assert len(body["price_bars"]) > 8
     assert body["price_bars"][-1]["close"] == 55.5
+    assert any("flat price-bar gap fill" in warning for warning in body["warnings"])
     assert len(body["markers"]) == 2
