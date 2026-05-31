@@ -11,6 +11,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sqlite3
 import sys
 import urllib.request
@@ -27,6 +28,8 @@ DEFAULT_LIVE_ROOT = REPO_ROOT / "obw_platform" / "_reports" / "_live"
 DEFAULT_OUTPUT = DEFAULT_LIVE_ROOT / "hype_consolidated"
 DEFAULT_MAX_POINTS = 5000
 DEFAULT_MAX_TELEMETRY_BYTES = 20 * 1024 * 1024
+_TELEMETRY_MARK_RE = re.compile(r'"mark"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)')
+_TELEMETRY_UTC_RE = re.compile(r'"utc"\s*:\s*"([^"]+)"')
 
 
 def _utc_now() -> str:
@@ -196,6 +199,56 @@ def _read_candles_npz(path: Path) -> List[Dict[str, Any]]:
         if all(np.isfinite(row[k]) for k in ("open", "high", "low", "close")):
             out.append(row)
     return out
+
+
+def _read_mark_points_from_telemetry(path: Path) -> List[Dict[str, Any]]:
+    if not path.exists() or path.stat().st_size <= 0:
+        return []
+    dedup: Dict[str, Dict[str, Any]] = {}
+    try:
+        fh = path.open("r", encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    with fh:
+        for line in fh:
+            if '"mark"' not in line:
+                continue
+            mark_match = _TELEMETRY_MARK_RE.search(line)
+            utc_matches = list(_TELEMETRY_UTC_RE.finditer(line))
+            if mark_match and utc_matches:
+                point = _point(utc_matches[-1].group(1), mark_match.group(1))
+            else:
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                status = row.get("status") if isinstance(row, dict) and isinstance(row.get("status"), dict) else {}
+                input_meta = row.get("input_meta") if isinstance(row, dict) and isinstance(row.get("input_meta"), dict) else {}
+                if not input_meta and isinstance(status.get("input_meta"), dict):
+                    input_meta = status.get("input_meta") or {}
+                market = input_meta.get("market") if isinstance(input_meta.get("market"), dict) else {}
+                point = _point(row.get("ts") or row.get("utc") or status.get("utc"), market.get("mark"))
+            if point:
+                dedup[point["ts"]] = point
+    return sorted(dedup.values(), key=lambda x: x["ts"])
+
+
+def _mark_points_to_minute_bars(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for point in points:
+        ts = pd.to_datetime(point.get("ts"), utc=True, errors="coerce")
+        value = _safe_float(point.get("value"))
+        if pd.isna(ts) or value is None:
+            continue
+        bucket = ts.floor("min").isoformat()
+        existing = buckets.get(bucket)
+        if not existing:
+            buckets[bucket] = {"ts": bucket, "open": value, "high": value, "low": value, "close": value}
+            continue
+        existing["high"] = max(float(existing["high"]), value)
+        existing["low"] = min(float(existing["low"]), value)
+        existing["close"] = value
+    return sorted(buckets.values(), key=lambda x: x["ts"])
 
 
 def _merge_points(*series_groups: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -605,6 +658,13 @@ def build_consolidated_session(
         bar_groups.append(_read_candles_csv(session_dir / "live_candles.csv"))
         for npz in sorted(session_dir.glob("*ohlcv*.npz")):
             bar_groups.append(_read_candles_npz(npz))
+        telemetry_points: List[Dict[str, Any]] = []
+        for telemetry_path in sorted([*session_dir.glob("run_telemetry_*.jsonl"), session_dir / "telemetry.jsonl"]):
+            telemetry_points.extend(_read_mark_points_from_telemetry(telemetry_path))
+        if telemetry_points:
+            telemetry_points = _merge_points(telemetry_points)
+            mark_groups.append(telemetry_points)
+            bar_groups.append(_mark_points_to_minute_bars(telemetry_points))
         marker_groups.append(_read_event_csv(session_dir / "live_chart_events.csv"))
         orders = _read_filled_orders_from_sqlite(session_dir / "session.sqlite")
         for idx, row in enumerate(orders):

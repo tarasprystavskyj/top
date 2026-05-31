@@ -42,6 +42,22 @@ def _make_source_session(root: Path, name: str, start: str, order_id: str) -> Pa
             for idx in range(3)
         ]
     ).to_csv(session / "live_candles.csv", index=False)
+    (session / "telemetry.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "poll",
+                        "status": {
+                            "utc": (base + pd.Timedelta(hours=1)).isoformat(),
+                            "input_meta": {"market": {"mark": 55.5}},
+                        },
+                    }
+                )
+            ]
+        ),
+        encoding="utf-8",
+    )
     pd.DataFrame(
         [
             {
@@ -102,7 +118,7 @@ def test_build_hype_consolidated_session_is_compact_and_api_readable(monkeypatch
         force=True,
     )
 
-    assert manifest["counts_full"]["price_bars"] == 6
+    assert manifest["counts_full"]["price_bars"] == 8
     assert (output / "chart.json").exists()
     assert (output / "telemetry.jsonl").exists()
     assert not list(output.glob("run_telemetry_*.jsonl"))
@@ -126,5 +142,6 @@ def test_build_hype_consolidated_session_is_compact_and_api_readable(monkeypatch
     assert chart.status_code == 200
     body = chart.json()
     assert body["schema"] == "hype_consolidated_chart_v1"
-    assert len(body["price_bars"]) == 6
+    assert len(body["price_bars"]) == 8
+    assert body["price_bars"][-1]["close"] == 55.5
     assert len(body["markers"]) == 2
