@@ -468,15 +468,12 @@ def _replay_order_floating_pnl(orders: List[Dict[str, Any]], bars: List[Dict[str
                 continue
             order_type = str(order.get("type") or "").upper()
             if order_type in {"CLOSE", "EXIT"}:
-                close_qty = min(qty, order_qty)
+                close_qty = qty
                 if close_qty > 0:
                     avg_entry = cost / qty if qty > 0 else price
                     realized += (price - avg_entry) * close_qty
-                    qty -= close_qty
-                    cost -= avg_entry * close_qty
-                    if qty <= 1e-12:
-                        qty = 0.0
-                        cost = 0.0
+                    qty = 0.0
+                    cost = 0.0
                 continue
             qty += order_qty
             cost += price * order_qty

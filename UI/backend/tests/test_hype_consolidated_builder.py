@@ -13,7 +13,7 @@ for item in (REPO_ROOT, BACKEND_DIR):
         sys.path.insert(0, str(item))
 
 import api_main
-from scripts.build_hype_consolidated_session import build_consolidated_session
+from scripts.build_hype_consolidated_session import _replay_order_floating_pnl, build_consolidated_session
 
 
 def _write_json(path: Path, payload):
@@ -212,3 +212,21 @@ def test_build_hype_consolidated_session_uses_real_gap_cache(tmp_path):
         "2026-05-25T00:05:00+00:00",
     ]
     assert any("real OHLCV" in warning for warning in body["warnings"])
+
+
+def test_replayed_floating_pnl_is_zero_after_full_close():
+    bars = [
+        {"ts": "2026-05-25T00:00:00Z", "open": 10, "high": 10, "low": 10, "close": 10},
+        {"ts": "2026-05-25T00:01:00Z", "open": 11, "high": 11, "low": 11, "close": 11},
+        {"ts": "2026-05-25T00:02:00Z", "open": 12, "high": 12, "low": 12, "close": 12},
+        {"ts": "2026-05-25T00:03:00Z", "open": 13, "high": 13, "low": 13, "close": 13},
+    ]
+    orders = [
+        {"ts_utc": "2026-05-25T00:00:00Z", "type": "OPEN", "price": 10, "qty": 1},
+        {"ts_utc": "2026-05-25T00:02:00Z", "type": "CLOSE", "price": 12, "qty": 0.1},
+    ]
+
+    floating, realized, _ = _replay_order_floating_pnl(orders, bars)
+
+    assert [row["value"] for row in floating] == [0.0, 1.0, 0.0, 0.0]
+    assert [row["value"] for row in realized] == [0.0, 0.0, 2.0, 2.0]
