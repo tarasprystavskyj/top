@@ -426,6 +426,68 @@ def _forward_fill_points_to_bars(points: List[Dict[str, Any]], bars: List[Dict[s
     return out if out else points, inserted
 
 
+def _subtract_point_series(total: List[Dict[str, Any]], realized: List[Dict[str, Any]], bars: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    total_full, _ = _forward_fill_points_to_bars(total, bars)
+    realized_full, _ = _forward_fill_points_to_bars(realized, bars)
+    realized_by_ts = {row["ts"]: float(row["value"]) for row in realized_full if row.get("ts") and _safe_float(row.get("value")) is not None}
+    out: List[Dict[str, Any]] = []
+    for row in total_full:
+        ts = row.get("ts")
+        value = _safe_float(row.get("value"))
+        if not ts or value is None:
+            continue
+        out.append({"ts": ts, "value": float(value - realized_by_ts.get(ts, 0.0))})
+    return out
+
+
+def _replay_order_floating_pnl(orders: List[Dict[str, Any]], bars: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
+    if not orders or not bars:
+        return [], [], 0
+    sorted_orders = sorted(orders, key=lambda row: _to_iso(row.get("ts_utc") or row.get("bar_time_utc")) or "")
+    order_idx = 0
+    qty = 0.0
+    cost = 0.0
+    realized = 0.0
+    floating_rows: List[Dict[str, Any]] = []
+    realized_rows: List[Dict[str, Any]] = []
+    bars_seen = 0
+    for bar in bars:
+        bar_ts = pd.to_datetime(bar.get("ts"), utc=True, errors="coerce")
+        close = _safe_float(bar.get("close"))
+        if pd.isna(bar_ts) or close is None:
+            continue
+        while order_idx < len(sorted_orders):
+            order = sorted_orders[order_idx]
+            order_ts = pd.to_datetime(_to_iso(order.get("ts_utc") or order.get("bar_time_utc")), utc=True, errors="coerce")
+            if pd.isna(order_ts) or order_ts.floor("min") > bar_ts.floor("min"):
+                break
+            order_idx += 1
+            order_qty = _safe_float(order.get("qty")) or 0.0
+            price = _safe_float(order.get("price"))
+            if order_qty <= 0 or price is None:
+                continue
+            order_type = str(order.get("type") or "").upper()
+            if order_type in {"CLOSE", "EXIT"}:
+                close_qty = min(qty, order_qty)
+                if close_qty > 0:
+                    avg_entry = cost / qty if qty > 0 else price
+                    realized += (price - avg_entry) * close_qty
+                    qty -= close_qty
+                    cost -= avg_entry * close_qty
+                    if qty <= 1e-12:
+                        qty = 0.0
+                        cost = 0.0
+                continue
+            qty += order_qty
+            cost += price * order_qty
+        value = (close - (cost / qty)) * qty if qty > 0 else 0.0
+        ts = bar_ts.floor("min").isoformat()
+        floating_rows.append({"ts": ts, "value": float(value)})
+        realized_rows.append({"ts": ts, "value": float(realized)})
+        bars_seen += 1
+    return floating_rows, realized_rows, bars_seen
+
+
 def _fill_synthetic_flat_bar_gaps(bars: List[Dict[str, Any]], max_gap_minutes: int = 60 * 72) -> Tuple[List[Dict[str, Any]], int]:
     if len(bars) < 2:
         return bars, 0
@@ -457,7 +519,7 @@ def _read_chart_snapshot(path: Path) -> Dict[str, List[Dict[str, Any]]]:
     if not isinstance(data, dict):
         return {}
     out: Dict[str, List[Dict[str, Any]]] = {}
-    for key in ("live", "backtest", "live_realized", "backtest_realized", "backtest_price", "distance", "mark", "price_bars", "markers", "labels", "price_lines"):
+    for key in ("live", "backtest", "live_realized", "backtest_realized", "live_floating", "backtest_floating", "backtest_price", "distance", "mark", "price_bars", "markers", "labels", "price_lines"):
         rows = data.get(key)
         if isinstance(rows, list):
             out[key] = [row for row in rows if isinstance(row, dict)]
@@ -470,7 +532,7 @@ def _fetch_chart_snapshot(url: str) -> Dict[str, List[Dict[str, Any]]]:
     if not isinstance(data, dict):
         return {}
     out: Dict[str, List[Dict[str, Any]]] = {}
-    for key in ("live", "backtest", "live_realized", "backtest_realized", "backtest_price", "distance", "mark", "price_bars", "markers", "labels", "price_lines"):
+    for key in ("live", "backtest", "live_realized", "backtest_realized", "live_floating", "backtest_floating", "backtest_price", "distance", "mark", "price_bars", "markers", "labels", "price_lines"):
         rows = data.get(key)
         if isinstance(rows, list):
             out[key] = [row for row in rows if isinstance(row, dict)]
@@ -786,6 +848,8 @@ def build_consolidated_session(
     backtest_price_groups: List[List[Dict[str, Any]]] = []
     backtest_realized_groups: List[List[Dict[str, Any]]] = []
     live_realized_groups: List[List[Dict[str, Any]]] = []
+    live_floating_groups: List[List[Dict[str, Any]]] = []
+    backtest_floating_groups: List[List[Dict[str, Any]]] = []
     bar_groups: List[List[Dict[str, Any]]] = []
     mark_groups: List[List[Dict[str, Any]]] = []
     marker_groups: List[List[Dict[str, Any]]] = []
@@ -837,6 +901,8 @@ def build_consolidated_session(
         backtest_groups.append(chart.get("backtest", []))
         live_realized_groups.append(chart.get("live_realized", []))
         backtest_realized_groups.append(chart.get("backtest_realized", []))
+        live_floating_groups.append(chart.get("live_floating", []))
+        backtest_floating_groups.append(chart.get("backtest_floating", []))
         backtest_price_groups.append(chart.get("backtest_price", []))
         mark_groups.append(chart.get("mark", []))
         bar_groups.append(chart.get("price_bars", []))
@@ -871,13 +937,27 @@ def build_consolidated_session(
     backtest_full = _merge_points(*backtest_groups)
     live_realized_full = _merge_points(*live_realized_groups)
     backtest_realized_full = _merge_points(*backtest_realized_groups)
+    live_floating_full = _merge_points(*live_floating_groups)
+    backtest_floating_full = _merge_points(*backtest_floating_groups)
     backtest_price_full = _merge_points(*backtest_price_groups)
+    reconstructed_live_floating, reconstructed_live_realized, replayed_mtm_points = _replay_order_floating_pnl(
+        sorted(orders_by_id.values(), key=lambda x: x.get("ts_utc") or ""),
+        price_bars_full,
+    )
+    if reconstructed_live_floating:
+        live_floating_full = reconstructed_live_floating
+    if reconstructed_live_realized and not live_realized_full:
+        live_realized_full = reconstructed_live_realized
+    if not backtest_floating_full and backtest_full:
+        backtest_floating_full = _subtract_point_series(backtest_full, backtest_realized_full, price_bars_full)
     ffilled_counts: Dict[str, int] = {}
     if forward_fill_equity:
         live_full, ffilled_counts["live"] = _forward_fill_points_to_bars(live_full, price_bars_full)
         backtest_full, ffilled_counts["backtest"] = _forward_fill_points_to_bars(backtest_full, price_bars_full)
         live_realized_full, ffilled_counts["live_realized"] = _forward_fill_points_to_bars(live_realized_full, price_bars_full)
         backtest_realized_full, ffilled_counts["backtest_realized"] = _forward_fill_points_to_bars(backtest_realized_full, price_bars_full)
+        live_floating_full, ffilled_counts["live_floating"] = _forward_fill_points_to_bars(live_floating_full, price_bars_full)
+        backtest_floating_full, ffilled_counts["backtest_floating"] = _forward_fill_points_to_bars(backtest_floating_full, price_bars_full)
         backtest_price_full, ffilled_counts["backtest_price"] = _forward_fill_points_to_bars(backtest_price_full, price_bars_full)
     markers = _merge_markers(*marker_groups)
     labels = _merge_labels(*label_groups)
@@ -891,6 +971,8 @@ def build_consolidated_session(
         "sources": {
             "snapshot": "chart.json",
             "live": "live_equity.csv + source chart snapshots",
+            "live_floating": "minute mark-to-market replay from filled orders + recovered OHLCV",
+            "backtest_floating": "backtest total minus backtest realized on recovered minute timeline",
             "price_bars": "live_candles.csv + telemetry + source OHLCV/chart snapshots + real OHLCV gap cache/fetch + residual synthetic flat gap fill",
             "mark": "telemetry.jsonl from consolidated price_bars close",
             "markers": "live_chart_events.csv + session.sqlite filled orders + source chart snapshots",
@@ -921,6 +1003,8 @@ def build_consolidated_session(
         "backtest": _downsample_points(backtest_full, max_points),
         "live_realized": _downsample_points(live_realized_full, max_points),
         "backtest_realized": _downsample_points(backtest_realized_full, max_points),
+        "live_floating": _downsample_points(live_floating_full, max_points),
+        "backtest_floating": _downsample_points(backtest_floating_full, max_points),
         "backtest_price": _downsample_points(backtest_price_full, max_points),
         "mark": _downsample_points(mark_full, max_points),
         "price_bars": _downsample_bars(price_bars_full, max_points),
@@ -940,6 +1024,9 @@ def build_consolidated_session(
         "backtest": len(backtest_full),
         "live_realized": len(live_realized_full),
         "backtest_realized": len(backtest_realized_full),
+        "live_floating": len(live_floating_full),
+        "backtest_floating": len(backtest_floating_full),
+        "replayed_mtm_points": replayed_mtm_points,
         "backtest_price": len(backtest_price_full),
         "mark": len(mark_full),
         "price_bars": len(price_bars_full),

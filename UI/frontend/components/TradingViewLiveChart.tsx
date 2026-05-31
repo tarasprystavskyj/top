@@ -46,6 +46,8 @@ type LiveChartPayload = {
   backtest?: Point[];
   live_realized?: Point[];
   backtest_realized?: Point[];
+  live_floating?: Point[];
+  backtest_floating?: Point[];
   backtest_price?: Point[];
   price_bars?: PriceBar[];
   distance?: Point[];
@@ -60,7 +62,7 @@ type LiveChartPayload = {
 
 type BarSize = '1m' | '5m' | '15m' | '1h';
 type PriceLayerKey = 'livePrice' | 'backtestPrice' | 'telemetryMark' | 'events' | 'targets' | 'labels' | 'parameters';
-type PnlLayerKey = 'livePnl' | 'backtestPnl' | 'liveRealized' | 'backtestRealized';
+type PnlLayerKey = 'livePnl' | 'backtestPnl' | 'liveRealized' | 'backtestRealized' | 'liveFloating' | 'backtestFloating';
 
 const colors = {
   bg: '#0B1220',
@@ -266,6 +268,8 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
     backtestPnl: true,
     liveRealized: true,
     backtestRealized: true,
+    liveFloating: true,
+    backtestFloating: true,
   });
 
   const priceBars = Array.isArray(payload?.price_bars) ? payload.price_bars : [];
@@ -275,6 +279,8 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
   const backtest = Array.isArray(payload?.backtest) ? payload.backtest : [];
   const liveRealized = Array.isArray(payload?.live_realized) ? payload.live_realized : [];
   const backtestRealized = Array.isArray(payload?.backtest_realized) ? payload.backtest_realized : [];
+  const liveFloating = Array.isArray(payload?.live_floating) ? payload.live_floating : [];
+  const backtestFloating = Array.isArray(payload?.backtest_floating) ? payload.backtest_floating : [];
   const markers = Array.isArray(payload?.markers) ? payload.markers : [];
   const labels = Array.isArray(payload?.labels) ? payload.labels : [];
   const priceLines = Array.isArray(payload?.price_lines) ? payload.price_lines : [];
@@ -287,6 +293,8 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
   const backtestLine = useMemo(() => toLineData(backtest, barSeconds), [backtest, barSeconds]);
   const liveRealizedLine = useMemo(() => toLineData(liveRealized, barSeconds), [barSeconds, liveRealized]);
   const backtestRealizedLine = useMemo(() => toLineData(backtestRealized, barSeconds), [backtestRealized, barSeconds]);
+  const liveFloatingLine = useMemo(() => toLineData(liveFloating, barSeconds), [barSeconds, liveFloating]);
+  const backtestFloatingLine = useMemo(() => toLineData(backtestFloating, barSeconds), [backtestFloating, barSeconds]);
   const eventTimes = useMemo(
     () => markers.map((marker, idx) => ({ time: timeForBar(marker.time, idx + 1, barSize) as number })),
     [barSize, markers],
@@ -296,12 +304,12 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
     [barSize, labels],
   );
   const sharedTimeScale = useMemo(
-    () => regularTimeScale([liveCandles, markLine, backtestPriceLine, liveLine, backtestLine, liveRealizedLine, backtestRealizedLine, eventTimes, labelTimes], barSeconds),
-    [barSeconds, liveCandles, markLine, backtestPriceLine, liveLine, backtestLine, liveRealizedLine, backtestRealizedLine, eventTimes, labelTimes],
+    () => regularTimeScale([liveCandles, markLine, backtestPriceLine, liveLine, backtestLine, liveRealizedLine, backtestRealizedLine, liveFloatingLine, backtestFloatingLine, eventTimes, labelTimes], barSeconds),
+    [barSeconds, liveCandles, markLine, backtestPriceLine, liveLine, backtestLine, liveRealizedLine, backtestRealizedLine, liveFloatingLine, backtestFloatingLine, eventTimes, labelTimes],
   );
   const sharedLogicalRange = useMemo(() => fullLogicalRange(sharedTimeScale.length), [sharedTimeScale.length]);
   const hasPriceData = liveCandles.length > 0 || backtestPriceLine.length > 0 || markLine.length > 0;
-  const hasPnlData = liveLine.length > 0 || backtestLine.length > 0 || liveRealizedLine.length > 0 || backtestRealizedLine.length > 0;
+  const hasPnlData = liveLine.length > 0 || backtestLine.length > 0 || liveRealizedLine.length > 0 || backtestRealizedLine.length > 0 || liveFloatingLine.length > 0 || backtestFloatingLine.length > 0;
 
   useEffect(() => {
     if (!priceRef.current || !pnlRef.current || (!hasPriceData && !hasPnlData)) return;
@@ -391,6 +399,8 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
     addPnlLine(pnlLayers.backtestPnl, backtestLine, '#22D3EE', 'Backtest total PNL', 1);
     addPnlLine(pnlLayers.liveRealized, liveRealizedLine, '#F59E0B', 'Live realized PNL', 2);
     addPnlLine(pnlLayers.backtestRealized, backtestRealizedLine, '#A78BFA', 'Backtest realized PNL', 2);
+    addPnlLine(pnlLayers.liveFloating, liveFloatingLine, '#34D399', 'Live floating PNL', 1);
+    addPnlLine(pnlLayers.backtestFloating, backtestFloatingLine, '#818CF8', 'Backtest floating PNL', 1);
 
     if (anchorSeries && priceLayers.events && markers.length) {
       createSeriesMarkers(
@@ -587,6 +597,8 @@ export default function TradingViewLiveChart({ payload }: { payload: LiveChartPa
           ['backtestPnl', 'backtest total'],
           ['liveRealized', 'live realized'],
           ['backtestRealized', 'backtest realized'],
+          ['liveFloating', 'live floating'],
+          ['backtestFloating', 'backtest floating'],
         ] as [PnlLayerKey, string][]).map(([key, label]) => (
           <label key={key} style={{ ...labelStyle, color: pnlLayers[key] ? colors.text : colors.muted }}>
             <input type="checkbox" checked={pnlLayers[key]} onChange={() => togglePnlLayer(key)} />

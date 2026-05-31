@@ -53,6 +53,8 @@ type LiveChartPayload = {
   backtest?: Point[];
   live_realized?: Point[];
   backtest_realized?: Point[];
+  live_floating?: Point[];
+  backtest_floating?: Point[];
   backtest_price?: Point[];
   price_bars?: { ts: string; open: number; high: number; low: number; close: number }[];
   distance?: Point[];

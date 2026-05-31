@@ -100,6 +100,8 @@ export function normalizeLiveChartPayload(raw) {
     backtest: normalizeChartSeries(raw?.backtest || []),
     live_realized: normalizeChartSeries(raw?.live_realized || []),
     backtest_realized: normalizeChartSeries(raw?.backtest_realized || []),
+    live_floating: normalizeChartSeries(raw?.live_floating || []),
+    backtest_floating: normalizeChartSeries(raw?.backtest_floating || []),
     backtest_price: normalizeChartSeries(raw?.backtest_price || []),
     price_bars: normalizePriceBars(raw?.price_bars || []),
     distance: normalizeChartSeries(raw?.distance || []),

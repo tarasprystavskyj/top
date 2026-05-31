@@ -3754,7 +3754,7 @@ def _downsample_line_series_lttb(series: List[Dict[str, Any]], max_points: int) 
 
 def _downsample_live_chart_payload(payload: Dict[str, Any], max_points: int) -> None:
     stats: Dict[str, Dict[str, int]] = {}
-    for key in ("live", "backtest", "live_realized", "backtest_realized", "backtest_price", "distance", "mark"):
+    for key in ("live", "backtest", "live_realized", "backtest_realized", "live_floating", "backtest_floating", "backtest_price", "distance", "mark"):
         rows = payload.get(key)
         if isinstance(rows, list) and len(rows) > max_points:
             downsampled, dropped = _downsample_line_series_lttb(rows, max_points)
@@ -3977,6 +3977,8 @@ def _live_snapshot_chart_payload(session_dir: str) -> Optional[Dict[str, Any]]:
         "backtest",
         "live_realized",
         "backtest_realized",
+        "live_floating",
+        "backtest_floating",
         "backtest_price",
         "price_bars",
         "distance",

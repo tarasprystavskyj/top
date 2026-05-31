@@ -60,6 +60,8 @@ test('live chart payload preserves source metadata and approximate fallback flag
     live: [{ ts: '2026-01-01T00:00:00Z', value: 1 }],
     live_realized: [{ ts: '2026-01-01T00:00:00Z', value: 0.5 }],
     backtest_realized: [{ ts: '2026-01-01T00:00:00Z', value: 0.4 }],
+    live_floating: [{ ts: '2026-01-01T00:00:00Z', value: 0.25 }],
+    backtest_floating: [{ ts: '2026-01-01T00:00:00Z', value: 0.15 }],
     backtest_price: [{ ts: '2026-01-01T00:00:00Z', value: 99 }],
     price_bars: [{ ts: '2026-01-01T00:00:00Z', open: 98, high: 101, low: 97, close: 100 }],
     mark: [{ ts: '2026-01-01T00:00:00Z', value: 100 }],
@@ -76,6 +78,8 @@ test('live chart payload preserves source metadata and approximate fallback flag
   assert.equal(normalized.backtest_price[0].value, 99);
   assert.equal(normalized.live_realized[0].value, 0.5);
   assert.equal(normalized.backtest_realized[0].value, 0.4);
+  assert.equal(normalized.live_floating[0].value, 0.25);
+  assert.equal(normalized.backtest_floating[0].value, 0.15);
   assert.equal(normalized.price_bars[0].close, 100);
   assert.equal(normalized.markers[0].text, 'DCA buy');
   assert.equal(normalized.labels[0].layer, 'parameters');

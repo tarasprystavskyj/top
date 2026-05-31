@@ -32,6 +32,12 @@ def _make_source_session(root: Path, name: str, start: str, order_id: str) -> Pa
     ).to_csv(session / "live_equity.csv", index=False)
     pd.DataFrame(
         [
+            {"ts": (base + pd.Timedelta(minutes=idx)).isoformat(), "value": float(idx) * 0.5}
+            for idx in range(3)
+        ]
+    ).to_csv(session / "backtest_equity.csv", index=False)
+    pd.DataFrame(
+        [
             {
                 "ts": (base + pd.Timedelta(minutes=idx)).isoformat(),
                 "open": 50.0 + idx,
@@ -153,6 +159,8 @@ def test_build_hype_consolidated_session_is_compact_and_api_readable(monkeypatch
     assert len(body["price_bars"]) > 8
     assert body["price_bars"][-1]["close"] == 55.5
     assert any("flat price-bar gap fill" in warning for warning in body["warnings"])
+    assert body["live_floating"]
+    assert body["backtest_floating"]
     assert len(body["markers"]) == 2
 
 
