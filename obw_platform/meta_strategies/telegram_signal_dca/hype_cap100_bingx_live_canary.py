@@ -1010,6 +1010,8 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
         "live_symbol": args.live_symbol,
         "exchange": args.live_exchange,
         "live_exchange_profile": args.live_exchange_profile,
+        "meta_strategy_config_dir": str(getattr(args, "meta_strategy_config_dir", "") or ""),
+        "strategy_config": str(getattr(args, "strategy_config", "") or ""),
         "timeframe": _artifact_timeframe(args),
         "copy_poll_interval_sec": args.interval_sec,
         "dca_eval_interval_sec": args.dca_eval_interval_sec,

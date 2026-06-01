@@ -1,12 +1,15 @@
 import argparse
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from obw_platform.meta_strategies.telegram_signal_dca import hype_cap100_bingx_live_canary as live
 from obw_platform.meta_strategies.telegram_signal_dca import hype_cap100_champion_dca_strategy as champion
 from obw_platform.meta_strategies.telegram_signal_dca import hype_cap100_live_disabled_canary as paper
 from obw_platform.meta_strategies.telegram_signal_dca import hype_copy_signal_meta_strategy as meta
+from obw_platform.meta_strategies.telegram_signal_dca import meta_strategy_policy_config
 
 
 NOW = datetime(2026, 5, 25, 21, 0, tzinfo=timezone.utc)
@@ -36,6 +39,8 @@ def make_args(**overrides):
         order_error_circuit_sec=1800.0,
         order_error_max_consecutive=3,
         entry_failure_cooldown_sec=3600.0,
+        meta_strategy_config_dir="",
+        strategy_config="",
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -149,6 +154,76 @@ class HypeStrategyRunnerSplitTest(unittest.TestCase):
     def test_paper_and_live_use_same_meta_and_champion_modules(self):
         self.assertIs(paper.copy_signal_meta, live.copy_signal_meta)
         self.assertIs(paper.champion_dca, champion)
+
+    def test_meta_strategy_defaults_to_hype_champion_without_config(self):
+        args = make_args()
+        state = {"open_trades": {}, "equity": 30.0}
+        result = meta.build_strategy_intents(state, [source_long()], [], 50.0, NOW, args, allow_dca=False, iso_fn=paper.iso)
+        self.assertEqual(len(result["intents"]), 1)
+        intent = result["intents"][0]
+        self.assertEqual(intent["candidate_index"], champion.CHAMPION_CANDIDATE_INDEX)
+        self.assertAlmostEqual(intent["notional"], 8.4)
+        self.assertEqual(intent["strategy_policy"], "copy_source_open_base_entry")
+
+    def test_meta_strategy_uses_symbol_config_for_amd_contract_sized_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_dir = Path(tmp)
+            (cfg_dir / "AMDUSDT.json").write_text(
+                """
+{
+  "schema": "telegram_signal_dca_meta_strategy_config_v1",
+  "name": "unit_amd_contract_policy",
+  "symbols": ["AMDUSDT"],
+  "candidate_index": 21001,
+  "strategy_policy": "unit_configured_dca",
+  "dca": {
+    "contract_size_base": 0.01,
+    "base_contracts": 1,
+    "add_contracts": [1, 2],
+    "drops_pct": [1.0, 2.0]
+  }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            args = make_args(
+                symbol="AMDUSDT",
+                live_symbol="AMD/USDT:USDT",
+                initial_equity=100.0,
+                initial_target_notional=100.0,
+                max_gross_notional_usdt=100.0,
+                max_one_side_notional_usdt=100.0,
+                meta_strategy_config_dir=str(cfg_dir),
+            )
+            pos = {
+                "key": "AMDUSDT:LONG",
+                "id": "amd-1",
+                "symbol": "AMDUSDT",
+                "side": "LONG",
+                "entry_price": 500.0,
+            }
+            result = meta.build_strategy_intents({}, [pos], [], 494.0, NOW, args, allow_dca=True, iso_fn=paper.iso)
+        self.assertEqual([intent["intent_type"] for intent in result["intents"]], ["open_entry", "dca_entry"])
+        base, dca_intent = result["intents"]
+        self.assertEqual(base["candidate_index"], 21001)
+        self.assertEqual(base["strategy_policy"], "unit_configured_dca")
+        self.assertAlmostEqual(base["notional"], 5.0)
+        self.assertAlmostEqual(dca_intent["expected_price"], 495.0)
+        self.assertAlmostEqual(dca_intent["notional"], 4.95)
+
+    def test_single_strategy_config_overrides_config_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "custom.json"
+            cfg.write_text(
+                '{"name":"single_override","symbols":["AMDUSDT"],"candidate_index":21002,"dca":{"base_notional_usdt":7,"add_notionals_usdt":[3],"drops_pct":[1]}}',
+                encoding="utf-8",
+            )
+            args = make_args(symbol="AMDUSDT", strategy_config=str(cfg), initial_equity=20, initial_target_notional=20, max_gross_notional_usdt=20)
+            policy = meta_strategy_policy_config.resolve_policy(args, "AMDUSDT")
+            plan = policy.build_plan(20.0, args, 500.0)
+        self.assertEqual(plan["candidate_index"], 21002)
+        self.assertAlmostEqual(plan["base_notional"], 7.0)
+        self.assertEqual(plan["add_notionals"], [3.0])
 
 
 if __name__ == "__main__":

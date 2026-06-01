@@ -452,6 +452,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--timeout-sec", type=float, default=20.0)
     ap.add_argument("--interval-sec", type=float, default=60.0)
     ap.add_argument("--max-events", type=int, default=2000)
+    ap.add_argument("--meta-strategy-config-dir", default="", help="Optional folder with per-symbol meta-strategy DCA configs.")
+    ap.add_argument("--strategy-config", default="", help="Optional single meta-strategy config file. Overrides --meta-strategy-config-dir.")
     ap.add_argument("--mock-open-long", action="store_true")
     ap.add_argument("--mock-open-short", action="store_true")
     ap.add_argument("--mock-no-position", action="store_true")

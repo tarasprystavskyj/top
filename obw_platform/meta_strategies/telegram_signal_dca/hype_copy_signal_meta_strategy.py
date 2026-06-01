@@ -9,8 +9,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from . import hype_cap100_champion_dca_strategy as dca
+    from . import meta_strategy_policy_config
 except ImportError:  # pragma: no cover - script import path
     import hype_cap100_champion_dca_strategy as dca
+    import meta_strategy_policy_config
 
 
 SOURCE_HISTORY_OPEN_TOLERANCE_SEC = 2 * 60 * 60
@@ -134,17 +136,19 @@ def build_strategy_intents(
     intents: List[Dict[str, Any]] = []
 
     for key, pos in sorted(current.items()):
+        policy = meta_strategy_policy_config.resolve_policy(args, pos.get("symbol") or args.symbol)
         if key not in open_trades:
             entry = float(pos["entry_price"])
-            plan = dca.build_plan(float(state.get("equity") or args.initial_equity), args, entry)
-            trade = dca.build_trade_from_source(pos, plan, now=now, mark=mark, iso_fn=iso_fn)
-            intents.append(dca.base_entry_intent(trade, expected_price=entry))
-            intents.extend(dca.dca_entry_intents(trade, mark=mark, allow_dca=allow_dca))
+            plan = policy.build_plan(float(state.get("equity") or args.initial_equity), args, entry)
+            trade = policy.build_trade_from_source(pos, plan, now=now, mark=mark, iso_fn=iso_fn)
+            intents.append(policy.base_entry_intent(trade, expected_price=entry))
+            intents.extend(policy.dca_entry_intents(trade, mark=mark, allow_dca=allow_dca))
         else:
             trade = open_trades[key]
             trade["last_seen_utc"] = iso_fn(now)
             trade["last_mark"] = mark
-            intents.extend(dca.dca_entry_intents(trade, mark=mark, allow_dca=allow_dca))
+            policy = meta_strategy_policy_config.resolve_policy(args, trade.get("symbol") or args.symbol)
+            intents.extend(policy.dca_entry_intents(trade, mark=mark, allow_dca=allow_dca))
 
     keys_to_close = set(open_trades) - set(current)
     for key in sorted(keys_to_close):

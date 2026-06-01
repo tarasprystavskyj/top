@@ -1,0 +1,19 @@
+{
+  "schema": "telegram_signal_dca_meta_strategy_config_v1",
+  "name": "callme_amdusdt_gateio_v21_min_contract",
+  "symbols": ["AMDUSDT"],
+  "candidate_index": 21001,
+  "strategy_policy": "callme_amdusdt_gateio_v21_configured_dca",
+  "dca": {
+    "contract_size_base": 0.01,
+    "base_contracts": 1,
+    "add_contracts": [1, 1, 1, 1],
+    "drops_pct": [0.25, 0.35, 0.55, 3.0],
+    "min_order_notional_usdt": 5.1
+  },
+  "notes": {
+    "source": "Binance copytrader 4512404768792222208",
+    "live_exchange_profile": "gateio_current",
+    "purpose": "minimum-contract Callme AMDUSDT test live with Veronica runner semantics"
+  }
+}
