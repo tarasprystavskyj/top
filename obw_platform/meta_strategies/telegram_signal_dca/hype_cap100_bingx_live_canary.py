@@ -677,7 +677,7 @@ def export_match_ready_trade_history(args: argparse.Namespace) -> Optional[str]:
         return None
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    symbol_safe = str(args.live_symbol or DEFAULT_LIVE_SYMBOL).replace("-", "_")
+    symbol_safe = artifact_safe_name(str(args.live_symbol or DEFAULT_LIVE_SYMBOL))
     out_path = out_dir / f"{symbol_safe}_trade_history_for_match.csv"
     with out_path.open("w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(
@@ -711,6 +711,17 @@ def export_match_ready_trade_history(args: argparse.Namespace) -> Optional[str]:
                 }
             )
     return str(out_path)
+
+
+def artifact_safe_name(raw: str) -> str:
+    out = []
+    for ch in str(raw or ""):
+        if ch.isalnum():
+            out.append(ch)
+        else:
+            out.append("_")
+    text = "".join(out).strip("_")
+    return text or "symbol"
 
 
 def write_live_equity_artifacts(args: argparse.Namespace, status: Dict[str, Any]) -> Optional[str]:

@@ -146,6 +146,9 @@ def open_trade():
 
 
 class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
+    def test_artifact_safe_name_handles_ccxt_symbols(self):
+        self.assertEqual(live.artifact_safe_name("AMD/USDT:USDT"), "AMD_USDT_USDT")
+
     def test_callable_surface_inventory_is_intentional(self):
         expected = {
             "stable_client_order_id",
