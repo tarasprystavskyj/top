@@ -998,6 +998,10 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "live_strategy_params.json"
+    try:
+        resolved_policy = copy_signal_meta.meta_strategy_policy_config.describe_policy(args, args.symbol)
+    except Exception as exc:
+        resolved_policy = {"source": "unresolved", "error": str(exc)}
     payload = {
         "schema": "hype_cap100_live_strategy_params_v1",
         "utc": str(status.get("utc") or paper.iso(paper.utc_now())),
@@ -1012,6 +1016,7 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
         "live_exchange_profile": args.live_exchange_profile,
         "meta_strategy_config_dir": str(getattr(args, "meta_strategy_config_dir", "") or ""),
         "strategy_config": str(getattr(args, "strategy_config", "") or ""),
+        "resolved_meta_strategy_policy": resolved_policy,
         "timeframe": _artifact_timeframe(args),
         "copy_poll_interval_sec": args.interval_sec,
         "dca_eval_interval_sec": args.dca_eval_interval_sec,

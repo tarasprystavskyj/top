@@ -221,9 +221,12 @@ class HypeStrategyRunnerSplitTest(unittest.TestCase):
             args = make_args(symbol="AMDUSDT", strategy_config=str(cfg), initial_equity=20, initial_target_notional=20, max_gross_notional_usdt=20)
             policy = meta_strategy_policy_config.resolve_policy(args, "AMDUSDT")
             plan = policy.build_plan(20.0, args, 500.0)
+            desc = meta_strategy_policy_config.describe_policy(args, "AMDUSDT")
         self.assertEqual(plan["candidate_index"], 21002)
         self.assertAlmostEqual(plan["base_notional"], 7.0)
         self.assertEqual(plan["add_notionals"], [3.0])
+        self.assertEqual(desc["source"], "config")
+        self.assertEqual(desc["candidate_index"], 21002)
 
 
 if __name__ == "__main__":

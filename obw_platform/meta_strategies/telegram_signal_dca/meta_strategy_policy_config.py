@@ -201,3 +201,22 @@ def resolve_policy(args: Any, symbol: str):
     if config:
         return ConfiguredDcaPolicy(config)
     return champion_dca
+
+
+def describe_policy(args: Any, symbol: str) -> Dict[str, Any]:
+    policy = resolve_policy(args, symbol)
+    if isinstance(policy, ConfiguredDcaPolicy):
+        return {
+            "source": "config",
+            "name": policy.name,
+            "candidate_index": policy.candidate_index,
+            "strategy_policy": str(policy.config.get("strategy_policy") or f"configured_dca:{policy.name}"),
+            "config_path": str(policy.config.get("_config_path") or ""),
+        }
+    return {
+        "source": "hype_champion_default",
+        "name": "hype_cap100_champion_dca_strategy",
+        "candidate_index": champion_dca.CHAMPION_CANDIDATE_INDEX,
+        "strategy_policy": "copy_source_open_base_entry",
+        "config_path": "",
+    }
