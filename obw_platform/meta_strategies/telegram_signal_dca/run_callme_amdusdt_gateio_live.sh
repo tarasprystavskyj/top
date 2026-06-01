@@ -46,6 +46,7 @@ exec "${PYTHON_BIN}" obw_platform/meta_strategies/telegram_signal_dca/hype_cap10
   --max-one-side-notional-usdt 30 \
   --max-daily-loss-usdt 3 \
   --max-orders-per-hour 8 \
+  --deadline-utc disabled \
   --order-error-backoff-sec 300 \
   --order-error-circuit-sec 1800 \
   --order-error-max-consecutive 2 \
