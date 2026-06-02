@@ -18,6 +18,7 @@ OUT_DIR="${OUT_DIR:-/var/www/vps2.happyuser.info/top/top_1/obw_platform/_reports
 RUN_ID="${RUN_ID:-CALLME_AMDUSDT_GATEIO_LIVE_$(date -u +%Y%m%dT%H%M%SZ)}"
 ENV_FILE="${ENV_FILE:-/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env}"
 SERVER_PROFILE="${SERVER_PROFILE:-/var/www/vps2.happyuser.info/top/.codex_CLI_laptop_local_philosofy/profiles/top_1.server.sh}"
+CALLME_AMD_DEADLINE_UTC="${CALLME_AMD_DEADLINE_UTC:-2026-06-04T05:15:00Z}"
 
 mkdir -p "${OUT_DIR}"
 if [[ -f "${SERVER_PROFILE}" ]]; then
@@ -46,7 +47,7 @@ exec "${PYTHON_BIN}" obw_platform/meta_strategies/telegram_signal_dca/hype_cap10
   --max-one-side-notional-usdt 30 \
   --max-daily-loss-usdt 3 \
   --max-orders-per-hour 8 \
-  --deadline-utc 2026-06-02T08:00:00Z \
+  --deadline-utc "${CALLME_AMD_DEADLINE_UTC}" \
   --order-error-backoff-sec 300 \
   --order-error-circuit-sec 1800 \
   --order-error-max-consecutive 2 \
