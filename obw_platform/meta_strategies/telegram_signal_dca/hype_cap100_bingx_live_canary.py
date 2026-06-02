@@ -227,6 +227,7 @@ BINGX_LEGACY_ENV_FILE = "/var/www/vps2.happyuser.info/top/top_1/.env"
 DEFAULT_LIVE_SYMBOL = "HYPE-USDT"
 SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio")
 SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy")
+SUPPORTED_SOURCE_LEVERAGE_MODES = ("ignore", "copy", "copy_div2")
 LIVE_EXCHANGE_PROFILES = {
     "gateio_current": {
         "live_exchange": "gateio",
@@ -1014,6 +1015,10 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
         "dca_eval_interval_sec": args.dca_eval_interval_sec,
         "history_poll_interval_sec": args.history_poll_interval_sec,
         "position_mode": args.position_mode,
+        "source_leverage_policy": {
+            "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+            "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
+        },
         "long_only": bool(args.long_only),
         "risk": {
             "initial_equity": args.initial_equity,
@@ -1023,6 +1028,15 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
             "max_daily_loss_usdt": args.max_daily_loss_usdt,
             "max_orders_per_hour": args.max_orders_per_hour,
             "deadline_utc": args.deadline_utc,
+        },
+        "protection": {
+            "account_loss_stop_usdt": getattr(args, "protection_account_loss_stop_usdt", 0.0),
+            "floating_pnl_stop_usdt": getattr(args, "protection_floating_pnl_stop_usdt", 0.0),
+            "emergency_account_loss_usdt": getattr(args, "protection_emergency_account_loss_usdt", 0.0),
+            "stale_market_sec": getattr(args, "protection_stale_market_sec", 0.0),
+            "require_book_ok": bool(getattr(args, "protection_require_book_ok", False)),
+            "require_premium_ok": bool(getattr(args, "protection_require_premium_ok", False)),
+            "auto_stop_new_orders": bool(getattr(args, "protection_auto_stop_new_orders", False)),
         },
     }
     paper.write_json(path, payload)
@@ -1062,6 +1076,118 @@ def control_state(args: argparse.Namespace) -> Dict[str, Any]:
         "kill": kill_path.exists(),
         "hot_stop": hot_path.exists(),
     }
+
+
+def _positive_arg(args: argparse.Namespace, name: str) -> float:
+    try:
+        value = float(getattr(args, name, 0.0) or 0.0)
+    except Exception:
+        return 0.0
+    return value if math.isfinite(value) and value > 0 else 0.0
+
+
+def _age_sec(now: datetime, iso_raw: Any) -> Optional[float]:
+    if not iso_raw:
+        return None
+    try:
+        dt = paper.parse_utc(str(iso_raw))
+        return max(0.0, (now - dt).total_seconds())
+    except Exception:
+        return None
+
+
+def open_unrealized_pnl_usdt(state: Dict[str, Any], mark: Optional[float]) -> float:
+    total = 0.0
+    open_trades = state.get("open_trades") if isinstance(state.get("open_trades"), dict) else {}
+    for trade in open_trades.values():
+        if not isinstance(trade, dict):
+            continue
+        try:
+            total += float(paper.unrealized_pnl(trade, mark))
+        except Exception:
+            continue
+    return total
+
+
+def evaluate_live_protection(
+    state: Dict[str, Any],
+    mark: Optional[float],
+    now: datetime,
+    input_meta: Dict[str, Any],
+    args: argparse.Namespace,
+) -> Dict[str, Any]:
+    reasons: List[Dict[str, Any]] = []
+    daily_pnl = float(paper.daily_pnl_usdt(state, mark, now))
+    floating_pnl = open_unrealized_pnl_usdt(state, mark)
+
+    account_loss_stop = _positive_arg(args, "protection_account_loss_stop_usdt")
+    if account_loss_stop and daily_pnl <= -account_loss_stop:
+        reasons.append({"code": "account_loss_stop", "value": daily_pnl, "threshold": -account_loss_stop})
+
+    floating_stop = _positive_arg(args, "protection_floating_pnl_stop_usdt")
+    if floating_stop and floating_pnl <= -floating_stop:
+        reasons.append({"code": "floating_pnl_stop", "value": floating_pnl, "threshold": -floating_stop})
+
+    emergency_loss = _positive_arg(args, "protection_emergency_account_loss_usdt")
+    emergency = bool(emergency_loss and daily_pnl <= -emergency_loss)
+    if emergency:
+        reasons.append({"code": "emergency_account_loss", "value": daily_pnl, "threshold": -emergency_loss})
+
+    stale_limit = _positive_arg(args, "protection_stale_market_sec")
+    market_meta = input_meta.get("market") if isinstance(input_meta.get("market"), dict) else {}
+    positions_meta = input_meta.get("positions") if isinstance(input_meta.get("positions"), dict) else {}
+    if stale_limit:
+        mark_age = _age_sec(now, state.get("last_mark_poll_utc"))
+        if mark_age is None or mark_age > stale_limit:
+            reasons.append({"code": "stale_mark", "age_sec": mark_age, "threshold_sec": stale_limit, "market": market_meta})
+        if market_meta.get("error"):
+            reasons.append({"code": "mark_fetch_error", "error": str(market_meta.get("error"))[:240], "age_sec": mark_age})
+        pos_age = _age_sec(now, state.get("last_positions_poll_utc"))
+        if positions_meta.get("error") and (pos_age is None or pos_age > stale_limit):
+            reasons.append({"code": "positions_fetch_error_stale", "error": str(positions_meta.get("error"))[:240], "age_sec": pos_age})
+
+    if getattr(args, "protection_require_book_ok", False) and market_meta.get("book_ok") is False:
+        reasons.append({"code": "book_not_ok", "market": market_meta})
+    if getattr(args, "protection_require_premium_ok", False) and market_meta.get("premium_ok") is False:
+        reasons.append({"code": "premium_not_ok", "market": market_meta})
+
+    block_new_entries = bool(reasons)
+    return {
+        "schema": "hype_live_protection_v1",
+        "active": block_new_entries,
+        "block_new_entries": block_new_entries,
+        "emergency": emergency,
+        "daily_realized_plus_unrealized_pnl_usdt": daily_pnl,
+        "floating_pnl_usdt": floating_pnl,
+        "mark": mark,
+        "thresholds": {
+            "account_loss_stop_usdt": account_loss_stop,
+            "floating_pnl_stop_usdt": floating_stop,
+            "emergency_account_loss_usdt": emergency_loss,
+            "stale_market_sec": stale_limit,
+            "require_book_ok": bool(getattr(args, "protection_require_book_ok", False)),
+            "require_premium_ok": bool(getattr(args, "protection_require_premium_ok", False)),
+        },
+        "auto_stop_new_orders": bool(getattr(args, "protection_auto_stop_new_orders", False)),
+        "reasons": reasons,
+    }
+
+
+def apply_live_protection_side_effects(args: argparse.Namespace, protection: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
+    if not protection.get("block_new_entries") or not getattr(args, "protection_auto_stop_new_orders", False):
+        return None
+    stop_path, _kill_path = control_paths(args)
+    if stop_path.exists():
+        return {"type": "protection_stop_already_present", "path": str(stop_path), "protection": protection}
+    stop_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "utc": paper.iso(now),
+        "run_id": args.run_id,
+        "reason": "auto_protection_block_new_entries",
+        "protection": protection,
+    }
+    stop_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    return {"type": "protection_stop_new_orders_created", "path": str(stop_path), "protection": protection}
 
 
 def default_hot_restart_snapshot_path(args: argparse.Namespace) -> Path:
@@ -1104,6 +1230,15 @@ def build_hot_restart_snapshot(
             "max_daily_loss_usdt": args.max_daily_loss_usdt,
             "max_orders_per_hour": args.max_orders_per_hour,
             "deadline_utc": args.deadline_utc,
+            "protection_account_loss_stop_usdt": getattr(args, "protection_account_loss_stop_usdt", 0.0),
+            "protection_floating_pnl_stop_usdt": getattr(args, "protection_floating_pnl_stop_usdt", 0.0),
+            "protection_emergency_account_loss_usdt": getattr(args, "protection_emergency_account_loss_usdt", 0.0),
+            "protection_stale_market_sec": getattr(args, "protection_stale_market_sec", 0.0),
+            "protection_require_book_ok": bool(getattr(args, "protection_require_book_ok", False)),
+            "protection_require_premium_ok": bool(getattr(args, "protection_require_premium_ok", False)),
+            "protection_auto_stop_new_orders": bool(getattr(args, "protection_auto_stop_new_orders", False)),
+            "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+            "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
             "long_only": bool(args.long_only),
             "interval_sec": args.interval_sec,
             "dca_eval_interval_sec": args.dca_eval_interval_sec,
@@ -1257,6 +1392,136 @@ def order_fee_usdt(order: Dict[str, Any]) -> float:
         except Exception:
             continue
     return total
+
+
+def parse_source_leverage(raw: Any) -> Optional[float]:
+    try:
+        value = float(str(raw).strip())
+    except Exception:
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
+def normalize_source_margin_mode(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    if text in {"cross", "crossed"}:
+        return "cross"
+    if text in {"isolated", "isolate"}:
+        return "isolated"
+    return text
+
+
+def effective_source_leverage(args: argparse.Namespace, trade: Dict[str, Any]) -> Dict[str, Any]:
+    mode = str(getattr(args, "source_leverage_mode", "ignore") or "ignore").strip().lower()
+    if mode not in SUPPORTED_SOURCE_LEVERAGE_MODES:
+        mode = "ignore"
+    raw = trade.get("source_leverage_raw", trade.get("source_leverage"))
+    source = parse_source_leverage(trade.get("source_leverage"))
+    if source is None:
+        source = parse_source_leverage(raw)
+    margin_mode = normalize_source_margin_mode(trade.get("source_margin_mode"))
+    out = {
+        "mode": mode,
+        "source_leverage_raw": raw,
+        "source_leverage": source,
+        "source_margin_mode": margin_mode,
+        "effective_leverage": None,
+        "required": mode != "ignore",
+    }
+    if mode == "ignore":
+        return out
+    if source is None:
+        out["error"] = "missing_source_leverage"
+        return out
+    if mode == "copy":
+        effective = source
+    else:
+        effective = max(1.0, math.floor(source / 2.0)) if source > 1.0 else 1.0
+    max_leverage = parse_source_leverage(getattr(args, "max_source_leverage", None))
+    if max_leverage is not None:
+        effective = min(effective, max_leverage)
+    out["effective_leverage"] = max(1.0, float(effective))
+    return out
+
+
+def leverage_cache_key(args: argparse.Namespace, ccxt_symbol: str, side: str, margin_mode: str, leverage: float) -> str:
+    return "|".join(
+        str(x or "")
+        for x in (
+            str(getattr(args, "live_exchange", "")).lower(),
+            str(getattr(args, "live_exchange_profile", "")).lower(),
+            ccxt_symbol,
+            str(side or "").upper() if str(getattr(args, "position_mode", "")).lower() == "hedge" else "BOTH",
+            normalize_source_margin_mode(margin_mode),
+            f"{float(leverage):g}",
+        )
+    )
+
+
+def live_leverage_params(args: argparse.Namespace, side: str, margin_mode: str) -> Dict[str, Any]:
+    ex = str(getattr(args, "live_exchange", "") or "").lower()
+    params: Dict[str, Any] = {}
+    mode = normalize_source_margin_mode(margin_mode)
+    if ex == "gateio":
+        params["settle"] = "USDT"
+        if mode:
+            params["marginMode"] = mode
+        return params
+    if ex == "bingx":
+        if str(getattr(args, "position_mode", "") or "").lower() == "hedge" and side:
+            params["side"] = str(side).upper()
+            params["positionSide"] = str(side).upper()
+        if mode:
+            params["marginMode"] = mode
+        return params
+    return params
+
+
+def ensure_symbol_leverage(
+    args: argparse.Namespace,
+    state: Dict[str, Any],
+    *,
+    symbol: str,
+    side: str,
+    margin_mode: str,
+    leverage: float,
+    now: datetime,
+) -> Dict[str, Any]:
+    client = live_client(args)
+    ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
+    key = leverage_cache_key(args, ccxt_symbol, side, margin_mode, leverage)
+    cache = state.setdefault("leverage_set_cache", {})
+    if isinstance(cache.get(key), dict) and cache[key].get("ok"):
+        return {**cache[key], "cached": True, "cache_key": key}
+    params = live_leverage_params(args, side, margin_mode)
+    payload = {
+        "ok": False,
+        "cached": False,
+        "exchange": getattr(args, "live_exchange", ""),
+        "ccxt_symbol": ccxt_symbol,
+        "side": str(side or "").upper(),
+        "margin_mode": normalize_source_margin_mode(margin_mode),
+        "leverage": float(leverage),
+        "params": params,
+        "cache_key": key,
+        "utc": paper.iso(now),
+    }
+    try:
+        if not hasattr(client.ex, "set_leverage"):
+            raise RuntimeError("exchange_client_missing_set_leverage")
+        result = client.ex.set_leverage(float(leverage), ccxt_symbol, params)
+    except Exception as exc:
+        payload["error"] = str(exc)
+        state["last_leverage_setup"] = payload
+        return payload
+    payload["ok"] = True
+    payload["result"] = safe_order(result) if isinstance(result, dict) else str(result)
+    cache[key] = payload
+    state["leverage_set_cache"] = cache
+    state["last_leverage_setup"] = payload
+    return payload
 
 
 def signed_slip_bp(side: str, expected_price: Optional[float], fill_price: Optional[float], *, is_close: bool) -> Optional[float]:
@@ -1513,11 +1778,58 @@ def live_order_amount_from_base_qty(
     is_close: bool,
     max_base_qty: Optional[float] = None,
 ) -> Tuple[float, float, float]:
-    contract_size = live_market_contract_size(client, ccxt_symbol) if str(args.live_exchange).lower() == "gateio" else 1.0
+    is_gateio = str(args.live_exchange).lower() == "gateio"
+    contract_size = live_market_contract_size(client, ccxt_symbol) if is_gateio else 1.0
     raw_amount = float(base_qty or 0.0) / max(contract_size, 1e-12)
     max_amount = None if max_base_qty is None else float(max_base_qty or 0.0) / max(contract_size, 1e-12)
     order_amount = _normalize_order_qty(client, ccxt_symbol, raw_amount, is_close=is_close, max_qty=max_amount)
+    if is_gateio and order_amount > 0:
+        # Gate.io futures order amount is contracts. CCXT market precision can
+        # report fractional precision, but the exchange floors fractional
+        # contract sizes. Normalize explicitly so telemetry/preflight matches
+        # what is actually sent and filled.
+        if is_close:
+            order_amount = math.floor(float(order_amount) + 1e-12)
+            if max_amount is not None:
+                order_amount = min(order_amount, math.floor(float(max_amount) + 1e-12))
+        else:
+            order_amount = max(1.0, float(round(float(order_amount))))
+        if max_amount is not None:
+            order_amount = min(order_amount, math.floor(float(max_amount) + 1e-12))
     return float(order_amount or 0.0), float(order_amount or 0.0) * contract_size, contract_size
+
+
+def runtime_sizing_payload(state: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    state_equity = float(state.get("equity") or getattr(args, "initial_equity", 0.0) or 0.0)
+    effective_new_entry_target = min(
+        float(getattr(args, "initial_target_notional", 0.0) or 0.0),
+        float(getattr(args, "max_gross_notional_usdt", 0.0) or 0.0),
+        max(state_equity, 0.0),
+    )
+    open_trades = state.get("open_trades") if isinstance(state.get("open_trades"), dict) else {}
+    open_targets = []
+    for key, trade in sorted(open_trades.items()):
+        if not isinstance(trade, dict):
+            continue
+        open_targets.append(
+            {
+                "key": key,
+                "target_notional": float(trade.get("target_notional") or 0.0),
+                "base_notional": float(trade.get("base_notional") or 0.0),
+                "remaining_add_notional": sum(float(x or 0.0) for x in list(trade.get("add_notionals") or [])[int(trade.get("next_level_idx") or 0) :]),
+                "current_notional": float(trade.get("notional") or 0.0),
+                "qty": float(trade.get("qty") or 0.0),
+            }
+        )
+    return {
+        "cli_initial_equity": float(getattr(args, "initial_equity", 0.0) or 0.0),
+        "cli_initial_target_notional": float(getattr(args, "initial_target_notional", 0.0) or 0.0),
+        "cli_max_gross_notional_usdt": float(getattr(args, "max_gross_notional_usdt", 0.0) or 0.0),
+        "state_initial_equity": float(state.get("initial_equity") or 0.0),
+        "state_equity": state_equity,
+        "effective_new_entry_target_notional": effective_new_entry_target,
+        "open_trade_targets": open_targets,
+    }
 
 
 def live_order_filled_base_qty(args: argparse.Namespace, client: CCXTFetcher, ccxt_symbol: str, order: Dict[str, Any], fallback_order_amount: float) -> float:
@@ -1801,6 +2113,16 @@ def live_add_fill(
             "control": controls,
             "requested_notional": notional,
         }
+    protection = getattr(args, "_last_protection", {})
+    if isinstance(protection, dict) and protection.get("block_new_entries"):
+        return {
+            "type": "live_entry_blocked",
+            "key": trade.get("key"),
+            "fill_type": fill_type,
+            "reason": "protection_block_new_entries",
+            "protection": protection,
+            "requested_notional": notional,
+        }
     backoff = order_error_backoff_active(state, now)
     if backoff:
         return {
@@ -1846,6 +2168,63 @@ def live_add_fill(
             "exchange_preflight": preflight,
             "requested_notional": notional,
         }
+    leverage_policy = effective_source_leverage(args, trade)
+    leverage_setup: Dict[str, Any] = {"ok": True, "policy": leverage_policy, "skipped": True}
+    if leverage_policy.get("required"):
+        effective_lev = leverage_policy.get("effective_leverage")
+        if effective_lev is None:
+            error_text = str(leverage_policy.get("error") or "missing_source_leverage")
+            failure_payload = register_entry_failure(state, attempt_key, error_text, now, args)
+            state["last_leverage_setup"] = {"ok": False, "error": error_text, "policy": leverage_policy, "utc": paper.iso(now)}
+            return {
+                "type": "live_entry_blocked",
+                "key": trade.get("key"),
+                "fill_type": fill_type,
+                "reason": "leverage_setup_failed",
+                "error": error_text,
+                "leverage": leverage_policy,
+                "requested_notional": notional,
+                "attempt_key": attempt_key,
+                "entry_failure": failure_payload,
+            }
+        leverage_setup = ensure_symbol_leverage(
+            args,
+            state,
+            symbol=trade["symbol"],
+            side=str(trade["side"]),
+            margin_mode=str(leverage_policy.get("source_margin_mode") or ""),
+            leverage=float(effective_lev),
+            now=now,
+        )
+        leverage_setup["policy"] = leverage_policy
+        if not leverage_setup.get("ok"):
+            error_text = str(leverage_setup.get("error") or "leverage_setup_failed")
+            backoff_payload = register_order_error_backoff(state, error_text, now, args)
+            failure_payload = register_entry_failure(state, attempt_key, error_text, now, args)
+            record_session_order(
+                args,
+                now=now,
+                symbol=args.live_symbol,
+                side=str(trade["side"]),
+                type_="OPEN",
+                price=expected_price,
+                qty=0.0,
+                status="REJECTED",
+                reason="leverage_setup_failed",
+                extra={"leverage_setup": leverage_setup, "order_error_backoff": backoff_payload, "entry_failure": failure_payload, "attempt_key": attempt_key},
+            )
+            return {
+                "type": "live_entry_blocked",
+                "key": trade.get("key"),
+                "fill_type": fill_type,
+                "reason": "leverage_setup_failed",
+                "error": error_text,
+                "leverage_setup": leverage_setup,
+                "requested_notional": notional,
+                "attempt_key": attempt_key,
+                "backoff": backoff_payload,
+                "entry_failure": failure_payload,
+            }
     client_order_id = stable_client_order_id(
         "entry",
         args.run_id,
@@ -1881,6 +2260,7 @@ def live_add_fill(
             "error": error_text,
             "guard": guard_detail,
             "exchange_preflight": preflight,
+            "leverage_setup": leverage_setup,
             "requested_notional": notional,
             "attempt_key": attempt_key,
             "backoff": backoff_payload,
@@ -1917,6 +2297,12 @@ def live_add_fill(
         "live_fill_price": fill_price,
         "requested_notional": notional,
         "live_notional": live_notional,
+        "source_leverage": leverage_policy.get("source_leverage"),
+        "source_leverage_raw": leverage_policy.get("source_leverage_raw"),
+        "effective_leverage": leverage_policy.get("effective_leverage"),
+        "source_leverage_mode": leverage_policy.get("mode"),
+        "source_margin_mode": leverage_policy.get("source_margin_mode"),
+        "leverage_setup": leverage_setup,
         "qty": qty,
         "requested_base_qty": submitted.get("requested_base_qty"),
         "exchange_preflight": preflight,
@@ -1967,7 +2353,7 @@ def live_add_fill(
         status="FILLED",
         reason=reason,
         exchange_order_id=str(submitted.get("exchange_order_id") or ""),
-        extra={"fill": fill, "submitted": submitted, "exchange_preflight": preflight},
+        extra={"fill": fill, "submitted": submitted, "exchange_preflight": preflight, "leverage_setup": leverage_setup},
     )
     clear_order_error_backoff(state)
     clear_entry_failure(state, attempt_key)
@@ -2182,6 +2568,10 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["live_symbol"] = args.live_symbol
     payload["live_exchange_profile"] = args.live_exchange_profile
     payload["position_mode"] = args.position_mode
+    payload["source_leverage_policy"] = {
+        "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+        "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
+    }
     payload["auth_probe"] = getattr(args, "_auth_probe", {})
     payload["exchange_switch_reset"] = getattr(args, "_exchange_switch_reset", {})
     payload["copy_poll_interval_sec"] = args.interval_sec
@@ -2195,6 +2585,10 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["order_sync_wait_sec"] = args.order_sync_wait_sec
     payload["order_error_backoff"] = state.get("order_error_backoff") if isinstance(state.get("order_error_backoff"), dict) else {}
     payload["entry_failures"] = state.get("entry_failures") if isinstance(state.get("entry_failures"), dict) else {}
+    payload["leverage_set_cache"] = state.get("leverage_set_cache") if isinstance(state.get("leverage_set_cache"), dict) else {}
+    payload["last_leverage_setup"] = state.get("last_leverage_setup") if isinstance(state.get("last_leverage_setup"), dict) else {}
+    payload["runtime_sizing"] = runtime_sizing_payload(state, args)
+    payload["protection"] = getattr(args, "_last_protection", {})
     return payload
 
 
@@ -2210,9 +2604,14 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     state["paper_only"] = False
     state["live_exchange"] = args.live_exchange
     positions, history, mark, input_meta = load_inputs_live(args, state, now)
+    protection = evaluate_live_protection(state, mark, now, input_meta, args)
+    args._last_protection = protection
+    protection_event = apply_live_protection_side_effects(args, protection, now)
     allow_dca, dca_meta = dca_eval_due(state, now, args)
     args._last_dca_eval_meta = dca_meta
     events = apply_live_snapshot(state, positions, history, mark, now, args, allow_dca=allow_dca)
+    if protection_event:
+        events.insert(0, protection_event)
     if allow_dca:
         state["last_dca_eval_bucket"] = dca_meta.get("dca_eval_bucket")
         state["last_dca_eval_utc"] = paper.iso(now)
@@ -2250,12 +2649,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--order-error-circuit-sec", type=float, default=DEFAULT_ORDER_ERROR_CIRCUIT_SEC, help="Long private order POST cooldown after repeated/config/rate-limit errors.")
     ap.add_argument("--order-error-max-consecutive", type=int, default=DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE, help="Consecutive order errors before using circuit cooldown.")
     ap.add_argument("--entry-failure-cooldown-sec", type=float, default=DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC, help="Cooldown for the same symbol/lead/fill-level after rejected entry.")
+    ap.add_argument("--source-leverage-mode", choices=SUPPORTED_SOURCE_LEVERAGE_MODES, default="ignore", help="How to apply Binance copy-source leverage before follower opens/DCA legs.")
+    ap.add_argument("--max-source-leverage", type=float, default=0.0, help="Optional cap for effective source leverage; 0 means uncapped.")
     ap.add_argument("--hot-restart-snapshot-path", default="", help="Where HOT_STOP writes a restart snapshot. Defaults to out-dir/HOT_RESTART_SNAPSHOT.json.")
     ap.add_argument("--resume-snapshot", default="", help="Load state from a HOT_STOP snapshot before starting.")
     ap.add_argument("--resume-snapshot-overwrite", action="store_true", help="Allow --resume-snapshot to replace an existing state-path.")
     ap.add_argument("--live-cache-npz-path", default="", help="Live OHLCV NPZ artifact path. Defaults to out-dir/live_mark_ohlcv.npz.")
     ap.add_argument("--live-cache-npz-max-bars", type=int, default=10000, help="Max rows retained in the live OHLCV NPZ artifact.")
     ap.add_argument("--stdout-log-path", default="", help="Current stdout log path to publish via ACTIVE_LOG_PATH.txt.")
+    ap.add_argument("--protection-account-loss-stop-usdt", type=float, default=0.0, help="Block new entries when daily realized+unrealized PnL reaches this negative USD threshold.")
+    ap.add_argument("--protection-floating-pnl-stop-usdt", type=float, default=0.0, help="Block new entries when open floating PnL reaches this negative USD threshold.")
+    ap.add_argument("--protection-emergency-account-loss-usdt", type=float, default=0.0, help="Mark emergency protection when daily realized+unrealized PnL reaches this negative USD threshold.")
+    ap.add_argument("--protection-stale-market-sec", type=float, default=0.0, help="Block new entries after stale cached mark/position inputs following fetch errors.")
+    ap.add_argument("--protection-require-book-ok", action="store_true", help="Block new entries when mark metadata reports book_ok=false.")
+    ap.add_argument("--protection-require-premium-ok", action="store_true", help="Block new entries when mark metadata reports premium_ok=false.")
+    ap.add_argument("--protection-auto-stop-new-orders", action="store_true", help="Create STOP_NEW_ORDERS when protection blocks new entries.")
     return ap
 
 
@@ -2296,8 +2704,18 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("order error cooldowns must be positive")
     if args.order_error_max_consecutive <= 0:
         raise SystemExit("--order-error-max-consecutive must be positive")
+    if args.max_source_leverage < 0:
+        raise SystemExit("--max-source-leverage must be non-negative")
     if args.live_cache_npz_max_bars <= 0:
         raise SystemExit("--live-cache-npz-max-bars must be positive")
+    for name in (
+        "protection_account_loss_stop_usdt",
+        "protection_floating_pnl_stop_usdt",
+        "protection_emergency_account_loss_usdt",
+        "protection_stale_market_sec",
+    ):
+        if float(getattr(args, name, 0.0) or 0.0) < 0:
+            raise SystemExit(f"--{name.replace('_', '-')} must be non-negative")
     if args.resume_snapshot and not Path(args.resume_snapshot).exists():
         raise SystemExit(f"--resume-snapshot does not exist: {args.resume_snapshot}")
 

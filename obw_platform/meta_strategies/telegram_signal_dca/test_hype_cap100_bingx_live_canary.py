@@ -17,7 +17,7 @@ fake_live_runner_dual = types.ModuleType("obw_platform.runners.live_runner_dual"
 fake_live_runner_dual._extract_order_id = lambda order: str((order or {}).get("id") or "")
 fake_live_runner_dual._fetch_exchange_position = lambda *args, **kwargs: None
 fake_live_runner_dual._fetch_order_fill = lambda *args, **kwargs: (None, None, None)
-fake_live_runner_dual._normalize_order_qty = lambda _client, _symbol, qty, is_close=False: qty
+fake_live_runner_dual._normalize_order_qty = lambda _client, _symbol, qty, is_close=False, max_qty=None: min(qty, max_qty) if max_qty is not None else qty
 sys.modules.setdefault("obw_platform.runners.live_runner_dual", fake_live_runner_dual)
 
 from obw_platform.meta_strategies.telegram_signal_dca import hype_cap100_bingx_live_canary as live
@@ -69,10 +69,19 @@ def make_args(**overrides):
         order_error_circuit_sec=1800.0,
         order_error_max_consecutive=3,
         entry_failure_cooldown_sec=3600.0,
+        source_leverage_mode="ignore",
+        max_source_leverage=0.0,
         hot_restart_snapshot_path="",
         resume_snapshot="",
         resume_snapshot_overwrite=False,
         stdout_log_path="",
+        protection_account_loss_stop_usdt=0.0,
+        protection_floating_pnl_stop_usdt=0.0,
+        protection_emergency_account_loss_usdt=0.0,
+        protection_stale_market_sec=0.0,
+        protection_require_book_ok=False,
+        protection_require_premium_ok=False,
+        protection_auto_stop_new_orders=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -83,6 +92,7 @@ class FakeExchange:
         self.orders = list(orders or [{"id": "ex-1", "average": 50.0, "filled": 0.2}])
         self.failures = list(failures or [])
         self.calls = []
+        self.leverage_calls = []
         self.balance_calls = []
         self.balance = balance or {"USDT": {"total": 1.0}}
         self.markets = {"HYPE/USDT:USDT": {"contractSize": 0.1, "info": {"quanto_multiplier": "0.1"}}}
@@ -95,6 +105,12 @@ class FakeExchange:
         if self.failures:
             raise Exception(self.failures.pop(0))
         return self.orders.pop(0)
+
+    def set_leverage(self, *args):
+        self.leverage_calls.append(args)
+        if self.failures:
+            raise Exception(self.failures.pop(0))
+        return {"id": "lev-1", "leverage": args[0], "symbol": args[1], "params": args[2] if len(args) > 2 else {}}
 
     def fetch_balance(self, params=None):
         self.balance_calls.append(params or {})
@@ -132,6 +148,9 @@ def open_trade():
         "side": "LONG",
         "opened_at_utc": live.paper.iso(NOW),
         "lead_entry_price": 50.0,
+        "source_leverage_raw": "6",
+        "source_leverage": 6.0,
+        "source_margin_mode": "Cross",
         "target_notional": 30.0,
         "base_notional": 8.4,
         "add_notionals": [1.0],
@@ -167,6 +186,12 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             "live_client",
             "auth_probe",
             "live_balance_params",
+            "parse_source_leverage",
+            "normalize_source_margin_mode",
+            "effective_source_leverage",
+            "leverage_cache_key",
+            "live_leverage_params",
+            "ensure_symbol_leverage",
             "live_order_params",
             "reset_exchange_failures_on_switch",
             "submit_open",
@@ -349,6 +374,28 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(contract_size, 0.1)
         self.assertAlmostEqual(base_qty, 0.2)
 
+    def test_gateio_live_order_amount_uses_integer_contracts(self):
+        args = make_args(live_exchange="gateio")
+        client = FakeClient()
+        with patch.object(live, "_normalize_order_qty", return_value=11.8):
+            order_amount, base_qty, contract_size = live.live_order_amount_from_base_qty(
+                args, client, "HYPE/USDT:USDT", 1.174, is_close=False
+            )
+        self.assertEqual(order_amount, 12.0)
+        self.assertEqual(contract_size, 0.1)
+        self.assertAlmostEqual(base_qty, 1.2)
+
+    def test_gateio_close_order_amount_floors_to_position_contracts(self):
+        args = make_args(live_exchange="gateio")
+        client = FakeClient()
+        with patch.object(live, "_normalize_order_qty", return_value=11.8):
+            order_amount, base_qty, contract_size = live.live_order_amount_from_base_qty(
+                args, client, "HYPE/USDT:USDT", 1.174, is_close=True, max_base_qty=1.1
+            )
+        self.assertEqual(order_amount, 11.0)
+        self.assertEqual(contract_size, 0.1)
+        self.assertAlmostEqual(base_qty, 1.1)
+
     def test_live_open_preflight_reports_exchange_lot_upsize_without_blocking(self):
         args = make_args(live_exchange="gateio")
         args._live_client = FakeClient()
@@ -386,6 +433,49 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(result["post_trade_position_qty"], 0.25)
         self.assertEqual(args._live_client.ex.calls[0][2], "buy")
         self.assertEqual(args._live_client.ex.calls[0][5]["clientOrderId"], "client-open")
+
+    def test_source_leverage_policy_resolves_copy_and_copy_div2(self):
+        trade = open_trade()
+        self.assertEqual(live.parse_source_leverage("6"), 6.0)
+        self.assertIsNone(live.parse_source_leverage("0"))
+        self.assertEqual(live.normalize_source_margin_mode("Cross"), "cross")
+        ignore = live.effective_source_leverage(make_args(), trade)
+        self.assertFalse(ignore["required"])
+        copy = live.effective_source_leverage(make_args(source_leverage_mode="copy"), trade)
+        self.assertEqual(copy["effective_leverage"], 6.0)
+        div2 = live.effective_source_leverage(make_args(source_leverage_mode="copy_div2"), trade)
+        self.assertEqual(div2["effective_leverage"], 3.0)
+
+    def test_ensure_symbol_leverage_bingx_hedge_is_side_specific_and_cached(self):
+        args = make_args(live_exchange="bingx", position_mode="hedge")
+        args._live_client = FakeClient()
+        state = {}
+        first = live.ensure_symbol_leverage(args, state, symbol="HYPEUSDT", side="LONG", margin_mode="Cross", leverage=3.0, now=NOW)
+        second = live.ensure_symbol_leverage(args, state, symbol="HYPEUSDT", side="LONG", margin_mode="Cross", leverage=3.0, now=NOW)
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(len(args._live_client.ex.leverage_calls), 1)
+        self.assertEqual(args._live_client.ex.leverage_calls[0][0], 3.0)
+        self.assertEqual(args._live_client.ex.leverage_calls[0][2]["side"], "LONG")
+        self.assertEqual(args._live_client.ex.leverage_calls[0][2]["marginMode"], "cross")
+
+    def test_ensure_symbol_leverage_gateio_uses_settle_without_position_side(self):
+        args = make_args(live_exchange="gateio", position_mode="oneway")
+        args._live_client = FakeClient()
+        result = live.ensure_symbol_leverage(args, {}, symbol="HYPEUSDT", side="LONG", margin_mode="isolated", leverage=2.0, now=NOW)
+        self.assertTrue(result["ok"])
+        params = args._live_client.ex.leverage_calls[0][2]
+        self.assertEqual(params["settle"], "USDT")
+        self.assertEqual(params["marginMode"], "isolated")
+        self.assertNotIn("positionSide", params)
+
+    def test_live_add_fill_blocks_when_required_leverage_setup_fails(self):
+        args = make_args(source_leverage_mode="copy")
+        args._live_client = FakeClient(FakeExchange(failures=["set leverage rejected"]))
+        event = live.live_add_fill({}, open_trade(), now=NOW, expected_price=50.0, notional=10.0, fill_type="base_entry", reason="test", mark=50.0, args=args)
+        self.assertEqual(event["type"], "live_entry_blocked")
+        self.assertEqual(event["reason"], "leverage_setup_failed")
+        self.assertEqual(args._live_client.ex.calls, [])
 
     def test_submit_open_retries_without_position_side_for_one_way_error(self):
         args = make_args()
@@ -499,6 +589,15 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
                 event = live.live_add_fill({}, open_trade(), now=NOW, expected_price=50.0, notional=10.0, fill_type="base", reason="test", mark=50.0, args=args)
         self.assertEqual(event["type"], "live_entry_blocked")
         self.assertEqual(event["reason"], "stop_new_orders_file")
+        self.assertFalse(submit_open.called)
+
+    def test_live_protection_blocks_entry_without_order(self):
+        args = make_args()
+        args._last_protection = {"block_new_entries": True, "reasons": [{"code": "floating_pnl_stop"}]}
+        with patch.object(live, "submit_open") as submit_open:
+            event = live.live_add_fill({}, open_trade(), now=NOW, expected_price=50.0, notional=10.0, fill_type="base", reason="test", mark=50.0, args=args)
+        self.assertEqual(event["type"], "live_entry_blocked")
+        self.assertEqual(event["reason"], "protection_block_new_entries")
         self.assertFalse(submit_open.called)
 
     def test_live_add_fill_records_successful_live_fill(self):
@@ -775,6 +874,30 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             ), patch.object(live, "apply_live_snapshot", return_value=[]):
                 status = live.poll_once(args)
         self.assertEqual(status["dca_eval_meta"]["dca_eval_bucket"], int(NOW.timestamp() // 60))
+
+    def test_poll_once_auto_stop_new_orders_on_floating_protection(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            args = make_args(
+                out_dir=td,
+                state_path=str(state_path),
+                status_path=str(Path(td) / "RUN_STATUS.json"),
+                telemetry_path=str(Path(td) / "telemetry.jsonl"),
+                protection_floating_pnl_stop_usdt=1.0,
+                protection_auto_stop_new_orders=True,
+            )
+            state = live.paper.default_state(args)
+            trade = open_trade()
+            trade["notional"] = 30.0
+            state["open_trades"] = {"HYPEUSDT:LONG": trade}
+            live.paper.write_json(state_path, state)
+            with patch.object(live.paper, "utc_now", return_value=NOW), patch.object(
+                live, "load_inputs_live", return_value=([lead_long()], [], 45.0, {"market": {"book_ok": True, "premium_ok": True}})
+            ), patch.object(live, "apply_live_snapshot", return_value=[]):
+                status = live.poll_once(args)
+            self.assertTrue(Path(td, "STOP_NEW_ORDERS").exists())
+        self.assertTrue(status["protection"]["block_new_entries"])
+        self.assertEqual(status["protection"]["reasons"][0]["code"], "floating_pnl_stop")
 
     def test_hot_stop_writes_snapshot_without_loading_inputs(self):
         with tempfile.TemporaryDirectory() as td:

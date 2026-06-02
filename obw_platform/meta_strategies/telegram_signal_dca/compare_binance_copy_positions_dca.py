@@ -45,6 +45,8 @@ class CopyPosition:
     exit: float
     lead_pnl: float
     lead_roi: float
+    leverage: float
+    margin_mode: str
 
 
 def parse_dt(raw: Any) -> datetime:
@@ -86,6 +88,8 @@ def read_positions(path: Path) -> List[CopyPosition]:
                     exit=exit_px,
                     lead_pnl=parse_float(row.get("closingPnl"), 0.0),
                     lead_roi=parse_float(row.get("roi"), 0.0),
+                    leverage=parse_float(row.get("leverage"), 1.0),
+                    margin_mode=str(row.get("isolated") or row.get("margin_mode") or "").strip(),
                 )
             )
     return sorted(out, key=lambda p: p.opened)
@@ -190,6 +194,37 @@ def touched(side: str, candle: Dict[str, float], level: float, *, fill_mode: str
     return candle["low"] <= level if side == "LONG" else candle["high"] >= level
 
 
+def effective_leverage_for_mode(pos: CopyPosition, mode: str) -> float:
+    source = float(pos.leverage) if math.isfinite(float(pos.leverage or 0.0)) and float(pos.leverage or 0.0) > 0 else 1.0
+    mode = str(mode or "ignore").strip().lower()
+    if mode == "copy":
+        return max(1.0, source)
+    if mode == "copy_div2":
+        return max(1.0, math.floor(source / 2.0)) if source > 1.0 else 1.0
+    return 1.0
+
+
+def liquidation_metrics(side: str, avg_entry: float, risk_mark: float, notional: float, leverage: float, account_equity: float, mtm: float) -> Dict[str, float]:
+    leverage = max(float(leverage or 1.0), 1.0)
+    margin_used = float(notional or 0.0) / leverage
+    if side == "LONG":
+        liq_price = avg_entry * (1.0 - 1.0 / leverage)
+        buffer_pct = 100.0 * (risk_mark - liq_price) / max(avg_entry, 1e-12)
+    else:
+        liq_price = avg_entry * (1.0 + 1.0 / leverage)
+        buffer_pct = 100.0 * (liq_price - risk_mark) / max(avg_entry, 1e-12)
+    equity_after_mtm = float(account_equity or 0.0) + float(mtm or 0.0)
+    equity_ratio = equity_after_mtm / max(margin_used, 1e-12)
+    return {
+        "liq_price": liq_price,
+        "liq_buffer_pct": buffer_pct,
+        "margin_used": margin_used,
+        "equity_after_mtm": equity_after_mtm,
+        "equity_ratio": equity_ratio,
+        "liq_touched": 1.0 if buffer_pct <= 0.0 else 0.0,
+    }
+
+
 def simulate_position(
     pos: CopyPosition,
     candles: List[Dict[str, float]],
@@ -198,6 +233,8 @@ def simulate_position(
     dca_count: int,
     fill_mode: str = "touch",
     min_order_usd: float = 2.0,
+    leverage_mode: str = "ignore",
+    account_equity: float = 500.0,
 ) -> Dict[str, Any]:
     fee = float(policy["fee"])
     slip = float(policy["slippage"])
@@ -206,10 +243,17 @@ def simulate_position(
     avg_entry = pos.entry
     notional = base_notional
     fills = 0
+    effective_leverage = effective_leverage_for_mode(pos, leverage_mode)
     levels, adds = dca_plan(pos.side, pos.entry, policy, dca_count)
     fill_rows: List[Dict[str, Any]] = []
     min_mtm = 0.0
     min_mtm_pct_on_notional = 0.0
+    max_floating_pnl_drawdown = 0.0
+    peak_floating_pnl = 0.0
+    min_liq_buffer_pct = float("inf")
+    min_equity_ratio = float("inf")
+    max_margin_used = 0.0
+    liq_touch_count = 0
     skip_boundary = fill_mode in {"touch_skip_boundary", "close_beyond_skip_boundary"}
     for i, candle in enumerate(candles):
         can_fill = not (skip_boundary and (i == 0 or i == len(candles) - 1))
@@ -230,8 +274,15 @@ def simulate_position(
         mark = float(candle["low"] if pos.side == "LONG" else candle["high"])
         mtm_ret = ret_for(pos.side, avg_entry, mark) - 2 * fee - 2 * slip
         mtm = mtm_ret * notional
+        peak_floating_pnl = max(peak_floating_pnl, mtm)
+        max_floating_pnl_drawdown = max(max_floating_pnl_drawdown, peak_floating_pnl - mtm)
         min_mtm = min(min_mtm, mtm)
         min_mtm_pct_on_notional = min(min_mtm_pct_on_notional, 100.0 * mtm / max(notional, 1e-12))
+        liq = liquidation_metrics(pos.side, avg_entry, mark, notional, effective_leverage, account_equity, mtm)
+        min_liq_buffer_pct = min(min_liq_buffer_pct, float(liq["liq_buffer_pct"]))
+        min_equity_ratio = min(min_equity_ratio, float(liq["equity_ratio"]))
+        max_margin_used = max(max_margin_used, float(liq["margin_used"]))
+        liq_touch_count += int(liq["liq_touched"])
     gross_ret = ret_for(pos.side, avg_entry, pos.exit)
     net_ret = gross_ret - 2 * fee - 2 * slip
     pnl = net_ret * notional
@@ -258,6 +309,17 @@ def simulate_position(
         "ret_on_max_capital_pct": 100.0 * pnl / max(float(policy["target_notional"]), 1e-12),
         "lead_pnl": pos.lead_pnl,
         "lead_roi": pos.lead_roi,
+        "source_leverage": pos.leverage,
+        "source_margin_mode": pos.margin_mode,
+        "leverage_mode": leverage_mode,
+        "effective_leverage": effective_leverage,
+        "account_equity": account_equity,
+        "max_margin_used": max_margin_used,
+        "min_equity_ratio": min_equity_ratio if math.isfinite(min_equity_ratio) else 0.0,
+        "min_liq_buffer_pct": min_liq_buffer_pct if math.isfinite(min_liq_buffer_pct) else 0.0,
+        "liq_touch_count": liq_touch_count,
+        "max_floating_pnl_drawdown_usdt": max_floating_pnl_drawdown,
+        "max_floating_pnl_drawdown_pct_equity": 100.0 * max_floating_pnl_drawdown / max(account_equity, 1e-12),
         "candles": len(candles),
         "fill_mode": fill_mode,
         "fills_json": json.dumps(fill_rows, separators=(",", ":")),
@@ -293,6 +355,12 @@ def summarize(rows: List[Dict[str, Any]], initial_equity: float, start: datetime
         "pf": pos / abs(neg) if neg < 0 else 0.0,
         "max_dd_pct": 100.0 * max_drawdown(curve),
         "max_mtm_dd_pct": 100.0 * max_drawdown(mtm_curve),
+        "max_floating_pnl_drawdown_usdt": max((float(r.get("max_floating_pnl_drawdown_usdt", 0.0)) for r in rows), default=0.0),
+        "max_floating_pnl_drawdown_pct_equity": max((float(r.get("max_floating_pnl_drawdown_pct_equity", 0.0)) for r in rows), default=0.0),
+        "min_liq_buffer_pct": min((float(r.get("min_liq_buffer_pct", 0.0)) for r in rows), default=0.0),
+        "liq_touch_count": sum(int(float(r.get("liq_touch_count", 0.0))) for r in rows),
+        "min_equity_ratio": min((float(r.get("min_equity_ratio", 0.0)) for r in rows), default=0.0),
+        "max_margin_used": max((float(r.get("max_margin_used", 0.0)) for r in rows), default=0.0),
         "min_trade_mtm_pct_equity": 100.0
         * min((float(r.get("min_mtm", 0.0)) for r in rows), default=0.0)
         / max(initial_equity, 1e-12),
@@ -324,6 +392,8 @@ def main() -> None:
     ap.add_argument("--out-dir", default="obw_platform/meta_strategies/telegram_signal_dca/reports/binance_copy_4728671486012660992_20260519/backtest")
     ap.add_argument("--target-notional", type=float, default=100.0)
     ap.add_argument("--initial-equity", type=float, default=500.0)
+    ap.add_argument("--leverage-equity", type=float, default=None, help="Account equity used for leverage/liquidation diagnostics. Defaults to --initial-equity.")
+    ap.add_argument("--leverage-modes", default="ignore,copy,copy_div2")
     ap.add_argument("--dca-counts", default="0,1,2,3")
     ap.add_argument(
         "--fill-mode",
@@ -364,44 +434,54 @@ def main() -> None:
     summaries: Dict[str, Dict[str, Any]] = {}
     start = min(p.opened for p, _ in eligible)
     end = max(p.closed for p, _ in eligible)
+    leverage_equity = float(args.leverage_equity if args.leverage_equity is not None else args.initial_equity)
+    leverage_modes = [m.strip() for m in str(args.leverage_modes).split(",") if m.strip()]
     for raw_count in args.dca_counts.split(","):
         count = int(raw_count.strip())
         policy = policy_for_capital_mode(policy0, count, args.target_notional, "same_max")
-        rows = [
-            simulate_position(p, candles, policy=policy, dca_count=count, fill_mode=args.fill_mode)
-            for p, candles in eligible
-        ]
-        label = "plain" if count == 0 else f"dca{count}"
-        write_csv(out_dir / f"{label}_trades.csv", rows)
-        summary = summarize(rows, args.initial_equity, start, end)
-        summary.update(
-            {
-                "label": label,
-                "dca_count": count,
-                "target_notional": args.target_notional,
-                "capital_mode": "same_max",
-                "fee": policy["fee"],
-                "slippage_per_side": policy["slippage"],
-                "fill_mode": args.fill_mode,
-            }
-        )
-        summaries[label] = summary
+        base_label = "plain" if count == 0 else f"dca{count}"
+        for leverage_mode in leverage_modes:
+            rows = [
+                simulate_position(p, candles, policy=policy, dca_count=count, fill_mode=args.fill_mode, leverage_mode=leverage_mode, account_equity=leverage_equity)
+                for p, candles in eligible
+            ]
+            label = f"{base_label}_{leverage_mode}"
+            write_csv(out_dir / f"{label}_trades.csv", rows)
+            summary = summarize(rows, args.initial_equity, start, end)
+            summary.update(
+                {
+                    "label": label,
+                    "dca_count": count,
+                    "target_notional": args.target_notional,
+                    "capital_mode": "same_max",
+                    "fee": policy["fee"],
+                    "slippage_per_side": policy["slippage"],
+                    "fill_mode": args.fill_mode,
+                    "leverage_mode": leverage_mode,
+                    "leverage_equity": leverage_equity,
+                    "liquidation_model": "conservative_cross_approx_no_maintenance_fee: liq ~= avg_entry +/- avg_entry/leverage using intrabar low/high",
+                }
+            )
+            summaries[label] = summary
 
     (out_dir / "skipped.json").write_text(json.dumps(skipped, ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "summary.json").write_text(json.dumps(summaries, ensure_ascii=False, indent=2), encoding="utf-8")
     md = ["# Binance Copy Position History: Plain vs V21 DCA", ""]
     md.append(f"Positions loaded: {len(positions)}; tested: {len(eligible)}; skipped: {len(skipped)}")
     md.append("")
-    md.append(f"Initial equity: {args.initial_equity:.2f}. Target notional is planned max position notional, not account equity.")
+    md.append(f"Initial equity: {args.initial_equity:.2f}. Leverage diagnostic equity: {leverage_equity:.2f}. Target notional is planned max position notional, not account equity.")
     md.append(f"Fill mode: `{args.fill_mode}`.")
+    md.append("Liquidation proximity uses a conservative approximation, not exact exchange liquidation math: long uses intrabar low, short uses intrabar high, and ignores maintenance/funding nuances.")
     md.append("")
-    md.append("| variant | positions | net % | /30d % | win % | PF | max MTM DD % | min trade MTM % eq | avg/max notional | avg DCA fills |")
-    md.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    md.append("| variant | lev mode | positions | net % | /30d % | win % | PF | max MTM DD % | max float DD USDT | min liq buffer % | liq touches | min equity ratio | max margin | avg/max notional | avg DCA fills |")
+    md.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for label, s in summaries.items():
         md.append(
-            f"| {label} | {s['positions']} | {s['net_pct']:.2f} | {s['net_pct_per_30d']:.2f} | "
+            f"| {label} | {s['leverage_mode']} | {s['positions']} | {s['net_pct']:.2f} | {s['net_pct_per_30d']:.2f} | "
             f"{s['win_rate_pct']:.1f} | {s['pf']:.2f} | {s['max_mtm_dd_pct']:.2f} | "
-            f"{s['min_trade_mtm_pct_equity']:.2f} | {s['avg_notional']:.1f}/{s['max_notional']:.1f} | "
+            f"{s['max_floating_pnl_drawdown_usdt']:.2f} | {s['min_liq_buffer_pct']:.2f} | "
+            f"{s['liq_touch_count']} | {s['min_equity_ratio']:.2f} | {s['max_margin_used']:.2f} | "
+            f"{s['avg_notional']:.1f}/{s['max_notional']:.1f} | "
             f"{s['avg_dca_fills']:.2f} |"
         )
     md.append("")
