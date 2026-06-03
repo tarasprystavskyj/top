@@ -43,6 +43,14 @@
     "entry_failure_cooldown_sec": 3600,
     "poll_sec": 60
   },
+  "protection": {
+    "scale_reference": "allocation.max_notional_usdt",
+    "account_loss_stop_pct_of_equity": 5.0,
+    "floating_pnl_stop_pct_of_equity": 5.0,
+    "emergency_account_loss_pct_of_equity": 10.0,
+    "stale_market_sec": 300,
+    "auto_stop_new_orders": true
+  },
   "live_orders_enabled": true,
   "live_ack_env": "VERONIKA_HYPE_HTX_LIVE_ACK",
   "live_ack_value": "I_ACCEPT_REAL_HTX_ORDERS",

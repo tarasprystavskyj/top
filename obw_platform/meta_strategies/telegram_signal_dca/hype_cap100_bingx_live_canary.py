@@ -1382,7 +1382,24 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
     allocation = cfg.get("allocation") if isinstance(cfg.get("allocation"), dict) else {}
     sizing = cfg.get("sizing") if isinstance(cfg.get("sizing"), dict) else {}
     safety = cfg.get("safety") if isinstance(cfg.get("safety"), dict) else {}
+    protection = cfg.get("protection") if isinstance(cfg.get("protection"), dict) else {}
     signal = cfg.get("signal") if isinstance(cfg.get("signal"), dict) else {}
+    protection_equity = (
+        allocation.get("max_notional_usdt")
+        or allocation.get("initial_equity_usdt")
+        or cfg.get("initial_equity_usdt")
+        or cfg.get("paper_notional_usdt")
+    )
+
+    def protection_usdt(abs_key: str, pct_key: str) -> Optional[float]:
+        value = protection.get(abs_key)
+        if _truthy_config_value(value):
+            return float(value)
+        pct = protection.get(pct_key)
+        if not _truthy_config_value(pct) or not _truthy_config_value(protection_equity):
+            return None
+        return float(protection_equity) * float(pct) / 100.0
+
     config_defaults = {
         "live_exchange_profile": cfg.get("live_exchange_profile") or cfg.get("exchange_profile"),
         "live_exchange": cfg.get("live_exchange") or cfg.get("exchange"),
@@ -1408,6 +1425,13 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
         "history_poll_interval_sec": cfg.get("history_poll_interval_sec"),
         "source_leverage_mode": cfg.get("source_leverage_mode") or (cfg.get("source_leverage") if isinstance(cfg.get("source_leverage"), str) else None) or ((cfg.get("source_leverage") or {}).get("mode") if isinstance(cfg.get("source_leverage"), dict) else None),
         "max_source_leverage": cfg.get("max_source_leverage") or ((cfg.get("source_leverage") or {}).get("max_source_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
+        "protection_account_loss_stop_usdt": protection_usdt("account_loss_stop_usdt", "account_loss_stop_pct_of_equity"),
+        "protection_floating_pnl_stop_usdt": protection_usdt("floating_pnl_stop_usdt", "floating_pnl_stop_pct_of_equity"),
+        "protection_emergency_account_loss_usdt": protection_usdt("emergency_account_loss_usdt", "emergency_account_loss_pct_of_equity"),
+        "protection_stale_market_sec": protection.get("stale_market_sec"),
+        "protection_require_book_ok": protection.get("require_book_ok"),
+        "protection_require_premium_ok": protection.get("require_premium_ok"),
+        "protection_auto_stop_new_orders": protection.get("auto_stop_new_orders"),
     }
     applied: List[str] = []
     for attr, value in config_defaults.items():
