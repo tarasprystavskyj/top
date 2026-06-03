@@ -1,0 +1,36 @@
+{
+  "schema": "telegram_signal_dca_liquidation_metabacktest_v1",
+  "notes": "Research-only HYPE live-style allocations. Cross margin should be evaluated per exchange account, not across exchanges.",
+  "legs": [
+    {
+      "name": "htx_hype_110",
+      "symbol": "HYPEUSDT",
+      "allocation_usdt": 110.0,
+      "leverage_mode": "source",
+      "margin_mode": "both",
+      "base_frac": 0.05,
+      "dca_steps_pct": [0.25, 0.35, 0.55],
+      "dca_add_weights": [0.8, 1.2, 2.2]
+    },
+    {
+      "name": "gateio_hype_310p2",
+      "symbol": "HYPEUSDT",
+      "allocation_usdt": 310.2,
+      "leverage_mode": "source",
+      "margin_mode": "both",
+      "base_frac": 0.05,
+      "dca_steps_pct": [0.25, 0.35, 0.55],
+      "dca_add_weights": [0.8, 1.2, 2.2]
+    },
+    {
+      "name": "bingx_hype_53p9",
+      "symbol": "HYPEUSDT",
+      "allocation_usdt": 53.9,
+      "leverage_mode": "source",
+      "margin_mode": "both",
+      "base_frac": 0.05,
+      "dca_steps_pct": [0.25, 0.35, 0.55],
+      "dca_add_weights": [0.8, 1.2, 2.2]
+    }
+  ]
+}
