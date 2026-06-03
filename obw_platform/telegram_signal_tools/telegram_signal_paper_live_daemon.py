@@ -14,6 +14,7 @@ import json
 import math
 import os
 import sqlite3
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -57,6 +58,154 @@ DEFAULT_DCA_CONFIG = "obw_platform/configs/V21_strict_trend_stable_live_static9p
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def parse_iso_ts(value: Optional[str]) -> Optional[dt.datetime]:
+    if not value:
+        return None
+    text = str(value).replace("Z", "+00:00")
+    if len(text) >= 6 and text[-3] == ":" and text[-6] in ("+", "-"):
+        text = text[:-3] + text[-2:]
+    try:
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S.%f%z", "%Y-%m-%d %H:%M:%S%z"):
+            try:
+                return dt.datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return dt.datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def seconds_since(value: Optional[str], now: dt.datetime) -> Optional[float]:
+    parsed = parse_iso_ts(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return max((now - parsed).total_seconds(), 0.0)
+
+
+def fmt_age(value: Optional[str], now: dt.datetime) -> str:
+    age = seconds_since(value, now)
+    return "none" if age is None else "%.1f" % age
+
+
+def safe_error_text(exc: BaseException) -> str:
+    text = "%s: %s" % (exc.__class__.__name__, exc)
+    text = " ".join(text.split())
+    return text[:240]
+
+
+class TelegramPollState:
+    def __init__(self) -> None:
+        self.started_at = utc_now()
+        self.last_message_at = None  # type: Optional[str]
+        self.last_signal_at = None  # type: Optional[str]
+        self.last_exit_at = None  # type: Optional[str]
+        self.last_handler_error_at = None  # type: Optional[str]
+        self.last_monitor_at = None  # type: Optional[str]
+        self.last_monitor_error_at = None  # type: Optional[str]
+        self.last_disconnect_at = None  # type: Optional[str]
+        self.last_error = ""  # type: str
+        self.messages_seen = 0
+        self.signals_seen = 0
+        self.channel_exits_seen = 0
+        self.duplicates_seen = 0
+        self.handler_errors = 0
+        self.monitor_errors = 0
+        self.disconnects = 0
+
+    def record_message(self) -> None:
+        self.messages_seen += 1
+        self.last_message_at = utc_now()
+
+    def record_signal(self) -> None:
+        self.signals_seen += 1
+        self.last_signal_at = utc_now()
+
+    def record_channel_exit(self) -> None:
+        self.channel_exits_seen += 1
+        self.last_exit_at = utc_now()
+
+    def record_duplicate(self) -> None:
+        self.duplicates_seen += 1
+
+    def record_handler_error(self, exc: BaseException) -> None:
+        self.handler_errors += 1
+        self.last_handler_error_at = utc_now()
+        self.last_error = safe_error_text(exc)
+
+    def record_monitor_poll(self) -> None:
+        self.last_monitor_at = utc_now()
+
+    def record_monitor_error(self, exc: BaseException) -> None:
+        self.monitor_errors += 1
+        self.last_monitor_error_at = utc_now()
+        self.last_error = safe_error_text(exc)
+
+    def record_disconnect(self, exc: Optional[BaseException] = None) -> None:
+        self.disconnects += 1
+        self.last_disconnect_at = utc_now()
+        if exc is not None:
+            self.last_error = safe_error_text(exc)
+
+
+def format_heartbeat_line(state: TelegramPollState, connected: Optional[bool], now: Optional[dt.datetime] = None) -> str:
+    now = now or dt.datetime.now(dt.timezone.utc)
+    connected_text = "unknown" if connected is None else ("yes" if connected else "no")
+    status = "alive"
+    if connected is False:
+        status = "degraded"
+    elif state.last_handler_error_at or state.last_monitor_error_at or state.last_disconnect_at:
+        status = "alive_with_recent_errors"
+    return (
+        "[paper-live HEARTBEAT] status=%s connected=%s uptime_sec=%.1f "
+        "telegram_idle_sec=%s monitor_idle_sec=%s messages=%s signals=%s channel_exits=%s duplicates=%s "
+        "handler_errors=%s monitor_errors=%s disconnects=%s last_message_at=%s last_signal_at=%s "
+        "last_exit_at=%s last_monitor_at=%s last_error=%s"
+    ) % (
+        status,
+        connected_text,
+        seconds_since(state.started_at, now) or 0.0,
+        fmt_age(state.last_message_at, now),
+        fmt_age(state.last_monitor_at, now),
+        state.messages_seen,
+        state.signals_seen,
+        state.channel_exits_seen,
+        state.duplicates_seen,
+        state.handler_errors,
+        state.monitor_errors,
+        state.disconnects,
+        state.last_message_at or "none",
+        state.last_signal_at or "none",
+        state.last_exit_at or "none",
+        state.last_monitor_at or "none",
+        state.last_error or "none",
+    )
+
+
+def client_connected(client: Any) -> Optional[bool]:
+    try:
+        is_connected = getattr(client, "is_connected", None)
+        if callable(is_connected):
+            return bool(is_connected())
+    except Exception:
+        return None
+    return None
+
+
+async def heartbeat_loop(client: Any, state: TelegramPollState, interval_sec: float) -> None:
+    if interval_sec <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval_sec)
+        print(format_heartbeat_line(state, client_connected(client)), flush=True)
 
 
 def load_env_file(path: str) -> Path:
@@ -928,57 +1077,76 @@ def fetch_price(ex: Any, symbol: str) -> Optional[float]:
         return None
 
 
-async def monitor_paper_state(db_path: Path, poll_sec: float, monitor_pending: bool, monitor_exits: bool, dca_config: str) -> None:
+async def monitor_paper_state(
+    db_path: Path,
+    poll_sec: float,
+    monitor_pending: bool,
+    monitor_exits: bool,
+    dca_config: str,
+    poll_state: Optional[TelegramPollState] = None,
+) -> None:
     ex = build_exchange()
     if ex is None:
         print("[paper-live] ccxt not available; entry fills and TP/SL monitor disabled, pending timeouts still active", flush=True)
     while True:
-        con = sqlite3.connect(db_path)
-        con.row_factory = sqlite3.Row
-        pending = []
-        if monitor_pending:
-            pending = list(con.execute(
-                "SELECT * FROM positions WHERE status='pending' ORDER BY pending_created_at"
-            ))
-        rows = []
-        if monitor_exits:
-            rows = list(con.execute("SELECT * FROM positions WHERE status='open' AND qty_open > 0"))
-        con.close()
-        now = utc_now()
-        for pos in pending:
-            expires_at = str(pos["pending_expires_at"] or "")
-            if expires_at and expires_at <= now:
-                expire_pending_position(db_path, pos)
-                continue
-            if ex is None:
-                continue
-            price = fetch_price(ex, str(pos["symbol"]))
-            if price is None:
-                continue
-            if price_touches_entry(pos, price):
-                open_pending_position(db_path, pos, price, dca_config)
-        for pos in rows:
-            price = fetch_price(ex, str(pos["symbol"]))
-            if price is None:
-                continue
-            if int(pos["v21_enabled"] or 0) and pos["v21_state_json"]:
-                apply_v21_manage(db_path, pos, price, dca_config)
-                continue
-            side = str(pos["side"])
-            if side == "long" and price <= float(pos["sl"]):
-                close_or_partial(db_path, pos, price, "sl", 1.0)
-            elif side == "short" and price >= float(pos["sl"]):
-                close_or_partial(db_path, pos, price, "sl", 1.0)
-            else:
-                apply_dca_fills(db_path, pos, price)
-                stage = int(pos["tp_stage"])
-                if stage >= 3:
+        con = None
+        try:
+            if poll_state is not None:
+                poll_state.record_monitor_poll()
+            con = sqlite3.connect(db_path)
+            con.row_factory = sqlite3.Row
+            pending = []
+            if monitor_pending:
+                pending = list(con.execute(
+                    "SELECT * FROM positions WHERE status='pending' ORDER BY pending_created_at"
+                ))
+            rows = []
+            if monitor_exits:
+                rows = list(con.execute("SELECT * FROM positions WHERE status='open' AND qty_open > 0"))
+            con.close()
+            con = None
+            now = utc_now()
+            for pos in pending:
+                expires_at = str(pos["pending_expires_at"] or "")
+                if expires_at and expires_at <= now:
+                    expire_pending_position(db_path, pos)
                     continue
-                tps = [float(pos["tp1"]), float(pos["tp2"]), float(pos["tp3"])]
-                hit = (side == "long" and price >= tps[stage]) or (side == "short" and price <= tps[stage])
-                if hit:
-                    frac = 1.0 / 3.0 if stage < 2 else 1.0
-                    close_or_partial(db_path, pos, price, f"tp{stage + 1}", frac)
+                if ex is None:
+                    continue
+                price = fetch_price(ex, str(pos["symbol"]))
+                if price is None:
+                    continue
+                if price_touches_entry(pos, price):
+                    open_pending_position(db_path, pos, price, dca_config)
+            for pos in rows:
+                price = fetch_price(ex, str(pos["symbol"]))
+                if price is None:
+                    continue
+                if int(pos["v21_enabled"] or 0) and pos["v21_state_json"]:
+                    apply_v21_manage(db_path, pos, price, dca_config)
+                    continue
+                side = str(pos["side"])
+                if side == "long" and price <= float(pos["sl"]):
+                    close_or_partial(db_path, pos, price, "sl", 1.0)
+                elif side == "short" and price >= float(pos["sl"]):
+                    close_or_partial(db_path, pos, price, "sl", 1.0)
+                else:
+                    apply_dca_fills(db_path, pos, price)
+                    stage = int(pos["tp_stage"])
+                    if stage >= 3:
+                        continue
+                    tps = [float(pos["tp1"]), float(pos["tp2"]), float(pos["tp3"])]
+                    hit = (side == "long" and price >= tps[stage]) or (side == "short" and price <= tps[stage])
+                    if hit:
+                        frac = 1.0 / 3.0 if stage < 2 else 1.0
+                        close_or_partial(db_path, pos, price, f"tp{stage + 1}", frac)
+        except Exception as exc:
+            if poll_state is not None:
+                poll_state.record_monitor_error(exc)
+            print("[paper-live MONITOR_ERROR] %s" % safe_error_text(exc), flush=True)
+        finally:
+            if con is not None:
+                con.close()
         await asyncio.sleep(poll_sec)
 
 
@@ -994,60 +1162,80 @@ async def run(args: argparse.Namespace) -> None:
     ex = build_exchange() if args.entry_policy == "ticker" else None
     channel_exit_ex = ex or build_exchange()
     client = TelegramClient(str(session), int(os.environ["TG_API_ID"]), os.environ["TG_API_HASH"])
+    poll_state = TelegramPollState()
 
     @client.on(events.NewMessage(chats=channel))
     async def handler(event):
-        message_id = int(event.message.id)
-        raw_text = event.raw_text or ""
-        sig = parse_signal_text(raw_text, ts_utc=event.message.date.isoformat() if event.message.date else None)
-        if not sig:
-            exit_info = parse_channel_exit_text(raw_text)
-            if exit_info:
-                apply_channel_exit(db_path, channel, exit_info, message_id, channel_exit_ex)
-            return
-        sig["source_channel"] = channel
-        sig["telegram_message_id"] = message_id
-        sig["telegram_message_date"] = event.message.date.isoformat() if event.message.date else None
-        ticker_price = fetch_price(ex, sig["symbol"]) if ex is not None else None
-        if args.entry_policy == "touch":
-            state = insert_signal_and_pending(db_path, sig, message_id, args.notional, args.entry_timeout_sec, args.dca_count, args.strategy_mode, args.dca_config)
-        else:
-            state = insert_signal_and_position(
-                db_path,
-                sig,
-                message_id,
-                args.notional,
-                args.entry_policy,
-                ticker_price,
-                args.dca_count,
-                args.dca_config,
-                args.strategy_mode,
-            )
-        if state != "duplicate":
-            with out.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(sig, ensure_ascii=False) + "\n")
-            if state == "pending":
-                print("[paper-live PENDING] msg=%s %s %s entry=[%.12g, %.12g] timeout_sec=%.1f" % (
-                    message_id,
-                    sig["symbol"],
-                    sig["side"],
-                    float(sig["entry_low"]),
-                    float(sig["entry_high"]),
-                    float(args.entry_timeout_sec),
-                ), flush=True)
+        try:
+            message_id = int(event.message.id)
+            raw_text = event.raw_text or ""
+            poll_state.record_message()
+            sig = parse_signal_text(raw_text, ts_utc=event.message.date.isoformat() if event.message.date else None)
+            if not sig:
+                exit_info = parse_channel_exit_text(raw_text)
+                if exit_info:
+                    poll_state.record_channel_exit()
+                    apply_channel_exit(db_path, channel, exit_info, message_id, channel_exit_ex)
+                return
+            sig["source_channel"] = channel
+            sig["telegram_message_id"] = message_id
+            sig["telegram_message_date"] = event.message.date.isoformat() if event.message.date else None
+            ticker_price = fetch_price(ex, sig["symbol"]) if ex is not None else None
+            if args.entry_policy == "touch":
+                state = insert_signal_and_pending(db_path, sig, message_id, args.notional, args.entry_timeout_sec, args.dca_count, args.strategy_mode, args.dca_config)
             else:
-                print("[paper-live OPEN] msg=%s %s %s delegated=%.12g policy=%s strategy_mode=%s" % (
-                    message_id, sig["symbol"], sig["side"], args.notional, args.entry_policy, args.strategy_mode,
-                ), flush=True)
-        else:
-            print("[paper-live SKIP duplicate] msg=%s" % message_id, flush=True)
+                state = insert_signal_and_position(
+                    db_path,
+                    sig,
+                    message_id,
+                    args.notional,
+                    args.entry_policy,
+                    ticker_price,
+                    args.dca_count,
+                    args.dca_config,
+                    args.strategy_mode,
+                )
+            if state != "duplicate":
+                poll_state.record_signal()
+                with out.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(sig, ensure_ascii=False) + "\n")
+                if state == "pending":
+                    print("[paper-live PENDING] msg=%s %s %s entry=[%.12g, %.12g] timeout_sec=%.1f" % (
+                        message_id,
+                        sig["symbol"],
+                        sig["side"],
+                        float(sig["entry_low"]),
+                        float(sig["entry_high"]),
+                        float(args.entry_timeout_sec),
+                    ), flush=True)
+                else:
+                    print("[paper-live OPEN] msg=%s %s %s delegated=%.12g policy=%s strategy_mode=%s" % (
+                        message_id, sig["symbol"], sig["side"], args.notional, args.entry_policy, args.strategy_mode,
+                    ), flush=True)
+            else:
+                poll_state.record_duplicate()
+                print("[paper-live SKIP duplicate] msg=%s" % message_id, flush=True)
+        except Exception as exc:
+            poll_state.record_handler_error(exc)
+            print("[paper-live HANDLER_ERROR] %s" % safe_error_text(exc), flush=True)
+            traceback.print_exc()
+            raise
 
-    await client.start()
+    print("[paper-live CONNECTING] channel=%s session=%s" % (channel, session), flush=True)
+    try:
+        await client.start()
+    except Exception as exc:
+        poll_state.record_disconnect(exc)
+        print("[paper-live CONNECT_ERROR] %s" % safe_error_text(exc), flush=True)
+        raise
     if not await client.is_user_authorized():
         raise SystemExit("Telethon user session is not authorized")
-    print("[paper-live] listening channel=%s db=%s entry_policy=%s strategy_mode=%s poll_sec=%.1f timeout_sec=%.1f" % (
-        channel, db_path, args.entry_policy, args.strategy_mode, args.poll_sec, args.entry_timeout_sec,
+    print("[paper-live CONNECTED] connected=%s" % ("yes" if client_connected(client) else "unknown"), flush=True)
+    print("[paper-live] listening channel=%s db=%s entry_policy=%s strategy_mode=%s poll_sec=%.1f timeout_sec=%.1f heartbeat_sec=%.1f" % (
+        channel, db_path, args.entry_policy, args.strategy_mode, args.poll_sec, args.entry_timeout_sec, args.heartbeat_sec,
     ), flush=True)
+    print(format_heartbeat_line(poll_state, client_connected(client)), flush=True)
+    asyncio.ensure_future(heartbeat_loop(client, poll_state, args.heartbeat_sec))
     if args.entry_policy == "touch" or args.monitor_exits:
         asyncio.ensure_future(monitor_paper_state(
             db_path,
@@ -1055,8 +1243,21 @@ async def run(args: argparse.Namespace) -> None:
             args.entry_policy == "touch",
             bool(args.monitor_exits),
             args.dca_config,
+            poll_state,
         ))
-    await client.run_until_disconnected()
+    try:
+        await client.run_until_disconnected()
+    except Exception as exc:
+        poll_state.record_disconnect(exc)
+        print("[paper-live DISCONNECTED] connected=%s error=%s" % (
+            "yes" if client_connected(client) else "no",
+            safe_error_text(exc),
+        ), flush=True)
+        raise
+    poll_state.record_disconnect()
+    print("[paper-live DISCONNECTED] connected=%s run_until_disconnected returned" % (
+        "yes" if client_connected(client) else "no",
+    ), flush=True)
 
 
 def main() -> None:
@@ -1074,6 +1275,7 @@ def main() -> None:
     ap.add_argument("--strategy-mode", choices=["v21", "legacy_dca"], default="v21")
     ap.add_argument("--monitor-exits", action="store_true")
     ap.add_argument("--poll-sec", type=float, default=15.0)
+    ap.add_argument("--heartbeat-sec", type=float, default=300.0, help="log daemon/Telegram polling heartbeat every N seconds; 0 disables")
     args = ap.parse_args()
     loop = asyncio.get_event_loop()
     loop.run_until_complete(run(args))

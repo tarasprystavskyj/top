@@ -45,7 +45,26 @@ def iso(d: datetime) -> str:
 
 
 def parse_iso(raw: Any) -> datetime:
-    return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(timezone.utc)
+    text = str(raw).strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text).astimezone(timezone.utc)
+    except AttributeError:
+        pass
+
+    offset = timezone.utc
+    body = text
+    if len(text) >= 6 and text[-6] in {"+", "-"} and text[-3] == ":":
+        sign = 1 if text[-6] == "+" else -1
+        hours = int(text[-5:-3])
+        minutes = int(text[-2:])
+        offset = timezone(sign * timedelta(hours=hours, minutes=minutes))
+        body = text[:-6]
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(body, fmt).replace(tzinfo=offset).astimezone(timezone.utc)
+        except ValueError:
+            continue
+    raise ValueError("invalid iso datetime: %r" % (raw,))
 
 
 def stable_id(*parts: Any) -> str:
@@ -864,10 +883,22 @@ def apply_follow_open(
                 del state["open_positions"][key]
                 events.append({"type": "paper_exit", "key": key, "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": symbol, "reason": v21_closed["exit_reason"], "pnl": v21_closed["paper_pnl_usdt"]})
             continue
-        closed = close_paper(trade, exit_mark=mark, exit_source=source, exit_context=mark_context, exit_reason="lead_position_no_longer_open", now=now, slippage_bp=slippage_bp)
+        if hist is not None:
+            exit_mark = float(hist.get("avg_close_price") or mark)
+            exit_source = "history_exit"
+            exit_context = mark_context
+            exit_reason = "lead_position_no_longer_open_market_snapshot"
+        else:
+            exit_mark = mark
+            exit_source = source
+            exit_context = mark_context
+            exit_reason = "lead_position_no_longer_open"
+        closed = close_paper(trade, exit_mark=exit_mark, exit_source=exit_source, exit_context=exit_context, exit_reason=exit_reason, now=now, slippage_bp=slippage_bp)
+        if hist is not None:
+            closed["history_exit"] = hist
         state["closed_trades"].append(closed)
         del state["open_positions"][key]
-        events.append({"type": "paper_exit", "key": key, "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": symbol, "pnl": closed["paper_pnl_usdt"]})
+        events.append({"type": "paper_exit", "key": key, "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": symbol, "reason": closed["exit_reason"], "pnl": closed["paper_pnl_usdt"]})
     return events
 
 

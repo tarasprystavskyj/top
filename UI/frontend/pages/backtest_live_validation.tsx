@@ -22,10 +22,14 @@ import {
 
 type FileEntry = { name: string; path: string; size: number; modified_at: string; symbol_guess?: string | null };
 type Point = { ts: string; value: number };
+type ChartSeries = { name: string; color: string; data: Point[] };
 type LiveSessionStatus = 'running' | 'stopped' | 'error' | 'unknown';
 type LiveSessionEntry = {
   name: string;
+  display_name?: string | null;
   path: string;
+  root_label?: string | null;
+  stale_duplicate?: boolean;
   exchange?: string | null;
   timeframe?: string | null;
   status?: LiveSessionStatus;
@@ -44,7 +48,7 @@ type LiveSessionInspect = {
   last_debug_event?: { level?: string; event_type?: string; ts?: string } | null;
   last_equity_ts?: string | null;
 };
-type LiveChartPayload = { live?: Point[]; backtest?: Point[]; distance?: Point[] };
+type LiveChartPayload = { live?: Point[]; backtest?: Point[]; distance?: Point[]; sources?: Record<string, string | null>; warnings?: string[]; approximate?: boolean };
 type LiveTableKind = 'open_positions' | 'orders' | 'debug_events' | 'stdio';
 type TableStateMap = Record<LiveTableKind, any[]>;
 type TableLoadingMap = Record<LiveTableKind, boolean>;
@@ -227,11 +231,16 @@ const preStyle: CSSProperties = {
   overflow: 'auto',
 };
 
-function LineChart({ title, series }: { title: string; series: { name: string; color: string; data: Point[] }[] }) {
+function LineChart({ title, series }: { title: string; series: ChartSeries[] }) {
+  const [hiddenLayers, setHiddenLayers] = useState<Record<string, boolean>>({});
   const width = 920;
   const height = 320;
   const padding = 46;
-  const domain = computeSharedDomain(series);
+  const visibleSeries = series.filter(s => !hiddenLayers[s.name]);
+  const visibleDataSeries = visibleSeries.filter(s => s.data.length > 0);
+  const domain = computeSharedDomain(visibleSeries);
+  const toggleLayer = (name: string) => setHiddenLayers(prev => ({ ...prev, [name]: !prev[name] }));
+  const showAllLayers = () => setHiddenLayers({});
   if (!domain.pointCount) return <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 14, color: colors.muted, background: '#0B1220' }}>{title}: No data</div>;
   const { xMin, xMax, yMin, yMax } = domain;
   const hasTimeX = xMax > 10_000_000_000;
@@ -245,7 +254,42 @@ function LineChart({ title, series }: { title: string; series: { name: string; c
 
   return (
     <div style={{ ...cardStyle, padding: 16 }}>
-      <h4 style={{ marginTop: 0, color: colors.text }}>{title}</h4>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 10 }}>
+        <h4 style={{ margin: 0, color: colors.text }}>{title}</h4>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {series.map(s => {
+            const active = !hiddenLayers[s.name];
+            const disabled = active && s.data.length > 0 && visibleDataSeries.length <= 1;
+            return (
+              <button
+                key={s.name}
+                type="button"
+                aria-pressed={active}
+                disabled={disabled}
+                onClick={() => toggleLayer(s.name)}
+                style={{
+                  border: `1px solid ${active ? s.color : colors.border}`,
+                  background: active ? '#0F172A' : '#020617',
+                  color: active ? colors.text : colors.muted,
+                  borderRadius: 6,
+                  padding: '5px 8px',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: disabled ? 'not-allowed' : 'pointer',
+                  opacity: disabled ? 0.75 : 1,
+                }}
+              >
+                <span style={{ color: s.color }}>■</span> {s.name}
+              </button>
+            );
+          })}
+          {visibleSeries.length < series.length && (
+            <button type="button" onClick={showAllLayers} style={{ ...buttonStyle, padding: '5px 8px', fontSize: 12 }}>
+              Show all
+            </button>
+          )}
+        </div>
+      </div>
       <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 320 }}>
         <rect x={0} y={0} width={width} height={height} fill="#0B1220" />
         <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#334155" />
@@ -272,7 +316,7 @@ function LineChart({ title, series }: { title: string; series: { name: string; c
             </g>
           );
         })}
-        {series.map(s => {
+        {visibleSeries.map(s => {
           const pts = s.data.map((d, i) => {
             const tsMs = Date.parse(String(d.ts || ''));
             return { x: Number.isFinite(tsMs) ? tsMs : i, y: Number(d.value) || 0, ts: d.ts };
@@ -284,7 +328,7 @@ function LineChart({ title, series }: { title: string; series: { name: string; c
         <text x={width - padding} y={height - 8} textAnchor="end" fontSize="11" fill="#94A3B8">X: {hasTimeX ? 'timestamp' : 'index'}</text>
       </svg>
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        {series.map(s => (
+        {visibleSeries.map(s => (
           <span key={s.name} style={{ color: s.color, fontWeight: 600 }}>{s.name}</span>
         ))}
       </div>
@@ -331,7 +375,10 @@ function normalizeStatus(value: any): LiveSessionStatus {
 function normalizeLiveSessionEntry(raw: any): LiveSessionEntry {
   return {
     name: String(raw?.name || raw?.path || 'unknown_session'),
+    display_name: raw?.display_name != null ? String(raw.display_name) : null,
     path: String(raw?.path || ''),
+    root_label: raw?.root_label != null ? String(raw.root_label) : null,
+    stale_duplicate: !!raw?.stale_duplicate,
     exchange: raw?.exchange != null ? String(raw.exchange) : null,
     timeframe: raw?.timeframe != null ? String(raw.timeframe) : null,
     status: normalizeStatus(raw?.status),
@@ -422,6 +469,7 @@ export default function BacktestLiveValidationPage() {
     const norm = normalizeLiveChartPayload(liveCharts || {});
     return { live: norm.live || [], backtest: norm.backtest || [], distance: norm.distance || [] };
   }, [liveCharts]);
+  const liveChartMeta = useMemo(() => normalizeLiveChartPayload(liveCharts || {}), [liveCharts]);
 
   async function refreshLiveSessions(keepPath = true) {
     setLiveListLoading(true);
@@ -557,9 +605,7 @@ export default function BacktestLiveValidationPage() {
     setLiveChartLoading(true);
     setLiveChartError(null);
     try {
-      const query = new URLSearchParams({ path });
-      if (selectedPath) query.set('tv_path', selectedPath);
-      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?${query.toString()}`);
+      const r = await apiFetch(`/api/backtest_live_validation/live_session/chart?path=${encodeURIComponent(path)}`);
       if (!r.ok) throw new Error('Live chart failed');
       setLiveCharts(normalizeLiveChartPayload(await r.json()));
       setLiveLastRefreshTs(new Date().toISOString());
@@ -716,6 +762,7 @@ export default function BacktestLiveValidationPage() {
   const pnlDomain = computeSharedDomain([{ data: alignedPnl.backtest }, { data: alignedPnl.live }]);
 
   const liveChartVisibility = getLiveChartVisibility(liveCharts);
+  const liveChartSourceLabel = liveChartMeta.sources?.live ? `Source: ${liveChartMeta.sources.live}` : null;
   const summaryModel = buildLiveSummaryModel(selectedLivePath, selectedLiveEntry, liveInspect, liveStatus);
   const debugLevelColor = DEBUG_LEVEL_COLOR_MAP[String(summaryModel.debugLevel).toLowerCase()] || '#64748b';
 
@@ -792,7 +839,7 @@ export default function BacktestLiveValidationPage() {
             <option value="">--select live session from _reports/_live--</option>
             {liveSessions.map(session => (
               <option key={session.path} value={session.path}>
-                {session.name || session.path} | ex: {session.exchange || 'n/a'} | tf: {session.timeframe || 'n/a'} | updated: {fmtTs(session.updated_at)} | status: {session.status || 'unknown'}
+                {session.display_name || session.name || session.path}{session.stale_duplicate ? ' | stale duplicate' : ''} | ex: {session.exchange || 'n/a'} | tf: {session.timeframe || 'n/a'} | updated: {fmtTs(session.updated_at)} | status: {session.status || 'unknown'}
               </option>
             ))}
           </select>
@@ -837,6 +884,12 @@ export default function BacktestLiveValidationPage() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <h4 style={sectionTitleStyle}>Live charts</h4>
+            {(liveChartMeta.approximate || liveChartMeta.warnings?.length || liveChartSourceLabel) && (
+              <div style={{ border: `1px solid ${liveChartMeta.approximate ? colors.warning : colors.border}`, borderRadius: 8, padding: 10, color: liveChartMeta.approximate ? colors.warning : colors.muted, background: '#0B1220', fontSize: 12, lineHeight: 1.45 }}>
+                {liveChartMeta.approximate ? 'Orders-only fallback: approximate notional chart, not real PnL.' : liveChartSourceLabel}
+                {liveChartMeta.warnings?.length ? ` ${liveChartMeta.warnings.join(' ')}` : ''}
+              </div>
+            )}
             {liveChartVisibility.live ? <LineChart title="Live equity / PNL" series={[{ name: 'Live equity', color: colors.success, data: liveSeries.live }]} /> : <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: 10, color: colors.muted, background: '#0B1220' }}>No chart data</div>}
             {liveChartVisibility.overlay ? (
               <LineChart title="Live vs Backtest overlay" series={[{ name: 'Live', color: colors.success, data: liveSeries.live }, { name: 'Backtest', color: colors.accent, data: liveSeries.backtest }]} />

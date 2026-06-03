@@ -156,7 +156,9 @@ class LiveSessionTelegramMonitorTest(unittest.TestCase):
             self.assertEqual(first["sent"], 1)
             self.assertEqual(second["sent"], 0)
             self.assertEqual(post.call_count, 1)
-            self.assertIn("[HYPE live order FILLED]", first["alerts"][0])
+            self.assertIn("🟢 HYPE order filled", first["alerts"][0])
+            self.assertIn("📅", first["alerts"][0])
+            self.assertIn("💰", first["alerts"][0])
 
     def test_init_baseline_marks_existing_orders_without_order_alerts(self):
         with tempfile.TemporaryDirectory() as td:
@@ -194,23 +196,63 @@ class LiveSessionTelegramMonitorTest(unittest.TestCase):
                     {"order_id": "rej-3", "ts_utc": monitor.iso(NOW - timedelta(seconds=2)), "mode": "close", "status": "REJECTED", "reason": "busy"},
                     {"order_id": "can-1", "ts_utc": monitor.iso(NOW - timedelta(seconds=2)), "mode": "close", "status": "CANCELED", "reason": "busy"},
                 ],
-                positions=[{"qty": 1.0, "entry": 10.0, "entry_fill": 10.0, "status": "OPEN"}],
+                positions=[{"bot_id": f"{live_dir}|bingx|copy1_dca60", "qty": 1.0, "entry": 10.0, "entry_fill": 10.0, "status": "OPEN", "exchange": "bingx"}],
             )
             args = make_args(live_dir, dry_run=True)
             with patch.object(monitor.subprocess, "run", return_value=SimpleNamespace(stdout="")):
                 alerts, meta = monitor.collect_alerts(args, monitor.load_monitor_state(Path(args.state_path)), NOW)
             text = "\n".join(alerts)
             self.assertIn("stale RUN_STATUS", text)
-            self.assertIn("live_exchange=bingx expected=gateio", text)
+            self.assertIn("exchange mismatch", text)
+            self.assertIn("live=bingx", text)
+            self.assertIn("expected=gateio", text)
             self.assertIn("control flag active", text)
-            self.assertIn("order_error_backoff active", text)
-            self.assertIn("entry_failure HYPEUSDT:LONG", text)
+            self.assertIn("order backoff active", text)
+            self.assertIn("entry failure", text)
+            self.assertIn("HYPEUSDT:LONG", text)
             self.assertIn("live process missing", text)
             self.assertIn("notional mismatch", text)
             self.assertIn("position/notional mismatch", text)
             self.assertIn("rejected order cluster", text)
             self.assertIn("repeated close attempts", text)
+            self.assertIn("🔴", text)
+            self.assertIn("🟠", text)
             self.assertEqual(meta["orders_scanned"], 4)
+
+    def test_historical_rejected_orders_do_not_trigger_cluster_alerts_after_seen(self):
+        with tempfile.TemporaryDirectory() as td:
+            live_dir = Path(td)
+            write_status(live_dir)
+            orders = [
+                {"order_id": f"old-rej-{idx}", "ts_utc": monitor.iso(NOW - timedelta(minutes=idx)), "mode": "open", "status": "REJECTED", "reason": "old incident"}
+                for idx in range(5)
+            ]
+            make_db(live_dir, orders=orders)
+            args = make_args(live_dir, dry_run=True)
+            state = monitor.load_monitor_state(Path(args.state_path))
+            state["seen_order_ids"] = [order["order_id"] for order in orders]
+            with patch.object(monitor.subprocess, "run", return_value=SimpleNamespace(stdout=f"123 python hype_cap100_bingx_live_canary.py --out-dir {live_dir}\n")):
+                alerts, _meta = monitor.collect_alerts(args, state, NOW)
+            text = "\n".join(alerts)
+            self.assertNotIn("rejected order cluster", text)
+            self.assertNotIn("repeated open attempts", text)
+
+    def test_db_notional_mismatch_ignores_stale_other_exchange_and_other_bot_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            live_dir = Path(td)
+            write_status(live_dir, guards={"gross_open_notional": 6.0, "one_side_open_notional": 6.0})
+            make_db(
+                live_dir,
+                positions=[
+                    {"bot_id": f"{live_dir}|gateio|copy1_dca60", "qty": 0.1, "entry": 60.0, "entry_fill": 60.0, "status": "OPEN", "exchange": "gateio"},
+                    {"bot_id": "/old/path|bingx|copy1_dca60", "qty": 10.0, "entry": 60.0, "entry_fill": 60.0, "status": "OPEN", "exchange": "bingx"},
+                    {"bot_id": "/other/path|gateio|copy1_dca60", "qty": 10.0, "entry": 60.0, "entry_fill": 60.0, "status": "OPEN", "exchange": "gateio"},
+                ],
+            )
+            args = make_args(live_dir, dry_run=True)
+            with patch.object(monitor.subprocess, "run", return_value=SimpleNamespace(stdout=f"123 python hype_cap100_bingx_live_canary.py --out-dir {live_dir}\n")):
+                alerts, _meta = monitor.collect_alerts(args, monitor.load_monitor_state(Path(args.state_path)), NOW)
+            self.assertNotIn("position/notional mismatch", "\n".join(alerts))
 
     def test_daily_reexec_updates_state_before_exec(self):
         with tempfile.TemporaryDirectory() as td:
