@@ -17,6 +17,11 @@
   "exit_on_reversal": true,
   "exchange_profile": "htx_current",
   "live_orders_enabled": false,
+  "source_leverage": {
+    "mode": "copy",
+    "max_source_leverage": 0.0,
+    "notes": "Live per-symbol runners should copy source Binance follower leverage."
+  },
   "notes": {
     "purpose": "Combined HTX paper/shadow validation for friend 200 USD allocation",
     "allocation": "55% Veronika HYPE / 45% Callme multi-symbol",

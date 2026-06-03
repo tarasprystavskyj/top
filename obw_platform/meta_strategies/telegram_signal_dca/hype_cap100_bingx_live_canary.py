@@ -228,6 +228,7 @@ DEFAULT_HTX_FRIEND_LIVE_CONFIG = ROOT / "meta_strategies" / "telegram_signal_dca
 DEFAULT_LIVE_SYMBOL = "HYPE-USDT"
 SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio", "htx")
 SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy", "htx_current")
+SUPPORTED_SOURCE_LEVERAGE_MODES = ("ignore", "copy", "copy_div2")
 LIVE_EXCHANGE_PROFILES = {
     "gateio_current": {
         "live_exchange": "gateio",
@@ -1028,6 +1029,10 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
         "dca_eval_interval_sec": args.dca_eval_interval_sec,
         "history_poll_interval_sec": args.history_poll_interval_sec,
         "position_mode": args.position_mode,
+        "source_leverage_policy": {
+            "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+            "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
+        },
         "long_only": bool(args.long_only),
         "risk": {
             "initial_equity": args.initial_equity,
@@ -1265,6 +1270,8 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
         "interval_sec": cfg.get("poll_sec") or safety.get("poll_sec"),
         "dca_eval_interval_sec": cfg.get("dca_eval_interval_sec") or sizing.get("dca_eval_interval_sec"),
         "history_poll_interval_sec": cfg.get("history_poll_interval_sec"),
+        "source_leverage_mode": cfg.get("source_leverage_mode") or (cfg.get("source_leverage") if isinstance(cfg.get("source_leverage"), str) else None) or ((cfg.get("source_leverage") or {}).get("mode") if isinstance(cfg.get("source_leverage"), dict) else None),
+        "max_source_leverage": cfg.get("max_source_leverage") or ((cfg.get("source_leverage") or {}).get("max_source_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
     }
     applied: List[str] = []
     for attr, value in config_defaults.items():
@@ -1423,6 +1430,138 @@ def order_fee_usdt(order: Dict[str, Any]) -> float:
         except Exception:
             continue
     return total
+
+
+def parse_source_leverage(raw: Any) -> Optional[float]:
+    try:
+        value = float(str(raw).strip())
+    except Exception:
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
+def normalize_source_margin_mode(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    if text in {"cross", "crossed"}:
+        return "cross"
+    if text in {"isolated", "isolate"}:
+        return "isolated"
+    return text
+
+
+def effective_source_leverage(args: argparse.Namespace, trade: Dict[str, Any]) -> Dict[str, Any]:
+    mode = str(getattr(args, "source_leverage_mode", "ignore") or "ignore").strip().lower()
+    if mode not in SUPPORTED_SOURCE_LEVERAGE_MODES:
+        mode = "ignore"
+    raw = trade.get("source_leverage_raw", trade.get("source_leverage"))
+    source = parse_source_leverage(trade.get("source_leverage"))
+    if source is None:
+        source = parse_source_leverage(raw)
+    margin_mode = normalize_source_margin_mode(trade.get("source_margin_mode"))
+    out = {
+        "mode": mode,
+        "source_leverage_raw": raw,
+        "source_leverage": source,
+        "source_margin_mode": margin_mode,
+        "effective_leverage": None,
+        "required": mode != "ignore",
+    }
+    if mode == "ignore":
+        return out
+    if source is None:
+        out["error"] = "missing_source_leverage"
+        return out
+    effective = source if mode == "copy" else (max(1.0, math.floor(source / 2.0)) if source > 1.0 else 1.0)
+    max_leverage = parse_source_leverage(getattr(args, "max_source_leverage", None))
+    if max_leverage is not None:
+        effective = min(effective, max_leverage)
+    out["effective_leverage"] = max(1.0, float(effective))
+    return out
+
+
+def leverage_cache_key(args: argparse.Namespace, ccxt_symbol: str, side: str, margin_mode: str, leverage: float) -> str:
+    position_side = str(side or "").upper() if str(getattr(args, "position_mode", "")).lower() == "hedge" else "BOTH"
+    return "|".join(
+        str(x or "")
+        for x in (
+            str(getattr(args, "live_exchange", "")).lower(),
+            str(getattr(args, "live_exchange_profile", "")).lower(),
+            ccxt_symbol,
+            position_side,
+            normalize_source_margin_mode(margin_mode),
+            f"{float(leverage):g}",
+        )
+    )
+
+
+def live_leverage_params(args: argparse.Namespace, side: str, margin_mode: str) -> Dict[str, Any]:
+    ex = str(getattr(args, "live_exchange", "") or "").lower()
+    mode = normalize_source_margin_mode(margin_mode)
+    params: Dict[str, Any] = {}
+    if ex == "gateio":
+        params["settle"] = "USDT"
+        if mode:
+            params["marginMode"] = mode
+        return params
+    if ex == "bingx":
+        if str(getattr(args, "position_mode", "") or "").lower() == "hedge" and side:
+            params["side"] = str(side).upper()
+            params["positionSide"] = str(side).upper()
+        if mode:
+            params["marginMode"] = mode
+        return params
+    if ex == "htx":
+        if mode:
+            params["marginMode"] = mode
+        return params
+    return params
+
+
+def ensure_symbol_leverage(
+    args: argparse.Namespace,
+    state: Dict[str, Any],
+    *,
+    symbol: str,
+    side: str,
+    margin_mode: str,
+    leverage: float,
+    now: datetime,
+) -> Dict[str, Any]:
+    client = live_client(args)
+    ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
+    key = leverage_cache_key(args, ccxt_symbol, side, margin_mode, leverage)
+    cache = state.setdefault("leverage_set_cache", {})
+    if isinstance(cache.get(key), dict) and cache[key].get("ok"):
+        return {**cache[key], "cached": True, "cache_key": key}
+    params = live_leverage_params(args, side, margin_mode)
+    payload = {
+        "ok": False,
+        "cached": False,
+        "exchange": getattr(args, "live_exchange", ""),
+        "ccxt_symbol": ccxt_symbol,
+        "side": str(side or "").upper(),
+        "margin_mode": normalize_source_margin_mode(margin_mode),
+        "leverage": float(leverage),
+        "params": params,
+        "cache_key": key,
+        "utc": paper.iso(now),
+    }
+    try:
+        if not hasattr(client.ex, "set_leverage"):
+            raise RuntimeError("exchange_client_missing_set_leverage")
+        result = client.ex.set_leverage(float(leverage), ccxt_symbol, params)
+    except Exception as exc:
+        payload["error"] = str(exc)
+        state["last_leverage_setup"] = payload
+        return payload
+    payload["ok"] = True
+    payload["result"] = safe_order(result) if isinstance(result, dict) else str(result)
+    cache[key] = payload
+    state["leverage_set_cache"] = cache
+    state["last_leverage_setup"] = payload
+    return payload
 
 
 def signed_slip_bp(side: str, expected_price: Optional[float], fill_price: Optional[float], *, is_close: bool) -> Optional[float]:
@@ -2040,9 +2179,22 @@ def seed_open_trades_from_exchange(
         trade["avg_entry"] = entry
         trade["exchange_position"] = ex_pos
         trade["seeded_from_exchange"] = True
+        leverage_policy = effective_source_leverage(args, trade)
+        leverage_setup: Dict[str, Any] = {"ok": True, "policy": leverage_policy, "skipped": True}
+        if leverage_policy.get("required") and leverage_policy.get("effective_leverage") is not None:
+            leverage_setup = ensure_symbol_leverage(
+                args,
+                state,
+                symbol=trade["symbol"],
+                side=str(trade["side"]),
+                margin_mode=str(leverage_policy.get("source_margin_mode") or ""),
+                leverage=float(leverage_policy["effective_leverage"]),
+                now=now,
+            )
+            leverage_setup["policy"] = leverage_policy
         open_trades[key] = trade
         upsert_session_position(args, trade, status="OPEN", now=now, exchange_order_id=str(trade.get("exchange_order_id") or ""))
-        events.append({"type": "exchange_position_seeded", "key": key, "qty": qty, "entry": entry, "notional": trade["notional"], "ccxt_symbol": ccxt_symbol})
+        events.append({"type": "exchange_position_seeded", "key": key, "qty": qty, "entry": entry, "notional": trade["notional"], "ccxt_symbol": ccxt_symbol, "leverage_setup": leverage_setup})
     return events
 
 
@@ -2115,6 +2267,67 @@ def live_add_fill(
             "requested_notional": notional,
             "effective_order_notional": order_notional,
         }
+    leverage_policy = effective_source_leverage(args, trade)
+    leverage_setup: Dict[str, Any] = {"ok": True, "policy": leverage_policy, "skipped": True}
+    if leverage_policy.get("required"):
+        effective_lev = leverage_policy.get("effective_leverage")
+        if effective_lev is None:
+            error_text = str(leverage_policy.get("error") or "missing_source_leverage")
+            failure_payload = register_entry_failure(state, attempt_key, error_text, now, args)
+            state["last_leverage_setup"] = {"ok": False, "error": error_text, "policy": leverage_policy, "utc": paper.iso(now)}
+            return {
+                "type": "live_entry_blocked",
+                "key": trade.get("key"),
+                "fill_type": fill_type,
+                "reason": "leverage_setup_failed",
+                "error": error_text,
+                "leverage": leverage_policy,
+                "exchange_preflight": preflight,
+                "requested_notional": notional,
+                "effective_order_notional": order_notional,
+                "attempt_key": attempt_key,
+                "entry_failure": failure_payload,
+            }
+        leverage_setup = ensure_symbol_leverage(
+            args,
+            state,
+            symbol=trade["symbol"],
+            side=str(trade["side"]),
+            margin_mode=str(leverage_policy.get("source_margin_mode") or ""),
+            leverage=float(effective_lev),
+            now=now,
+        )
+        leverage_setup["policy"] = leverage_policy
+        if not leverage_setup.get("ok"):
+            error_text = str(leverage_setup.get("error") or "leverage_setup_failed")
+            backoff_payload = register_order_error_backoff(state, error_text, now, args)
+            failure_payload = register_entry_failure(state, attempt_key, error_text, now, args)
+            record_session_order(
+                args,
+                now=now,
+                symbol=args.live_symbol,
+                side=str(trade["side"]),
+                type_="OPEN",
+                price=expected_price,
+                qty=0.0,
+                status="REJECTED",
+                reason="leverage_setup_failed",
+                extra={"leverage_setup": leverage_setup, "order_error_backoff": backoff_payload, "entry_failure": failure_payload, "attempt_key": attempt_key},
+            )
+            return {
+                "type": "live_entry_blocked",
+                "key": trade.get("key"),
+                "fill_type": fill_type,
+                "reason": "leverage_setup_failed",
+                "error": error_text,
+                "leverage_setup": leverage_setup,
+                "exchange_preflight": preflight,
+                "requested_notional": notional,
+                "effective_order_notional": order_notional,
+                "attempt_key": attempt_key,
+                "backoff": backoff_payload,
+                "entry_failure": failure_payload,
+            }
     client_order_id = stable_client_order_id(
         "entry",
         args.run_id,
@@ -2150,6 +2363,7 @@ def live_add_fill(
             "error": error_text,
             "guard": guard_detail,
             "exchange_preflight": preflight,
+            "leverage_setup": leverage_setup,
             "requested_notional": notional,
             "effective_order_notional": order_notional,
             "attempt_key": attempt_key,
@@ -2188,6 +2402,12 @@ def live_add_fill(
         "requested_notional": notional,
         "effective_order_notional": order_notional,
         "live_notional": live_notional,
+        "source_leverage": leverage_policy.get("source_leverage"),
+        "source_leverage_raw": leverage_policy.get("source_leverage_raw"),
+        "effective_leverage": leverage_policy.get("effective_leverage"),
+        "source_leverage_mode": leverage_policy.get("mode"),
+        "source_margin_mode": leverage_policy.get("source_margin_mode"),
+        "leverage_setup": leverage_setup,
         "qty": qty,
         "requested_base_qty": submitted.get("requested_base_qty"),
         "exchange_preflight": preflight,
@@ -2238,7 +2458,7 @@ def live_add_fill(
         status="FILLED",
         reason=reason,
         exchange_order_id=str(submitted.get("exchange_order_id") or ""),
-        extra={"fill": fill, "submitted": submitted, "exchange_preflight": preflight},
+        extra={"fill": fill, "submitted": submitted, "exchange_preflight": preflight, "leverage_setup": leverage_setup},
     )
     clear_order_error_backoff(state)
     clear_entry_failure(state, attempt_key)
@@ -2455,6 +2675,10 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["live_symbol"] = args.live_symbol
     payload["live_exchange_profile"] = args.live_exchange_profile
     payload["position_mode"] = args.position_mode
+    payload["source_leverage_policy"] = {
+        "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+        "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
+    }
     payload["auth_probe"] = getattr(args, "_auth_probe", {})
     payload["exchange_switch_reset"] = getattr(args, "_exchange_switch_reset", {})
     payload["copy_poll_interval_sec"] = args.interval_sec
@@ -2468,6 +2692,8 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["order_sync_wait_sec"] = args.order_sync_wait_sec
     payload["order_error_backoff"] = state.get("order_error_backoff") if isinstance(state.get("order_error_backoff"), dict) else {}
     payload["entry_failures"] = state.get("entry_failures") if isinstance(state.get("entry_failures"), dict) else {}
+    payload["leverage_set_cache"] = state.get("leverage_set_cache") if isinstance(state.get("leverage_set_cache"), dict) else {}
+    payload["last_leverage_setup"] = state.get("last_leverage_setup") if isinstance(state.get("last_leverage_setup"), dict) else {}
     return payload
 
 
@@ -2526,6 +2752,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--order-error-circuit-sec", type=float, default=DEFAULT_ORDER_ERROR_CIRCUIT_SEC, help="Long private order POST cooldown after repeated/config/rate-limit errors.")
     ap.add_argument("--order-error-max-consecutive", type=int, default=DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE, help="Consecutive order errors before using circuit cooldown.")
     ap.add_argument("--entry-failure-cooldown-sec", type=float, default=DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC, help="Cooldown for the same symbol/lead/fill-level after rejected entry.")
+    ap.add_argument("--source-leverage-mode", choices=SUPPORTED_SOURCE_LEVERAGE_MODES, default="ignore", help="How to apply Binance copy-source leverage before follower opens/DCA legs.")
+    ap.add_argument("--max-source-leverage", type=float, default=0.0, help="Optional cap for effective source leverage; 0 means uncapped.")
     ap.add_argument("--hot-restart-snapshot-path", default="", help="Where HOT_STOP writes a restart snapshot. Defaults to out-dir/HOT_RESTART_SNAPSHOT.json.")
     ap.add_argument("--resume-snapshot", default="", help="Load state from a HOT_STOP snapshot before starting.")
     ap.add_argument("--resume-snapshot-overwrite", action="store_true", help="Allow --resume-snapshot to replace an existing state-path.")
@@ -2573,6 +2801,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("order error cooldowns must be positive")
     if args.order_error_max_consecutive <= 0:
         raise SystemExit("--order-error-max-consecutive must be positive")
+    if args.max_source_leverage < 0:
+        raise SystemExit("--max-source-leverage must be non-negative")
     if args.live_cache_npz_max_bars <= 0:
         raise SystemExit("--live-cache-npz-max-bars must be positive")
     if args.resume_snapshot and not Path(args.resume_snapshot).exists():

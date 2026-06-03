@@ -30,6 +30,11 @@
     "dca_scaling": "Scale DCA plan from delegated 90 USDT through the same guarded canary path.",
     "dca_eval_interval_sec": 60.0
   },
+  "source_leverage": {
+    "mode": "copy",
+    "max_source_leverage": 0.0,
+    "notes": "Copy source Binance follower leverage before HTX live open/DCA legs."
+  },
   "safety": {
     "max_daily_loss_usdt": 4.5,
     "max_orders_per_hour": 10,

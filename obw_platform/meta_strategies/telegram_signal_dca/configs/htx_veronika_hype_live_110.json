@@ -29,6 +29,11 @@
     "dca_scaling": "Scale from delegated 110 USDT through the same HYPE cap100 DCA path.",
     "dca_eval_interval_sec": 60.0
   },
+  "source_leverage": {
+    "mode": "copy",
+    "max_source_leverage": 0.0,
+    "notes": "Copy source Binance follower leverage before HTX live open/DCA legs."
+  },
   "safety": {
     "max_daily_loss_usdt": 5.5,
     "max_orders_per_hour": 10,

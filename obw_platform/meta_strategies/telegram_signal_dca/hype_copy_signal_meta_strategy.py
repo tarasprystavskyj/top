@@ -144,6 +144,13 @@ def build_strategy_intents(
             trade = open_trades[key]
             trade["last_seen_utc"] = iso_fn(now)
             trade["last_mark"] = mark
+            trade["source_leverage_raw"] = pos.get("leverage")
+            try:
+                source_leverage = float(pos.get("leverage"))
+            except Exception:
+                source_leverage = None
+            trade["source_leverage"] = source_leverage if source_leverage and source_leverage > 0 else None
+            trade["source_margin_mode"] = str(pos.get("isolated") or pos.get("margin_mode") or trade.get("source_margin_mode") or "").strip()
             intents.extend(dca.dca_entry_intents(trade, mark=mark, allow_dca=allow_dca))
 
     keys_to_close = set(open_trades) - set(current)

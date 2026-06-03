@@ -65,11 +65,22 @@ def build_plan(equity: float, args: Any, entry_price: float) -> Dict[str, Any]:
 def build_trade_from_source(pos: Dict[str, Any], plan: Dict[str, Any], *, now: datetime, mark: Optional[float], iso_fn) -> Dict[str, Any]:
     side = str(pos["side"])
     entry = float(pos["entry_price"])
+    source_leverage_raw = pos.get("leverage")
+    try:
+        source_leverage = float(source_leverage_raw)
+    except Exception:
+        source_leverage = None
+    if source_leverage is not None and source_leverage <= 0:
+        source_leverage = None
+    source_margin_mode = str(pos.get("isolated") or pos.get("margin_mode") or "").strip()
     return {
         "key": f"{pos['symbol']}:{side}",
         "lead_position_id": pos.get("id"),
         "symbol": pos["symbol"],
         "side": side,
+        "source_leverage_raw": source_leverage_raw,
+        "source_leverage": source_leverage,
+        "source_margin_mode": source_margin_mode,
         "opened_at_utc": iso_fn(now),
         "detected_at_ms": int(now.timestamp() * 1000),
         "lead_entry_price": entry,
