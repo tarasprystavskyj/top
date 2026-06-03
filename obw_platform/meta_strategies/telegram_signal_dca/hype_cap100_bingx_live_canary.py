@@ -1513,6 +1513,8 @@ def live_leverage_params(args: argparse.Namespace, side: str, margin_mode: str) 
             params["marginMode"] = mode
         return params
     if ex == "htx":
+        if not mode:
+            mode = "cross"
         if mode:
             params["marginMode"] = mode
         return params
@@ -1551,7 +1553,10 @@ def ensure_symbol_leverage(
     try:
         if not hasattr(client.ex, "set_leverage"):
             raise RuntimeError("exchange_client_missing_set_leverage")
-        result = client.ex.set_leverage(float(leverage), ccxt_symbol, params)
+        leverage_value: Any = float(leverage)
+        if float(leverage_value).is_integer():
+            leverage_value = int(leverage_value)
+        result = client.ex.set_leverage(leverage_value, ccxt_symbol, params)
     except Exception as exc:
         payload["error"] = str(exc)
         state["last_leverage_setup"] = payload
