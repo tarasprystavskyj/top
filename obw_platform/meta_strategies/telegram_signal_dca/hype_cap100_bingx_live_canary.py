@@ -1658,6 +1658,35 @@ def live_order_filled_base_qty(args: argparse.Namespace, client: CCXTFetcher, cc
     return float(order_amount or 0.0)
 
 
+def htx_submit_market_order(client: CCXTFetcher, ccxt_symbol: str, order_side: str, order_amount: float, *, reduce_only: bool) -> Dict[str, Any]:
+    market = client.ex.market(ccxt_symbol)
+    request: Dict[str, Any] = {
+        "contract_code": market["id"],
+        "volume": client.ex.amount_to_precision(ccxt_symbol, order_amount),
+        "direction": order_side,
+        "lever_rate": 1,
+        "order_price_type": "optimal_20",
+    }
+    if reduce_only:
+        request["reduce_only"] = 1
+    response = client.ex.contractPrivatePostLinearSwapApiV1SwapCrossOrder(request)
+    data = response.get("data") if isinstance(response, dict) else {}
+    order_id = ""
+    if isinstance(data, dict):
+        order_id = str(data.get("order_id_str") or data.get("order_id") or "")
+    return {
+        "id": order_id,
+        "info": response,
+        "symbol": ccxt_symbol,
+        "type": "market",
+        "side": order_side,
+        "amount": order_amount,
+        "filled": order_amount,
+        "remaining": 0.0,
+        "status": "closed",
+    }
+
+
 def live_open_order_preflight(args: argparse.Namespace, symbol: str, expected_price: float, notional: float) -> Dict[str, Any]:
     client = getattr(args, "_live_client", None)
     requested_notional = float(notional or 0.0)
@@ -1711,7 +1740,10 @@ def submit_open(args: argparse.Namespace, symbol: str, side: str, expected_price
     params = live_order_params(client_order_id, side, reduce_only=False, position_mode=args.position_mode, exchange=args.live_exchange)
     order_side = "buy" if side.upper() == "LONG" else "sell"
     try:
-        od = client.ex.create_order(ccxt_symbol, "market", order_side, order_amount, None, params)
+        if str(args.live_exchange or "").lower() == "htx":
+            od = htx_submit_market_order(client, ccxt_symbol, order_side, order_amount, reduce_only=False)
+        else:
+            od = client.ex.create_order(ccxt_symbol, "market", order_side, order_amount, None, params)
     except Exception as exc:
         msg = str(exc).lower()
         if ("one-way mode" not in msg) and ("positionside" not in msg) and ("position side" not in msg):
@@ -1724,9 +1756,15 @@ def submit_open(args: argparse.Namespace, symbol: str, side: str, expected_price
             return {"ok": False, "error": str(retry_exc), "qty": expected_base_qty, "order_amount": order_amount, "ccxt_symbol": ccxt_symbol}
     ex_order_id = order_id_from_response(od)
     fill_px, fill_dt, fetched_order = _fetch_order_fill(client, ccxt_symbol, ex_order_id, wait_sec=args.order_sync_wait_sec, poll_sec=args.order_sync_poll_sec)
+    ex_pos = live_fetch_exchange_position(args, client, ccxt_symbol, side) if str(args.live_exchange or "").lower() == "htx" else None
+    if fill_px is None and ex_pos and float(ex_pos.get("qty") or 0.0) > 0 and float(ex_pos.get("entry") or 0.0) > 0:
+        fill_px = float(ex_pos.get("entry") or 0.0)
+        fill_dt = paper.utc_now()
+        fetched_order = fetched_order or od
     if fill_px is None:
         return {"ok": False, "error": "open_timeout_no_fill", "qty": expected_base_qty, "order_amount": order_amount, "ccxt_symbol": ccxt_symbol, "order": fetched_order or od, "exchange_order_id": ex_order_id}
-    ex_pos = live_fetch_exchange_position(args, client, ccxt_symbol, side)
+    if ex_pos is None:
+        ex_pos = live_fetch_exchange_position(args, client, ccxt_symbol, side)
     order = fetched_order or od
     order_qty = live_order_filled_base_qty(args, client, ccxt_symbol, order if isinstance(order, dict) else {}, order_amount)
     return {
@@ -1764,7 +1802,10 @@ def submit_close(args: argparse.Namespace, symbol: str, side: str, qty: float, c
     close_side = "sell" if side.upper() == "LONG" else "buy"
     params = live_order_params(client_order_id, side, reduce_only=True, position_mode=args.position_mode, exchange=args.live_exchange)
     try:
-        od = client.ex.create_order(ccxt_symbol, "market", close_side, order_amount, None, params)
+        if str(args.live_exchange or "").lower() == "htx":
+            od = htx_submit_market_order(client, ccxt_symbol, close_side, order_amount, reduce_only=True)
+        else:
+            od = client.ex.create_order(ccxt_symbol, "market", close_side, order_amount, None, params)
     except Exception as exc:
         msg = str(exc).lower()
         if ("no position to close" in msg) or ('code":101205' in msg) or ("code': 101205" in msg):
