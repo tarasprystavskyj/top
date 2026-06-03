@@ -465,7 +465,7 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         result = live.ensure_symbol_leverage(args, {}, symbol="HYPEUSDT", side="LONG", margin_mode="isolated", leverage=2.0, now=NOW)
         self.assertTrue(result["ok"])
         params = args._live_client.ex.leverage_calls[0][2]
-        self.assertEqual(params["settle"], "USDT")
+        self.assertEqual(params["settle"], "usdt")
         self.assertEqual(params["marginMode"], "isolated")
         self.assertNotIn("positionSide", params)
 

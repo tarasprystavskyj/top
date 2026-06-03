@@ -1664,7 +1664,7 @@ def live_leverage_params(args: argparse.Namespace, side: str, margin_mode: str) 
     mode = normalize_source_margin_mode(margin_mode)
     params: Dict[str, Any] = {}
     if ex == "gateio":
-        params["settle"] = "USDT"
+        params["settle"] = "usdt"
         if mode:
             params["marginMode"] = mode
         return params
