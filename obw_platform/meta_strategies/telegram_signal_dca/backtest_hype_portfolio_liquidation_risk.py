@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Offline HYPE portfolio liquidation-risk meta-backtester.
+"""Offline portfolio liquidation-risk meta-backtester.
 
-Research-only. Uses local Binance-copy position history plus local HYPE 1m NPZ
-data from the existing DCA research lane. It does not read secrets, call
-exchange APIs, or place orders.
+Research-only. Uses local Binance-copy position history plus local 1m NPZ
+market data. It does not read secrets, call exchange APIs, or place orders.
 """
 from __future__ import annotations
 
@@ -156,15 +155,44 @@ def load_legs(*, legs_json: str, portfolio_config: Path | None, allocation_usdt:
     ]
 
 
-def load_npz_arrays(path: Path) -> Dict[str, np.ndarray]:
-    z = np.load(path, allow_pickle=True)
+def normalize_symbol(raw: Any) -> str:
+    text = str(raw or "").upper().strip()
+    if "/" in text:
+        base = text.split("/", 1)[0]
+        rest = text.split("/", 1)[1]
+        quote = rest.split(":", 1)[0]
+        return f"{base}{quote}"
+    return text.replace("-", "").replace("_", "")
+
+
+def _npz_arrays_slice(z: Any, start: int | None = None, end: int | None = None) -> Dict[str, np.ndarray]:
+    sl = slice(start, end)
     return {
-        "t": z["timestamp_s"].astype(np.int64) * 1000,
-        "open": z["open"].astype(float),
-        "high": z["high"].astype(float),
-        "low": z["low"].astype(float),
-        "close": z["close"].astype(float),
+        "t": z["timestamp_s"][sl].astype(np.int64) * 1000,
+        "open": z["open"][sl].astype(float),
+        "high": z["high"][sl].astype(float),
+        "low": z["low"][sl].astype(float),
+        "close": z["close"][sl].astype(float),
     }
+
+
+def load_npz_arrays(path: Path) -> Dict[str, Dict[str, np.ndarray]]:
+    z = np.load(path, allow_pickle=True)
+    if "symbols" in z and "offsets" in z:
+        symbols = [normalize_symbol(x) for x in z["symbols"]]
+        offsets = z["offsets"].astype(np.int64)
+        return {
+            symbol: _npz_arrays_slice(z, int(offsets[i]), int(offsets[i + 1]))
+            for i, symbol in enumerate(symbols)
+        }
+    return {"__single__": _npz_arrays_slice(z)}
+
+
+def arrays_for_symbol(market_arrays: Dict[str, Dict[str, np.ndarray]], symbol: str) -> Dict[str, np.ndarray] | None:
+    normalized = normalize_symbol(symbol)
+    if normalized in market_arrays:
+        return market_arrays[normalized]
+    return market_arrays.get("__single__")
 
 
 def allocations(leg: LegConfig) -> tuple[float, List[float]]:
@@ -272,7 +300,7 @@ def simulate_leg_trade(
     maintenance_margin_pct: float,
     include_boundary_risk: bool,
 ) -> tuple[Dict[str, Any], List[Dict[str, Any]]] | None:
-    if pos.symbol != leg.symbol:
+    if leg.symbol not in {"*", "ALL"} and pos.symbol != leg.symbol:
         return None
     side = effective_side(pos, leg)
     if side is None:
@@ -518,7 +546,7 @@ def write_report(path: Path, summary: Dict[str, Any], legs: Sequence[LegConfig])
 
 def run_backtest(
     positions: Sequence[CopyPosition],
-    arrays: Dict[str, np.ndarray],
+    market_arrays: Dict[str, Dict[str, np.ndarray]],
     legs: Sequence[LegConfig],
     *,
     initial_equity: float,
@@ -529,9 +557,16 @@ def run_backtest(
     maintenance_margin_pct: float,
     include_boundary_risk: bool,
 ) -> tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if "t" in market_arrays:
+        market_arrays = {"__single__": market_arrays}  # type: ignore[dict-item]
     trades: List[Dict[str, Any]] = []
     snapshots: List[Dict[str, Any]] = []
+    skipped_missing_market = 0
     for pos in positions:
+        arrays = arrays_for_symbol(market_arrays, pos.symbol)
+        if arrays is None:
+            skipped_missing_market += 1
+            continue
         for leg in legs:
             result = simulate_leg_trade(
                 pos,
@@ -564,6 +599,7 @@ def run_backtest(
     )
     summary = {
         "positions_loaded": len(positions),
+        "positions_skipped_missing_market": skipped_missing_market,
         "legs": len(legs),
         "simulated_leg_trades": len(trades),
         "risk_snapshot_count": len(snapshots),
@@ -624,10 +660,10 @@ def main() -> None:
     if not legs:
         raise SystemExit("no portfolio legs selected")
     positions = read_positions(Path(args.positions_csv))
-    arrays = load_npz_arrays(Path(args.npz))
+    market_arrays = load_npz_arrays(Path(args.npz))
     summary, trades, snapshots, cross_rows = run_backtest(
         positions,
-        arrays,
+        market_arrays,
         legs,
         initial_equity=float(args.initial_equity),
         fill_mode=args.fill_mode,
