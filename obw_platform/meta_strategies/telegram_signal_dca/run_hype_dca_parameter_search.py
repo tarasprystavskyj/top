@@ -51,6 +51,73 @@ class Candidate:
     add_weights: tuple[float, ...]
     fee: float = 0.0005
     slippage: float = 0.0009380229915652661
+    protection_account_loss_stop_pct_of_margin: float = 0.0
+    protection_floating_pnl_stop_pct_of_margin: float = 0.0
+    protection_emergency_account_loss_pct_of_margin: float = 0.0
+    protection_confirm_bars: int = 1
+
+
+def pct_token(value: float) -> str:
+    return ("%g" % float(value)).replace(".", "p").replace("-", "m")
+
+
+def protection_threshold_pct(candidate: Candidate) -> float:
+    vals = [
+        float(candidate.protection_account_loss_stop_pct_of_margin),
+        float(candidate.protection_floating_pnl_stop_pct_of_margin),
+        float(candidate.protection_emergency_account_loss_pct_of_margin),
+    ]
+    positives = [v for v in vals if v > 0.0]
+    return min(positives) if positives else 0.0
+
+
+def protection_suffix(candidate: Candidate) -> str:
+    if protection_threshold_pct(candidate) <= 0.0:
+        return ""
+    return (
+        "__prot_a"
+        + pct_token(candidate.protection_account_loss_stop_pct_of_margin)
+        + "_f"
+        + pct_token(candidate.protection_floating_pnl_stop_pct_of_margin)
+        + "_e"
+        + pct_token(candidate.protection_emergency_account_loss_pct_of_margin)
+        + "_c"
+        + str(int(max(1, candidate.protection_confirm_bars)))
+    )
+
+
+def parse_protection_grid(raw: str) -> List[tuple[float, float, float, int]]:
+    specs: List[tuple[float, float, float, int]] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if item.lower() in {"none", "off", "0"}:
+            specs.append((0.0, 0.0, 0.0, 1))
+            continue
+        body, sep, confirm_raw = item.partition("@")
+        parts = [float(x.strip()) for x in body.split("/") if x.strip()]
+        if len(parts) != 3:
+            raise ValueError(f"protection grid item must be account/floating/emergency[@confirm], got {item!r}")
+        confirm = int(float(confirm_raw.strip())) if sep else 1
+        specs.append((parts[0], parts[1], parts[2], max(1, confirm)))
+    return specs or [(0.0, 0.0, 0.0, 1)]
+
+
+def expand_protection_grid(candidates: Sequence[Candidate], raw: str) -> List[Candidate]:
+    specs = parse_protection_grid(raw)
+    out: List[Candidate] = []
+    for candidate in candidates:
+        for account_pct, floating_pct, emergency_pct, confirm_bars in specs:
+            protected = replace(
+                candidate,
+                protection_account_loss_stop_pct_of_margin=account_pct,
+                protection_floating_pnl_stop_pct_of_margin=floating_pct,
+                protection_emergency_account_loss_pct_of_margin=emergency_pct,
+                protection_confirm_bars=confirm_bars,
+            )
+            out.append(replace(protected, name=candidate.name + protection_suffix(protected)))
+    return out
 
 
 def iso(d: datetime) -> str:
@@ -148,7 +215,8 @@ def min_order_ok(candidate: Candidate) -> tuple[bool, float]:
 
 
 def research_label(candidate: Candidate, *, position_sizing_mode: str, max_target_notional: float | None) -> str:
-    if candidate.name == CANONICAL_RESEARCH_CHAMPION and position_sizing_mode == "compound":
+    base_name = candidate.name.split("__prot_", 1)[0]
+    if base_name == CANONICAL_RESEARCH_CHAMPION and position_sizing_mode == "compound":
         return "grounded_compound_champion"
     if position_sizing_mode == "compound" and (max_target_notional is None or max_target_notional <= 500.0):
         return "grounded_compound_candidate"
@@ -163,6 +231,7 @@ def simulate_position(
     arrays: Dict[str, np.ndarray],
     *,
     fill_mode: str = "touch",
+    protection_reference_usd: float | None = None,
 ) -> Dict[str, Any] | None:
     t = arrays["t"]
     start = int(np.searchsorted(t, ms(pos.opened), side="left"))
@@ -184,9 +253,61 @@ def simulate_position(
     min_mtm_pct_on_notional = 0.0
     skip_boundary = fill_mode in {"touch_skip_boundary", "close_beyond_skip_boundary"}
     min_ok, min_leg = min_order_ok(candidate)
+    protection_ref = float(protection_reference_usd if protection_reference_usd is not None else candidate.target_notional)
+    protection_pct = protection_threshold_pct(candidate)
+    protection_loss_limit = -abs(protection_pct) * protection_ref / 100.0 if protection_pct > 0.0 else 0.0
+    protection_confirm_bars = int(max(1, candidate.protection_confirm_bars))
+    protection_consecutive = 0
+    protection_triggered = False
+    protection_trigger_reason = ""
+    protection_trigger_t = 0
+    protection_trigger_mtm = 0.0
+    protection_trigger_mtm_pct_margin = 0.0
+    protection_blocked_dca_fills = 0
+    protection_blocked_dca_notional = 0.0
+    blocked_probe_fill = 0
+    best_after_protection_mtm = 0.0
 
     for i in range(len(close)):
+        boundary = skip_boundary and (i == 0 or i == len(close) - 1)
+        if protection_pct > 0.0 and not protection_triggered and not boundary:
+            mark = float(low[i] if pos.side == "LONG" else high[i])
+            mtm_ret = ret_for(pos.side, avg_entry, mark) - 2 * candidate.fee - 2 * candidate.slippage
+            mtm = mtm_ret * notional
+            if mtm <= protection_loss_limit:
+                protection_consecutive += 1
+            else:
+                protection_consecutive = 0
+            if protection_consecutive >= protection_confirm_bars:
+                protection_triggered = True
+                protection_trigger_reason = "adverse_mtm_blocks_dca"
+                protection_trigger_t = int(ts[i])
+                protection_trigger_mtm = mtm
+                protection_trigger_mtm_pct_margin = 100.0 * mtm / max(protection_ref, 1e-12)
+                best_after_protection_mtm = mtm
+
         can_fill = not (skip_boundary and (i == 0 or i == len(close) - 1))
+        if protection_triggered and can_fill:
+            probe_this_candle = 0
+            blocked_probe_fill = max(blocked_probe_fill, fills)
+            while blocked_probe_fill < len(levels):
+                touched = level_crossed(
+                    pos.side,
+                    low=float(low[i]),
+                    high=float(high[i]),
+                    close=float(close[i]),
+                    level=float(levels[blocked_probe_fill]),
+                    fill_mode=fill_mode,
+                )
+                if not touched:
+                    break
+                if probe_this_candle >= 1 and skip_boundary:
+                    break
+                protection_blocked_dca_fills += 1
+                protection_blocked_dca_notional += float(adds[blocked_probe_fill])
+                blocked_probe_fill += 1
+                probe_this_candle += 1
+            can_fill = False
         fills_this_candle = 0
         while can_fill and fills < len(levels):
             touched = level_crossed(
@@ -216,6 +337,10 @@ def simulate_position(
         mtm = mtm_ret * notional
         min_mtm = min(min_mtm, mtm)
         min_mtm_pct_on_notional = min(min_mtm_pct_on_notional, 100.0 * mtm / max(notional, 1e-12))
+        if protection_triggered:
+            favorable_mark = float(high[i] if pos.side == "LONG" else low[i])
+            favorable_ret = ret_for(pos.side, avg_entry, favorable_mark) - 2 * candidate.fee - 2 * candidate.slippage
+            best_after_protection_mtm = max(best_after_protection_mtm, favorable_ret * notional)
 
     gross_ret = ret_for(pos.side, avg_entry, pos.exit)
     net_ret = gross_ret - 2 * candidate.fee - 2 * candidate.slippage
@@ -237,6 +362,20 @@ def simulate_position(
         "min_mtm_pct_on_notional": min_mtm_pct_on_notional,
         "min_order_usd": min_leg,
         "min_order_ok": min_ok,
+        "protection_reference_usd": protection_ref,
+        "protection_account_loss_stop_pct_of_margin": candidate.protection_account_loss_stop_pct_of_margin,
+        "protection_floating_pnl_stop_pct_of_margin": candidate.protection_floating_pnl_stop_pct_of_margin,
+        "protection_emergency_account_loss_pct_of_margin": candidate.protection_emergency_account_loss_pct_of_margin,
+        "protection_confirm_bars": protection_confirm_bars,
+        "protection_trigger_pct_of_margin": protection_pct,
+        "protection_triggered": protection_triggered,
+        "protection_trigger_reason": protection_trigger_reason,
+        "protection_trigger_t": protection_trigger_t,
+        "protection_trigger_mtm": protection_trigger_mtm,
+        "protection_trigger_mtm_pct_margin": protection_trigger_mtm_pct_margin,
+        "protection_blocked_dca_fills": protection_blocked_dca_fills,
+        "protection_blocked_dca_notional": protection_blocked_dca_notional,
+        "protection_post_trigger_recovery_usd": max(0.0, best_after_protection_mtm - protection_trigger_mtm) if protection_triggered else 0.0,
         "candles": len(close),
         "fill_mode": fill_mode,
         "fills_json": json.dumps(fill_rows, separators=(",", ":")),
@@ -300,6 +439,11 @@ def summarize(rows: Sequence[Dict[str, Any]], initial_equity: float) -> Dict[str
     gross_loss = sum(x for x in pnl_values if x < 0)
     min_mtm = min((float(r["min_mtm"]) for r in rows), default=0.0)
     min_mtm_pct_notional = min((float(r["min_mtm_pct_on_notional"]) for r in rows), default=0.0)
+    protection_triggered = [r for r in rows if str(r.get("protection_triggered", "False")) == "True"]
+    protection_triggered_winners = [r for r in protection_triggered if float(r.get("pnl", 0.0)) > 0.0]
+    protection_blocked_fills = sum(int(r.get("protection_blocked_dca_fills", 0)) for r in rows)
+    protection_blocked_notional = sum(float(r.get("protection_blocked_dca_notional", 0.0)) for r in rows)
+    protection_recoveries = [float(r.get("protection_post_trigger_recovery_usd", 0.0)) for r in protection_triggered]
     return {
         "trades": len(rows),
         "equity_start": initial_equity,
@@ -318,6 +462,15 @@ def summarize(rows: Sequence[Dict[str, Any]], initial_equity: float) -> Dict[str
         "max_notional": max((float(r["notional"]) for r in rows), default=0.0),
         "min_order_usd": min((float(r.get("min_order_usd", 0.0)) for r in rows), default=0.0),
         "min_order_ok": all(str(r.get("min_order_ok", "True")) == "True" for r in rows),
+        "protection_trigger_count": len(protection_triggered),
+        "protection_trigger_rate_pct": 100.0 * len(protection_triggered) / max(1, len(rows)),
+        "protection_triggered_winner_count": len(protection_triggered_winners),
+        "protection_triggered_winner_rate_pct": 100.0 * len(protection_triggered_winners) / max(1, len(protection_triggered)),
+        "protection_blocked_dca_fills": protection_blocked_fills,
+        "protection_blocked_dca_notional": protection_blocked_notional,
+        "protection_max_post_trigger_recovery_usd": max(protection_recoveries, default=0.0),
+        "protection_avg_post_trigger_recovery_usd": sum(protection_recoveries) / max(1, len(protection_recoveries)),
+        "protection_no_trigger_gate_ok": len(protection_triggered) == 0,
     }
 
 
@@ -439,7 +592,14 @@ def simulate_candidate_rows(
         if position_sizing_mode == "compound":
             effective_target = min(equity * leverage, equity * target_frac)
             effective = replace(candidate, target_notional=max(effective_target, 0.0))
-        row = simulate_position(pos, effective, arrays, fill_mode=fill_mode)
+        protection_reference_usd = effective.target_notional / leverage
+        row = simulate_position(
+            pos,
+            effective,
+            arrays,
+            fill_mode=fill_mode,
+            protection_reference_usd=protection_reference_usd,
+        )
         if row is None:
             continue
         row["initial_target_notional"] = initial_target
@@ -482,6 +642,14 @@ def main() -> None:
     ap.add_argument("--max-mtm-dd-pct", type=float, default=50.0)
     ap.add_argument("--min-trade-mtm-pct", type=float, default=-50.0)
     ap.add_argument(
+        "--protection-grid",
+        default="none,25/25/35@1,35/35/45@1,45/45/60@2",
+        help=(
+            "Comma grid of account/floating/emergency pct-of-margin-allocation thresholds, "
+            "optionally @confirm_bars. Example: none,35/35/45@1."
+        ),
+    )
+    ap.add_argument(
         "--fill-mode",
         default=STRICT_FILL_MODE,
         choices=("touch", "touch_skip_boundary", "close_beyond", "close_beyond_skip_boundary"),
@@ -516,6 +684,7 @@ def main() -> None:
         missing = wanted.difference(c.name for c in candidates)
         if missing:
             raise SystemExit(f"candidate_filter not found: {sorted(missing)}")
+    candidates = expand_protection_grid(candidates, args.protection_grid)
 
     for candidate in candidates:
         rows = simulate_candidate_rows(
@@ -553,6 +722,12 @@ def main() -> None:
                 "position_sizing_mode": args.position_sizing_mode,
                 "entry_source": args.entry_source,
                 "slippage_bp_per_side": (candidate.slippage * 10000.0),
+                "protection_account_loss_stop_pct_of_margin": candidate.protection_account_loss_stop_pct_of_margin,
+                "protection_floating_pnl_stop_pct_of_margin": candidate.protection_floating_pnl_stop_pct_of_margin,
+                "protection_emergency_account_loss_pct_of_margin": candidate.protection_emergency_account_loss_pct_of_margin,
+                "protection_confirm_bars": candidate.protection_confirm_bars,
+                "protection_trigger_pct_of_margin": protection_threshold_pct(candidate),
+                "protection_scale_reference": "margin_allocation_usd",
                 "min_order_gate_usd": MIN_ORDER_USD,
                 "mtm_gate_ok": float(s["max_mtm_dd_pct"]) >= -abs(args.max_mtm_dd_pct),
                 "strict_trade_mtm_gate_ok": float(s["min_trade_mtm_pct_equity"]) >= float(args.min_trade_mtm_pct),
@@ -579,6 +754,12 @@ def main() -> None:
                 "position_sizing_mode": args.position_sizing_mode,
                 "entry_source": args.entry_source,
                 "slippage_bp_per_side": (candidate.slippage * 10000.0),
+                "protection_account_loss_stop_pct_of_margin": candidate.protection_account_loss_stop_pct_of_margin,
+                "protection_floating_pnl_stop_pct_of_margin": candidate.protection_floating_pnl_stop_pct_of_margin,
+                "protection_emergency_account_loss_pct_of_margin": candidate.protection_emergency_account_loss_pct_of_margin,
+                "protection_confirm_bars": candidate.protection_confirm_bars,
+                "protection_trigger_pct_of_margin": protection_threshold_pct(candidate),
+                "protection_scale_reference": "margin_allocation_usd",
                 "min_order_gate_usd": MIN_ORDER_USD,
                 "mtm_gate_ok": float(strict_s["max_mtm_dd_pct"]) >= -abs(args.max_mtm_dd_pct),
                 "strict_trade_mtm_gate_ok": float(strict_s["min_trade_mtm_pct_equity"]) >= float(args.min_trade_mtm_pct),
@@ -610,9 +791,19 @@ def main() -> None:
     ranked = sorted(eligible, key=lambda s: (float(s["net_pct"]), float(s["max_mtm_dd_pct"])), reverse=True)
     ranked_strict = sorted(strict_eligible, key=lambda s: (float(s["net_pct"]), float(s["max_mtm_dd_pct"])), reverse=True)
     all_ranked = sorted(summaries, key=lambda s: (float(s["net_pct"]), float(s["max_mtm_dd_pct"])), reverse=True)
+    no_trigger_ranked = sorted(
+        [
+            s
+            for s in strict_eligible
+            if s["protection_no_trigger_gate_ok"] and float(s["protection_trigger_pct_of_margin"]) > 0.0
+        ],
+        key=lambda s: (float(s["net_pct"]), float(s["max_mtm_dd_pct"])),
+        reverse=True,
+    )
     write_csv(out_dir / "candidate_summary_all.csv", all_ranked)
     write_csv(out_dir / "candidate_summary_eligible.csv", ranked)
     write_csv(out_dir / "candidate_summary_strict_trade_mtm.csv", ranked_strict)
+    write_csv(out_dir / "candidate_summary_protection_no_trigger.csv", no_trigger_ranked)
     for row in ranked[: args.topn]:
         name = str(row["candidate"])
         write_csv(out_dir / "top_variants" / name / "trades.csv", row_cache[name])
@@ -628,10 +819,7 @@ def main() -> None:
     stress_rows: List[Dict[str, Any]] = []
     candidates_by_name = {
         c.name: c
-        for c in apply_candidate_slippage(
-            candidate_grid(args.target_scale, args.random_candidates, args.seed, args.max_target_notional),
-            args.slippage_bp,
-        )
+        for c in candidates
     }
     for row in ranked_strict[: min(args.topn, 10)]:
         base_candidate = candidates_by_name[str(row["candidate"])]
@@ -654,6 +842,12 @@ def main() -> None:
                     "slippage_mult": mult,
                     "slippage_per_side": stressed.slippage,
                     "target_notional": stressed.target_notional,
+                    "protection_account_loss_stop_pct_of_margin": stressed.protection_account_loss_stop_pct_of_margin,
+                    "protection_floating_pnl_stop_pct_of_margin": stressed.protection_floating_pnl_stop_pct_of_margin,
+                    "protection_emergency_account_loss_pct_of_margin": stressed.protection_emergency_account_loss_pct_of_margin,
+                    "protection_confirm_bars": stressed.protection_confirm_bars,
+                    "protection_trigger_pct_of_margin": protection_threshold_pct(stressed),
+                    "protection_scale_reference": "margin_allocation_usd",
                     "fill_mode": args.strict_fill_mode,
                     "position_sizing_mode": args.position_sizing_mode,
                     "entry_source": args.entry_source,
@@ -680,42 +874,64 @@ def main() -> None:
         "Target notional is planned max position notional, not account equity.",
         f"Baseline fill mode: `{args.fill_mode}`. Strict output fill mode: `{args.strict_fill_mode}`.",
         f"Minimum order gate: every base/add leg must be >= ${MIN_ORDER_USD:.2f}.",
+        f"Protection grid: `{args.protection_grid}` as account/floating/emergency pct of margin allocation; trigger blocks future DCA fills, it does not force-close.",
         f"Random candidates: {args.random_candidates}. Seed: {args.seed}.",
         f"Canonical research champion: `{CANONICAL_RESEARCH_CHAMPION}` as `grounded_compound_champion`.",
         "Reporting labels: `grounded_compound_champion`, `static_500_cap`, and rejected `high_notional_illusion`.",
         "",
-        "| rank | label | candidate | target notional | net % | max MTM DD % | max realized DD % | min trade MTM % eq | margin calls | PF | avg/max notional | notional>equity | avg fills | double? |",
-        "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| rank | label | candidate | protection a/f/e | confirm | target notional | net % | max MTM DD % | min trade MTM % eq | prot hits | blocked DCA | margin calls | PF | avg/max notional | double? |",
+        "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for i, row in enumerate(ranked[: args.topn], 1):
         md.append(
-            f"| {i} | {row['research_label']} | {row['candidate']} | {row['target_notional']:.1f} | {row['net_pct']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
-            f"{row['max_realized_dd_pct']:.2f} | {row['min_trade_mtm_pct_equity']:.2f} | {row['margin_call_count']} | {row['pf']:.2f} | "
-            f"{row['avg_notional']:.1f}/{row['max_notional']:.1f} | {row['notional_gt_equity_before_count']} | "
-            f"{row['avg_dca_fills']:.2f} | {row['target_double_hit']} |"
+            f"| {i} | {row['research_label']} | {row['candidate']} | "
+            f"{row['protection_account_loss_stop_pct_of_margin']:.1f}/{row['protection_floating_pnl_stop_pct_of_margin']:.1f}/{row['protection_emergency_account_loss_pct_of_margin']:.1f} | "
+            f"{row['protection_confirm_bars']} | {row['target_notional']:.1f} | {row['net_pct']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
+            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['protection_trigger_count']} | {row['protection_blocked_dca_fills']} | "
+            f"{row['margin_call_count']} | {row['pf']:.2f} | {row['avg_notional']:.1f}/{row['max_notional']:.1f} | {row['target_double_hit']} |"
         )
     md.extend(
         [
             "",
             "## Strict Trade MTM Top",
             "",
-            "| rank | label | candidate | target notional | net % | max MTM DD % | min trade MTM % eq | margin calls | PF | avg/max notional | notional>equity | avg fills |",
-            "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| rank | label | candidate | protection a/f/e | confirm | target notional | net % | max MTM DD % | min trade MTM % eq | prot hits | winners hit | blocked DCA | max recovery after hit | margin calls | PF |",
+            "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for i, row in enumerate(ranked_strict[: args.topn], 1):
         md.append(
-            f"| {i} | {row['research_label']} | {row['candidate']} | {row['target_notional']:.1f} | {row['net_pct']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
-            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['margin_call_count']} | {row['pf']:.2f} | "
-            f"{row['avg_notional']:.1f}/{row['max_notional']:.1f} | {row['notional_gt_equity_before_count']} | "
-            f"{row['avg_dca_fills']:.2f} |"
+            f"| {i} | {row['research_label']} | {row['candidate']} | "
+            f"{row['protection_account_loss_stop_pct_of_margin']:.1f}/{row['protection_floating_pnl_stop_pct_of_margin']:.1f}/{row['protection_emergency_account_loss_pct_of_margin']:.1f} | "
+            f"{row['protection_confirm_bars']} | {row['target_notional']:.1f} | {row['net_pct']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
+            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['protection_trigger_count']} | {row['protection_triggered_winner_count']} | "
+            f"{row['protection_blocked_dca_fills']} | {row['protection_max_post_trigger_recovery_usd']:.2f} | {row['margin_call_count']} | {row['pf']:.2f} |"
+        )
+    md.extend(
+        [
+            "",
+            "## Protection No-Trigger Top",
+            "",
+            "| rank | label | candidate | protection a/f/e | confirm | net % | max MTM DD % | min trade MTM % eq | PF |",
+            "|---:|---|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for i, row in enumerate(no_trigger_ranked[: args.topn], 1):
+        md.append(
+            f"| {i} | {row['research_label']} | {row['candidate']} | "
+            f"{row['protection_account_loss_stop_pct_of_margin']:.1f}/{row['protection_floating_pnl_stop_pct_of_margin']:.1f}/{row['protection_emergency_account_loss_pct_of_margin']:.1f} | "
+            f"{row['protection_confirm_bars']} | {row['net_pct']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
+            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['pf']:.2f} |"
         )
     md.extend(
         [
             "",
             "Notes:",
             "- MTM uses worst intratrade candle adverse mark after DCA fills, with entry and exit fee/slippage costs, as percent of initial equity.",
+            "- Protection uses adverse MTM before a DCA fill to model live stop-new-orders behavior; a trigger blocks later DCA fills and leaves the position open until the replay close.",
+            "- Optimize protection per symbol and meta-strategy; shared HYPE/AMD thresholds are only a fallback when symbol-specific MAE/MFE evidence is missing.",
             "- `candidate_summary_strict_trade_mtm.csv` is generated from the strict fill mode and must pass both portfolio MTM DD and min trade MTM gates.",
+            "- `candidate_summary_protection_no_trigger.csv` lists variants where the protection grid did not trip in closed-position replay.",
             "- `stress_slippage.csv` reruns strict top candidates at 1x/2x/3x slippage.",
             "- Grounded compound candidates cannot pass strict ranking if final trade notional exceeds equity before the trade, beyond floating tolerance.",
             "- High-notional fixed-cap results are labeled as `high_notional_illusion` and are not promotion-grade.",

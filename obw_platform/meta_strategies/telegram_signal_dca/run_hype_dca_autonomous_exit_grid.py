@@ -41,12 +41,14 @@ from run_hype_dca_parameter_search import (  # noqa: E402
     apply_candidate_slippage,
     candidate_grid,
     dca_levels,
+    expand_protection_grid,
     grounding_stats,
     iso,
     leverage_stats,
     level_crossed,
     load_npz_arrays,
     ms,
+    protection_threshold_pct,
     summarize,
     write_csv,
 )
@@ -128,6 +130,7 @@ def simulate_autonomous_position(
     sl_pct: float,
     ttl_hours: float,
     conservative_same_bar: bool = True,
+    protection_reference_usd: float | None = None,
 ) -> Dict[str, Any] | None:
     t = arrays["t"]
     entry_i = entry_index_for_source(t, pos.opened, entry_source)
@@ -153,6 +156,20 @@ def simulate_autonomous_position(
     min_mtm_pct_on_notional = 0.0
     min_ok, min_leg = (min([base_notional, *adds]) >= MIN_ORDER_USD, min([base_notional, *adds]) if adds else base_notional)
     skip_boundary = fill_mode in {"touch_skip_boundary", "close_beyond_skip_boundary"}
+    protection_ref = float(protection_reference_usd if protection_reference_usd is not None else candidate.target_notional)
+    protection_pct = protection_threshold_pct(candidate)
+    protection_loss_limit = -abs(protection_pct) * protection_ref / 100.0 if protection_pct > 0.0 else 0.0
+    protection_confirm_bars = int(max(1, candidate.protection_confirm_bars))
+    protection_consecutive = 0
+    protection_triggered = False
+    protection_trigger_reason = ""
+    protection_trigger_t = 0
+    protection_trigger_mtm = 0.0
+    protection_trigger_mtm_pct_margin = 0.0
+    protection_blocked_dca_fills = 0
+    protection_blocked_dca_notional = 0.0
+    blocked_probe_fill = 0
+    best_after_protection_mtm = 0.0
 
     exit_reason = "ttl"
     exit_px = float(close[-1])
@@ -160,9 +177,47 @@ def simulate_autonomous_position(
     exit_i_rel = len(close) - 1
 
     for i in range(len(close)):
+        boundary = skip_boundary and i == 0
+        if protection_pct > 0.0 and not protection_triggered and not boundary:
+            mark = float(low[i] if pos.side == "LONG" else high[i])
+            mtm_ret = ret_for(pos.side, avg_entry, mark) - 2 * candidate.fee - 2 * candidate.slippage
+            mtm = mtm_ret * notional
+            if mtm <= protection_loss_limit:
+                protection_consecutive += 1
+            else:
+                protection_consecutive = 0
+            if protection_consecutive >= protection_confirm_bars:
+                protection_triggered = True
+                protection_trigger_reason = "adverse_mtm_blocks_dca"
+                protection_trigger_t = int(ts[i])
+                protection_trigger_mtm = mtm
+                protection_trigger_mtm_pct_margin = 100.0 * mtm / max(protection_ref, 1e-12)
+                best_after_protection_mtm = mtm
+
         # No same-candle fill on the entry candle for public OHLC anchors. That
         # avoids pretending we knew the full opening candle after entering.
         can_fill = not (skip_boundary and i == 0)
+        if protection_triggered and can_fill:
+            probe_this_candle = 0
+            blocked_probe_fill = max(blocked_probe_fill, fills)
+            while blocked_probe_fill < len(levels):
+                touched = level_crossed(
+                    pos.side,
+                    low=float(low[i]),
+                    high=float(high[i]),
+                    close=float(close[i]),
+                    level=float(levels[blocked_probe_fill]),
+                    fill_mode=fill_mode,
+                )
+                if not touched:
+                    break
+                if probe_this_candle >= 1 and skip_boundary:
+                    break
+                protection_blocked_dca_fills += 1
+                protection_blocked_dca_notional += float(adds[blocked_probe_fill])
+                blocked_probe_fill += 1
+                probe_this_candle += 1
+            can_fill = False
         fills_this_candle = 0
         while can_fill and fills < len(levels):
             touched = level_crossed(
@@ -192,6 +247,10 @@ def simulate_autonomous_position(
         mtm = mtm_ret * notional
         min_mtm = min(min_mtm, mtm)
         min_mtm_pct_on_notional = min(min_mtm_pct_on_notional, 100.0 * mtm / max(notional, 1e-12))
+        if protection_triggered:
+            favorable_mark = float(high[i] if pos.side == "LONG" else low[i])
+            favorable_ret = ret_for(pos.side, avg_entry, favorable_mark) - 2 * candidate.fee - 2 * candidate.slippage
+            best_after_protection_mtm = max(best_after_protection_mtm, favorable_ret * notional)
 
         # Exit checks also skip the entry candle under strict boundary mode.
         if skip_boundary and i == 0:
@@ -239,6 +298,20 @@ def simulate_autonomous_position(
         "min_mtm_pct_on_notional": min_mtm_pct_on_notional,
         "min_order_usd": min_leg,
         "min_order_ok": min_ok,
+        "protection_reference_usd": protection_ref,
+        "protection_account_loss_stop_pct_of_margin": candidate.protection_account_loss_stop_pct_of_margin,
+        "protection_floating_pnl_stop_pct_of_margin": candidate.protection_floating_pnl_stop_pct_of_margin,
+        "protection_emergency_account_loss_pct_of_margin": candidate.protection_emergency_account_loss_pct_of_margin,
+        "protection_confirm_bars": protection_confirm_bars,
+        "protection_trigger_pct_of_margin": protection_pct,
+        "protection_triggered": protection_triggered,
+        "protection_trigger_reason": protection_trigger_reason,
+        "protection_trigger_t": protection_trigger_t,
+        "protection_trigger_mtm": protection_trigger_mtm,
+        "protection_trigger_mtm_pct_margin": protection_trigger_mtm_pct_margin,
+        "protection_blocked_dca_fills": protection_blocked_dca_fills,
+        "protection_blocked_dca_notional": protection_blocked_dca_notional,
+        "protection_post_trigger_recovery_usd": max(0.0, best_after_protection_mtm - protection_trigger_mtm) if protection_triggered else 0.0,
         "candles": int(exit_i_rel + 1),
         "ttl_hours": ttl_hours,
         "tp_pct": 100.0 * tp_pct,
@@ -281,6 +354,7 @@ def simulate_autonomous_rows(
             tp_pct=tp_pct,
             sl_pct=sl_pct,
             ttl_hours=ttl_hours,
+            protection_reference_usd=effective.target_notional / leverage,
         )
         if row is None:
             continue
@@ -338,6 +412,11 @@ def main() -> None:
     ap.add_argument("--tp-pcts", default="0.5,0.75,1.0,1.25,1.5,2.0")
     ap.add_argument("--sl-pcts", default="1.0,1.5,2.0,3.0,5.0")
     ap.add_argument("--ttl-hours", default="4,8,12,24,48,72")
+    ap.add_argument(
+        "--protection-grid",
+        default="none,25/25/35@1,35/35/45@1,45/45/60@2",
+        help="Comma grid of account/floating/emergency pct-of-margin-allocation thresholds, optionally @confirm_bars.",
+    )
     ap.add_argument("--min-order-usd", type=float, default=MIN_ORDER_USD)
     ap.add_argument("--min-trade-mtm-pct", type=float, default=-50.0)
     ap.add_argument("--max-mtm-dd-pct", type=float, default=50.0)
@@ -364,6 +443,7 @@ def main() -> None:
         missing = wanted.difference(c.name for c in candidates)
         if missing:
             raise SystemExit(f"candidate_filter not found: {sorted(missing)}")
+    candidates = expand_protection_grid(candidates, args.protection_grid)
     if not candidates:
         raise SystemExit("no candidates selected")
 
@@ -402,6 +482,12 @@ def main() -> None:
                             "sl_pct": 100.0 * sl,
                             "ttl_hours": ttl,
                             "slippage_bp_per_side": candidate.slippage * 10000.0,
+                            "protection_account_loss_stop_pct_of_margin": candidate.protection_account_loss_stop_pct_of_margin,
+                            "protection_floating_pnl_stop_pct_of_margin": candidate.protection_floating_pnl_stop_pct_of_margin,
+                            "protection_emergency_account_loss_pct_of_margin": candidate.protection_emergency_account_loss_pct_of_margin,
+                            "protection_confirm_bars": candidate.protection_confirm_bars,
+                            "protection_trigger_pct_of_margin": protection_threshold_pct(candidate),
+                            "protection_scale_reference": "margin_allocation_usd",
                             "fill_mode": args.fill_mode,
                             "position_sizing_mode": args.position_sizing_mode,
                             "min_order_gate_usd": MIN_ORDER_USD,
@@ -440,16 +526,19 @@ def main() -> None:
         f"Slippage: `{args.slippage_bp:g} bp` per side. Min order gate: `${MIN_ORDER_USD:.2f}`.",
         f"Position sizing: `{args.position_sizing_mode}`, leverage diagnostic: `{args.leverage:g}x`.",
         f"Candidates: {len(candidates)}. TP grid: `{args.tp_pcts}`. SL grid: `{args.sl_pcts}`. TTL grid: `{args.ttl_hours}`.",
+        f"Protection grid: `{args.protection_grid}` as account/floating/emergency pct of margin allocation; trigger blocks future DCA fills and does not force-close.",
         "",
-        "| rank | candidate | tp | sl | ttl h | net % | final | max MTM DD % | min trade MTM % eq | PF | margin calls | over equity | exits |",
-        "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| rank | candidate | protection a/f/e | confirm | tp | sl | ttl h | net % | final | max MTM DD % | min trade MTM % eq | prot hits | blocked DCA | PF | exits |",
+        "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for i, row in enumerate(ranked[: args.topn], 1):
         md.append(
-            f"| {i} | {row['candidate']} | {row['tp_pct']:.2f} | {row['sl_pct']:.2f} | {row['ttl_hours']} | "
+            f"| {i} | {row['candidate']} | "
+            f"{row['protection_account_loss_stop_pct_of_margin']:.1f}/{row['protection_floating_pnl_stop_pct_of_margin']:.1f}/{row['protection_emergency_account_loss_pct_of_margin']:.1f} | "
+            f"{row['protection_confirm_bars']} | {row['tp_pct']:.2f} | {row['sl_pct']:.2f} | {row['ttl_hours']} | "
             f"{row['net_pct']:.2f} | {row['equity_end']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
-            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['pf']:.2f} | {row['margin_call_count']} | "
-            f"{row['notional_gt_equity_before_count']} | `{row['exit_reason_counts']}` |"
+            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['protection_trigger_count']} | "
+            f"{row['protection_blocked_dca_fills']} | {row['pf']:.2f} | `{row['exit_reason_counts']}` |"
         )
     md.extend([
         "",

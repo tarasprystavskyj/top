@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -106,6 +106,35 @@ def main() -> None:
         raise AssertionError("touch mode did not fill on the open boundary fixture")
     if int(strict_fills[0]["t"]) != ts_minute(1):
         raise AssertionError("strict mode did not skip the open boundary fixture")
+
+    protected_candidate = replace(
+        candidate,
+        name="synthetic-protected",
+        protection_account_loss_stop_pct_of_margin=1.0,
+        protection_floating_pnl_stop_pct_of_margin=1.0,
+        protection_emergency_account_loss_pct_of_margin=2.0,
+        protection_confirm_bars=1,
+    )
+    protected = simulate_position(
+        pos,
+        protected_candidate,
+        arrays(),
+        fill_mode="close_beyond_skip_boundary",
+        protection_reference_usd=100.0,
+    )
+    if protected is None:
+        raise AssertionError("protected simulation returned None")
+    if int(protected["dca_fills"]) != 1:
+        raise AssertionError(f"protected dca_fills: got {protected['dca_fills']}, expected 1")
+    if str(protected["protection_triggered"]) != "True":
+        raise AssertionError("protection did not trigger before the second DCA fill")
+    if int(protected["protection_blocked_dca_fills"]) != 1:
+        raise AssertionError(
+            f"blocked dca fills: got {protected['protection_blocked_dca_fills']}, expected 1"
+        )
+    protected_fills = json.loads(str(protected["fills_json"]))
+    if len(protected_fills) != 1 or int(protected_fills[0]["t"]) != ts_minute(1):
+        raise AssertionError("protection should leave the first strict DCA fill intact and block the second")
 
     print("OK synthetic HYPE DCA formulas/fills/MTM match hand-computed expectations")
 
