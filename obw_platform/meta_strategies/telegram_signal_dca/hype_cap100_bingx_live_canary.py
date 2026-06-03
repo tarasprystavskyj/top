@@ -1602,7 +1602,7 @@ def live_order_params(client_order_id: str, side: str, reduce_only: bool, positi
             params["reduceOnly"] = True
         return params
     if ex == "htx":
-        params = {"channel_code": ""}
+        params = {"channel_code": "", "order_price_type": "optimal_20"}
         if reduce_only:
             params["reduceOnly"] = True
         return params
