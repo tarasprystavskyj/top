@@ -1664,6 +1664,7 @@ def htx_submit_market_order(client: CCXTFetcher, ccxt_symbol: str, order_side: s
         "contract_code": market["id"],
         "volume": client.ex.amount_to_precision(ccxt_symbol, order_amount),
         "direction": order_side,
+        "offset": "close" if reduce_only else "open",
         "lever_rate": 1,
         "order_price_type": "optimal_20",
     }
