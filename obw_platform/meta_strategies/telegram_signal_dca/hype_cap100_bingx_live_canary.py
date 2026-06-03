@@ -677,13 +677,20 @@ def _read_session_orders_for_artifacts(session_db: str, run_id: str = "", *, all
         return []
 
 
+def safe_artifact_name(value: Any) -> str:
+    text = str(value or DEFAULT_LIVE_SYMBOL).strip() or DEFAULT_LIVE_SYMBOL
+    for ch in "\\/:*?\"<>|":
+        text = text.replace(ch, "_")
+    return text.replace("-", "_")
+
+
 def export_match_ready_trade_history(args: argparse.Namespace) -> Optional[str]:
     rows = _read_session_orders_for_artifacts(str(args.session_db or ""), str(args.run_id or ""))
     if not rows:
         return None
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    symbol_safe = str(args.live_symbol or DEFAULT_LIVE_SYMBOL).replace("-", "_")
+    symbol_safe = safe_artifact_name(args.live_symbol or DEFAULT_LIVE_SYMBOL)
     out_path = out_dir / f"{symbol_safe}_trade_history_for_match.csv"
     with out_path.open("w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(
@@ -2003,6 +2010,42 @@ def sync_trade_from_exchange(args: argparse.Namespace, trade: Dict[str, Any]) ->
     return {"synced": False, "reason": "exchange_position_zero", "ccxt_symbol": ccxt_symbol}
 
 
+def seed_open_trades_from_exchange(
+    state: Dict[str, Any],
+    positions: List[Dict[str, Any]],
+    mark: Optional[float],
+    now: datetime,
+    args: argparse.Namespace,
+) -> List[Dict[str, Any]]:
+    open_trades: Dict[str, Dict[str, Any]] = state.setdefault("open_trades", {})
+    current, signal_events = copy_signal_meta.filter_source_positions(positions, symbol=args.symbol, long_only=bool(args.long_only))
+    events: List[Dict[str, Any]] = list(signal_events)
+    if not current:
+        return events
+    client = live_client(args)
+    for key, pos in sorted(current.items()):
+        if key in open_trades:
+            continue
+        side = str(pos.get("side") or "").upper()
+        ccxt_symbol = client.resolve_symbol(str(pos.get("symbol") or "")) or client.resolve_symbol(args.live_symbol) or args.live_symbol
+        ex_pos = live_fetch_exchange_position(args, client, ccxt_symbol, side)
+        qty = float((ex_pos or {}).get("qty") or 0.0)
+        entry = float((ex_pos or {}).get("entry") or 0.0)
+        if qty <= 0 or entry <= 0:
+            continue
+        plan = copy_signal_meta.dca.build_plan(float(state.get("equity") or args.initial_equity), args, float(pos["entry_price"]))
+        trade = copy_signal_meta.dca.build_trade_from_source(pos, plan, now=now, mark=mark, iso_fn=paper.iso)
+        trade["qty"] = qty
+        trade["notional"] = qty * entry
+        trade["avg_entry"] = entry
+        trade["exchange_position"] = ex_pos
+        trade["seeded_from_exchange"] = True
+        open_trades[key] = trade
+        upsert_session_position(args, trade, status="OPEN", now=now, exchange_order_id=str(trade.get("exchange_order_id") or ""))
+        events.append({"type": "exchange_position_seeded", "key": key, "qty": qty, "entry": entry, "notional": trade["notional"], "ccxt_symbol": ccxt_symbol})
+    return events
+
+
 def live_add_fill(
     state: Dict[str, Any],
     trade: Dict[str, Any],
@@ -2333,8 +2376,10 @@ def apply_live_snapshot(
     args: argparse.Namespace,
     allow_dca: bool,
 ) -> List[Dict[str, Any]]:
+    seed_events = seed_open_trades_from_exchange(state, positions, mark, now, args)
     plan = copy_signal_meta.build_strategy_intents(state, positions, history, mark, now, args, allow_dca=allow_dca, iso_fn=paper.iso)
-    events: List[Dict[str, Any]] = list(plan.get("events") or [])
+    events: List[Dict[str, Any]] = list(seed_events)
+    events.extend(plan.get("events") or [])
     current_keys = set(plan.get("current_keys") or set())
     open_trades: Dict[str, Dict[str, Any]] = state.setdefault("open_trades", {})
     dca_blocked_keys = set()
