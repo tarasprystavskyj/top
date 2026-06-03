@@ -534,12 +534,22 @@ def v21_row(now: datetime, price: float) -> Dict[str, Any]:
 def _snapshot_to_json(snapshot: Any) -> Optional[Dict[str, Any]]:
     if snapshot is None:
         return None
+    if isinstance(snapshot, dict):
+        items = snapshot.items()
+    elif hasattr(snapshot, "__dict__"):
+        items = vars(snapshot).items()
+    else:
+        return {"value": snapshot}
     out: Dict[str, Any] = {}
-    for key, value in vars(snapshot).items():
+    for key, value in items:
         if isinstance(value, deque):
             out[key] = list(value)
         elif key == "lots" and value is not None:
             out[key] = [[float(q), float(px)] for q, px in value]
+        elif isinstance(value, dict):
+            out[key] = {str(k): v for k, v in value.items()}
+        elif isinstance(value, tuple):
+            out[key] = list(value)
         else:
             out[key] = value
     return out

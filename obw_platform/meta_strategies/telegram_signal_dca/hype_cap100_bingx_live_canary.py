@@ -1590,7 +1590,7 @@ def live_balance_params(exchange: str) -> Dict[str, Any]:
     if str(exchange or "").lower() == "gateio":
         return {"type": "swap", "settle": "USDT"}
     if str(exchange or "").lower() == "htx":
-        return {"type": "swap"}
+        return {"type": "swap", "defaultSubType": "linear", "unified": True}
     return {}
 
 
