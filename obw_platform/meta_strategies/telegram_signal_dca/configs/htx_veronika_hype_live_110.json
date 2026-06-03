@@ -40,5 +40,15 @@
   },
   "live_orders_enabled": true,
   "live_ack_env": "VERONIKA_HYPE_HTX_LIVE_ACK",
-  "live_ack_value": "I_ACCEPT_REAL_HTX_ORDERS"
+  "live_ack_value": "I_ACCEPT_REAL_HTX_ORDERS",
+  "symbol_market_constraints": {
+    "HYPEUSDT": {
+      "live_symbol": "HYPE/USDT:USDT",
+      "htx_contract_code": "HYPE-USDT",
+      "available": true,
+      "contract_size_coin": 0.1,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.1
+    }
+  }
 }

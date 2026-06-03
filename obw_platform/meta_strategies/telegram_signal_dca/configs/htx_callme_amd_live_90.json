@@ -1,0 +1,55 @@
+{
+  "schema": "telegram_signal_dca_live_config_v1",
+  "name": "htx_callme_amd_live_90",
+  "exchange": "htx",
+  "exchange_profile": "htx_current",
+  "live_symbol": "AMD/USDT:USDT",
+  "position_mode": "oneway",
+  "env": {
+    "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+    "api_key_env": "HTX_MAKSYM_KEY",
+    "api_secret_env": "HTX_MAKSYM_SECRET"
+  },
+  "signal": {
+    "lead_trader_name": "Callme",
+    "portfolio_id": "4512404768792222208",
+    "copy_symbol": "AMDUSDT",
+    "mode": "follow_open",
+    "entry_filter_override": "owner_requested_force_current_open_position"
+  },
+  "allocation": {
+    "split_pct": 45.0,
+    "initial_equity_usdt": 90.0,
+    "max_notional_usdt": 90.0,
+    "max_one_side_notional_usdt": 90.0,
+    "initial_target_notional_usdt": 90.0
+  },
+  "sizing": {
+    "base_order_policy": "candidate_189_fresh_base_pct_28_scaled_from_90_usdt",
+    "initial_base_order_usdt": 25.2,
+    "dca_scaling": "Scale DCA plan from delegated 90 USDT through the same guarded canary path.",
+    "dca_eval_interval_sec": 60.0
+  },
+  "safety": {
+    "max_daily_loss_usdt": 4.5,
+    "max_orders_per_hour": 10,
+    "order_error_backoff_sec": 300,
+    "order_error_circuit_sec": 1800,
+    "order_error_max_consecutive": 2,
+    "entry_failure_cooldown_sec": 3600,
+    "poll_sec": 60
+  },
+  "live_orders_enabled": true,
+  "live_ack_env": "CALLME_AMD_HTX_LIVE_ACK",
+  "live_ack_value": "I_ACCEPT_REAL_HTX_ORDERS",
+  "symbol_market_constraints": {
+    "AMDUSDT": {
+      "live_symbol": "AMD/USDT:USDT",
+      "htx_contract_code": "AMD-USDT",
+      "available": true,
+      "contract_size_coin": 0.01,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.01
+    }
+  }
+}

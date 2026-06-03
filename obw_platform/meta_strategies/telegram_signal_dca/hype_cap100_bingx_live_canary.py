@@ -1269,6 +1269,47 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
     return {"config": cfg.get("_config_path") or str(getattr(args, "live_config", "")), "defaults_applied": applied}
 
 
+def _compact_symbol_key(value: Any) -> str:
+    text = str(value or "").upper().strip()
+    if not text:
+        return ""
+    return text.replace("/", "").replace("-", "").replace(":", "")
+
+
+def configured_symbol_market_constraint(args: argparse.Namespace, symbol: str, ccxt_symbol: str) -> Dict[str, Any]:
+    cfg = getattr(args, "_live_config", {}) or {}
+    constraints = cfg.get("symbol_market_constraints") or cfg.get("market_constraints") or {}
+    if not isinstance(constraints, dict):
+        return {}
+    candidates = [
+        symbol,
+        ccxt_symbol,
+        getattr(args, "symbol", ""),
+        getattr(args, "live_symbol", ""),
+        str(symbol or "").replace("USDT", "/USDT:USDT"),
+    ]
+    for candidate in candidates:
+        if candidate in constraints and isinstance(constraints[candidate], dict):
+            return constraints[candidate]
+    compact_candidates = {_compact_symbol_key(candidate) for candidate in candidates}
+    for key, value in constraints.items():
+        if _compact_symbol_key(key) in compact_candidates and isinstance(value, dict):
+            return value
+    return {}
+
+
+def configured_min_base_qty(args: argparse.Namespace, symbol: str, ccxt_symbol: str) -> Tuple[float, str]:
+    constraint = configured_symbol_market_constraint(args, symbol, ccxt_symbol)
+    for key in ("min_coin_qty", "min_base_qty", "min_order_qty_coin"):
+        try:
+            value = float(constraint.get(key) or 0.0)
+        except Exception:
+            value = 0.0
+        if value > 0:
+            return value, key
+    return 0.0, ""
+
+
 def map_live_credential_aliases(args: argparse.Namespace) -> Dict[str, Any]:
     exchange = str(args.live_exchange or "").upper()
     key_env = str(getattr(args, "live_api_key_env", "") or "").strip()
@@ -1696,7 +1737,9 @@ def live_open_order_preflight(args: argparse.Namespace, symbol: str, expected_pr
         return {"ok": True, "available": False, "requested_notional": requested_notional, "normalized_notional": requested_notional}
     ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
     requested_base_qty = requested_notional / max(expected_price, 1e-12)
-    order_amount, normalized_base_qty, contract_size = live_order_amount_from_base_qty(args, client, ccxt_symbol, requested_base_qty, is_close=False)
+    min_base_qty, min_base_source = configured_min_base_qty(args, symbol, ccxt_symbol)
+    effective_base_qty = max(requested_base_qty, min_base_qty)
+    order_amount, normalized_base_qty, contract_size = live_order_amount_from_base_qty(args, client, ccxt_symbol, effective_base_qty, is_close=False)
     normalized_notional = normalized_base_qty * expected_price
     resize_bp = (normalized_notional - requested_notional) / max(requested_notional, 1e-12) * 10000.0
     out = {
@@ -1705,6 +1748,9 @@ def live_open_order_preflight(args: argparse.Namespace, symbol: str, expected_pr
         "ccxt_symbol": ccxt_symbol,
         "requested_notional": requested_notional,
         "requested_base_qty": requested_base_qty,
+        "effective_base_qty": effective_base_qty,
+        "configured_min_coin_qty": min_base_qty,
+        "configured_min_coin_qty_source": min_base_source,
         "normalized_contract_amount": order_amount,
         "normalized_base_qty": normalized_base_qty,
         "normalized_notional": normalized_notional,
@@ -1735,7 +1781,9 @@ def submit_open(args: argparse.Namespace, symbol: str, side: str, expected_price
     client = live_client(args)
     ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
     base_qty = float(notional) / max(float(expected_price), 1e-12)
-    order_amount, expected_base_qty, contract_size = live_order_amount_from_base_qty(args, client, ccxt_symbol, base_qty, is_close=False)
+    min_base_qty, min_base_source = configured_min_base_qty(args, symbol, ccxt_symbol)
+    effective_base_qty = max(base_qty, min_base_qty)
+    order_amount, expected_base_qty, contract_size = live_order_amount_from_base_qty(args, client, ccxt_symbol, effective_base_qty, is_close=False)
     if order_amount <= 0:
         return {"ok": False, "error": "open_qty_zero_after_normalize", "qty": expected_base_qty, "order_amount": order_amount}
     params = live_order_params(client_order_id, side, reduce_only=False, position_mode=args.position_mode, exchange=args.live_exchange)
@@ -1774,6 +1822,9 @@ def submit_open(args: argparse.Namespace, symbol: str, side: str, expected_price
         "order_amount": order_amount,
         "contract_size": contract_size,
         "requested_base_qty": base_qty,
+        "effective_base_qty": effective_base_qty,
+        "configured_min_coin_qty": min_base_qty,
+        "configured_min_coin_qty_source": min_base_source,
         "normalized_contract_amount": order_amount,
         "filled_contracts": order_amount,
         "filled_base_qty": order_qty,
@@ -2006,8 +2057,9 @@ def live_add_fill(
             "exchange_preflight": preflight,
             "requested_notional": notional,
         }
+    order_notional = max(float(notional or 0.0), float(preflight.get("normalized_notional") or 0.0))
     ok, guard_reason, guard_detail = paper.guard_new_entry(
-        state, side=str(trade["side"]), add_notional=notional, mark=mark, now=now, args=args
+        state, side=str(trade["side"]), add_notional=order_notional, mark=mark, now=now, args=args
     )
     if not ok:
         return {
@@ -2018,6 +2070,7 @@ def live_add_fill(
             "guard": guard_detail,
             "exchange_preflight": preflight,
             "requested_notional": notional,
+            "effective_order_notional": order_notional,
         }
     client_order_id = stable_client_order_id(
         "entry",
@@ -2028,7 +2081,7 @@ def live_add_fill(
         fill_type,
         trade.get("next_level_idx"),
     )
-    submitted = submit_open(args, trade["symbol"], str(trade["side"]), expected_price, notional, client_order_id)
+    submitted = submit_open(args, trade["symbol"], str(trade["side"]), expected_price, order_notional, client_order_id)
     if not submitted.get("ok"):
         error_text = str(submitted.get("error") or "unknown_order_error")
         backoff_payload = register_order_error_backoff(state, error_text, now, args)
@@ -2055,6 +2108,7 @@ def live_add_fill(
             "guard": guard_detail,
             "exchange_preflight": preflight,
             "requested_notional": notional,
+            "effective_order_notional": order_notional,
             "attempt_key": attempt_key,
             "backoff": backoff_payload,
             "entry_failure": failure_payload,
@@ -2089,6 +2143,7 @@ def live_add_fill(
         "expected_price": expected_price,
         "live_fill_price": fill_price,
         "requested_notional": notional,
+        "effective_order_notional": order_notional,
         "live_notional": live_notional,
         "qty": qty,
         "requested_base_qty": submitted.get("requested_base_qty"),

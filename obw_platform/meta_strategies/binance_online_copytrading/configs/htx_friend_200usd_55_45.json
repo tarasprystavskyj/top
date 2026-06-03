@@ -22,6 +22,62 @@
     "allocation": "55% Veronika HYPE / 45% Callme multi-symbol",
     "base_order_rule": "V21 base_order_pct_eq=5.0 scales initial and DCA sizing from delegated_capital_usdt"
   },
+  "symbol_market_constraints": {
+    "HYPEUSDT": {
+      "live_symbol": "HYPE/USDT:USDT",
+      "htx_contract_code": "HYPE-USDT",
+      "available": true,
+      "contract_size_coin": 0.1,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.1
+    },
+    "AMDUSDT": {
+      "live_symbol": "AMD/USDT:USDT",
+      "htx_contract_code": "AMD-USDT",
+      "available": true,
+      "contract_size_coin": 0.01,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.01
+    },
+    "BTCUSDT": {
+      "live_symbol": "BTC/USDT:USDT",
+      "htx_contract_code": "BTC-USDT",
+      "available": true,
+      "contract_size_coin": 0.001,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.001
+    },
+    "ETHUSDT": {
+      "live_symbol": "ETH/USDT:USDT",
+      "htx_contract_code": "ETH-USDT",
+      "available": true,
+      "contract_size_coin": 0.01,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.01
+    },
+    "MSTRUSDT": {
+      "live_symbol": "",
+      "htx_contract_code": "",
+      "available": false,
+      "reason": "HTX swap market not available in current ccxt market metadata"
+    },
+    "PAXGUSDT": {
+      "live_symbol": "PAXG/USDT:USDT",
+      "htx_contract_code": "PAXG-USDT",
+      "available": true,
+      "contract_size_coin": 0.001,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.001
+    },
+    "SOLUSDT": {
+      "live_symbol": "SOL/USDT:USDT",
+      "htx_contract_code": "SOL-USDT",
+      "available": true,
+      "contract_size_coin": 1.0,
+      "min_contracts": 1.0,
+      "min_coin_qty": 1.0
+    }
+  },
   "leads": [
     {
       "name": "lead_430051_veronika_hype_follow_open",

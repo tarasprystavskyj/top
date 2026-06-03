@@ -24,6 +24,54 @@
     "source": "Binance copy follower 4512404768792222208",
     "symbol_scope": "multi-symbol; do not force AMD-only"
   },
+  "symbol_market_constraints": {
+    "AMDUSDT": {
+      "live_symbol": "AMD/USDT:USDT",
+      "htx_contract_code": "AMD-USDT",
+      "available": true,
+      "contract_size_coin": 0.01,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.01
+    },
+    "BTCUSDT": {
+      "live_symbol": "BTC/USDT:USDT",
+      "htx_contract_code": "BTC-USDT",
+      "available": true,
+      "contract_size_coin": 0.001,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.001
+    },
+    "ETHUSDT": {
+      "live_symbol": "ETH/USDT:USDT",
+      "htx_contract_code": "ETH-USDT",
+      "available": true,
+      "contract_size_coin": 0.01,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.01
+    },
+    "MSTRUSDT": {
+      "live_symbol": "",
+      "htx_contract_code": "",
+      "available": false,
+      "reason": "HTX swap market not available in current ccxt market metadata"
+    },
+    "PAXGUSDT": {
+      "live_symbol": "PAXG/USDT:USDT",
+      "htx_contract_code": "PAXG-USDT",
+      "available": true,
+      "contract_size_coin": 0.001,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.001
+    },
+    "SOLUSDT": {
+      "live_symbol": "SOL/USDT:USDT",
+      "htx_contract_code": "SOL-USDT",
+      "available": true,
+      "contract_size_coin": 1.0,
+      "min_contracts": 1.0,
+      "min_coin_qty": 1.0
+    }
+  },
   "leads": [
     {
       "name": "lead_451240_callme_multi_follow_open",

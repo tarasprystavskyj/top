@@ -24,6 +24,16 @@
     "source": "Binance copy follower 4300516091842181632",
     "symbol_scope": "HYPEUSDT only"
   },
+  "symbol_market_constraints": {
+    "HYPEUSDT": {
+      "live_symbol": "HYPE/USDT:USDT",
+      "htx_contract_code": "HYPE-USDT",
+      "available": true,
+      "contract_size_coin": 0.1,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.1
+    }
+  },
   "leads": [
     {
       "name": "lead_430051_veronika_hype_follow_open",
