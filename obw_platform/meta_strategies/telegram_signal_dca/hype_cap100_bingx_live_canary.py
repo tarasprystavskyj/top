@@ -224,9 +224,10 @@ LIVE_REPORTS_ROOT = ROOT.parent / "top_1" / "obw_platform" / "_reports" / "_live
 DEFAULT_OUT_DIR = LIVE_REPORTS_ROOT / "hype_canary_bingx_live"
 DEFAULT_ENV_FILE = "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env"
 BINGX_LEGACY_ENV_FILE = "/var/www/vps2.happyuser.info/top/top_1/.env"
+DEFAULT_HTX_FRIEND_LIVE_CONFIG = ROOT / "meta_strategies" / "telegram_signal_dca" / "configs" / "htx_veronika_hype_live_110.json"
 DEFAULT_LIVE_SYMBOL = "HYPE-USDT"
-SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio")
-SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy")
+SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio", "htx")
+SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy", "htx_current")
 LIVE_EXCHANGE_PROFILES = {
     "gateio_current": {
         "live_exchange": "gateio",
@@ -239,6 +240,12 @@ LIVE_EXCHANGE_PROFILES = {
         "live_symbol": DEFAULT_LIVE_SYMBOL,
         "position_mode": "hedge",
         "env_file": BINGX_LEGACY_ENV_FILE,
+    },
+    "htx_current": {
+        "live_exchange": "htx",
+        "live_symbol": "HYPE/USDT:USDT",
+        "position_mode": "oneway",
+        "env_file": DEFAULT_ENV_FILE,
     },
 }
 DEFAULT_COPY_POLL_INTERVAL_SEC = 1.0
@@ -1198,6 +1205,117 @@ def load_env_file(path: str) -> Dict[str, bool]:
     return loaded
 
 
+def _truthy_config_value(value: Any) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
+def load_live_config(path: str) -> Dict[str, Any]:
+    if not _truthy_config_value(path):
+        return {}
+    cfg_path = Path(path)
+    if not cfg_path.exists():
+        raise SystemExit(f"--live-config does not exist: {path}")
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"failed to read --live-config {path}: {exc}") from exc
+    if not isinstance(cfg, dict):
+        raise SystemExit(f"--live-config must contain a JSON object: {path}")
+    cfg["_config_path"] = str(cfg_path)
+    return cfg
+
+
+def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
+    cfg = load_live_config(getattr(args, "live_config", "") or "")
+    if not cfg:
+        args._live_config = {}
+        return {"config": "", "defaults_applied": []}
+    env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    allocation = cfg.get("allocation") if isinstance(cfg.get("allocation"), dict) else {}
+    sizing = cfg.get("sizing") if isinstance(cfg.get("sizing"), dict) else {}
+    safety = cfg.get("safety") if isinstance(cfg.get("safety"), dict) else {}
+    signal = cfg.get("signal") if isinstance(cfg.get("signal"), dict) else {}
+    config_defaults = {
+        "live_exchange_profile": cfg.get("live_exchange_profile") or cfg.get("exchange_profile"),
+        "live_exchange": cfg.get("live_exchange") or cfg.get("exchange"),
+        "live_symbol": cfg.get("live_symbol") or cfg.get("symbol"),
+        "position_mode": cfg.get("position_mode"),
+        "env_file": env.get("file") or cfg.get("env_file"),
+        "live_api_key_env": env.get("api_key_env") or env.get("key_env"),
+        "live_api_secret_env": env.get("api_secret_env") or env.get("secret_env"),
+        "portfolio_id": cfg.get("portfolio_id") or signal.get("portfolio_id"),
+        "symbol": signal.get("copy_symbol") or signal.get("symbol"),
+        "initial_equity": allocation.get("initial_equity_usdt") or allocation.get("max_notional_usdt"),
+        "initial_target_notional": allocation.get("initial_target_notional_usdt") or allocation.get("max_notional_usdt"),
+        "max_gross_notional_usdt": allocation.get("max_notional_usdt"),
+        "max_one_side_notional_usdt": allocation.get("max_one_side_notional_usdt") or allocation.get("max_notional_usdt"),
+        "max_daily_loss_usdt": safety.get("max_daily_loss_usdt"),
+        "max_orders_per_hour": safety.get("max_orders_per_hour"),
+        "order_error_backoff_sec": safety.get("order_error_backoff_sec"),
+        "order_error_circuit_sec": safety.get("order_error_circuit_sec"),
+        "order_error_max_consecutive": safety.get("order_error_max_consecutive"),
+        "entry_failure_cooldown_sec": safety.get("entry_failure_cooldown_sec"),
+        "interval_sec": cfg.get("poll_sec") or safety.get("poll_sec"),
+        "dca_eval_interval_sec": cfg.get("dca_eval_interval_sec") or sizing.get("dca_eval_interval_sec"),
+        "history_poll_interval_sec": cfg.get("history_poll_interval_sec"),
+    }
+    applied: List[str] = []
+    for attr, value in config_defaults.items():
+        if not _truthy_config_value(value):
+            continue
+        setattr(args, attr, value)
+        applied.append(attr)
+    args._live_config = cfg
+    return {"config": cfg.get("_config_path") or str(getattr(args, "live_config", "")), "defaults_applied": applied}
+
+
+def map_live_credential_aliases(args: argparse.Namespace) -> Dict[str, Any]:
+    exchange = str(args.live_exchange or "").upper()
+    key_env = str(getattr(args, "live_api_key_env", "") or "").strip()
+    secret_env = str(getattr(args, "live_api_secret_env", "") or "").strip()
+    target_key = f"{exchange}_KEY" if exchange else ""
+    target_secret = f"{exchange}_SECRET" if exchange else ""
+    out = {
+        "api_key_env": key_env,
+        "api_secret_env": secret_env,
+        "target_key_env": target_key,
+        "target_secret_env": target_secret,
+        "key_mapped": False,
+        "secret_mapped": False,
+    }
+    if key_env and target_key and os.environ.get(key_env) and not os.environ.get(target_key):
+        os.environ[target_key] = os.environ[key_env]
+        out["key_mapped"] = True
+    if secret_env and target_secret and os.environ.get(secret_env) and not os.environ.get(target_secret):
+        os.environ[target_secret] = os.environ[secret_env]
+        out["secret_mapped"] = True
+    return out
+
+
+def rebuild_fetcher_symbol_index(client: CCXTFetcher) -> None:
+    client.by_base = {}
+    for m in (getattr(client, "markets", {}) or {}).values():
+        try:
+            if m.get("swap") and m.get("quote") == "USDT":
+                base = m.get("base")
+                if base:
+                    client.by_base[base] = m["symbol"]
+        except Exception:
+            continue
+
+
+def configure_live_fetcher(args: argparse.Namespace, client: CCXTFetcher) -> None:
+    if str(args.live_exchange or "").lower() != "htx":
+        return
+    try:
+        client.ex.options = dict(getattr(client.ex, "options", {}) or {})
+        client.ex.options["defaultType"] = "swap"
+        client.markets = client.ex.load_markets(True)
+        rebuild_fetcher_symbol_index(client)
+    except Exception as exc:
+        raise SystemExit(f"failed to load HTX swap markets: {exc}") from exc
+
+
 def safe_order(order: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(order, dict):
         return {}
@@ -1437,7 +1555,9 @@ def live_client(args: argparse.Namespace) -> CCXTFetcher:
     if client is not None:
         return client
     loaded = load_env_file(args.env_file)
+    args._env_credential_aliases = map_live_credential_aliases(args)
     client = CCXTFetcher(exchange=args.live_exchange, symbol_format="usdtm")
+    configure_live_fetcher(args, client)
     args._live_client = client
     args._env_loaded_keys = sorted(k for k in loaded if any(t in k.upper() for t in ("KEY", "SECRET", "API")))
     return client
@@ -1448,6 +1568,9 @@ def auth_probe(args: argparse.Namespace) -> Dict[str, Any]:
     report = client.debug_credentials_report() if hasattr(client, "debug_credentials_report") else {}
     out = {
         "exchange": args.live_exchange,
+        "live_api_key_env": getattr(args, "live_api_key_env", ""),
+        "live_api_secret_env": getattr(args, "live_api_secret_env", ""),
+        "credential_alias_mapping": getattr(args, "_env_credential_aliases", {}),
         "credentials_present": bool(getattr(client, "credentials_present", False)),
         "key_found": bool((report or {}).get("key_found")),
         "secret_found": bool((report or {}).get("secret_found")),
@@ -1466,6 +1589,8 @@ def auth_probe(args: argparse.Namespace) -> Dict[str, Any]:
 def live_balance_params(exchange: str) -> Dict[str, Any]:
     if str(exchange or "").lower() == "gateio":
         return {"type": "swap", "settle": "USDT"}
+    if str(exchange or "").lower() == "htx":
+        return {"type": "swap"}
     return {}
 
 
@@ -1473,6 +1598,11 @@ def live_order_params(client_order_id: str, side: str, reduce_only: bool, positi
     ex = str(exchange or "").lower()
     if ex == "gateio":
         params: Dict[str, Any] = {"text": gateio_client_order_text(client_order_id)}
+        if reduce_only:
+            params["reduceOnly"] = True
+        return params
+    if ex == "htx":
+        params = {"clientOrderId": client_order_id}
         if reduce_only:
             params["reduceOnly"] = True
         return params
@@ -1513,7 +1643,8 @@ def live_order_amount_from_base_qty(
     is_close: bool,
     max_base_qty: Optional[float] = None,
 ) -> Tuple[float, float, float]:
-    contract_size = live_market_contract_size(client, ccxt_symbol) if str(args.live_exchange).lower() == "gateio" else 1.0
+    exchange = str(args.live_exchange).lower()
+    contract_size = live_market_contract_size(client, ccxt_symbol) if exchange in {"gateio", "htx"} else 1.0
     raw_amount = float(base_qty or 0.0) / max(contract_size, 1e-12)
     max_amount = None if max_base_qty is None else float(max_base_qty or 0.0) / max(contract_size, 1e-12)
     order_amount = _normalize_order_qty(client, ccxt_symbol, raw_amount, is_close=is_close, max_qty=max_amount)
@@ -1522,7 +1653,7 @@ def live_order_amount_from_base_qty(
 
 def live_order_filled_base_qty(args: argparse.Namespace, client: CCXTFetcher, ccxt_symbol: str, order: Dict[str, Any], fallback_order_amount: float) -> float:
     order_amount = order_filled_qty(order, fallback_order_amount)
-    if str(args.live_exchange).lower() == "gateio":
+    if str(args.live_exchange).lower() in {"gateio", "htx"}:
         return float(order_amount or 0.0) * live_market_contract_size(client, ccxt_symbol)
     return float(order_amount or 0.0)
 
@@ -1559,7 +1690,7 @@ def live_fetch_exchange_position(args: argparse.Namespace, client: CCXTFetcher, 
     pos = _fetch_exchange_position(client, ccxt_symbol, side)
     if not isinstance(pos, dict):
         return pos
-    if str(args.live_exchange).lower() == "gateio" and not pos.get("_qty_unit") == "base":
+    if str(args.live_exchange).lower() in {"gateio", "htx"} and not pos.get("_qty_unit") == "base":
         out = dict(pos)
         contract_size = live_market_contract_size(client, ccxt_symbol)
         out["qty_contracts"] = float(out.get("qty") or 0.0)
@@ -2234,10 +2365,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap = paper.build_arg_parser()
     ap.description = "Exchange live HYPE cap100 canary."
     ap.set_defaults(out_dir=str(DEFAULT_OUT_DIR), interval_sec=DEFAULT_COPY_POLL_INTERVAL_SEC)
+    ap.add_argument("--live-config", default="", help="JSON live launch config with exchange, env aliases, allocation, and safety limits.")
     ap.add_argument("--live-exchange-profile", choices=SUPPORTED_LIVE_EXCHANGE_PROFILES, default="gateio_current")
     ap.add_argument("--env-file", default=None)
     ap.add_argument("--live-exchange", default=None, choices=SUPPORTED_LIVE_EXCHANGES)
     ap.add_argument("--live-symbol", default=None)
+    ap.add_argument("--live-api-key-env", default="", help="Env var name containing the exchange API key; value is never printed.")
+    ap.add_argument("--live-api-secret-env", default="", help="Env var name containing the exchange API secret; value is never printed.")
     ap.add_argument("--position-mode", choices=["oneway", "hedge"], default=None)
     ap.add_argument("--dca-eval-interval-sec", type=float, default=DEFAULT_DCA_EVAL_INTERVAL_SEC)
     ap.add_argument("--history-poll-interval-sec", type=float, default=DEFAULT_HISTORY_POLL_INTERVAL_SEC)
@@ -2274,6 +2408,7 @@ def apply_live_exchange_profile(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def normalize_paths(args: argparse.Namespace) -> None:
+    args._live_config_resolution = apply_live_config(args)
     args._live_exchange_profile_resolution = apply_live_exchange_profile(args)
     paper.normalize_paths(args)
     out_dir = Path(args.out_dir)

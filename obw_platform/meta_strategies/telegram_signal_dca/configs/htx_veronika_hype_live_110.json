@@ -1,0 +1,44 @@
+{
+  "schema": "telegram_signal_dca_live_config_v1",
+  "name": "htx_veronika_hype_live_110",
+  "exchange": "htx",
+  "exchange_profile": "htx_current",
+  "live_symbol": "HYPE/USDT:USDT",
+  "position_mode": "oneway",
+  "env": {
+    "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+    "api_key_env": "HTX_MAKSYM_KEY",
+    "api_secret_env": "HTX_MAKSYM_SECRET"
+  },
+  "signal": {
+    "lead_trader_name": "Veronika",
+    "portfolio_id": "4300516091842181632",
+    "copy_symbol": "HYPEUSDT",
+    "mode": "follow_open"
+  },
+  "allocation": {
+    "split_pct": 55.0,
+    "initial_equity_usdt": 110.0,
+    "max_notional_usdt": 110.0,
+    "max_one_side_notional_usdt": 110.0,
+    "initial_target_notional_usdt": 110.0
+  },
+  "sizing": {
+    "base_order_pct_eq": 5.0,
+    "initial_base_order_usdt": 5.5,
+    "dca_scaling": "Scale from delegated 110 USDT through the same HYPE cap100 DCA path.",
+    "dca_eval_interval_sec": 60.0
+  },
+  "safety": {
+    "max_daily_loss_usdt": 5.5,
+    "max_orders_per_hour": 10,
+    "order_error_backoff_sec": 300,
+    "order_error_circuit_sec": 1800,
+    "order_error_max_consecutive": 2,
+    "entry_failure_cooldown_sec": 3600,
+    "poll_sec": 60
+  },
+  "live_orders_enabled": true,
+  "live_ack_env": "VERONIKA_HYPE_HTX_LIVE_ACK",
+  "live_ack_value": "I_ACCEPT_REAL_HTX_ORDERS"
+}

@@ -1,0 +1,38 @@
+{
+  "schema": "binance_online_copytrading_config_v1",
+  "name": "htx_friend_veronika_hype_110",
+  "paper_notional_usdt": 110.0,
+  "initial_equity_usdt": 110.0,
+  "exchange": "htx",
+  "paper_exchange": "htx",
+  "env": {
+    "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+    "api_key_env": "HTX_MAKSYM_KEY",
+    "api_secret_env": "HTX_MAKSYM_SECRET"
+  },
+  "v21_config": "obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml",
+  "base_order_pct_eq": 5.0,
+  "slippage_bp": 10.0,
+  "ttl_hours": 72.0,
+  "exit_on_reversal": true,
+  "exchange_profile": "htx_current",
+  "live_orders_enabled": false,
+  "notes": {
+    "purpose": "HTX paper/shadow validation for friend 200 USD allocation",
+    "allocation_pct": 55.0,
+    "base_order_usdt": 5.5,
+    "source": "Binance copy follower 4300516091842181632",
+    "symbol_scope": "HYPEUSDT only"
+  },
+  "leads": [
+    {
+      "name": "lead_430051_veronika_hype_follow_open",
+      "lead_trader_name": "Veronika",
+      "portfolio_id": "4300516091842181632",
+      "mode": "follow_open",
+      "delegated_capital_usdt": 110.0,
+      "symbol_allowlist": ["HYPEUSDT"],
+      "enabled": true
+    }
+  ]
+}

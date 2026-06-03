@@ -27,6 +27,7 @@ import yaml
 POSITIONS_URL = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-data/positions"
 POSITION_HISTORY_URL = "https://www.binance.com/bapi/futures/v1/public/future/copy-trade/lead-portfolio/position-history"
 BINANCE_MARK_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
+HTX_SWAP_MARK_URL = "https://api.hbdm.com/linear-swap-ex/market/detail/merged"
 DEFAULT_CONFIG = "obw_platform/meta_strategies/binance_online_copytrading/config.json"
 DEFAULT_STATE = "obw_platform/meta_strategies/binance_online_copytrading/reports/state.json"
 DEFAULT_SESSION_DB = "obw_platform/meta_strategies/binance_online_copytrading/reports/session.sqlite"
@@ -237,6 +238,17 @@ class MarkProvider:
         return f"{base}/USDT:USDT"
 
     @staticmethod
+    def htx_contract_code(symbol: str) -> str:
+        text = str(symbol or "").upper().strip()
+        if "/" in text:
+            base = text.split("/", 1)[0]
+        elif text.endswith("USDT"):
+            base = text[:-4]
+        else:
+            base = text.replace("-USDT", "")
+        return f"{base}-USDT"
+
+    @staticmethod
     def _book_level(book: Dict[str, Any], side: str) -> Tuple[Optional[float], Optional[float]]:
         rows = book.get(side) or []
         if not rows:
@@ -277,6 +289,44 @@ class MarkProvider:
             "symbol": symbol,
             "fallback_price": fallback,
         }
+        if self.exchange in {"htx", "huobi"}:
+            contract_code = self.htx_contract_code(symbol)
+            ctx["htx_contract_code"] = contract_code
+            try:
+                resp = session.get(HTX_SWAP_MARK_URL, params={"contract_code": contract_code}, timeout=self.timeout_sec)
+                resp.raise_for_status()
+                data = resp.json()
+                tick = data.get("tick") if isinstance(data, dict) else {}
+                bid_row = tick.get("bid") if isinstance(tick, dict) else None
+                ask_row = tick.get("ask") if isinstance(tick, dict) else None
+                bid = finite_price(bid_row[0]) if isinstance(bid_row, list) and bid_row else None
+                ask = finite_price(ask_row[0]) if isinstance(ask_row, list) and ask_row else None
+                price = finite_price((tick or {}).get("close")) if isinstance(tick, dict) else None
+                if not price and bid and ask:
+                    price = (bid + ask) / 2.0
+                ctx.update(
+                    {
+                        "source": "htx_public_swap",
+                        "htx_close": price,
+                        "htx_bid": bid,
+                        "htx_ask": ask,
+                        "htx_orderbook_ok": bool(bid and ask),
+                    }
+                )
+                if bid and ask:
+                    mid = (bid + ask) / 2.0
+                    ctx["htx_mid"] = mid
+                    ctx["htx_spread"] = ask - bid
+                    ctx["htx_spread_bp_mid"] = 10_000.0 * (ask - bid) / mid if mid > 0 else None
+                ctx["request_latency_ms"] = round((time.time() - started) * 1000.0, 3)
+                if price:
+                    ctx["mark"] = price
+                    return price, "htx_public_swap", ctx
+            except Exception as exc:
+                ctx["htx_error"] = str(exc)[:200]
+            ctx["source"] = "missing_htx_mark"
+            ctx["request_latency_ms"] = round((time.time() - started) * 1000.0, 3)
+            return None, "missing_htx_mark", ctx
         if self.ccxt_ex is not None:
             market = self.market_symbol(symbol)
             ctx["bingx_market"] = market
@@ -365,6 +415,31 @@ def load_state(path: Path) -> Dict[str, Any]:
 
 def lead_trader_name(lead: Dict[str, Any]) -> str:
     return str(lead.get("lead_trader_name") or lead.get("trader_name") or lead.get("nickname") or lead.get("name") or "")
+
+
+def _normalize_copy_symbol(raw: Any) -> str:
+    text = str(raw or "").upper().strip()
+    if "/" in text:
+        base = text.split("/", 1)[0]
+        quote = text.split("/", 1)[1].split(":", 1)[0]
+        return f"{base}{quote}"
+    return text.replace("-", "")
+
+
+def filter_lead_symbols(lead: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    allow = {_normalize_copy_symbol(x) for x in (lead.get("symbol_allowlist") or []) if str(x).strip()}
+    block = {_normalize_copy_symbol(x) for x in (lead.get("symbol_blocklist") or []) if str(x).strip()}
+    if not allow and not block:
+        return rows
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        symbol = _normalize_copy_symbol(row.get("symbol"))
+        if allow and symbol not in allow:
+            continue
+        if block and symbol in block:
+            continue
+        out.append(row)
+    return out
 
 
 def enrich_existing_trades_with_lead_name(state: Dict[str, Any], lead: Dict[str, Any]) -> None:
@@ -1284,6 +1359,8 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
         v21_runtime = V21OneLegRuntime(v21_config, delegated_capital)
         open_positions = fetch_open_positions(session, portfolio_id, args.timeout_sec) if mode == "follow_open" else []
         history = fetch_history(session, portfolio_id, args.timeout_sec, page_size=args.history_page_size, max_pages=args.history_pages)
+        open_positions = filter_lead_symbols(lead, open_positions)
+        history = filter_lead_symbols(lead, history)
         if mode == "follow_open":
             lead_events = apply_follow_open(
                 state,
@@ -1357,7 +1434,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Paper-live Binance online copytrading meta-strategy.")
     ap.add_argument("--config", default=DEFAULT_CONFIG)
     ap.add_argument("--state-path", default=DEFAULT_STATE)
-    ap.add_argument("--paper-exchange", default="bingx", choices=["bingx", "binance"])
+    ap.add_argument("--paper-exchange", default="bingx", choices=["bingx", "binance", "htx"])
     ap.add_argument("--notional-usdt", type=float, default=0.0)
     ap.add_argument("--v21-config", default=DEFAULT_V21_CONFIG)
     ap.add_argument("--slippage-bp", type=float, default=None)
