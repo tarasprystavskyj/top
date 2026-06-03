@@ -228,7 +228,7 @@ DEFAULT_HTX_FRIEND_LIVE_CONFIG = ROOT / "meta_strategies" / "telegram_signal_dca
 DEFAULT_LIVE_SYMBOL = "HYPE-USDT"
 SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio", "htx", "mexc")
 SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy", "htx_current", "mexc_current")
-SUPPORTED_SOURCE_LEVERAGE_MODES = ("ignore", "copy", "copy_div2")
+SUPPORTED_SOURCE_LEVERAGE_MODES = ("ignore", "copy", "copy_div2", "fixed")
 LIVE_EXCHANGE_PROFILES = {
     "gateio_current": {
         "live_exchange": "gateio",
@@ -1037,6 +1037,7 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
         "position_mode": args.position_mode,
         "source_leverage_policy": {
             "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+            "fixed_source_leverage": getattr(args, "fixed_source_leverage", 0.0),
             "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
         },
         "long_only": bool(args.long_only),
@@ -1258,6 +1259,7 @@ def build_hot_restart_snapshot(
             "protection_require_premium_ok": bool(getattr(args, "protection_require_premium_ok", False)),
             "protection_auto_stop_new_orders": bool(getattr(args, "protection_auto_stop_new_orders", False)),
             "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+            "fixed_source_leverage": getattr(args, "fixed_source_leverage", 0.0),
             "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
             "long_only": bool(args.long_only),
             "interval_sec": args.interval_sec,
@@ -1425,6 +1427,7 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
         "history_poll_interval_sec": cfg.get("history_poll_interval_sec"),
         "source_leverage_mode": cfg.get("source_leverage_mode") or (cfg.get("source_leverage") if isinstance(cfg.get("source_leverage"), str) else None) or ((cfg.get("source_leverage") or {}).get("mode") if isinstance(cfg.get("source_leverage"), dict) else None),
         "max_source_leverage": cfg.get("max_source_leverage") or ((cfg.get("source_leverage") or {}).get("max_source_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
+        "fixed_source_leverage": cfg.get("fixed_source_leverage") or ((cfg.get("source_leverage") or {}).get("fixed_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
         "protection_account_loss_stop_usdt": protection_usdt("account_loss_stop_usdt", "account_loss_stop_pct_of_equity"),
         "protection_floating_pnl_stop_usdt": protection_usdt("floating_pnl_stop_usdt", "floating_pnl_stop_pct_of_equity"),
         "protection_emergency_account_loss_usdt": protection_usdt("emergency_account_loss_usdt", "emergency_account_loss_pct_of_equity"),
@@ -1629,6 +1632,17 @@ def effective_source_leverage(args: argparse.Namespace, trade: Dict[str, Any]) -
         "required": mode != "ignore",
     }
     if mode == "ignore":
+        return out
+    if mode == "fixed":
+        fixed = parse_source_leverage(getattr(args, "fixed_source_leverage", None))
+        if fixed is None:
+            out["error"] = "missing_fixed_source_leverage"
+            return out
+        effective = fixed
+        max_leverage = parse_source_leverage(getattr(args, "max_source_leverage", None))
+        if max_leverage is not None:
+            effective = min(effective, max_leverage)
+        out["effective_leverage"] = max(1.0, float(effective))
         return out
     if source is None:
         out["error"] = "missing_source_leverage"
@@ -2913,6 +2927,7 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["position_mode"] = args.position_mode
     payload["source_leverage_policy"] = {
         "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+        "fixed_source_leverage": getattr(args, "fixed_source_leverage", 0.0),
         "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
     }
     payload["auth_probe"] = getattr(args, "_auth_probe", {})
@@ -2996,6 +3011,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--order-error-max-consecutive", type=int, default=DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE, help="Consecutive order errors before using circuit cooldown.")
     ap.add_argument("--entry-failure-cooldown-sec", type=float, default=DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC, help="Cooldown for the same symbol/lead/fill-level after rejected entry.")
     ap.add_argument("--source-leverage-mode", choices=SUPPORTED_SOURCE_LEVERAGE_MODES, default="ignore", help="How to apply Binance copy-source leverage before follower opens/DCA legs.")
+    ap.add_argument("--fixed-source-leverage", type=float, default=0.0, help="Fixed leverage used when --source-leverage-mode=fixed.")
     ap.add_argument("--max-source-leverage", type=float, default=0.0, help="Optional cap for effective source leverage; 0 means uncapped.")
     ap.add_argument("--hot-restart-snapshot-path", default="", help="Where HOT_STOP writes a restart snapshot. Defaults to out-dir/HOT_RESTART_SNAPSHOT.json.")
     ap.add_argument("--resume-snapshot", default="", help="Load state from a HOT_STOP snapshot before starting.")
@@ -3053,6 +3069,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--order-error-max-consecutive must be positive")
     if args.max_source_leverage < 0:
         raise SystemExit("--max-source-leverage must be non-negative")
+    if args.fixed_source_leverage < 0:
+        raise SystemExit("--fixed-source-leverage must be non-negative")
+    if args.source_leverage_mode == "fixed" and args.fixed_source_leverage <= 0:
+        raise SystemExit("--fixed-source-leverage is required when --source-leverage-mode=fixed")
     if args.live_cache_npz_max_bars <= 0:
         raise SystemExit("--live-cache-npz-max-bars must be positive")
     for name in (
