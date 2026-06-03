@@ -1,42 +1,42 @@
 {
   "schema": "telegram_signal_dca_live_config_v1",
-  "name": "htx_callme_amd_live_90",
-  "exchange": "htx",
-  "exchange_profile": "htx_current",
+  "name": "gateio_callme_amd_live_254",
+  "exchange": "gateio",
+  "exchange_profile": "gateio_current",
   "live_symbol": "AMD/USDT:USDT",
   "position_mode": "oneway",
   "env": {
     "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
-    "api_key_env": "HTX_MAKSYM_KEY",
-    "api_secret_env": "HTX_MAKSYM_SECRET"
+    "api_key_env": "GATEIO_KEY",
+    "api_secret_env": "GATEIO_SECRET"
   },
   "signal": {
     "lead_trader_name": "Callme",
     "portfolio_id": "4512404768792222208",
     "copy_symbol": "AMDUSDT",
-    "mode": "follow_open",
-    "entry_filter_override": "owner_requested_force_current_open_position"
+    "mode": "follow_open"
   },
   "allocation": {
     "split_pct": 45.0,
-    "initial_equity_usdt": 90.0,
-    "max_notional_usdt": 90.0,
-    "max_one_side_notional_usdt": 90.0,
-    "initial_target_notional_usdt": 90.0
+    "exchange_margin_usdt": 564.0,
+    "initial_equity_usdt": 253.8,
+    "max_notional_usdt": 253.8,
+    "max_one_side_notional_usdt": 253.8,
+    "initial_target_notional_usdt": 253.8
   },
   "sizing": {
-    "base_order_policy": "candidate_189_fresh_base_pct_28_scaled_from_90_usdt",
-    "initial_base_order_usdt": 25.2,
-    "dca_scaling": "Scale DCA plan from delegated 90 USDT through the same guarded canary path.",
+    "base_order_policy": "candidate_189_fresh_base_pct_28_scaled_from_253p8_usdt",
+    "initial_base_order_usdt": 71.064,
+    "dca_scaling": "Scale DCA plan from delegated GateIO 253.8 USDT margin allocation through the guarded canary path.",
     "dca_eval_interval_sec": 60.0
   },
   "source_leverage": {
     "mode": "copy",
     "max_source_leverage": 0.0,
-    "notes": "Copy source Binance follower leverage before HTX live open/DCA legs."
+    "notes": "Copy source Binance follower leverage before GateIO live open/DCA legs."
   },
   "safety": {
-    "max_daily_loss_usdt": 4.5,
+    "max_daily_loss_usdt": 25.38,
     "max_orders_per_hour": 10,
     "order_error_backoff_sec": 300,
     "order_error_circuit_sec": 1800,
@@ -54,12 +54,12 @@
     "notes": "Provisional wide AMD threshold; AMD-specific historical MAE artifact was not available locally."
   },
   "live_orders_enabled": true,
-  "live_ack_env": "CALLME_AMD_HTX_LIVE_ACK",
-  "live_ack_value": "I_ACCEPT_REAL_HTX_ORDERS",
+  "live_ack_env": "CALLME_AMD_GATEIO_LIVE_ACK",
+  "live_ack_value": "I_ACCEPT_REAL_GATEIO_ORDERS",
   "symbol_market_constraints": {
     "AMDUSDT": {
       "live_symbol": "AMD/USDT:USDT",
-      "htx_contract_code": "AMD-USDT",
+      "gateio_contract_code": "AMD_USDT",
       "available": true,
       "contract_size_coin": 0.01,
       "min_contracts": 1.0,

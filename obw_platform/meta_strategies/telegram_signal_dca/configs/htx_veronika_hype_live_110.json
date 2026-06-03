@@ -45,9 +45,9 @@
   },
   "protection": {
     "scale_reference": "allocation.max_notional_usdt",
-    "account_loss_stop_pct_of_equity": 5.0,
-    "floating_pnl_stop_pct_of_equity": 5.0,
-    "emergency_account_loss_pct_of_equity": 10.0,
+    "account_loss_stop_pct_of_equity": 35.0,
+    "floating_pnl_stop_pct_of_equity": 35.0,
+    "emergency_account_loss_pct_of_equity": 45.0,
     "stale_market_sec": 300,
     "auto_stop_new_orders": true
   },
