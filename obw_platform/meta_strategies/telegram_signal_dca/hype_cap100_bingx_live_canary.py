@@ -1037,6 +1037,7 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
         "position_mode": args.position_mode,
         "source_leverage_policy": {
             "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+            "source_margin_mode_override": getattr(args, "source_margin_mode_override", ""),
             "fixed_source_leverage": getattr(args, "fixed_source_leverage", 0.0),
             "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
         },
@@ -1259,6 +1260,7 @@ def build_hot_restart_snapshot(
             "protection_require_premium_ok": bool(getattr(args, "protection_require_premium_ok", False)),
             "protection_auto_stop_new_orders": bool(getattr(args, "protection_auto_stop_new_orders", False)),
             "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+            "source_margin_mode_override": getattr(args, "source_margin_mode_override", ""),
             "fixed_source_leverage": getattr(args, "fixed_source_leverage", 0.0),
             "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
             "long_only": bool(args.long_only),
@@ -1428,6 +1430,7 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
         "source_leverage_mode": cfg.get("source_leverage_mode") or (cfg.get("source_leverage") if isinstance(cfg.get("source_leverage"), str) else None) or ((cfg.get("source_leverage") or {}).get("mode") if isinstance(cfg.get("source_leverage"), dict) else None),
         "max_source_leverage": cfg.get("max_source_leverage") or ((cfg.get("source_leverage") or {}).get("max_source_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
         "fixed_source_leverage": cfg.get("fixed_source_leverage") or ((cfg.get("source_leverage") or {}).get("fixed_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
+        "source_margin_mode_override": cfg.get("source_margin_mode_override") or ((cfg.get("source_leverage") or {}).get("margin_mode") if isinstance(cfg.get("source_leverage"), dict) else None),
         "protection_account_loss_stop_usdt": protection_usdt("account_loss_stop_usdt", "account_loss_stop_pct_of_equity"),
         "protection_floating_pnl_stop_usdt": protection_usdt("floating_pnl_stop_usdt", "floating_pnl_stop_pct_of_equity"),
         "protection_emergency_account_loss_usdt": protection_usdt("emergency_account_loss_usdt", "emergency_account_loss_pct_of_equity"),
@@ -1622,7 +1625,7 @@ def effective_source_leverage(args: argparse.Namespace, trade: Dict[str, Any]) -
     source = parse_source_leverage(trade.get("source_leverage"))
     if source is None:
         source = parse_source_leverage(raw)
-    margin_mode = normalize_source_margin_mode(trade.get("source_margin_mode"))
+    margin_mode = normalize_source_margin_mode(getattr(args, "source_margin_mode_override", "")) or normalize_source_margin_mode(trade.get("source_margin_mode"))
     out = {
         "mode": mode,
         "source_leverage_raw": raw,
@@ -2371,7 +2374,7 @@ def sleep_until_next_poll(interval_sec: float) -> None:
     time.sleep(delay)
 
 
-def sync_trade_from_exchange(args: argparse.Namespace, trade: Dict[str, Any]) -> Dict[str, Any]:
+def sync_trade_from_exchange(args: argparse.Namespace, state: Dict[str, Any], trade: Dict[str, Any]) -> Dict[str, Any]:
     client = live_client(args)
     ccxt_symbol = client.resolve_symbol(trade.get("symbol") or "") or client.resolve_symbol(args.live_symbol) or args.live_symbol
     ex_pos = live_fetch_exchange_position(args, client, ccxt_symbol, str(trade.get("side") or "LONG"))
@@ -2384,8 +2387,22 @@ def sync_trade_from_exchange(args: argparse.Namespace, trade: Dict[str, Any]) ->
         trade["avg_entry"] = entry
         trade["notional"] = qty * entry
         trade["exchange_position"] = ex_pos
+        leverage_policy = effective_source_leverage(args, trade)
+        leverage_setup: Dict[str, Any] = {"ok": True, "policy": leverage_policy, "skipped": True}
+        if leverage_policy.get("required") and leverage_policy.get("effective_leverage") is not None:
+            leverage_setup = ensure_symbol_leverage(
+                args,
+                state,
+                symbol=str(trade.get("symbol") or args.symbol),
+                side=str(trade.get("side") or "LONG"),
+                margin_mode=str(leverage_policy.get("source_margin_mode") or ""),
+                leverage=float(leverage_policy["effective_leverage"]),
+                now=paper.utc_now(),
+            )
+            leverage_setup["policy"] = leverage_policy
+        trade["leverage_setup"] = leverage_setup
         upsert_session_position(args, trade, status="OPEN", now=paper.utc_now(), exchange_order_id=str(trade.get("exchange_order_id") or ""))
-        return {"synced": True, "qty": qty, "entry": entry, "notional": trade["notional"], "ccxt_symbol": ccxt_symbol}
+        return {"synced": True, "qty": qty, "entry": entry, "notional": trade["notional"], "ccxt_symbol": ccxt_symbol, "leverage_setup": leverage_setup}
     return {"synced": False, "reason": "exchange_position_zero", "ccxt_symbol": ccxt_symbol}
 
 
@@ -2856,7 +2873,7 @@ def apply_live_snapshot(
 
     for key in sorted(current_keys & set(open_trades)):
         trade = open_trades[key]
-        sync_meta = sync_trade_from_exchange(args, trade)
+        sync_meta = sync_trade_from_exchange(args, state, trade)
         if sync_meta.get("synced"):
             events.append({"type": "exchange_position_synced", "key": key, **sync_meta})
 
@@ -2927,6 +2944,7 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["position_mode"] = args.position_mode
     payload["source_leverage_policy"] = {
         "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+        "source_margin_mode_override": getattr(args, "source_margin_mode_override", ""),
         "fixed_source_leverage": getattr(args, "fixed_source_leverage", 0.0),
         "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
     }
@@ -3013,6 +3031,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--source-leverage-mode", choices=SUPPORTED_SOURCE_LEVERAGE_MODES, default="ignore", help="How to apply Binance copy-source leverage before follower opens/DCA legs.")
     ap.add_argument("--fixed-source-leverage", type=float, default=0.0, help="Fixed leverage used when --source-leverage-mode=fixed.")
     ap.add_argument("--max-source-leverage", type=float, default=0.0, help="Optional cap for effective source leverage; 0 means uncapped.")
+    ap.add_argument("--source-margin-mode-override", default="", help="Optional follower margin mode to pass to set_leverage instead of the source margin mode.")
     ap.add_argument("--hot-restart-snapshot-path", default="", help="Where HOT_STOP writes a restart snapshot. Defaults to out-dir/HOT_RESTART_SNAPSHOT.json.")
     ap.add_argument("--resume-snapshot", default="", help="Load state from a HOT_STOP snapshot before starting.")
     ap.add_argument("--resume-snapshot-overwrite", action="store_true", help="Allow --resume-snapshot to replace an existing state-path.")
@@ -3073,6 +3092,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--fixed-source-leverage must be non-negative")
     if args.source_leverage_mode == "fixed" and args.fixed_source_leverage <= 0:
         raise SystemExit("--fixed-source-leverage is required when --source-leverage-mode=fixed")
+    if args.source_margin_mode_override and normalize_source_margin_mode(args.source_margin_mode_override) not in {"cross", "isolated"}:
+        raise SystemExit("--source-margin-mode-override must be cross or isolated")
     if args.live_cache_npz_max_bars <= 0:
         raise SystemExit("--live-cache-npz-max-bars must be positive")
     for name in (

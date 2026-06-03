@@ -70,6 +70,7 @@ def make_args(**overrides):
         order_error_max_consecutive=3,
         entry_failure_cooldown_sec=3600.0,
         source_leverage_mode="ignore",
+        source_margin_mode_override="",
         fixed_source_leverage=0.0,
         max_source_leverage=0.0,
         hot_restart_snapshot_path="",
@@ -566,7 +567,7 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         args._live_client = FakeClient()
         trade = open_trade()
         with patch.object(live, "_fetch_exchange_position", return_value={"qty": 0.3, "entry": 51.0}):
-            meta = live.sync_trade_from_exchange(args, trade)
+            meta = live.sync_trade_from_exchange(args, {}, trade)
         self.assertTrue(meta["synced"])
         self.assertEqual(trade["qty"], 0.3)
         self.assertEqual(trade["avg_entry"], 51.0)
@@ -580,7 +581,7 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             args._live_client = FakeClient()
             trade = open_trade()
             with patch.object(live, "_fetch_exchange_position", return_value={"qty": 0.3, "entry": 51.0}), patch.object(live.paper, "utc_now", return_value=NOW):
-                meta = live.sync_trade_from_exchange(args, trade)
+                meta = live.sync_trade_from_exchange(args, {}, trade)
             self.assertTrue(meta["synced"])
             con = sqlite3.connect(session_db)
             try:
@@ -588,6 +589,19 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             finally:
                 con.close()
             self.assertEqual(row, (0.3, 51.0, "OPEN"))
+
+    def test_sync_trade_from_exchange_applies_fixed_leverage_to_existing_open_position(self):
+        args = make_args(source_leverage_mode="fixed", fixed_source_leverage=2.0, source_margin_mode_override="isolated", live_exchange="gateio")
+        args._live_client = FakeClient()
+        trade = open_trade()
+        state = {}
+        with patch.object(live, "_fetch_exchange_position", return_value={"qty": 0.3, "entry": 51.0}), patch.object(live.paper, "utc_now", return_value=NOW):
+            meta = live.sync_trade_from_exchange(args, state, trade)
+        self.assertTrue(meta["synced"])
+        self.assertTrue(meta["leverage_setup"]["ok"])
+        self.assertEqual(args._live_client.ex.leverage_calls[0][0], 2)
+        self.assertEqual(args._live_client.ex.leverage_calls[0][2]["marginMode"], "isolated")
+        self.assertEqual(state["last_leverage_setup"]["leverage"], 2.0)
 
     def test_live_add_fill_blocks_on_stop_file_without_order(self):
         with tempfile.TemporaryDirectory() as td:

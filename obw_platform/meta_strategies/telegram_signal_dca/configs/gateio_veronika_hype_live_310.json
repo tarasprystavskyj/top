@@ -33,6 +33,7 @@
   },
   "source_leverage": {
     "mode": "fixed",
+    "margin_mode": "isolated",
     "fixed_leverage": 2.0,
     "max_source_leverage": 2.0,
     "notes": "Use fixed 2x follower leverage before GateIO HYPE live open/DCA legs; do not copy higher source leverage."
