@@ -899,6 +899,98 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertTrue(status["protection"]["block_new_entries"])
         self.assertEqual(status["protection"]["reasons"][0]["code"], "floating_pnl_stop")
 
+    def test_live_config_scales_protection_percent_from_allocation_max_notional(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "live.json"
+            cfg_path.write_text(
+                json.dumps(
+                    {
+                        "exchange": "mexc",
+                        "exchange_profile": "mexc_current",
+                        "live_symbol": "HYPE/USDT:USDT",
+                        "signal": {"portfolio_id": "p1", "copy_symbol": "HYPEUSDT"},
+                        "allocation": {"initial_equity_usdt": 56.0, "max_notional_usdt": 90.0},
+                        "protection": {
+                            "account_loss_stop_pct_of_equity": 5.0,
+                            "floating_pnl_stop_pct_of_equity": 5.0,
+                            "emergency_account_loss_pct_of_equity": 10.0,
+                            "stale_market_sec": 300,
+                            "auto_stop_new_orders": True,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = live.build_arg_parser().parse_args(["--live-config", str(cfg_path)])
+            live.apply_live_config(args)
+
+        self.assertEqual(args.initial_equity, 56.0)
+        self.assertEqual(args.max_gross_notional_usdt, 90.0)
+        self.assertEqual(args.protection_account_loss_stop_usdt, 4.5)
+        self.assertEqual(args.protection_floating_pnl_stop_usdt, 4.5)
+        self.assertEqual(args.protection_emergency_account_loss_usdt, 9.0)
+        self.assertEqual(args.protection_stale_market_sec, 300)
+        self.assertTrue(args.protection_auto_stop_new_orders)
+
+    def test_live_protection_loss_threshold_boundaries(self):
+        args = make_args(
+            protection_account_loss_stop_usdt=4.5,
+            protection_floating_pnl_stop_usdt=4.5,
+            protection_emergency_account_loss_usdt=9.0,
+        )
+        state = live.paper.default_state(args)
+
+        with patch.object(live.paper, "daily_pnl_usdt", return_value=-4.49), patch.object(live, "open_unrealized_pnl_usdt", return_value=-4.49):
+            protection = live.evaluate_live_protection(state, 50.0, NOW, {"market": {}}, args)
+        self.assertFalse(protection["block_new_entries"])
+        self.assertEqual(protection["reasons"], [])
+
+        with patch.object(live.paper, "daily_pnl_usdt", return_value=-4.5), patch.object(live, "open_unrealized_pnl_usdt", return_value=-4.5):
+            protection = live.evaluate_live_protection(state, 50.0, NOW, {"market": {}}, args)
+        self.assertTrue(protection["block_new_entries"])
+        self.assertFalse(protection["emergency"])
+        self.assertEqual([r["code"] for r in protection["reasons"]], ["account_loss_stop", "floating_pnl_stop"])
+
+        with patch.object(live.paper, "daily_pnl_usdt", return_value=-9.0), patch.object(live, "open_unrealized_pnl_usdt", return_value=-4.49):
+            protection = live.evaluate_live_protection(state, 50.0, NOW, {"market": {}}, args)
+        self.assertTrue(protection["emergency"])
+        self.assertIn("emergency_account_loss", [r["code"] for r in protection["reasons"]])
+
+    def test_live_protection_stale_market_boundary(self):
+        args = make_args(protection_stale_market_sec=300.0)
+        state = live.paper.default_state(args)
+        state["last_mark_poll_utc"] = live.paper.iso(datetime.fromtimestamp(NOW.timestamp() - 299, tz=timezone.utc))
+        state["last_positions_poll_utc"] = live.paper.iso(datetime.fromtimestamp(NOW.timestamp() - 299, tz=timezone.utc))
+        fresh = live.evaluate_live_protection(state, 50.0, NOW, {"market": {}, "positions": {}}, args)
+        self.assertFalse(fresh["block_new_entries"])
+
+        fresh_mark_error = live.evaluate_live_protection(state, 50.0, NOW, {"market": {"error": "temporary"}, "positions": {}}, args)
+        self.assertFalse(fresh_mark_error["block_new_entries"])
+
+        state["last_mark_poll_utc"] = live.paper.iso(datetime.fromtimestamp(NOW.timestamp() - 301, tz=timezone.utc))
+        stale = live.evaluate_live_protection(state, 50.0, NOW, {"market": {"error": "temporary"}, "positions": {}}, args)
+        self.assertTrue(stale["block_new_entries"])
+        self.assertEqual(stale["reasons"][0]["code"], "stale_mark")
+        self.assertIn("mark_fetch_error", [r["code"] for r in stale["reasons"]])
+
+        state["last_mark_poll_utc"] = live.paper.iso(NOW)
+        state["last_positions_poll_utc"] = live.paper.iso(datetime.fromtimestamp(NOW.timestamp() - 301, tz=timezone.utc))
+        stale_positions = live.evaluate_live_protection(state, 50.0, NOW, {"market": {}, "positions": {"error": "fetch failed"}}, args)
+        self.assertTrue(stale_positions["block_new_entries"])
+        self.assertEqual(stale_positions["reasons"][0]["code"], "positions_fetch_error_stale")
+
+    def test_protection_side_effect_only_writes_stop_new_orders(self):
+        with tempfile.TemporaryDirectory() as td:
+            args = make_args(out_dir=td, protection_auto_stop_new_orders=True)
+            protection = {"block_new_entries": True, "reasons": [{"code": "floating_pnl_stop"}]}
+            with patch.object(live, "submit_open") as submit_open, patch.object(live, "submit_close") as submit_close:
+                event = live.apply_live_protection_side_effects(args, protection, NOW)
+            self.assertEqual(event["type"], "protection_stop_new_orders_created")
+            self.assertTrue(Path(td, "STOP_NEW_ORDERS").exists())
+            self.assertFalse(Path(td, "KILL").exists())
+            self.assertFalse(submit_open.called)
+            self.assertFalse(submit_close.called)
+
     def test_hot_stop_writes_snapshot_without_loading_inputs(self):
         with tempfile.TemporaryDirectory() as td:
             args = make_args(out_dir=td, state_path=str(Path(td) / "state.json"), status_path=str(Path(td) / "RUN_STATUS.json"), telemetry_path=str(Path(td) / "telemetry.jsonl"))

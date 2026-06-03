@@ -1160,7 +1160,7 @@ def evaluate_live_protection(
         mark_age = _age_sec(now, state.get("last_mark_poll_utc"))
         if mark_age is None or mark_age > stale_limit:
             reasons.append({"code": "stale_mark", "age_sec": mark_age, "threshold_sec": stale_limit, "market": market_meta})
-        if market_meta.get("error"):
+        if market_meta.get("error") and (mark_age is None or mark_age > stale_limit):
             reasons.append({"code": "mark_fetch_error", "error": str(market_meta.get("error"))[:240], "age_sec": mark_age})
         pos_age = _age_sec(now, state.get("last_positions_poll_utc"))
         if positions_meta.get("error") and (pos_age is None or pos_age > stale_limit):
