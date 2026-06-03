@@ -226,8 +226,8 @@ DEFAULT_ENV_FILE = "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env"
 BINGX_LEGACY_ENV_FILE = "/var/www/vps2.happyuser.info/top/top_1/.env"
 DEFAULT_HTX_FRIEND_LIVE_CONFIG = ROOT / "meta_strategies" / "telegram_signal_dca" / "configs" / "htx_veronika_hype_live_110.json"
 DEFAULT_LIVE_SYMBOL = "HYPE-USDT"
-SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio", "htx")
-SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy", "htx_current")
+SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio", "htx", "mexc")
+SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy", "htx_current", "mexc_current")
 SUPPORTED_SOURCE_LEVERAGE_MODES = ("ignore", "copy", "copy_div2")
 LIVE_EXCHANGE_PROFILES = {
     "gateio_current": {
@@ -244,6 +244,12 @@ LIVE_EXCHANGE_PROFILES = {
     },
     "htx_current": {
         "live_exchange": "htx",
+        "live_symbol": "HYPE/USDT:USDT",
+        "position_mode": "oneway",
+        "env_file": DEFAULT_ENV_FILE,
+    },
+    "mexc_current": {
+        "live_exchange": "mexc",
         "live_symbol": "HYPE/USDT:USDT",
         "position_mode": "oneway",
         "env_file": DEFAULT_ENV_FILE,
@@ -1490,7 +1496,7 @@ def rebuild_fetcher_symbol_index(client: CCXTFetcher) -> None:
 
 
 def configure_live_fetcher(args: argparse.Namespace, client: CCXTFetcher) -> None:
-    if str(args.live_exchange or "").lower() != "htx":
+    if str(args.live_exchange or "").lower() not in {"htx", "mexc"}:
         return
     try:
         client.ex.options = dict(getattr(client.ex, "options", {}) or {})
@@ -1498,7 +1504,7 @@ def configure_live_fetcher(args: argparse.Namespace, client: CCXTFetcher) -> Non
         client.markets = client.ex.load_markets(True)
         rebuild_fetcher_symbol_index(client)
     except Exception as exc:
-        raise SystemExit(f"failed to load HTX swap markets: {exc}") from exc
+        raise SystemExit(f"failed to load {args.live_exchange} swap markets: {exc}") from exc
 
 
 def safe_order(order: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1650,6 +1656,10 @@ def live_leverage_params(args: argparse.Namespace, side: str, margin_mode: str) 
             mode = "cross"
         if mode:
             params["marginMode"] = mode
+        return params
+    if ex == "mexc":
+        params["openType"] = 1 if mode == "isolated" else 2
+        params["positionType"] = 2 if str(side or "").upper() == "SHORT" else 1
         return params
     return params
 
@@ -1916,6 +1926,8 @@ def live_balance_params(exchange: str) -> Dict[str, Any]:
         return {"type": "swap", "settle": "USDT"}
     if str(exchange or "").lower() == "htx":
         return {"type": "swap", "defaultSubType": "linear", "unified": True}
+    if str(exchange or "").lower() == "mexc":
+        return {"type": "swap"}
     return {}
 
 
@@ -1928,6 +1940,11 @@ def live_order_params(client_order_id: str, side: str, reduce_only: bool, positi
         return params
     if ex == "htx":
         params = {"channel_code": "", "order_price_type": "optimal_20"}
+        if reduce_only:
+            params["reduceOnly"] = True
+        return params
+    if ex == "mexc":
+        params = {"marginMode": "cross", "externalOid": client_order_id}
         if reduce_only:
             params["reduceOnly"] = True
         return params
@@ -1970,7 +1987,7 @@ def live_order_amount_from_base_qty(
 ) -> Tuple[float, float, float]:
     exchange = str(args.live_exchange).lower()
     is_gateio = exchange == "gateio"
-    contract_size = live_market_contract_size(client, ccxt_symbol) if exchange in {"gateio", "htx"} else 1.0
+    contract_size = live_market_contract_size(client, ccxt_symbol) if exchange in {"gateio", "htx", "mexc"} else 1.0
     raw_amount = float(base_qty or 0.0) / max(contract_size, 1e-12)
     max_amount = None if max_base_qty is None else float(max_base_qty or 0.0) / max(contract_size, 1e-12)
     order_amount = _normalize_order_qty(client, ccxt_symbol, raw_amount, is_close=is_close, max_qty=max_amount)
@@ -2025,7 +2042,7 @@ def runtime_sizing_payload(state: Dict[str, Any], args: argparse.Namespace) -> D
 
 def live_order_filled_base_qty(args: argparse.Namespace, client: CCXTFetcher, ccxt_symbol: str, order: Dict[str, Any], fallback_order_amount: float) -> float:
     order_amount = order_filled_qty(order, fallback_order_amount)
-    if str(args.live_exchange).lower() in {"gateio", "htx"}:
+    if str(args.live_exchange).lower() in {"gateio", "htx", "mexc"}:
         return float(order_amount or 0.0) * live_market_contract_size(client, ccxt_symbol)
     return float(order_amount or 0.0)
 
@@ -2097,7 +2114,7 @@ def live_fetch_exchange_position(args: argparse.Namespace, client: CCXTFetcher, 
     pos = _fetch_exchange_position(client, ccxt_symbol, side)
     if not isinstance(pos, dict):
         return pos
-    if str(args.live_exchange).lower() in {"gateio", "htx"} and not pos.get("_qty_unit") == "base":
+    if str(args.live_exchange).lower() in {"gateio", "htx", "mexc"} and not pos.get("_qty_unit") == "base":
         out = dict(pos)
         contract_size = live_market_contract_size(client, ccxt_symbol)
         out["qty_contracts"] = float(out.get("qty") or 0.0)

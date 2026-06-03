@@ -1,0 +1,58 @@
+{
+  "schema": "telegram_signal_dca_live_config_v1",
+  "name": "mexc_veronika_hype_live_90",
+  "exchange": "mexc",
+  "exchange_profile": "mexc_current",
+  "live_symbol": "HYPE/USDT:USDT",
+  "position_mode": "oneway",
+  "env": {
+    "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+    "api_key_env": "MEXC_IGOR_KEY",
+    "api_secret_env": "MEXC_IGOR_SECRET"
+  },
+  "signal": {
+    "lead_trader_name": "Veronika",
+    "portfolio_id": "4300516091842181632",
+    "copy_symbol": "HYPEUSDT",
+    "mode": "follow_open"
+  },
+  "allocation": {
+    "initial_equity_usdt": 90.0,
+    "max_notional_usdt": 90.0,
+    "max_one_side_notional_usdt": 90.0,
+    "initial_target_notional_usdt": 90.0
+  },
+  "sizing": {
+    "base_order_policy": "candidate_189_fresh_base_pct_28_scaled_from_90_usdt",
+    "initial_base_order_usdt": 25.2,
+    "dca_scaling": "Scale DCA plan from delegated 90 USDT through the guarded canary path.",
+    "dca_eval_interval_sec": 60.0
+  },
+  "source_leverage": {
+    "mode": "copy",
+    "max_source_leverage": 0.0,
+    "notes": "Copy source Binance follower leverage before MEXC live open/DCA legs."
+  },
+  "safety": {
+    "max_daily_loss_usdt": 4.5,
+    "max_orders_per_hour": 10,
+    "order_error_backoff_sec": 300,
+    "order_error_circuit_sec": 1800,
+    "order_error_max_consecutive": 2,
+    "entry_failure_cooldown_sec": 3600,
+    "poll_sec": 60
+  },
+  "live_orders_enabled": true,
+  "live_ack_env": "VERONIKA_HYPE_MEXC_LIVE_ACK",
+  "live_ack_value": "I_ACCEPT_REAL_MEXC_ORDERS",
+  "symbol_market_constraints": {
+    "HYPEUSDT": {
+      "live_symbol": "HYPE/USDT:USDT",
+      "mexc_contract_code": "HYPE_USDT",
+      "available": true,
+      "contract_size_coin": 0.1,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.1
+    }
+  }
+}

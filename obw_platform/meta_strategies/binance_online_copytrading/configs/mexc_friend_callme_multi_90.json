@@ -1,0 +1,88 @@
+{
+  "schema": "binance_online_copytrading_config_v1",
+  "name": "mexc_friend_callme_multi_90",
+  "paper_notional_usdt": 90.0,
+  "initial_equity_usdt": 90.0,
+  "exchange": "mexc",
+  "paper_exchange": "mexc",
+  "env": {
+    "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+    "api_key_env": "MEXC_IGOR_KEY",
+    "api_secret_env": "MEXC_IGOR_SECRET"
+  },
+  "v21_config": "obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml",
+  "base_order_pct_eq": 5.0,
+  "slippage_bp": 10.0,
+  "ttl_hours": 72.0,
+  "exit_on_reversal": true,
+  "exchange_profile": "mexc_current",
+  "live_orders_enabled": false,
+  "source_leverage": {
+    "mode": "copy",
+    "max_source_leverage": 0.0,
+    "notes": "Live per-symbol runners should copy source Binance follower leverage."
+  },
+  "notes": {
+    "purpose": "MEXC paper/shadow validation for friend allocation",
+    "allocation_usdt": 90.0,
+    "base_order_usdt": 4.5,
+    "source": "Binance copy follower 4512404768792222208",
+    "symbol_scope": "multi-symbol; AMD and MSTR are unavailable on current MEXC USDT swap metadata"
+  },
+  "symbol_market_constraints": {
+    "AMDUSDT": {
+      "live_symbol": "",
+      "mexc_contract_code": "",
+      "available": false,
+      "reason": "MEXC USDT swap market not available in current ccxt market metadata"
+    },
+    "BTCUSDT": {
+      "live_symbol": "BTC/USDT:USDT",
+      "mexc_contract_code": "BTC_USDT",
+      "available": true,
+      "contract_size_coin": 0.0001,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.0001
+    },
+    "ETHUSDT": {
+      "live_symbol": "ETH/USDT:USDT",
+      "mexc_contract_code": "ETH_USDT",
+      "available": true,
+      "contract_size_coin": 0.01,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.01
+    },
+    "MSTRUSDT": {
+      "live_symbol": "",
+      "mexc_contract_code": "",
+      "available": false,
+      "reason": "MEXC USDT swap market not available in current ccxt market metadata"
+    },
+    "PAXGUSDT": {
+      "live_symbol": "PAXG/USDT:USDT",
+      "mexc_contract_code": "PAXG_USDT",
+      "available": true,
+      "contract_size_coin": 0.001,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.001
+    },
+    "SOLUSDT": {
+      "live_symbol": "SOL/USDT:USDT",
+      "mexc_contract_code": "SOL_USDT",
+      "available": true,
+      "contract_size_coin": 0.1,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.1
+    }
+  },
+  "leads": [
+    {
+      "name": "lead_451240_callme_multi_follow_open",
+      "lead_trader_name": "Callme",
+      "portfolio_id": "4512404768792222208",
+      "mode": "follow_open",
+      "delegated_capital_usdt": 90.0,
+      "enabled": true
+    }
+  ]
+}
