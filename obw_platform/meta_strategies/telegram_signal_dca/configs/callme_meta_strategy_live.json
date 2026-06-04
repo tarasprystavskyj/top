@@ -68,8 +68,9 @@
         "exchange_margin_usdt": 564.0,
         "initial_equity_usdt": 253.8,
         "initial_target_notional_usdt": 253.8,
-        "max_notional_usdt": 253.8,
-        "max_one_side_notional_usdt": 253.8
+        "max_notional_usdt": 564.0,
+        "max_one_side_notional_usdt": 564.0,
+        "notes": "GateIO Callme multi-symbol portfolio cap uses full exchange margin while each symbol target remains the legacy 253.8 USDT allocation."
       },
       "env": {
         "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
