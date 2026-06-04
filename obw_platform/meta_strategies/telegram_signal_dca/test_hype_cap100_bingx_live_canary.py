@@ -1484,6 +1484,36 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(args.order_post_throttle_sec, 10)
         self.assertEqual(args.mark_poll_interval_sec, 60)
 
+    def test_veronika_hype_configs_enable_source_box_ratio_without_switching_from_candidate189(self):
+        configs = [
+            "bingx_veronika_hype_live_54.json",
+            "gateio_veronika_hype_live_310.json",
+        ]
+        for name in configs:
+            cfg = Path("obw_platform/meta_strategies/telegram_signal_dca/configs") / name
+            args = live.build_arg_parser().parse_args(["--live-config", str(cfg)])
+            with tempfile.TemporaryDirectory() as td:
+                args.out_dir = td
+                live.normalize_paths(args)
+                live.validate_args(args)
+            sizing = args._live_config["sizing"]
+            self.assertEqual(args.source_size_sync_mode, "ratio", name)
+            self.assertEqual(args.source_size_sync_interval_sec, 60.0, name)
+            self.assertEqual(args.source_size_sync_min_adjust_notional_usdt, 2.0, name)
+            self.assertEqual(sizing["box_config_class"], "Candidate189BoxConfig", name)
+            self.assertEqual(sizing["dca_profile"], "candidate_189_guarded_dca4", name)
+            self.assertEqual(sizing["selected_dca_count"], 4, name)
+
+            plan = live.copy_signal_meta.dca.build_plan(
+                args.initial_equity,
+                args,
+                entry_price=50.0,
+                side="LONG",
+                sizing=sizing,
+            )
+            self.assertEqual(plan["box_config_class"], "Candidate189BoxConfig", name)
+            self.assertEqual(len(plan["add_notionals"]), 4, name)
+
     def test_record_and_upsert_session_helpers_are_noops_without_session_db_and_call_db_with_session_db(self):
         args = make_args(session_db="")
         live.record_session_order(args, now=NOW, symbol="HYPE-USDT", side="LONG", type_="OPEN", price=50.0, qty=0.1, status="FILLED", reason="test")
