@@ -1408,6 +1408,7 @@ def expand_callme_meta_live_config(args: argparse.Namespace, cfg: Dict[str, Any]
         raise SystemExit(f"Callme meta-strategy exchange is disabled: {exchange}")
 
     allocation = cfg.get("allocation") if isinstance(cfg.get("allocation"), dict) else {}
+    exchange_allocation = exchange_cfg.get("allocation") if isinstance(exchange_cfg.get("allocation"), dict) else {}
     default_symbol = cfg.get("default_symbol_config") if isinstance(cfg.get("default_symbol_config"), dict) else {}
     sizing = default_symbol.get("sizing") if isinstance(default_symbol.get("sizing"), dict) else {}
     safety = default_symbol.get("safety") if isinstance(default_symbol.get("safety"), dict) else {}
@@ -1416,8 +1417,17 @@ def expand_callme_meta_live_config(args: argparse.Namespace, cfg: Dict[str, Any]
     env = exchange_cfg.get("env") if isinstance(exchange_cfg.get("env"), dict) else {}
     lead = cfg.get("lead") if isinstance(cfg.get("lead"), dict) else {}
 
-    margin = allocation.get("default_exchange_margin_usdt") or allocation.get("default_max_notional_usdt") or 0.0
-    max_notional = allocation.get("default_max_notional_usdt") or margin
+    margin = (
+        exchange_allocation.get("initial_equity_usdt")
+        or exchange_allocation.get("exchange_margin_usdt")
+        or exchange_allocation.get("max_notional_usdt")
+        or allocation.get("default_exchange_margin_usdt")
+        or allocation.get("default_max_notional_usdt")
+        or 0.0
+    )
+    max_notional = exchange_allocation.get("max_notional_usdt") or exchange_allocation.get("initial_target_notional_usdt") or allocation.get("default_max_notional_usdt") or margin
+    max_one_side = exchange_allocation.get("max_one_side_notional_usdt") or max_notional
+    initial_target = exchange_allocation.get("initial_target_notional_usdt") or max_notional
     constraints: Dict[str, Dict[str, Any]] = {}
     first_live_symbol = ""
     for symbol, symbol_cfg in (cfg.get("symbols") or {}).items():
@@ -1450,9 +1460,9 @@ def expand_callme_meta_live_config(args: argparse.Namespace, cfg: Dict[str, Any]
         "signal": {"portfolio_id": lead.get("portfolio_id"), "copy_symbol": "*"},
         "allocation": {
             "initial_equity_usdt": margin,
-            "initial_target_notional_usdt": max_notional,
+            "initial_target_notional_usdt": initial_target,
             "max_notional_usdt": max_notional,
-            "max_one_side_notional_usdt": max_notional,
+            "max_one_side_notional_usdt": max_one_side,
         },
         "sizing": sizing,
         "safety": safety,

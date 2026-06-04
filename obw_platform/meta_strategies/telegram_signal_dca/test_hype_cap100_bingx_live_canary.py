@@ -591,6 +591,33 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(preflight["reason"], "live_symbol_unresolved")
         self.assertEqual(preflight["symbol_resolution"]["requested_symbol"], "AVGOUSDT")
 
+    def test_callme_meta_config_uses_exchange_allocation_override(self):
+        args = make_args(live_exchange="gateio")
+        cfg = {
+            "schema": "callme_meta_strategy_config_v1",
+            "name": "callme_meta_strategy_live",
+            "lead": {"portfolio_id": "p1"},
+            "allocation": {"default_exchange_margin_usdt": 54.0, "default_max_notional_usdt": 54.0},
+            "default_symbol_config": {"safety": {}, "sizing": {}, "source_leverage": {}, "protection": {}},
+            "exchanges": {
+                "gateio": {
+                    "enabled": True,
+                    "exchange_profile": "gateio_current",
+                    "position_mode": "oneway",
+                    "allocation": {
+                        "initial_equity_usdt": 253.8,
+                        "initial_target_notional_usdt": 253.8,
+                        "max_notional_usdt": 253.8,
+                        "max_one_side_notional_usdt": 253.8,
+                    },
+                }
+            },
+            "symbols": {},
+        }
+        expanded = live.expand_callme_meta_live_config(args, cfg)
+        self.assertEqual(expanded["allocation"]["initial_equity_usdt"], 253.8)
+        self.assertEqual(expanded["allocation"]["max_notional_usdt"], 253.8)
+
     def test_sync_trade_from_exchange_updates_session_open_position(self):
         with tempfile.TemporaryDirectory() as td:
             session_db = str(Path(td) / "session.sqlite")
