@@ -262,6 +262,9 @@ DEFAULT_ORDER_ERROR_BACKOFF_SEC = 300.0
 DEFAULT_ORDER_ERROR_CIRCUIT_SEC = 1800.0
 DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE = 3
 DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC = 3600.0
+DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR = 20
+DEFAULT_ORDER_POST_THROTTLE_SEC = 2.0
+DEFAULT_MARK_POLL_INTERVAL_SEC = 0.0
 
 
 def stable_client_order_id(*parts: Any) -> str:
@@ -1047,6 +1050,7 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
             "max_one_side_notional_usdt": args.max_one_side_notional_usdt,
             "max_daily_loss_usdt": args.max_daily_loss_usdt,
             "max_orders_per_hour": args.max_orders_per_hour,
+            "max_order_attempts_per_hour": getattr(args, "max_order_attempts_per_hour", DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR),
             "deadline_utc": args.deadline_utc,
         },
         "protection": {
@@ -1249,6 +1253,7 @@ def build_hot_restart_snapshot(
             "max_one_side_notional_usdt": args.max_one_side_notional_usdt,
             "max_daily_loss_usdt": args.max_daily_loss_usdt,
             "max_orders_per_hour": args.max_orders_per_hour,
+            "max_order_attempts_per_hour": getattr(args, "max_order_attempts_per_hour", DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR),
             "deadline_utc": args.deadline_utc,
             "protection_account_loss_stop_usdt": getattr(args, "protection_account_loss_stop_usdt", 0.0),
             "protection_floating_pnl_stop_usdt": getattr(args, "protection_floating_pnl_stop_usdt", 0.0),
@@ -1263,8 +1268,10 @@ def build_hot_restart_snapshot(
             "interval_sec": args.interval_sec,
             "dca_eval_interval_sec": args.dca_eval_interval_sec,
             "history_poll_interval_sec": args.history_poll_interval_sec,
+            "mark_poll_interval_sec": getattr(args, "mark_poll_interval_sec", DEFAULT_MARK_POLL_INTERVAL_SEC),
             "order_sync_wait_sec": args.order_sync_wait_sec,
             "order_sync_poll_sec": args.order_sync_poll_sec,
+            "order_post_throttle_sec": getattr(args, "order_post_throttle_sec", DEFAULT_ORDER_POST_THROTTLE_SEC),
         },
         "state": state,
         "status": status,
@@ -1416,13 +1423,16 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
         "max_one_side_notional_usdt": allocation.get("max_one_side_notional_usdt") or allocation.get("max_notional_usdt"),
         "max_daily_loss_usdt": safety.get("max_daily_loss_usdt"),
         "max_orders_per_hour": safety.get("max_orders_per_hour"),
+        "max_order_attempts_per_hour": safety.get("max_order_attempts_per_hour"),
         "order_error_backoff_sec": safety.get("order_error_backoff_sec"),
         "order_error_circuit_sec": safety.get("order_error_circuit_sec"),
         "order_error_max_consecutive": safety.get("order_error_max_consecutive"),
+        "order_post_throttle_sec": safety.get("order_post_throttle_sec"),
         "entry_failure_cooldown_sec": safety.get("entry_failure_cooldown_sec"),
         "interval_sec": cfg.get("poll_sec") or safety.get("poll_sec"),
         "dca_eval_interval_sec": cfg.get("dca_eval_interval_sec") or sizing.get("dca_eval_interval_sec"),
         "history_poll_interval_sec": cfg.get("history_poll_interval_sec"),
+        "mark_poll_interval_sec": cfg.get("mark_poll_interval_sec") or safety.get("mark_poll_interval_sec"),
         "source_leverage_mode": cfg.get("source_leverage_mode") or (cfg.get("source_leverage") if isinstance(cfg.get("source_leverage"), str) else None) or ((cfg.get("source_leverage") or {}).get("mode") if isinstance(cfg.get("source_leverage"), dict) else None),
         "max_source_leverage": cfg.get("max_source_leverage") or ((cfg.get("source_leverage") or {}).get("max_source_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
         "protection_account_loss_stop_usdt": protection_usdt("account_loss_stop_usdt", "account_loss_stop_pct_of_equity"),
@@ -1793,20 +1803,102 @@ def register_order_error_backoff(state: Dict[str, Any], error: str, now: datetim
     prior = state.get("order_error_backoff") if isinstance(state.get("order_error_backoff"), dict) else {}
     consecutive = int(prior.get("consecutive") or 0) + 1
     max_consecutive = max(1, int(getattr(args, "order_error_max_consecutive", DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE) or DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE))
-    delay = float(getattr(args, "order_error_backoff_sec", DEFAULT_ORDER_ERROR_BACKOFF_SEC) or DEFAULT_ORDER_ERROR_BACKOFF_SEC)
+    base_delay = float(getattr(args, "order_error_backoff_sec", DEFAULT_ORDER_ERROR_BACKOFF_SEC) or DEFAULT_ORDER_ERROR_BACKOFF_SEC)
+    circuit_delay = float(getattr(args, "order_error_circuit_sec", DEFAULT_ORDER_ERROR_CIRCUIT_SEC) or DEFAULT_ORDER_ERROR_CIRCUIT_SEC)
+    exp_delay = base_delay * (2 ** max(0, min(consecutive - 1, 8)))
+    jitter_seed = f"{getattr(args, 'run_id', '')}|{text}|{consecutive}".encode("utf-8", errors="replace")
+    jitter_unit = int(hashlib.sha1(jitter_seed).hexdigest()[:8], 16) / float(0xFFFFFFFF)
+    jitter_cap = min(max(base_delay * 0.25, 1.0), 300.0)
+    jitter = jitter_unit * jitter_cap
+    delay = exp_delay + jitter
     reason = "order_error_backoff"
     if consecutive >= max_consecutive:
-        delay = max(delay, float(getattr(args, "order_error_circuit_sec", DEFAULT_ORDER_ERROR_CIRCUIT_SEC) or DEFAULT_ORDER_ERROR_CIRCUIT_SEC))
+        delay = max(delay, circuit_delay + jitter)
         reason = "order_error_circuit_breaker"
     until_ts = now.timestamp() + max(delay, 1.0)
     payload = {
         "reason": reason,
         "last_error": text,
         "consecutive": consecutive,
+        "base_delay_sec": base_delay,
+        "exponential_delay_sec": exp_delay,
+        "jitter_sec": jitter,
+        "delay_sec": max(delay, 1.0),
         "until_ts": until_ts,
         "until_utc": paper.iso(datetime.fromtimestamp(until_ts, tz=timezone.utc)),
     }
     state["order_error_backoff"] = payload
+    return payload
+
+
+def _hour_bucket(now: datetime) -> str:
+    return now.strftime("%Y%m%dT%H")
+
+
+def prune_order_attempts(state: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+    attempts = state.setdefault("order_attempts", {})
+    if not isinstance(attempts, dict):
+        attempts = {}
+        state["order_attempts"] = attempts
+    buckets = attempts.get("hourly")
+    if not isinstance(buckets, dict):
+        buckets = {}
+        attempts["hourly"] = buckets
+    keep = {_hour_bucket(now)}
+    previous = datetime.fromtimestamp(max(0.0, now.timestamp() - 3600.0), tz=timezone.utc)
+    keep.add(_hour_bucket(previous))
+    for key in list(buckets):
+        if key not in keep:
+            buckets.pop(key, None)
+    return attempts
+
+
+def order_attempt_guard_active(state: Dict[str, Any], now: datetime, args: argparse.Namespace) -> Optional[Dict[str, Any]]:
+    attempts = prune_order_attempts(state, now)
+    max_attempts = int(getattr(args, "max_order_attempts_per_hour", DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR) or 0)
+    bucket = _hour_bucket(now)
+    count = int((attempts.get("hourly") or {}).get(bucket) or 0)
+    if max_attempts > 0 and count >= max_attempts:
+        return {
+            "reason": "max_order_attempts_per_hour",
+            "bucket": bucket,
+            "attempts": count,
+            "max_order_attempts_per_hour": max_attempts,
+        }
+    post_until = float(attempts.get("post_throttle_until_ts") or 0.0)
+    if post_until > now.timestamp():
+        return {
+            "reason": "order_post_throttle",
+            "until_ts": post_until,
+            "until_utc": paper.iso(datetime.fromtimestamp(post_until, tz=timezone.utc)),
+            "remaining_sec": max(0.0, post_until - now.timestamp()),
+            "last_attempt": attempts.get("last_attempt"),
+        }
+    return None
+
+
+def register_order_post_attempt(state: Dict[str, Any], now: datetime, args: argparse.Namespace, *, action: str, symbol: str, side: str) -> Dict[str, Any]:
+    attempts = prune_order_attempts(state, now)
+    bucket = _hour_bucket(now)
+    hourly = attempts.setdefault("hourly", {})
+    hourly[bucket] = int(hourly.get(bucket) or 0) + 1
+    throttle_sec = float(getattr(args, "order_post_throttle_sec", DEFAULT_ORDER_POST_THROTTLE_SEC) or 0.0)
+    until_ts = now.timestamp() + max(0.0, throttle_sec)
+    payload = {
+        "action": str(action),
+        "symbol": str(symbol),
+        "side": str(side),
+        "bucket": bucket,
+        "attempts": hourly[bucket],
+        "max_order_attempts_per_hour": int(getattr(args, "max_order_attempts_per_hour", DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR) or 0),
+        "post_throttle_sec": throttle_sec,
+        "post_throttle_until_ts": until_ts,
+        "post_throttle_until_utc": paper.iso(datetime.fromtimestamp(until_ts, tz=timezone.utc)),
+        "utc": paper.iso(now),
+    }
+    attempts["last_attempt"] = payload
+    attempts["post_throttle_until_ts"] = until_ts
+    attempts["post_throttle_until_utc"] = payload["post_throttle_until_utc"]
     return payload
 
 
@@ -2312,13 +2404,31 @@ def load_inputs_live(args: argparse.Namespace, state: Dict[str, Any], now: datet
             "cached_rows": len(positions),
             "last_positions_poll_utc": state.get("last_positions_poll_utc"),
         }
-    try:
-        mark, mark_meta = paper.fetch_mark(session, args.symbol, args.timeout_sec)
-        state["cached_mark"] = mark
-        state["last_mark_poll_utc"] = paper.iso(now)
-    except Exception as exc:
+    mark_interval = float(getattr(args, "mark_poll_interval_sec", DEFAULT_MARK_POLL_INTERVAL_SEC) or 0.0)
+    open_trades = state.get("open_trades") if isinstance(state.get("open_trades"), dict) else {}
+    has_source_or_local_position = bool(positions) or bool(open_trades)
+    last_mark_ts = float(state.get("last_mark_poll_ts") or 0.0)
+    mark_due = has_source_or_local_position or mark_interval <= 0 or not state.get("last_mark_poll_ts") or (now.timestamp() - last_mark_ts) >= mark_interval
+    if mark_due:
+        try:
+            mark, mark_meta = paper.fetch_mark(session, args.symbol, args.timeout_sec)
+            state["cached_mark"] = mark
+            state["last_mark_poll_ts"] = now.timestamp()
+            state["last_mark_poll_utc"] = paper.iso(now)
+            mark_meta["mark_poll_interval_sec"] = mark_interval
+            mark_meta["mark_poll_due"] = True
+        except Exception as exc:
+            mark = state.get("cached_mark")
+            mark_meta = {"error": str(exc), "cached_mark": mark, "last_mark_poll_utc": state.get("last_mark_poll_utc"), "mark_poll_interval_sec": mark_interval, "mark_poll_due": True}
+    else:
         mark = state.get("cached_mark")
-        mark_meta = {"error": str(exc), "cached_mark": mark, "last_mark_poll_utc": state.get("last_mark_poll_utc")}
+        mark_meta = {
+            "skipped": True,
+            "cached_mark": mark,
+            "last_mark_poll_utc": state.get("last_mark_poll_utc"),
+            "mark_poll_interval_sec": mark_interval,
+            "mark_poll_due": False,
+        }
 
     history_interval = float(getattr(args, "history_poll_interval_sec", DEFAULT_HISTORY_POLL_INTERVAL_SEC) or 0.0)
     last_history_ts = float(state.get("last_history_poll_ts") or 0.0)
@@ -2573,6 +2683,19 @@ def live_add_fill(
         fill_type,
         trade.get("next_level_idx"),
     )
+    attempt_guard = order_attempt_guard_active(state, now, args)
+    if attempt_guard:
+        return {
+            "type": "live_entry_blocked",
+            "key": trade.get("key"),
+            "fill_type": fill_type,
+            "reason": str(attempt_guard.get("reason") or "order_attempt_guard"),
+            "order_attempt_guard": attempt_guard,
+            "requested_notional": notional,
+            "effective_order_notional": order_notional,
+            "attempt_key": attempt_key,
+        }
+    post_attempt = register_order_post_attempt(state, now, args, action="OPEN", symbol=trade["symbol"], side=str(trade["side"]))
     submitted = submit_open(args, trade["symbol"], str(trade["side"]), expected_price, order_notional, client_order_id)
     if not submitted.get("ok"):
         error_text = str(submitted.get("error") or "unknown_order_error")
@@ -2589,7 +2712,7 @@ def live_add_fill(
             status="REJECTED",
             reason=error_text,
             exchange_order_id=str(submitted.get("exchange_order_id") or ""),
-            extra={**submitted, "order_error_backoff": backoff_payload, "entry_failure": failure_payload, "attempt_key": attempt_key},
+            extra={**submitted, "order_error_backoff": backoff_payload, "entry_failure": failure_payload, "attempt_key": attempt_key, "post_attempt": post_attempt},
         )
         return {
             "type": "live_entry_failed",
@@ -2605,6 +2728,7 @@ def live_add_fill(
             "attempt_key": attempt_key,
             "backoff": backoff_payload,
             "entry_failure": failure_payload,
+            "post_attempt": post_attempt,
         }
     order = safe_order(submitted.get("order"))
     fill_price = float(submitted.get("fill_price") or avg_price(order, expected_price))
@@ -2644,6 +2768,7 @@ def live_add_fill(
         "source_leverage_mode": leverage_policy.get("mode"),
         "source_margin_mode": leverage_policy.get("source_margin_mode"),
         "leverage_setup": leverage_setup,
+        "post_attempt": post_attempt,
         "qty": qty,
         "requested_base_qty": submitted.get("requested_base_qty"),
         "exchange_preflight": preflight,
@@ -2721,6 +2846,15 @@ def live_close_trade(
             "backoff": backoff,
         }
     client_order_id = stable_client_order_id("exit", args.run_id, trade.get("key"), trade.get("lead_position_id"), trade.get("opened_at_utc"))
+    attempt_guard = order_attempt_guard_active(state, now, args)
+    if attempt_guard:
+        return None, {
+            "type": "live_exit_blocked",
+            "key": trade.get("key"),
+            "reason": str(attempt_guard.get("reason") or "order_attempt_guard"),
+            "order_attempt_guard": attempt_guard,
+        }
+    post_attempt = register_order_post_attempt(state, now, args, action="CLOSE", symbol=trade["symbol"], side=str(trade["side"]))
     submitted = submit_close(args, trade["symbol"], str(trade["side"]), float(trade.get("qty") or 0.0), client_order_id)
     if submitted.get("synced_only"):
         closed = paper.close_trade(trade, now=now, expected_exit=expected_exit, mark=mark, reason=str(submitted.get("reason") or reason), history_row=history_row)
@@ -2755,7 +2889,7 @@ def live_close_trade(
             status="REJECTED",
             reason=error_text,
             exchange_order_id=str(submitted.get("exchange_order_id") or ""),
-            extra={**submitted, "order_error_backoff": backoff_payload},
+            extra={**submitted, "order_error_backoff": backoff_payload, "post_attempt": post_attempt},
         )
         return None, {
             "type": "live_exit_failed",
@@ -2763,6 +2897,7 @@ def live_close_trade(
             "reason": reason,
             "error": error_text,
             "backoff": backoff_payload,
+            "post_attempt": post_attempt,
         }
     order = safe_order(submitted.get("order"))
     exit_price = float(submitted.get("fill_price") or avg_price(order, expected_exit))
@@ -2791,6 +2926,7 @@ def live_close_trade(
     closed["exit_mark_price"] = mark
     closed["client_order_id"] = client_order_id
     closed["exchange_order_id"] = submitted.get("exchange_order_id")
+    closed["exit_post_attempt"] = post_attempt
     upsert_session_position(args, closed, status="CLOSED", now=now, exchange_order_id=str(submitted.get("exchange_order_id") or ""), exit_fill=exit_price, close_reason=reason)
     record_session_order(
         args,
@@ -2803,7 +2939,7 @@ def live_close_trade(
         status="FILLED",
         reason=reason,
         exchange_order_id=str(submitted.get("exchange_order_id") or ""),
-        extra={"closed": closed, "submitted": submitted, "source_history_match": source_meta},
+        extra={"closed": closed, "submitted": submitted, "source_history_match": source_meta, "post_attempt": post_attempt},
     )
     record_order_execution_comparison(
         args,
@@ -2920,6 +3056,7 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["copy_poll_interval_sec"] = args.interval_sec
     payload["dca_eval_interval_sec"] = args.dca_eval_interval_sec
     payload["history_poll_interval_sec"] = args.history_poll_interval_sec
+    payload["mark_poll_interval_sec"] = getattr(args, "mark_poll_interval_sec", DEFAULT_MARK_POLL_INTERVAL_SEC)
     payload["dca_eval_meta"] = getattr(args, "_last_dca_eval_meta", {})
     payload["control"] = control_state(args)
     payload["session_db"] = args.session_db
@@ -2927,6 +3064,9 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["active_pointers"] = active_pointer_sanity(args)
     payload["order_sync_wait_sec"] = args.order_sync_wait_sec
     payload["order_error_backoff"] = state.get("order_error_backoff") if isinstance(state.get("order_error_backoff"), dict) else {}
+    payload["order_attempts"] = state.get("order_attempts") if isinstance(state.get("order_attempts"), dict) else {}
+    payload["max_order_attempts_per_hour"] = getattr(args, "max_order_attempts_per_hour", DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR)
+    payload["order_post_throttle_sec"] = getattr(args, "order_post_throttle_sec", DEFAULT_ORDER_POST_THROTTLE_SEC)
     payload["entry_failures"] = state.get("entry_failures") if isinstance(state.get("entry_failures"), dict) else {}
     payload["leverage_set_cache"] = state.get("leverage_set_cache") if isinstance(state.get("leverage_set_cache"), dict) else {}
     payload["last_leverage_setup"] = state.get("last_leverage_setup") if isinstance(state.get("last_leverage_setup"), dict) else {}
@@ -2986,6 +3126,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--position-mode", choices=["oneway", "hedge"], default=None)
     ap.add_argument("--dca-eval-interval-sec", type=float, default=DEFAULT_DCA_EVAL_INTERVAL_SEC)
     ap.add_argument("--history-poll-interval-sec", type=float, default=DEFAULT_HISTORY_POLL_INTERVAL_SEC)
+    ap.add_argument("--mark-poll-interval-sec", type=float, default=DEFAULT_MARK_POLL_INTERVAL_SEC, help="Minimum seconds between public mark fetches when no source/local position is active; 0 fetches every poll.")
     ap.add_argument("--control-dir", default="", help="Directory containing STOP_NEW_ORDERS and KILL files. Defaults to out-dir.")
     ap.add_argument("--session-db", default="")
     ap.add_argument("--run-id", default="")
@@ -2994,6 +3135,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--order-error-backoff-sec", type=float, default=DEFAULT_ORDER_ERROR_BACKOFF_SEC, help="Minimum private order POST cooldown after an exchange order error.")
     ap.add_argument("--order-error-circuit-sec", type=float, default=DEFAULT_ORDER_ERROR_CIRCUIT_SEC, help="Long private order POST cooldown after repeated/config/rate-limit errors.")
     ap.add_argument("--order-error-max-consecutive", type=int, default=DEFAULT_ORDER_ERROR_MAX_CONSECUTIVE, help="Consecutive order errors before using circuit cooldown.")
+    ap.add_argument("--max-order-attempts-per-hour", type=int, default=DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR, help="Maximum live order POST attempts per UTC hour, counting rejected attempts; 0 disables.")
+    ap.add_argument("--order-post-throttle-sec", type=float, default=DEFAULT_ORDER_POST_THROTTLE_SEC, help="Minimum state-backed spacing between live trade/order POST attempts.")
     ap.add_argument("--entry-failure-cooldown-sec", type=float, default=DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC, help="Cooldown for the same symbol/lead/fill-level after rejected entry.")
     ap.add_argument("--source-leverage-mode", choices=SUPPORTED_SOURCE_LEVERAGE_MODES, default="ignore", help="How to apply Binance copy-source leverage before follower opens/DCA legs.")
     ap.add_argument("--max-source-leverage", type=float, default=0.0, help="Optional cap for effective source leverage; 0 means uncapped.")
@@ -3030,6 +3173,9 @@ def apply_live_exchange_profile(args: argparse.Namespace) -> Dict[str, Any]:
 def normalize_paths(args: argparse.Namespace) -> None:
     args._live_config_resolution = apply_live_config(args)
     args._live_exchange_profile_resolution = apply_live_exchange_profile(args)
+    if str(getattr(args, "live_exchange", "") or "").lower() == "bingx" and float(getattr(args, "interval_sec", 0.0) or 0.0) < 60.0:
+        args.interval_sec = 60.0
+        args._bingx_interval_clamped = True
     paper.normalize_paths(args)
     out_dir = Path(args.out_dir)
     if args.session_db and not Path(args.session_db).is_absolute() and Path(args.session_db).parent == Path("."):
@@ -3051,6 +3197,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("order error cooldowns must be positive")
     if args.order_error_max_consecutive <= 0:
         raise SystemExit("--order-error-max-consecutive must be positive")
+    if args.max_order_attempts_per_hour < 0:
+        raise SystemExit("--max-order-attempts-per-hour must be non-negative")
+    if args.order_post_throttle_sec < 0:
+        raise SystemExit("--order-post-throttle-sec must be non-negative")
+    if args.mark_poll_interval_sec < 0:
+        raise SystemExit("--mark-poll-interval-sec must be non-negative")
+    if str(args.live_exchange or "").lower() == "bingx" and float(args.interval_sec or 0.0) < 60.0:
+        raise SystemExit("BingX live poll interval must be at least 60 seconds")
     if args.max_source_leverage < 0:
         raise SystemExit("--max-source-leverage must be non-negative")
     if args.live_cache_npz_max_bars <= 0:

@@ -38,10 +38,13 @@
   "safety": {
     "max_daily_loss_usdt": 5.39,
     "max_orders_per_hour": 10,
+    "max_order_attempts_per_hour": 6,
+    "order_post_throttle_sec": 10,
     "order_error_backoff_sec": 300,
     "order_error_circuit_sec": 1800,
     "order_error_max_consecutive": 2,
     "entry_failure_cooldown_sec": 3600,
+    "mark_poll_interval_sec": 60,
     "poll_sec": 60
   },
   "protection": {
