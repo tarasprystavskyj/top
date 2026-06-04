@@ -39,6 +39,13 @@
       "margin_mode_override": "cross",
       "max_source_leverage": 0.0
     },
+    "source_size_sync": {
+      "mode": "ratio",
+      "interval_sec": 60.0,
+      "min_change_pct": 0.0,
+      "min_adjust_notional_usdt": 2.0,
+      "notes": "Every poll, compare public source position amount against the last synced amount. If the lead increases/reduces size, proportionally add/reduce the follower position without changing the DCA ladder."
+    },
     "safety": {
       "max_orders_per_hour": 10,
       "max_order_attempts_per_hour": 6,

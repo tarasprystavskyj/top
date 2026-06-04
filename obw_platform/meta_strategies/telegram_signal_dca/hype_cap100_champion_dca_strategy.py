@@ -73,6 +73,14 @@ def build_trade_from_source(pos: Dict[str, Any], plan: Dict[str, Any], *, now: d
     if source_leverage is not None and source_leverage <= 0:
         source_leverage = None
     source_margin_mode = str(pos.get("isolated") or pos.get("margin_mode") or "").strip()
+    try:
+        source_position_amount_abs = abs(float(pos.get("position_amount") or 0.0))
+    except Exception:
+        source_position_amount_abs = 0.0
+    try:
+        source_notional_value_abs = abs(float(pos.get("notional_value") or 0.0))
+    except Exception:
+        source_notional_value_abs = 0.0
     return {
         "key": f"{pos['symbol']}:{side}",
         "lead_position_id": pos.get("id"),
@@ -81,6 +89,9 @@ def build_trade_from_source(pos: Dict[str, Any], plan: Dict[str, Any], *, now: d
         "source_leverage_raw": source_leverage_raw,
         "source_leverage": source_leverage,
         "source_margin_mode": source_margin_mode,
+        "source_position_amount_abs": source_position_amount_abs,
+        "source_notional_value_abs": source_notional_value_abs,
+        "source_size_last_sync_utc": iso_fn(now),
         "opened_at_utc": iso_fn(now),
         "detected_at_ms": int(now.timestamp() * 1000),
         "lead_entry_price": entry,

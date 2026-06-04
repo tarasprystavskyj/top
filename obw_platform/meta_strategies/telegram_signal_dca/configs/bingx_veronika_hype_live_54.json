@@ -25,15 +25,18 @@
     "initial_target_notional_usdt": 53.9
   },
   "sizing": {
-    "base_order_pct_eq": 5.0,
-    "initial_base_order_usdt": 2.695,
-    "dca_scaling": "Scale from delegated BingX 53.9 USDT margin allocation through the guarded canary path.",
+    "base_order_policy": "candidate_189_fresh_base_pct_28_scaled_from_53p9_usdt",
+    "base_order_pct_eq": 28.0,
+    "initial_base_order_usdt": 15.092,
+    "dca_scaling": "Scale from delegated BingX 53.9 USDT margin allocation through candidate-189 guarded canary path.",
     "dca_eval_interval_sec": 60.0
   },
   "source_leverage": {
-    "mode": "copy",
-    "max_source_leverage": 0.0,
-    "notes": "Copy source Binance follower leverage before BingX live open/DCA legs."
+    "mode": "fixed",
+    "margin_mode": "isolated",
+    "fixed_leverage": 2.0,
+    "max_source_leverage": 2.0,
+    "notes": "Use fixed 2x follower leverage before BingX HYPE live open/DCA legs; do not copy higher source leverage."
   },
   "safety": {
     "max_daily_loss_usdt": 5.39,
@@ -53,7 +56,9 @@
     "floating_pnl_stop_pct_of_equity": 35.0,
     "emergency_account_loss_pct_of_equity": 45.0,
     "stale_market_sec": 300,
-    "auto_stop_new_orders": true
+    "auto_stop_new_orders": true,
+    "action_on_breach": "stop_new_orders_only",
+    "existing_positions_policy": "do_not_flatten; existing exposure remains until source close, manual action, or exchange-side close"
   },
   "live_orders_enabled": true,
   "live_ack_env": "VERONIKA_HYPE_BINGX_LIVE_ACK",

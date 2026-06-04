@@ -73,8 +73,13 @@ def make_args(**overrides):
         entry_failure_cooldown_sec=3600.0,
         mark_poll_interval_sec=0.0,
         source_leverage_mode="ignore",
-        max_source_leverage=0.0,
         source_margin_mode_override="",
+        fixed_source_leverage=0.0,
+        max_source_leverage=0.0,
+        source_size_sync_mode="off",
+        source_size_sync_interval_sec=60.0,
+        source_size_sync_min_change_pct=0.0,
+        source_size_sync_min_adjust_notional_usdt=0.0,
         hot_restart_snapshot_path="",
         resume_snapshot="",
         resume_snapshot_overwrite=False,
@@ -461,6 +466,84 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         forced_cross = live.effective_source_leverage(make_args(source_leverage_mode="copy_div2", source_margin_mode_override="cross"), {**trade, "source_margin_mode": "isolated"})
         self.assertEqual(forced_cross["effective_leverage"], 3.0)
         self.assertEqual(forced_cross["source_margin_mode"], "cross")
+        fixed = live.effective_source_leverage(make_args(source_leverage_mode="fixed", fixed_source_leverage=2.0), trade)
+        self.assertEqual(fixed["effective_leverage"], 2.0)
+        fixed_capped = live.effective_source_leverage(
+            make_args(source_leverage_mode="fixed", fixed_source_leverage=3.0, max_source_leverage=2.0),
+            trade,
+        )
+        self.assertEqual(fixed_capped["effective_leverage"], 2.0)
+
+    def test_source_size_sync_increase_scales_current_notional_without_advancing_dca(self):
+        args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0)
+        state = {"equity": 30.0, "open_trades": {}}
+        trade = open_trade()
+        trade["source_size_measure"] = 5.0
+        trade["source_position_amount_abs"] = 5.0
+        state["open_trades"][trade["key"]] = trade
+        source = {
+            trade["key"]: {
+                "symbol": "HYPEUSDT",
+                "side": "LONG",
+                "position_amount": 7.5,
+                "notional_value": 375.0,
+            }
+        }
+
+        def fake_add_fill(_state, got_trade, **kwargs):
+            got_trade["notional"] = float(got_trade["notional"]) + float(kwargs["notional"])
+            got_trade["qty"] = float(got_trade["qty"]) + float(kwargs["notional"]) / float(kwargs["expected_price"])
+            return {"type": "live_fill", "key": got_trade["key"], "fill": {"effective_order_notional": kwargs["notional"]}}
+
+        with patch.object(live, "live_add_fill", side_effect=fake_add_fill) as add_fill:
+            events = live.apply_source_size_sync(state, state["open_trades"], source, 50.0, NOW, args)
+
+        self.assertEqual(add_fill.call_count, 1)
+        self.assertAlmostEqual(add_fill.call_args.kwargs["notional"], 5.0)
+        self.assertEqual(add_fill.call_args.kwargs["fill_type"], "source_size_increase")
+        self.assertEqual(trade["next_level_idx"], 0)
+        self.assertAlmostEqual(trade["notional"], 15.0)
+        self.assertAlmostEqual(trade["source_size_measure"], 7.5)
+        self.assertEqual(events[0]["type"], "source_size_observed")
+        self.assertEqual(events[1]["type"], "live_fill")
+
+    def test_source_size_sync_reduce_is_partial_and_keeps_trade_open(self):
+        args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0)
+        state = {"equity": 30.0, "open_trades": {}}
+        trade = open_trade()
+        trade.update({"source_size_measure": 10.0, "source_position_amount_abs": 10.0, "fees_paid": 0.10})
+        state["open_trades"][trade["key"]] = trade
+        source = {
+            trade["key"]: {
+                "symbol": "HYPEUSDT",
+                "side": "LONG",
+                "position_amount": 5.0,
+                "notional_value": 250.0,
+            }
+        }
+        submitted = {
+            "ok": True,
+            "order": {"id": "close-1", "average": 55.0},
+            "qty": 0.1,
+            "fill_price": 55.0,
+            "fill_dt": NOW.isoformat(),
+            "ccxt_symbol": "HYPE/USDT:USDT",
+            "exchange_order_id": "close-1",
+            "exchange_position_after": {"qty": 0.1, "entry": 50.0},
+        }
+
+        with patch.object(live, "submit_close", return_value=submitted) as submit_close:
+            events = live.apply_source_size_sync(state, state["open_trades"], source, 55.0, NOW, args)
+
+        self.assertEqual(submit_close.call_count, 1)
+        self.assertAlmostEqual(submit_close.call_args.args[3], 0.0909090909)
+        self.assertAlmostEqual(trade["qty"], 0.1)
+        self.assertAlmostEqual(trade["notional"], 5.0)
+        self.assertAlmostEqual(trade["source_size_measure"], 5.0)
+        self.assertGreater(state["equity"], 30.0)
+        self.assertIn(trade["key"], state["open_trades"])
+        self.assertEqual(events[0]["type"], "source_size_observed")
+        self.assertEqual(events[1]["type"], "live_source_size_reduce")
 
     def test_ensure_symbol_leverage_bingx_hedge_is_side_specific_and_cached(self):
         args = make_args(live_exchange="bingx", position_mode="hedge")
@@ -574,7 +657,7 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         args._live_client = FakeClient()
         trade = open_trade()
         with patch.object(live, "_fetch_exchange_position", return_value={"qty": 0.3, "entry": 51.0}):
-            meta = live.sync_trade_from_exchange(args, trade)
+            meta = live.sync_trade_from_exchange(args, {}, trade)
         self.assertTrue(meta["synced"])
         self.assertEqual(trade["qty"], 0.3)
         self.assertEqual(trade["avg_entry"], 51.0)
@@ -630,7 +713,7 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             args._live_client = FakeClient()
             trade = open_trade()
             with patch.object(live, "_fetch_exchange_position", return_value={"qty": 0.3, "entry": 51.0}), patch.object(live.paper, "utc_now", return_value=NOW):
-                meta = live.sync_trade_from_exchange(args, trade)
+                meta = live.sync_trade_from_exchange(args, {}, trade)
             self.assertTrue(meta["synced"])
             con = sqlite3.connect(session_db)
             try:
@@ -638,6 +721,19 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             finally:
                 con.close()
             self.assertEqual(row, (0.3, 51.0, "OPEN"))
+
+    def test_sync_trade_from_exchange_applies_fixed_leverage_to_existing_open_position(self):
+        args = make_args(source_leverage_mode="fixed", fixed_source_leverage=2.0, source_margin_mode_override="isolated", live_exchange="gateio")
+        args._live_client = FakeClient()
+        trade = open_trade()
+        state = {}
+        with patch.object(live, "_fetch_exchange_position", return_value={"qty": 0.3, "entry": 51.0}), patch.object(live.paper, "utc_now", return_value=NOW):
+            meta = live.sync_trade_from_exchange(args, state, trade)
+        self.assertTrue(meta["synced"])
+        self.assertTrue(meta["leverage_setup"]["ok"])
+        self.assertEqual(args._live_client.ex.leverage_calls[0][0], 2)
+        self.assertEqual(args._live_client.ex.leverage_calls[0][2]["marginMode"], "isolated")
+        self.assertEqual(state["last_leverage_setup"]["leverage"], 2.0)
 
     def test_live_add_fill_blocks_on_stop_file_without_order(self):
         with tempfile.TemporaryDirectory() as td:

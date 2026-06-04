@@ -228,7 +228,7 @@ DEFAULT_HTX_FRIEND_LIVE_CONFIG = ROOT / "meta_strategies" / "telegram_signal_dca
 DEFAULT_LIVE_SYMBOL = "HYPE-USDT"
 SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio", "htx", "mexc")
 SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy", "htx_current", "mexc_current")
-SUPPORTED_SOURCE_LEVERAGE_MODES = ("ignore", "copy", "copy_div2")
+SUPPORTED_SOURCE_LEVERAGE_MODES = ("ignore", "copy", "copy_div2", "fixed")
 LIVE_EXCHANGE_PROFILES = {
     "gateio_current": {
         "live_exchange": "gateio",
@@ -265,6 +265,7 @@ DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC = 3600.0
 DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR = 20
 DEFAULT_ORDER_POST_THROTTLE_SEC = 2.0
 DEFAULT_MARK_POLL_INTERVAL_SEC = 0.0
+DEFAULT_SOURCE_SIZE_SYNC_INTERVAL_SEC = 60.0
 
 
 def stable_client_order_id(*parts: Any) -> str:
@@ -1040,6 +1041,8 @@ def write_live_strategy_params_artifact(args: argparse.Namespace, status: Dict[s
         "position_mode": args.position_mode,
         "source_leverage_policy": {
             "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+            "source_margin_mode_override": getattr(args, "source_margin_mode_override", ""),
+            "fixed_source_leverage": getattr(args, "fixed_source_leverage", 0.0),
             "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
         },
         "long_only": bool(args.long_only),
@@ -1263,6 +1266,8 @@ def build_hot_restart_snapshot(
             "protection_require_premium_ok": bool(getattr(args, "protection_require_premium_ok", False)),
             "protection_auto_stop_new_orders": bool(getattr(args, "protection_auto_stop_new_orders", False)),
             "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+            "source_margin_mode_override": getattr(args, "source_margin_mode_override", ""),
+            "fixed_source_leverage": getattr(args, "fixed_source_leverage", 0.0),
             "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
             "long_only": bool(args.long_only),
             "interval_sec": args.interval_sec,
@@ -1414,6 +1419,7 @@ def expand_callme_meta_live_config(args: argparse.Namespace, cfg: Dict[str, Any]
     safety = default_symbol.get("safety") if isinstance(default_symbol.get("safety"), dict) else {}
     protection = default_symbol.get("protection") if isinstance(default_symbol.get("protection"), dict) else {}
     source_leverage = default_symbol.get("source_leverage") if isinstance(default_symbol.get("source_leverage"), dict) else {}
+    source_size_sync = default_symbol.get("source_size_sync") if isinstance(default_symbol.get("source_size_sync"), dict) else {}
     env = exchange_cfg.get("env") if isinstance(exchange_cfg.get("env"), dict) else {}
     lead = cfg.get("lead") if isinstance(cfg.get("lead"), dict) else {}
 
@@ -1468,6 +1474,7 @@ def expand_callme_meta_live_config(args: argparse.Namespace, cfg: Dict[str, Any]
         "safety": safety,
         "protection": protection,
         "source_leverage": source_leverage,
+        "source_size_sync": source_size_sync,
         "poll_sec": safety.get("poll_sec"),
         "dca_eval_interval_sec": sizing.get("dca_eval_interval_sec"),
         "mark_poll_interval_sec": safety.get("mark_poll_interval_sec"),
@@ -1492,6 +1499,7 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
     sizing = cfg.get("sizing") if isinstance(cfg.get("sizing"), dict) else {}
     safety = cfg.get("safety") if isinstance(cfg.get("safety"), dict) else {}
     protection = cfg.get("protection") if isinstance(cfg.get("protection"), dict) else {}
+    source_size_sync = cfg.get("source_size_sync") if isinstance(cfg.get("source_size_sync"), dict) else {}
     signal = cfg.get("signal") if isinstance(cfg.get("signal"), dict) else {}
     protection_equity = (
         allocation.get("max_notional_usdt")
@@ -1537,7 +1545,14 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
         "mark_poll_interval_sec": cfg.get("mark_poll_interval_sec") or safety.get("mark_poll_interval_sec"),
         "source_leverage_mode": cfg.get("source_leverage_mode") or (cfg.get("source_leverage") if isinstance(cfg.get("source_leverage"), str) else None) or ((cfg.get("source_leverage") or {}).get("mode") if isinstance(cfg.get("source_leverage"), dict) else None),
         "max_source_leverage": cfg.get("max_source_leverage") or ((cfg.get("source_leverage") or {}).get("max_source_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
-        "source_margin_mode_override": cfg.get("source_margin_mode_override") or ((cfg.get("source_leverage") or {}).get("margin_mode_override") if isinstance(cfg.get("source_leverage"), dict) else None),
+        "fixed_source_leverage": cfg.get("fixed_source_leverage") or ((cfg.get("source_leverage") or {}).get("fixed_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
+        "source_margin_mode_override": cfg.get("source_margin_mode_override")
+        or ((cfg.get("source_leverage") or {}).get("margin_mode_override") if isinstance(cfg.get("source_leverage"), dict) else None)
+        or ((cfg.get("source_leverage") or {}).get("margin_mode") if isinstance(cfg.get("source_leverage"), dict) else None),
+        "source_size_sync_mode": cfg.get("source_size_sync_mode") or source_size_sync.get("mode"),
+        "source_size_sync_interval_sec": cfg.get("source_size_sync_interval_sec") or source_size_sync.get("interval_sec"),
+        "source_size_sync_min_change_pct": cfg.get("source_size_sync_min_change_pct") or source_size_sync.get("min_change_pct"),
+        "source_size_sync_min_adjust_notional_usdt": cfg.get("source_size_sync_min_adjust_notional_usdt") or source_size_sync.get("min_adjust_notional_usdt"),
         "protection_account_loss_stop_usdt": protection_usdt("account_loss_stop_usdt", "account_loss_stop_pct_of_equity"),
         "protection_floating_pnl_stop_usdt": protection_usdt("floating_pnl_stop_usdt", "floating_pnl_stop_pct_of_equity"),
         "protection_emergency_account_loss_usdt": protection_usdt("emergency_account_loss_usdt", "emergency_account_loss_pct_of_equity"),
@@ -1758,7 +1773,7 @@ def effective_source_leverage(args: argparse.Namespace, trade: Dict[str, Any]) -
     source = parse_source_leverage(trade.get("source_leverage"))
     if source is None:
         source = parse_source_leverage(raw)
-    margin_mode = normalize_source_margin_mode(getattr(args, "source_margin_mode_override", "") or trade.get("source_margin_mode"))
+    margin_mode = normalize_source_margin_mode(getattr(args, "source_margin_mode_override", "")) or normalize_source_margin_mode(trade.get("source_margin_mode"))
     out = {
         "mode": mode,
         "source_leverage_raw": raw,
@@ -1768,6 +1783,17 @@ def effective_source_leverage(args: argparse.Namespace, trade: Dict[str, Any]) -
         "required": mode != "ignore",
     }
     if mode == "ignore":
+        return out
+    if mode == "fixed":
+        fixed = parse_source_leverage(getattr(args, "fixed_source_leverage", None))
+        if fixed is None:
+            out["error"] = "missing_fixed_source_leverage"
+            return out
+        effective = fixed
+        max_leverage = parse_source_leverage(getattr(args, "max_source_leverage", None))
+        if max_leverage is not None:
+            effective = min(effective, max_leverage)
+        out["effective_leverage"] = max(1.0, float(effective))
         return out
     if source is None:
         out["error"] = "missing_source_leverage"
@@ -2663,7 +2689,7 @@ def sleep_until_next_poll(interval_sec: float) -> None:
     time.sleep(delay)
 
 
-def sync_trade_from_exchange(args: argparse.Namespace, trade: Dict[str, Any]) -> Dict[str, Any]:
+def sync_trade_from_exchange(args: argparse.Namespace, state: Dict[str, Any], trade: Dict[str, Any]) -> Dict[str, Any]:
     client = live_client(args)
     ccxt_symbol, symbol_resolution = resolve_live_trade_symbol(args, client, trade.get("symbol") or "")
     if not ccxt_symbol:
@@ -2678,9 +2704,329 @@ def sync_trade_from_exchange(args: argparse.Namespace, trade: Dict[str, Any]) ->
         trade["avg_entry"] = entry
         trade["notional"] = qty * entry
         trade["exchange_position"] = ex_pos
+        leverage_policy = effective_source_leverage(args, trade)
+        leverage_setup: Dict[str, Any] = {"ok": True, "policy": leverage_policy, "skipped": True}
+        if leverage_policy.get("required") and leverage_policy.get("effective_leverage") is not None:
+            leverage_setup = ensure_symbol_leverage(
+                args,
+                state,
+                symbol=str(trade.get("symbol") or args.symbol),
+                side=str(trade.get("side") or "LONG"),
+                margin_mode=str(leverage_policy.get("source_margin_mode") or ""),
+                leverage=float(leverage_policy["effective_leverage"]),
+                now=paper.utc_now(),
+            )
+            leverage_setup["policy"] = leverage_policy
+        trade["leverage_setup"] = leverage_setup
         upsert_session_position(args, trade, status="OPEN", now=paper.utc_now(), exchange_order_id=str(trade.get("exchange_order_id") or ""))
-        return {"synced": True, "qty": qty, "entry": entry, "notional": trade["notional"], "ccxt_symbol": ccxt_symbol}
+        return {"synced": True, "qty": qty, "entry": entry, "notional": trade["notional"], "ccxt_symbol": ccxt_symbol, "leverage_setup": leverage_setup}
     return {"synced": False, "reason": "exchange_position_zero", "ccxt_symbol": ccxt_symbol}
+
+
+def source_size_sync_enabled(args: argparse.Namespace) -> bool:
+    return str(getattr(args, "source_size_sync_mode", "off") or "off").strip().lower() == "ratio"
+
+
+def source_size_snapshot(pos: Dict[str, Any]) -> Dict[str, Any]:
+    amount_abs = 0.0
+    notional_abs = 0.0
+    try:
+        amount_abs = abs(float(pos.get("position_amount") or 0.0))
+    except Exception:
+        amount_abs = 0.0
+    try:
+        notional_abs = abs(float(pos.get("notional_value") or 0.0))
+    except Exception:
+        notional_abs = 0.0
+    measure = amount_abs if amount_abs > 0 else notional_abs
+    measure_field = "position_amount_abs" if amount_abs > 0 else "notional_value_abs"
+    return {
+        "source_position_amount_abs": amount_abs,
+        "source_notional_value_abs": notional_abs,
+        "source_size_measure": measure,
+        "source_size_measure_field": measure_field,
+    }
+
+
+def update_trade_source_size_snapshot(trade: Dict[str, Any], snapshot: Dict[str, Any], now: datetime) -> None:
+    trade["source_position_amount_abs"] = float(snapshot.get("source_position_amount_abs") or 0.0)
+    trade["source_notional_value_abs"] = float(snapshot.get("source_notional_value_abs") or 0.0)
+    trade["source_size_measure"] = float(snapshot.get("source_size_measure") or 0.0)
+    trade["source_size_measure_field"] = str(snapshot.get("source_size_measure_field") or "")
+    trade["source_size_last_sync_utc"] = paper.iso(now)
+
+
+def source_size_sync_due(trade: Dict[str, Any], now: datetime, args: argparse.Namespace) -> bool:
+    interval = float(getattr(args, "source_size_sync_interval_sec", DEFAULT_SOURCE_SIZE_SYNC_INTERVAL_SEC) or 0.0)
+    if interval <= 0:
+        return True
+    last = copy_signal_meta.parse_iso_dt(trade.get("source_size_last_checked_utc"))
+    if not last:
+        return True
+    return (now - last).total_seconds() >= max(interval - 0.5, 0.0)
+
+
+def source_size_observation_event(key: str, trade: Dict[str, Any], snapshot: Dict[str, Any], now: datetime, *, changed: bool, ratio: Optional[float] = None) -> Dict[str, Any]:
+    return {
+        "type": "source_size_observed",
+        "key": key,
+        "utc": paper.iso(now),
+        "symbol": trade.get("symbol"),
+        "side": trade.get("side"),
+        "changed": bool(changed),
+        "ratio": ratio,
+        "source_position_amount_abs": snapshot.get("source_position_amount_abs"),
+        "source_notional_value_abs": snapshot.get("source_notional_value_abs"),
+        "source_size_measure": snapshot.get("source_size_measure"),
+        "source_size_measure_field": snapshot.get("source_size_measure_field"),
+        "previous_source_size_measure": trade.get("source_size_measure"),
+        "follower_notional": trade.get("notional"),
+        "follower_qty": trade.get("qty"),
+    }
+
+
+def record_source_size_observation(state: Dict[str, Any], event: Dict[str, Any]) -> None:
+    state.setdefault("source_size_observations", []).append(event)
+    state["source_size_observations"] = state["source_size_observations"][-5000:]
+
+
+def live_reduce_for_source_size(
+    state: Dict[str, Any],
+    trade: Dict[str, Any],
+    *,
+    now: datetime,
+    expected_price: float,
+    reduce_notional: float,
+    source_snapshot: Dict[str, Any],
+    ratio: float,
+    args: argparse.Namespace,
+) -> Dict[str, Any]:
+    backoff = order_error_backoff_active(state, now)
+    if backoff:
+        return {
+            "type": "live_source_size_reduce_blocked",
+            "key": trade.get("key"),
+            "reason": str(backoff.get("reason") or "order_error_backoff"),
+            "backoff": backoff,
+            "requested_reduce_notional": reduce_notional,
+        }
+    attempt_guard = order_attempt_guard_active(state, now, args)
+    if attempt_guard:
+        return {
+            "type": "live_source_size_reduce_blocked",
+            "key": trade.get("key"),
+            "reason": str(attempt_guard.get("reason") or "order_attempt_guard"),
+            "order_attempt_guard": attempt_guard,
+            "requested_reduce_notional": reduce_notional,
+        }
+    qty = float(trade.get("qty") or 0.0)
+    avg_entry = float(trade.get("avg_entry") or expected_price or 0.0)
+    if qty <= 0 or avg_entry <= 0:
+        return {"type": "live_source_size_reduce_skipped", "key": trade.get("key"), "reason": "trade_qty_or_entry_missing", "requested_reduce_notional": reduce_notional}
+    reduce_qty = min(qty, max(float(reduce_notional), 0.0) / max(float(expected_price or avg_entry), 1e-12))
+    if reduce_qty <= 0:
+        return {"type": "live_source_size_reduce_skipped", "key": trade.get("key"), "reason": "reduce_qty_zero", "requested_reduce_notional": reduce_notional}
+    client_order_id = stable_client_order_id(
+        "source-size-reduce",
+        args.run_id,
+        trade.get("key"),
+        trade.get("lead_position_id"),
+        trade.get("opened_at_utc"),
+        source_snapshot.get("source_size_measure"),
+    )
+    post_attempt = register_order_post_attempt(state, now, args, action="CLOSE", symbol=str(trade.get("symbol") or args.live_symbol), side=str(trade.get("side") or "LONG"))
+    submitted = submit_close(args, str(trade["symbol"]), str(trade["side"]), reduce_qty, client_order_id)
+    if not submitted.get("ok"):
+        error_text = str(submitted.get("error") or "unknown_order_error")
+        backoff_payload = register_order_error_backoff(state, error_text, now, args)
+        record_session_order(
+            args,
+            now=now,
+            symbol=str(trade.get("symbol") or args.live_symbol),
+            side=str(trade["side"]),
+            type_="CLOSE",
+            price=expected_price,
+            qty=reduce_qty,
+            status="REJECTED",
+            reason="source_size_reduce_failed",
+            exchange_order_id=str(submitted.get("exchange_order_id") or ""),
+            extra={**submitted, "order_error_backoff": backoff_payload, "post_attempt": post_attempt, "source_size_sync": source_snapshot},
+        )
+        return {
+            "type": "live_source_size_reduce_failed",
+            "key": trade.get("key"),
+            "reason": "source_size_reduce_failed",
+            "error": error_text,
+            "requested_reduce_notional": reduce_notional,
+            "backoff": backoff_payload,
+            "post_attempt": post_attempt,
+        }
+    order = safe_order(submitted.get("order"))
+    fill_price = float(submitted.get("fill_price") or avg_price(order, expected_price))
+    filled_qty = min(float(submitted.get("qty") or reduce_qty), qty)
+    exit_fee = order_fee_usdt(submitted.get("order") if isinstance(submitted.get("order"), dict) else order)
+    closed_entry_notional = filled_qty * avg_entry
+    old_fees = float(trade.get("fees_paid") or 0.0)
+    closed_fee_share = old_fees * min(max(filled_qty / max(qty, 1e-12), 0.0), 1.0)
+    realized_pnl = paper.ret_for(str(trade["side"]), avg_entry, fill_price) * closed_entry_notional - closed_fee_share - exit_fee
+    old_notional = float(trade.get("notional") or closed_entry_notional)
+    ex_after = submitted.get("exchange_position_after")
+    if isinstance(ex_after, dict) and float(ex_after.get("qty") or 0.0) > 0 and float(ex_after.get("entry") or 0.0) > 0:
+        trade["qty"] = float(ex_after.get("qty") or 0.0)
+        trade["avg_entry"] = float(ex_after.get("entry") or avg_entry)
+        trade["notional"] = trade["qty"] * trade["avg_entry"]
+        trade["exchange_position"] = ex_after
+    else:
+        new_qty = max(qty - filled_qty, 0.0)
+        trade["qty"] = new_qty
+        trade["avg_entry"] = avg_entry if new_qty > 0 else 0.0
+        trade["notional"] = new_qty * avg_entry
+        trade["exchange_position"] = ex_after or {}
+    trade["fees_paid"] = max(old_fees - closed_fee_share, 0.0)
+    state["equity"] = float(state.get("equity") or args.initial_equity) + realized_pnl
+    exit_lag = fill_lag_sec(now, submitted.get("fill_dt"))
+    exit_slip = signed_slip_bp(str(trade["side"]), expected_price, fill_price, is_close=True)
+    fill = {
+        "ts_ms": int(now.timestamp() * 1000),
+        "utc": paper.iso(now),
+        "risk_action": "source_size_reduce",
+        "symbol": trade["symbol"],
+        "live_symbol": submitted.get("ccxt_symbol"),
+        "side": trade["side"],
+        "fill_type": "source_size_reduce",
+        "reason": "source_position_amount_decreased",
+        "expected_price": expected_price,
+        "live_fill_price": fill_price,
+        "requested_reduce_notional": reduce_notional,
+        "closed_entry_notional": closed_entry_notional,
+        "old_notional": old_notional,
+        "new_notional": trade["notional"],
+        "source_size_ratio": ratio,
+        "source_size_snapshot": source_snapshot,
+        "qty": filled_qty,
+        "post_trade_position_qty": submitted.get("post_trade_position_qty"),
+        "fee_usdt": exit_fee,
+        "closed_open_fee_share_usdt": closed_fee_share,
+        "realized_pnl_usdt": realized_pnl,
+        "exit_slip_bp": exit_slip,
+        "exit_lag_sec": exit_lag,
+        "paper_only": False,
+        "live_order": order,
+        "client_order_id": client_order_id,
+        "exchange_order_id": submitted.get("exchange_order_id"),
+        "fill_dt": submitted.get("fill_dt"),
+        "exchange_position_after": ex_after,
+        "post_attempt": post_attempt,
+    }
+    state.setdefault("paper_orders", []).append(fill)
+    state["paper_orders"] = state["paper_orders"][-5000:]
+    trade.setdefault("fills", []).append(fill)
+    trade["exchange_order_id"] = submitted.get("exchange_order_id")
+    record_session_order(
+        args,
+        now=now,
+        symbol=str(trade.get("symbol") or args.live_symbol),
+        side=str(trade["side"]),
+        type_="CLOSE",
+        price=fill_price,
+        qty=filled_qty,
+        status="FILLED",
+        reason="source_size_reduce",
+        exchange_order_id=str(submitted.get("exchange_order_id") or ""),
+        extra={"fill": fill, "submitted": submitted, "source_size_sync": source_snapshot, "post_attempt": post_attempt},
+    )
+    upsert_session_position(args, trade, status="OPEN", now=now, exchange_order_id=str(submitted.get("exchange_order_id") or ""))
+    clear_order_error_backoff(state)
+    return {"type": "live_source_size_reduce", "key": trade.get("key"), "fill": fill}
+
+
+def apply_source_size_sync(
+    state: Dict[str, Any],
+    open_trades: Dict[str, Dict[str, Any]],
+    current_source: Dict[str, Dict[str, Any]],
+    mark: Optional[float],
+    now: datetime,
+    args: argparse.Namespace,
+) -> List[Dict[str, Any]]:
+    if not source_size_sync_enabled(args):
+        return []
+    events: List[Dict[str, Any]] = []
+    min_change_pct = max(float(getattr(args, "source_size_sync_min_change_pct", 0.0) or 0.0), 0.0)
+    min_adjust_notional = max(float(getattr(args, "source_size_sync_min_adjust_notional_usdt", 0.0) or 0.0), 0.0)
+    for key in sorted(set(open_trades) & set(current_source)):
+        trade = open_trades[key]
+        if not source_size_sync_due(trade, now, args):
+            continue
+        pos = current_source[key]
+        snapshot = source_size_snapshot(pos)
+        trade["source_size_last_checked_utc"] = paper.iso(now)
+        previous = float(trade.get("source_size_measure") or trade.get("source_position_amount_abs") or trade.get("source_notional_value_abs") or 0.0)
+        current = float(snapshot.get("source_size_measure") or 0.0)
+        if previous <= 0 or current <= 0:
+            observation = source_size_observation_event(key, trade, snapshot, now, changed=False, ratio=None)
+            observation["reason"] = "source_size_seed_or_missing"
+            record_source_size_observation(state, observation)
+            events.append(observation)
+            update_trade_source_size_snapshot(trade, snapshot, now)
+            continue
+        ratio = current / previous
+        change_pct = abs(ratio - 1.0) * 100.0
+        changed = change_pct > 0.0
+        observation = source_size_observation_event(key, trade, snapshot, now, changed=changed, ratio=ratio)
+        observation["change_pct"] = change_pct
+        record_source_size_observation(state, observation)
+        events.append(observation)
+        if not changed or change_pct < min_change_pct:
+            if changed:
+                observation["action"] = "source_size_change_below_min_change_pct"
+            update_trade_source_size_snapshot(trade, snapshot, now)
+            continue
+        current_notional = float(trade.get("notional") or 0.0)
+        desired_notional = current_notional * ratio
+        delta_notional = desired_notional - current_notional
+        abs_delta = abs(delta_notional)
+        observation["desired_follower_notional"] = desired_notional
+        observation["delta_notional"] = delta_notional
+        if abs_delta < min_adjust_notional:
+            observation["action"] = "source_size_change_below_min_adjust_notional"
+            update_trade_source_size_snapshot(trade, snapshot, now)
+            continue
+        expected_price = float(copy_signal_meta.mark_for_symbol(args, mark, trade.get("symbol")) or trade.get("last_mark") or trade.get("avg_entry") or trade.get("lead_entry_price") or 0.0)
+        if expected_price <= 0:
+            observation["action"] = "source_size_sync_skipped_missing_price"
+            continue
+        if delta_notional > 0:
+            event = live_add_fill(
+                state,
+                trade,
+                now=now,
+                expected_price=expected_price,
+                notional=delta_notional,
+                fill_type="source_size_increase",
+                reason="source_position_amount_increased",
+                mark=mark,
+                args=args,
+            )
+            event["source_size_sync"] = {**snapshot, "previous_measure": previous, "ratio": ratio, "delta_notional": delta_notional}
+            if event.get("type") == "live_fill":
+                update_trade_source_size_snapshot(trade, snapshot, now)
+            events.append(event)
+            continue
+        event = live_reduce_for_source_size(
+            state,
+            trade,
+            now=now,
+            expected_price=expected_price,
+            reduce_notional=abs_delta,
+            source_snapshot=snapshot,
+            ratio=ratio,
+            args=args,
+        )
+        event["source_size_sync"] = {**snapshot, "previous_measure": previous, "ratio": ratio, "delta_notional": delta_notional}
+        if event.get("type") == "live_source_size_reduce":
+            update_trade_source_size_snapshot(trade, snapshot, now)
+        events.append(event)
+    return events
 
 
 def seed_open_trades_from_exchange(
@@ -3175,14 +3521,17 @@ def apply_live_snapshot(
     events: List[Dict[str, Any]] = list(seed_events)
     events.extend(plan.get("events") or [])
     current_keys = set(plan.get("current_keys") or set())
+    current_source, _source_size_filter_events = copy_signal_meta.filter_source_positions(positions, symbol=args.symbol, long_only=bool(args.long_only))
     open_trades: Dict[str, Dict[str, Any]] = state.setdefault("open_trades", {})
     dca_blocked_keys = set()
 
     for key in sorted(current_keys & set(open_trades)):
         trade = open_trades[key]
-        sync_meta = sync_trade_from_exchange(args, trade)
+        sync_meta = sync_trade_from_exchange(args, state, trade)
         if sync_meta.get("synced"):
             events.append({"type": "exchange_position_synced", "key": key, **sync_meta})
+
+    events.extend(apply_source_size_sync(state, open_trades, current_source, mark, now, args))
 
     for intent in plan.get("intents") or []:
         key = str(intent.get("key") or "")
@@ -3255,7 +3604,16 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["position_mode"] = args.position_mode
     payload["source_leverage_policy"] = {
         "source_leverage_mode": getattr(args, "source_leverage_mode", "ignore"),
+        "source_margin_mode_override": getattr(args, "source_margin_mode_override", ""),
+        "fixed_source_leverage": getattr(args, "fixed_source_leverage", 0.0),
         "max_source_leverage": getattr(args, "max_source_leverage", 0.0),
+    }
+    payload["source_size_sync"] = {
+        "mode": getattr(args, "source_size_sync_mode", "off"),
+        "interval_sec": getattr(args, "source_size_sync_interval_sec", DEFAULT_SOURCE_SIZE_SYNC_INTERVAL_SEC),
+        "min_change_pct": getattr(args, "source_size_sync_min_change_pct", 0.0),
+        "min_adjust_notional_usdt": getattr(args, "source_size_sync_min_adjust_notional_usdt", 0.0),
+        "recent_observations": (state.get("source_size_observations") or [])[-20:] if isinstance(state.get("source_size_observations"), list) else [],
     }
     payload["auth_probe"] = getattr(args, "_auth_probe", {})
     payload["exchange_switch_reset"] = getattr(args, "_exchange_switch_reset", {})
@@ -3345,8 +3703,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--order-post-throttle-sec", type=float, default=DEFAULT_ORDER_POST_THROTTLE_SEC, help="Minimum state-backed spacing between live trade/order POST attempts.")
     ap.add_argument("--entry-failure-cooldown-sec", type=float, default=DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC, help="Cooldown for the same symbol/lead/fill-level after rejected entry.")
     ap.add_argument("--source-leverage-mode", choices=SUPPORTED_SOURCE_LEVERAGE_MODES, default="ignore", help="How to apply Binance copy-source leverage before follower opens/DCA legs.")
+    ap.add_argument("--fixed-source-leverage", type=float, default=0.0, help="Fixed leverage used when --source-leverage-mode=fixed.")
     ap.add_argument("--max-source-leverage", type=float, default=0.0, help="Optional cap for effective source leverage; 0 means uncapped.")
     ap.add_argument("--source-margin-mode-override", choices=("", "cross", "isolated"), default="", help="Optional forced margin mode for follower leverage setup.")
+    ap.add_argument("--source-size-sync-mode", choices=("off", "ratio"), default="off", help="Follow source position amount changes with proportional follower add/reduce orders.")
+    ap.add_argument("--source-size-sync-interval-sec", type=float, default=DEFAULT_SOURCE_SIZE_SYNC_INTERVAL_SEC, help="Minimum seconds between source size sync checks per open trade.")
+    ap.add_argument("--source-size-sync-min-change-pct", type=float, default=0.0, help="Ignore source size ratio changes below this percent.")
+    ap.add_argument("--source-size-sync-min-adjust-notional-usdt", type=float, default=0.0, help="Ignore proportional follower add/reduce deltas below this notional.")
     ap.add_argument("--hot-restart-snapshot-path", default="", help="Where HOT_STOP writes a restart snapshot. Defaults to out-dir/HOT_RESTART_SNAPSHOT.json.")
     ap.add_argument("--resume-snapshot", default="", help="Load state from a HOT_STOP snapshot before starting.")
     ap.add_argument("--resume-snapshot-overwrite", action="store_true", help="Allow --resume-snapshot to replace an existing state-path.")
@@ -3414,6 +3777,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("BingX live poll interval must be at least 60 seconds")
     if args.max_source_leverage < 0:
         raise SystemExit("--max-source-leverage must be non-negative")
+    if args.fixed_source_leverage < 0:
+        raise SystemExit("--fixed-source-leverage must be non-negative")
+    if args.source_leverage_mode == "fixed" and args.fixed_source_leverage <= 0:
+        raise SystemExit("--fixed-source-leverage is required when --source-leverage-mode=fixed")
+    if args.source_margin_mode_override and normalize_source_margin_mode(args.source_margin_mode_override) not in {"cross", "isolated"}:
+        raise SystemExit("--source-margin-mode-override must be cross or isolated")
     if args.live_cache_npz_max_bars <= 0:
         raise SystemExit("--live-cache-npz-max-bars must be positive")
     for name in (
