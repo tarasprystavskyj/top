@@ -624,7 +624,7 @@ def upsert_session_position(args: argparse.Namespace, trade: Dict[str, Any], *, 
     if status != "OPEN":
         mark_stale_session_positions_closed(
             args,
-            symbol=args.live_symbol,
+            symbol=str(trade.get("symbol") or args.live_symbol),
             side=str(trade.get("side", "LONG")),
             now=now,
             close_reason=close_reason or "session_position_closed",
@@ -1380,11 +1380,103 @@ def load_live_config(path: str) -> Dict[str, Any]:
     return cfg
 
 
+def _compact_live_symbol(value: Any) -> str:
+    text = str(value or "").upper().strip()
+    if not text:
+        return ""
+    return text.replace("/", "").replace("-", "").replace(":", "")
+
+
+def _meta_exchange_from_args(args: argparse.Namespace, cfg: Dict[str, Any]) -> str:
+    explicit = str(getattr(args, "live_exchange", "") or cfg.get("live_exchange") or "").lower().strip()
+    if explicit:
+        return explicit
+    profile = str(getattr(args, "live_exchange_profile", "") or cfg.get("live_exchange_profile") or cfg.get("exchange_profile") or "").lower()
+    for name, payload in LIVE_EXCHANGE_PROFILES.items():
+        if profile == name.lower():
+            return str(payload.get("live_exchange") or "").lower()
+    return ""
+
+
+def expand_callme_meta_live_config(args: argparse.Namespace, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    exchange = _meta_exchange_from_args(args, cfg)
+    exchanges = cfg.get("exchanges") if isinstance(cfg.get("exchanges"), dict) else {}
+    exchange_cfg = exchanges.get(exchange) if isinstance(exchanges.get(exchange), dict) else {}
+    if not exchange or not exchange_cfg:
+        raise SystemExit("Callme meta-strategy live config requires --live-exchange matching an enabled exchange")
+    if exchange_cfg.get("enabled") is False:
+        raise SystemExit(f"Callme meta-strategy exchange is disabled: {exchange}")
+
+    allocation = cfg.get("allocation") if isinstance(cfg.get("allocation"), dict) else {}
+    default_symbol = cfg.get("default_symbol_config") if isinstance(cfg.get("default_symbol_config"), dict) else {}
+    sizing = default_symbol.get("sizing") if isinstance(default_symbol.get("sizing"), dict) else {}
+    safety = default_symbol.get("safety") if isinstance(default_symbol.get("safety"), dict) else {}
+    protection = default_symbol.get("protection") if isinstance(default_symbol.get("protection"), dict) else {}
+    source_leverage = default_symbol.get("source_leverage") if isinstance(default_symbol.get("source_leverage"), dict) else {}
+    env = exchange_cfg.get("env") if isinstance(exchange_cfg.get("env"), dict) else {}
+    lead = cfg.get("lead") if isinstance(cfg.get("lead"), dict) else {}
+
+    margin = allocation.get("default_exchange_margin_usdt") or allocation.get("default_max_notional_usdt") or 0.0
+    max_notional = allocation.get("default_max_notional_usdt") or margin
+    constraints: Dict[str, Dict[str, Any]] = {}
+    first_live_symbol = ""
+    for symbol, symbol_cfg in (cfg.get("symbols") or {}).items():
+        if str(symbol) == "*" or not isinstance(symbol_cfg, dict):
+            continue
+        exchange_symbols = symbol_cfg.get("exchange_symbols") if isinstance(symbol_cfg.get("exchange_symbols"), dict) else {}
+        item = exchange_symbols.get(exchange) if isinstance(exchange_symbols.get(exchange), dict) else {}
+        if not item or item.get("available") is False:
+            continue
+        live_symbol = str(item.get("live_symbol") or "").strip()
+        if live_symbol and not first_live_symbol:
+            first_live_symbol = live_symbol
+        constraint = {k: v for k, v in item.items() if k in {"min_coin_qty", "min_base_qty", "min_order_qty_coin", "contract_size_coin", "min_contracts"}}
+        if constraint:
+            constraints[str(symbol)] = constraint
+            if live_symbol:
+                constraints[live_symbol] = constraint
+
+    expanded = {
+        "_config_path": cfg.get("_config_path"),
+        "_meta_strategy": cfg.get("name") or "callme_meta_strategy_live",
+        "name": f"{cfg.get('name') or 'callme_meta_strategy_live'}_{exchange}",
+        "live_exchange": exchange,
+        "live_exchange_profile": exchange_cfg.get("exchange_profile"),
+        "exchange_profile": exchange_cfg.get("exchange_profile"),
+        "live_symbol": first_live_symbol or DEFAULT_LIVE_SYMBOL,
+        "position_mode": exchange_cfg.get("position_mode"),
+        "env": env,
+        "portfolio_id": lead.get("portfolio_id"),
+        "signal": {"portfolio_id": lead.get("portfolio_id"), "copy_symbol": "*"},
+        "allocation": {
+            "initial_equity_usdt": margin,
+            "initial_target_notional_usdt": max_notional,
+            "max_notional_usdt": max_notional,
+            "max_one_side_notional_usdt": max_notional,
+        },
+        "sizing": sizing,
+        "safety": safety,
+        "protection": protection,
+        "source_leverage": source_leverage,
+        "poll_sec": safety.get("poll_sec"),
+        "dca_eval_interval_sec": sizing.get("dca_eval_interval_sec"),
+        "mark_poll_interval_sec": safety.get("mark_poll_interval_sec"),
+        "history_poll_interval_sec": safety.get("history_poll_interval_sec"),
+        "symbol_market_constraints": constraints,
+        "callme_meta_symbols": cfg.get("symbols") if isinstance(cfg.get("symbols"), dict) else {},
+        "live_ack_env": exchange_cfg.get("live_ack_env"),
+        "live_ack_value": exchange_cfg.get("live_ack_value"),
+    }
+    return expanded
+
+
 def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
     cfg = load_live_config(getattr(args, "live_config", "") or "")
     if not cfg:
         args._live_config = {}
         return {"config": "", "defaults_applied": []}
+    if str(cfg.get("schema") or "") == "callme_meta_strategy_config_v1":
+        cfg = expand_callme_meta_live_config(args, cfg)
     env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
     allocation = cfg.get("allocation") if isinstance(cfg.get("allocation"), dict) else {}
     sizing = cfg.get("sizing") if isinstance(cfg.get("sizing"), dict) else {}
@@ -1492,6 +1584,30 @@ def configured_min_base_qty(args: argparse.Namespace, symbol: str, ccxt_symbol: 
         if value > 0:
             return value, key
     return 0.0, ""
+
+
+def live_multi_symbol_mode(args: argparse.Namespace) -> bool:
+    cfg = getattr(args, "_live_config", {}) or {}
+    symbol = str(getattr(args, "symbol", "") or "").upper().strip()
+    return bool(cfg.get("_meta_strategy")) or symbol in {"", "*", "ALL", "ANY", "MULTI", "MULTI_SYMBOL"} or "," in symbol
+
+
+def resolve_live_trade_symbol(args: argparse.Namespace, client: CCXTFetcher, symbol: Any) -> Tuple[str, Dict[str, Any]]:
+    requested = str(symbol or "").strip()
+    resolved = client.resolve_symbol(requested) if requested else ""
+    meta = {
+        "requested_symbol": requested,
+        "resolved_symbol": resolved,
+        "multi_symbol_mode": live_multi_symbol_mode(args),
+    }
+    if resolved:
+        return resolved, meta
+    if live_multi_symbol_mode(args):
+        meta["error"] = "live_symbol_unresolved_in_multi_symbol_mode"
+        return "", meta
+    fallback = client.resolve_symbol(args.live_symbol) or args.live_symbol
+    meta["fallback_live_symbol"] = fallback
+    return fallback, meta
 
 
 def map_live_credential_aliases(args: argparse.Namespace) -> Dict[str, Any]:
@@ -1711,7 +1827,9 @@ def ensure_symbol_leverage(
     now: datetime,
 ) -> Dict[str, Any]:
     client = live_client(args)
-    ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
+    ccxt_symbol, symbol_resolution = resolve_live_trade_symbol(args, client, symbol)
+    if not ccxt_symbol:
+        return {"ok": False, "error": "live_symbol_unresolved", "symbol_resolution": symbol_resolution}
     key = leverage_cache_key(args, ccxt_symbol, side, margin_mode, leverage)
     cache = state.setdefault("leverage_set_cache", {})
     if isinstance(cache.get(key), dict) and cache[key].get("ok"):
@@ -2201,7 +2319,16 @@ def live_open_order_preflight(args: argparse.Namespace, symbol: str, expected_pr
     expected_price = float(expected_price or 0.0)
     if client is None or expected_price <= 0 or requested_notional <= 0:
         return {"ok": True, "available": False, "requested_notional": requested_notional, "normalized_notional": requested_notional}
-    ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
+    ccxt_symbol, symbol_resolution = resolve_live_trade_symbol(args, client, symbol)
+    if not ccxt_symbol:
+        return {
+            "ok": False,
+            "available": True,
+            "reason": "live_symbol_unresolved",
+            "symbol_resolution": symbol_resolution,
+            "requested_notional": requested_notional,
+            "normalized_notional": requested_notional,
+        }
     requested_base_qty = requested_notional / max(expected_price, 1e-12)
     min_base_qty, min_base_source = configured_min_base_qty(args, symbol, ccxt_symbol)
     effective_base_qty = max(requested_base_qty, min_base_qty)
@@ -2212,6 +2339,7 @@ def live_open_order_preflight(args: argparse.Namespace, symbol: str, expected_pr
         "ok": True,
         "available": True,
         "ccxt_symbol": ccxt_symbol,
+        "symbol_resolution": symbol_resolution,
         "requested_notional": requested_notional,
         "requested_base_qty": requested_base_qty,
         "effective_base_qty": effective_base_qty,
@@ -2245,7 +2373,9 @@ def live_fetch_exchange_position(args: argparse.Namespace, client: CCXTFetcher, 
 
 def submit_open(args: argparse.Namespace, symbol: str, side: str, expected_price: float, notional: float, client_order_id: str) -> Dict[str, Any]:
     client = live_client(args)
-    ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
+    ccxt_symbol, symbol_resolution = resolve_live_trade_symbol(args, client, symbol)
+    if not ccxt_symbol:
+        return {"ok": False, "error": "live_symbol_unresolved", "symbol_resolution": symbol_resolution}
     base_qty = float(notional) / max(float(expected_price), 1e-12)
     min_base_qty, min_base_source = configured_min_base_qty(args, symbol, ccxt_symbol)
     effective_base_qty = max(base_qty, min_base_qty)
@@ -2302,6 +2432,7 @@ def submit_open(args: argparse.Namespace, symbol: str, side: str, expected_price
         "fill_dt": fill_dt.isoformat() if fill_dt else None,
         "params": params,
         "ccxt_symbol": ccxt_symbol,
+        "symbol_resolution": symbol_resolution,
         "exchange_order_id": ex_order_id,
         "exchange_position": ex_pos,
     }
@@ -2309,7 +2440,9 @@ def submit_open(args: argparse.Namespace, symbol: str, side: str, expected_price
 
 def submit_close(args: argparse.Namespace, symbol: str, side: str, qty: float, client_order_id: str) -> Dict[str, Any]:
     client = live_client(args)
-    ccxt_symbol = client.resolve_symbol(symbol) or client.resolve_symbol(args.live_symbol) or args.live_symbol
+    ccxt_symbol, symbol_resolution = resolve_live_trade_symbol(args, client, symbol)
+    if not ccxt_symbol:
+        return {"ok": False, "error": "live_symbol_unresolved", "symbol_resolution": symbol_resolution}
     ex_before = live_fetch_exchange_position(args, client, ccxt_symbol, side)
     if not ex_before or float(ex_before.get("qty") or 0.0) <= 1e-12:
         return {"ok": True, "synced_only": True, "qty": 0.0, "ccxt_symbol": ccxt_symbol, "reason": "exchange_no_position_before_close"}
@@ -2408,20 +2541,66 @@ def load_inputs_live(args: argparse.Namespace, state: Dict[str, Any], now: datet
         }
     mark_interval = float(getattr(args, "mark_poll_interval_sec", DEFAULT_MARK_POLL_INTERVAL_SEC) or 0.0)
     open_trades = state.get("open_trades") if isinstance(state.get("open_trades"), dict) else {}
-    has_source_or_local_position = bool(positions) or bool(open_trades)
+    filtered_positions, _ = copy_signal_meta.filter_source_positions(positions, symbol=args.symbol, long_only=bool(args.long_only))
+    target_symbols = {
+        str(pos.get("symbol") or "").upper().strip()
+        for pos in filtered_positions.values()
+        if str(pos.get("symbol") or "").strip()
+    }
+    target_symbols.update(
+        str(trade.get("symbol") or "").upper().strip()
+        for trade in open_trades.values()
+        if isinstance(trade, dict) and str(trade.get("symbol") or "").strip()
+    )
+    if not live_multi_symbol_mode(args) and str(args.symbol or "").strip():
+        target_symbols.add(str(args.symbol).upper().strip())
+    has_source_or_local_position = bool(filtered_positions) or bool(open_trades)
     last_mark_ts = float(state.get("last_mark_poll_ts") or 0.0)
     mark_due = has_source_or_local_position or mark_interval <= 0 or not state.get("last_mark_poll_ts") or (now.timestamp() - last_mark_ts) >= mark_interval
+    cached_symbol_marks = state.get("cached_symbol_marks") if isinstance(state.get("cached_symbol_marks"), dict) else {}
+    cached_symbol_mark_meta = state.get("cached_symbol_mark_meta") if isinstance(state.get("cached_symbol_mark_meta"), dict) else {}
     if mark_due:
-        try:
-            mark, mark_meta = paper.fetch_mark(session, args.symbol, args.timeout_sec)
-            state["cached_mark"] = mark
-            state["last_mark_poll_ts"] = now.timestamp()
-            state["last_mark_poll_utc"] = paper.iso(now)
-            mark_meta["mark_poll_interval_sec"] = mark_interval
-            mark_meta["mark_poll_due"] = True
-        except Exception as exc:
-            mark = state.get("cached_mark")
-            mark_meta = {"error": str(exc), "cached_mark": mark, "last_mark_poll_utc": state.get("last_mark_poll_utc"), "mark_poll_interval_sec": mark_interval, "mark_poll_due": True}
+        symbol_marks: Dict[str, float] = {}
+        symbol_mark_meta: Dict[str, Any] = {}
+        errors: Dict[str, str] = {}
+        for symbol in sorted(target_symbols):
+            try:
+                symbol_mark, one_meta = paper.fetch_mark(session, symbol, args.timeout_sec)
+                if symbol_mark is not None:
+                    symbol_marks[symbol] = float(symbol_mark)
+                symbol_mark_meta[symbol] = one_meta
+            except Exception as exc:
+                errors[symbol] = str(exc)
+                if symbol in cached_symbol_marks:
+                    try:
+                        symbol_marks[symbol] = float(cached_symbol_marks[symbol])
+                    except Exception:
+                        pass
+                    symbol_mark_meta[symbol] = cached_symbol_mark_meta.get(symbol, {"cached": True})
+                elif not live_multi_symbol_mode(args) and state.get("cached_mark") is not None:
+                    try:
+                        symbol_marks[symbol] = float(state["cached_mark"])
+                    except Exception:
+                        pass
+                    symbol_mark_meta[symbol] = {"cached": True, "source": "legacy_cached_mark"}
+        state["cached_symbol_marks"] = symbol_marks
+        state["cached_symbol_mark_meta"] = symbol_mark_meta
+        state["last_mark_poll_ts"] = now.timestamp()
+        state["last_mark_poll_utc"] = paper.iso(now)
+        if live_multi_symbol_mode(args):
+            mark = None
+        else:
+            mark = symbol_marks.get(str(args.symbol or "").upper().strip())
+        state["cached_mark"] = mark
+        mark_meta = {
+            "cached_mark": mark,
+            "mark_poll_interval_sec": mark_interval,
+            "mark_poll_due": True,
+            "target_symbols": sorted(target_symbols),
+            "symbol_marks": symbol_marks,
+            "symbol_mark_meta": symbol_mark_meta,
+            "errors": errors,
+        }
     else:
         mark = state.get("cached_mark")
         mark_meta = {
@@ -2430,7 +2609,11 @@ def load_inputs_live(args: argparse.Namespace, state: Dict[str, Any], now: datet
             "last_mark_poll_utc": state.get("last_mark_poll_utc"),
             "mark_poll_interval_sec": mark_interval,
             "mark_poll_due": False,
+            "target_symbols": sorted(target_symbols),
+            "symbol_marks": cached_symbol_marks,
+            "symbol_mark_meta": cached_symbol_mark_meta,
         }
+    args._symbol_marks = dict(mark_meta.get("symbol_marks") or cached_symbol_marks or {})
 
     history_interval = float(getattr(args, "history_poll_interval_sec", DEFAULT_HISTORY_POLL_INTERVAL_SEC) or 0.0)
     last_history_ts = float(state.get("last_history_poll_ts") or 0.0)
@@ -2471,7 +2654,9 @@ def sleep_until_next_poll(interval_sec: float) -> None:
 
 def sync_trade_from_exchange(args: argparse.Namespace, trade: Dict[str, Any]) -> Dict[str, Any]:
     client = live_client(args)
-    ccxt_symbol = client.resolve_symbol(trade.get("symbol") or "") or client.resolve_symbol(args.live_symbol) or args.live_symbol
+    ccxt_symbol, symbol_resolution = resolve_live_trade_symbol(args, client, trade.get("symbol") or "")
+    if not ccxt_symbol:
+        return {"synced": False, "reason": "live_symbol_unresolved", "symbol_resolution": symbol_resolution}
     ex_pos = live_fetch_exchange_position(args, client, ccxt_symbol, str(trade.get("side") or "LONG"))
     if not ex_pos:
         return {"synced": False, "reason": "exchange_position_missing", "ccxt_symbol": ccxt_symbol}
@@ -2504,14 +2689,18 @@ def seed_open_trades_from_exchange(
         if key in open_trades:
             continue
         side = str(pos.get("side") or "").upper()
-        ccxt_symbol = client.resolve_symbol(str(pos.get("symbol") or "")) or client.resolve_symbol(args.live_symbol) or args.live_symbol
+        ccxt_symbol, symbol_resolution = resolve_live_trade_symbol(args, client, str(pos.get("symbol") or ""))
+        if not ccxt_symbol:
+            events.append({"type": "exchange_position_seed_skipped", "key": key, "reason": "live_symbol_unresolved", "symbol_resolution": symbol_resolution})
+            continue
         ex_pos = live_fetch_exchange_position(args, client, ccxt_symbol, side)
         qty = float((ex_pos or {}).get("qty") or 0.0)
         entry = float((ex_pos or {}).get("entry") or 0.0)
         if qty <= 0 or entry <= 0:
             continue
         plan = copy_signal_meta.dca.build_plan(float(state.get("equity") or args.initial_equity), args, float(pos["entry_price"]))
-        trade = copy_signal_meta.dca.build_trade_from_source(pos, plan, now=now, mark=mark, iso_fn=paper.iso)
+        pos_mark = copy_signal_meta.mark_for_symbol(args, mark, pos.get("symbol"))
+        trade = copy_signal_meta.dca.build_trade_from_source(pos, plan, now=now, mark=pos_mark, iso_fn=paper.iso)
         trade["qty"] = qty
         trade["notional"] = qty * entry
         trade["avg_entry"] = entry
@@ -2653,7 +2842,7 @@ def live_add_fill(
             record_session_order(
                 args,
                 now=now,
-                symbol=args.live_symbol,
+                symbol=str(trade.get("symbol") or args.live_symbol),
                 side=str(trade["side"]),
                 type_="OPEN",
                 price=expected_price,
@@ -2706,7 +2895,7 @@ def live_add_fill(
         record_session_order(
             args,
             now=now,
-            symbol=args.live_symbol,
+            symbol=str(trade.get("symbol") or args.live_symbol),
             side=str(trade["side"]),
             type_="OPEN",
             price=expected_price,
@@ -2813,7 +3002,7 @@ def live_add_fill(
     record_session_order(
         args,
         now=now,
-        symbol=args.live_symbol,
+        symbol=str(trade.get("symbol") or args.live_symbol),
         side=str(trade["side"]),
         type_="OPEN",
         price=fill_price,
@@ -2867,7 +3056,7 @@ def live_close_trade(
         record_session_order(
             args,
             now=now,
-            symbol=args.live_symbol,
+            symbol=str(trade.get("symbol") or args.live_symbol),
             side=str(trade["side"]),
             type_="CLOSE",
             price=expected_exit,
@@ -2883,7 +3072,7 @@ def live_close_trade(
         record_session_order(
             args,
             now=now,
-            symbol=args.live_symbol,
+            symbol=str(trade.get("symbol") or args.live_symbol),
             side=str(trade["side"]),
             type_="CLOSE",
             price=expected_exit,
@@ -2933,7 +3122,7 @@ def live_close_trade(
     record_session_order(
         args,
         now=now,
-        symbol=args.live_symbol,
+        symbol=str(trade.get("symbol") or args.live_symbol),
         side=str(trade["side"]),
         type_="CLOSE",
         price=exit_price,
@@ -3047,6 +3236,10 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["live_order_code_present"] = True
     payload["live_exchange"] = args.live_exchange
     payload["live_symbol"] = args.live_symbol
+    payload["live_multi_symbol_mode"] = live_multi_symbol_mode(args)
+    payload["symbol_filter"] = args.symbol
+    payload["symbol_marks"] = getattr(args, "_symbol_marks", {})
+    payload["callme_meta_strategy"] = (getattr(args, "_live_config", {}) or {}).get("_meta_strategy")
     payload["live_exchange_profile"] = args.live_exchange_profile
     payload["position_mode"] = args.position_mode
     payload["source_leverage_policy"] = {

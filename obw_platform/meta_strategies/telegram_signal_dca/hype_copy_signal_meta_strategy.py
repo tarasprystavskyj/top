@@ -5,7 +5,7 @@ This module interprets source/Binance facts and emits explicit strategy
 intents. Execution wrappers should submit orders only from these intents.
 """
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 try:
     from . import hype_cap100_champion_dca_strategy as dca
@@ -105,11 +105,43 @@ def source_key(pos: Dict[str, Any]) -> str:
     return f"{pos['symbol']}:{pos['side']}"
 
 
+def _normalize_symbol(raw: Any) -> str:
+    text = str(raw or "").upper().strip()
+    if "/" in text:
+        base = text.split("/", 1)[0]
+        quote = text.split("/", 1)[1].split(":", 1)[0]
+        return f"{base}{quote}"
+    return text.replace("-", "").replace(":", "")
+
+
+def _symbol_filter(raw: Any) -> Optional[Set[str]]:
+    text = str(raw or "").upper().strip()
+    if text in {"", "*", "ALL", "ANY", "MULTI", "MULTI_SYMBOL"}:
+        return None
+    return {_normalize_symbol(part) for part in text.split(",") if _normalize_symbol(part)}
+
+
+def mark_for_symbol(args: Any, default_mark: Optional[float], symbol: Any) -> Optional[float]:
+    marks = getattr(args, "_symbol_marks", None)
+    if isinstance(marks, dict):
+        key = _normalize_symbol(symbol)
+        value = marks.get(key)
+        try:
+            out = float(value)
+        except Exception:
+            out = 0.0
+        if out > 0:
+            return out
+    return default_mark
+
+
 def filter_source_positions(positions: List[Dict[str, Any]], *, symbol: str, long_only: bool) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+    allowed = _symbol_filter(symbol)
     filtered: List[Dict[str, Any]] = []
     events: List[Dict[str, Any]] = []
     for pos in positions:
-        if pos.get("symbol") != symbol:
+        pos_symbol = _normalize_symbol(pos.get("symbol"))
+        if allowed is not None and pos_symbol not in allowed:
             continue
         if str(pos.get("side")) == "SHORT" and long_only:
             events.append({"type": "signal_ignored", "reason": "long_only", "key": pos.get("key")})
@@ -134,16 +166,17 @@ def build_strategy_intents(
     intents: List[Dict[str, Any]] = []
 
     for key, pos in sorted(current.items()):
+        pos_mark = mark_for_symbol(args, mark, pos.get("symbol"))
         if key not in open_trades:
             entry = float(pos["entry_price"])
             plan = dca.build_plan(float(state.get("equity") or args.initial_equity), args, entry)
-            trade = dca.build_trade_from_source(pos, plan, now=now, mark=mark, iso_fn=iso_fn)
+            trade = dca.build_trade_from_source(pos, plan, now=now, mark=pos_mark, iso_fn=iso_fn)
             intents.append(dca.base_entry_intent(trade, expected_price=entry))
-            intents.extend(dca.dca_entry_intents(trade, mark=mark, allow_dca=allow_dca))
+            intents.extend(dca.dca_entry_intents(trade, mark=pos_mark, allow_dca=allow_dca))
         else:
             trade = open_trades[key]
             trade["last_seen_utc"] = iso_fn(now)
-            trade["last_mark"] = mark
+            trade["last_mark"] = pos_mark
             trade["source_leverage_raw"] = pos.get("leverage")
             try:
                 source_leverage = float(pos.get("leverage"))
@@ -151,17 +184,18 @@ def build_strategy_intents(
                 source_leverage = None
             trade["source_leverage"] = source_leverage if source_leverage and source_leverage > 0 else None
             trade["source_margin_mode"] = str(pos.get("isolated") or pos.get("margin_mode") or trade.get("source_margin_mode") or "").strip()
-            intents.extend(dca.dca_entry_intents(trade, mark=mark, allow_dca=allow_dca))
+            intents.extend(dca.dca_entry_intents(trade, mark=pos_mark, allow_dca=allow_dca))
 
     keys_to_close = set(open_trades) - set(current)
     for key in sorted(keys_to_close):
         trade = open_trades[key]
+        trade_mark = mark_for_symbol(args, mark, trade.get("symbol"))
         hist, hist_meta = find_valid_source_history_exit(trade, history, now, iso_fn=iso_fn)
         if hist and hist.get("avg_close_price"):
             exit_price = float(hist["avg_close_price"])
             reason = "position_history_closed"
         else:
-            exit_price = float(mark or trade.get("last_mark") or trade["lead_entry_price"])
+            exit_price = float(trade_mark or trade.get("last_mark") or trade["lead_entry_price"])
             reason = "lead_position_disappeared_mark_fallback"
             trade["last_history_match_reject"] = hist_meta
         intents.append(

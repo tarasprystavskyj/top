@@ -133,6 +133,15 @@ class FakeClient:
         return {"key_found": True, "secret_found": True}
 
 
+class StrictFakeClient(FakeClient):
+    def __init__(self, symbols):
+        super().__init__()
+        self.symbols = dict(symbols)
+
+    def resolve_symbol(self, symbol):
+        return self.symbols.get(str(symbol or ""))
+
+
 def lead_long(entry=50.0):
     return {
         "key": "HYPEUSDT:LONG",
@@ -566,6 +575,21 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(trade["qty"], 0.3)
         self.assertEqual(trade["avg_entry"], 51.0)
         self.assertEqual(trade["notional"], 15.299999999999999)
+
+    def test_multi_symbol_filter_accepts_all_symbols(self):
+        rows = [lead_long(), {**lead_long(), "key": "AVGOUSDT:LONG", "symbol": "AVGOUSDT", "id": "lead-2"}]
+        current, events = live.copy_signal_meta.filter_source_positions(rows, symbol="*", long_only=True)
+        self.assertEqual(set(current), {"HYPEUSDT:LONG", "AVGOUSDT:LONG"})
+        self.assertEqual(events, [])
+
+    def test_multi_symbol_live_resolver_does_not_fallback_to_default_symbol(self):
+        args = make_args(symbol="*", live_symbol="HYPE-USDT")
+        args._live_config = {"_meta_strategy": "callme_meta_strategy_live"}
+        args._live_client = StrictFakeClient({"HYPE-USDT": "HYPE/USDT:USDT"})
+        preflight = live.live_open_order_preflight(args, "AVGOUSDT", expected_price=600.0, notional=10.0)
+        self.assertFalse(preflight["ok"])
+        self.assertEqual(preflight["reason"], "live_symbol_unresolved")
+        self.assertEqual(preflight["symbol_resolution"]["requested_symbol"], "AVGOUSDT")
 
     def test_sync_trade_from_exchange_updates_session_open_position(self):
         with tempfile.TemporaryDirectory() as td:
