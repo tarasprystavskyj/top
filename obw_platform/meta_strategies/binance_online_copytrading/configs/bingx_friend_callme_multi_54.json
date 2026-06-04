@@ -1,0 +1,42 @@
+{
+  "schema": "binance_online_copytrading_config_v1",
+  "name": "bingx_friend_callme_multi_54",
+  "paper_notional_usdt": 54.0,
+  "initial_equity_usdt": 54.0,
+  "exchange": "bingx",
+  "paper_exchange": "bingx",
+  "env": {
+    "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+    "api_key_env": "BINGX_SUBACCOUNT_KEY",
+    "api_secret_env": "BINGX_SUBACCOUNT_SECRET"
+  },
+  "v21_config": "obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml",
+  "base_order_pct_eq": 5.0,
+  "slippage_bp": 10.0,
+  "ttl_hours": 72.0,
+  "exit_on_reversal": true,
+  "exchange_profile": "bingx_legacy",
+  "live_orders_enabled": false,
+  "source_leverage": {
+    "mode": "copy",
+    "max_source_leverage": 0.0,
+    "notes": "Shadow-only multi-symbol watcher; do not submit live orders from this runner."
+  },
+  "notes": {
+    "purpose": "BingX shadow watcher for Callme multi-symbol portfolio; watches any source symbol that appears and records BingX market availability/marks.",
+    "allocation_pct": 45.0,
+    "base_order_usdt": 2.7,
+    "source": "Binance copy follower 4512404768792222208",
+    "symbol_scope": "multi-symbol; do not force AMD-only; live execution should use the Callme meta-strategy config and a multi-symbol live adapter"
+  },
+  "leads": [
+    {
+      "name": "lead_451240_callme_multi_follow_open",
+      "lead_trader_name": "Callme",
+      "portfolio_id": "4512404768792222208",
+      "mode": "follow_open",
+      "delegated_capital_usdt": 54.0,
+      "enabled": true
+    }
+  ]
+}
