@@ -64,6 +64,13 @@
       "enabled": true,
       "exchange_profile": "gateio_current",
       "position_mode": "oneway",
+      "allocation": {
+        "exchange_margin_usdt": 564.0,
+        "initial_equity_usdt": 253.8,
+        "initial_target_notional_usdt": 253.8,
+        "max_notional_usdt": 253.8,
+        "max_one_side_notional_usdt": 253.8
+      },
       "env": {
         "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
         "api_key_env": "GATEIO_KEY",
@@ -90,6 +97,13 @@
       "enabled": true,
       "exchange_profile": "bingx_legacy",
       "position_mode": "hedge",
+      "allocation": {
+        "exchange_margin_usdt": 54.0,
+        "initial_equity_usdt": 54.0,
+        "initial_target_notional_usdt": 54.0,
+        "max_notional_usdt": 54.0,
+        "max_one_side_notional_usdt": 54.0
+      },
       "env": {
         "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
         "api_key_env": "BINGX_SUBACCOUNT_KEY",
