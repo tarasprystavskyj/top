@@ -230,3 +230,73 @@ def test_replayed_floating_pnl_is_zero_after_full_close():
 
     assert [row["value"] for row in floating] == [0.0, 1.0, 0.0, 0.0]
     assert [row["value"] for row in realized] == [0.0, 0.0, 2.0, 2.0]
+
+
+def test_consolidated_live_total_is_replayed_sum_not_source_equity_overwrite(tmp_path):
+    live_root = tmp_path / "_live"
+    base = pd.Timestamp("2026-05-25T00:00:00Z")
+
+    def make_session(name: str, live_values, orders):
+        session = live_root / name
+        session.mkdir(parents=True)
+        pd.DataFrame(
+            [
+                {
+                    "ts": (base + pd.Timedelta(minutes=idx)).isoformat(),
+                    "open": close,
+                    "high": close,
+                    "low": close,
+                    "close": close,
+                }
+                for idx, close in enumerate([10.0, 20.0, 12.0, 21.0])
+            ]
+        ).to_csv(session / "live_candles.csv", index=False)
+        pd.DataFrame(
+            [
+                {"ts": (base + pd.Timedelta(minutes=idx)).isoformat(), "value": value}
+                for idx, value in enumerate(live_values)
+            ]
+        ).to_csv(session / "live_equity.csv", index=False)
+        con = sqlite3.connect(session / "session.sqlite")
+        con.execute(
+            "create table orders (order_id text, ts_utc text, bar_time_utc text, mode text, symbol text, side text, type text, price real, qty real, status text, reason text, run_id text, extra text)"
+        )
+        con.executemany("insert into orders values (?,?,?,?,?,?,?,?,?,?,?,?,?)", orders)
+        con.execute(
+            "create table open_positions (bot_id text, symbol text, side text, qty real, entry real, tp_price real, sl_price real, ts_open text, run_id text, exchange text, timeframe text, status text, ts_close text, entry_fill real, entry_fill_ts text, exit_fill real, exit_fill_ts text, close_reason text)"
+        )
+        con.commit()
+        con.close()
+        return session
+
+    source_a = make_session(
+        "hype_a",
+        [100.0, 101.0, 102.0, 103.0],
+        [
+            ("a-open", base.isoformat(), base.isoformat(), "hype", "HYPE-USDT", "LONG", "OPEN", 10.0, 1.0, "FILLED", "", "a", "{}"),
+            ("a-close", (base + pd.Timedelta(minutes=2)).isoformat(), (base + pd.Timedelta(minutes=2)).isoformat(), "hype", "HYPE-USDT", "LONG", "CLOSE", 12.0, 1.0, "FILLED", "", "a", "{}"),
+        ],
+    )
+    source_b = make_session(
+        "hype_b",
+        [200.0, 201.0, 202.0, 203.0],
+        [
+            ("b-open", (base + pd.Timedelta(minutes=1)).isoformat(), (base + pd.Timedelta(minutes=1)).isoformat(), "hype", "HYPE-USDT", "LONG", "OPEN", 20.0, 1.0, "FILLED", "", "b", "{}"),
+            ("b-close", (base + pd.Timedelta(minutes=3)).isoformat(), (base + pd.Timedelta(minutes=3)).isoformat(), "hype", "HYPE-USDT", "LONG", "CLOSE", 21.0, 1.0, "FILLED", "", "b", "{}"),
+        ],
+    )
+
+    build_consolidated_session(
+        live_root=live_root,
+        output=live_root / "hype_consolidated",
+        sources=[source_a, source_b],
+        max_points=100,
+        force=True,
+        gap_cache=None,
+        forward_fill_equity=False,
+    )
+
+    body = json.loads((live_root / "hype_consolidated" / "chart.json").read_text(encoding="utf-8"))
+    live_values = [row["value"] for row in body["live"]]
+    assert live_values == [0.0, 10.0, -6.0, 3.0]
+    assert not ({100.0, 101.0, 102.0, 103.0, 200.0, 201.0, 202.0, 203.0} & set(live_values))

@@ -127,12 +127,23 @@ def _read_series_csv(path: Path) -> List[Dict[str, Any]]:
     value_col = next((c for c in ("value", "equity", "pnl", "cum_pnl", "realized_pnl", "realized_value") if c in df.columns), None)
     if not ts_col or not value_col:
         return []
-    out: List[Dict[str, Any]] = []
-    for _, row in df.iterrows():
-        item = _point(row.get(ts_col), row.get(value_col))
-        if item:
-            out.append(item)
-    return sorted(out, key=lambda x: x["ts"])
+    compact = pd.DataFrame(
+        {
+            "ts": pd.to_datetime(df[ts_col], utc=True, errors="coerce"),
+            "value": pd.to_numeric(df[value_col], errors="coerce"),
+        }
+    )
+    compact = compact.dropna(subset=["ts", "value"]).sort_values("ts")
+    if compact.empty:
+        return []
+    finite = np.isfinite(compact["value"].to_numpy(dtype=float))
+    compact = compact.loc[finite]
+    if compact.empty:
+        return []
+    return [
+        {"ts": ts.isoformat(), "value": float(value)}
+        for ts, value in zip(compact["ts"], compact["value"])
+    ]
 
 
 def _read_candles_csv(path: Path) -> List[Dict[str, Any]]:
@@ -253,42 +264,67 @@ def _mark_points_to_minute_bars(points: List[Dict[str, Any]]) -> List[Dict[str, 
 
 
 def _merge_points(*series_groups: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    by_ts: Dict[str, Dict[str, Any]] = {}
+    rows: List[Dict[str, Any]] = []
     for group in series_groups:
         for row in group:
-            ts = _to_iso(row.get("ts") or row.get("time") or row.get("timestamp"))
             value = _safe_float(row.get("value"))
-            if ts and value is not None:
-                by_ts[ts] = {"ts": ts, "value": float(value)}
-    return sorted(by_ts.values(), key=lambda x: x["ts"])
+            if value is not None:
+                rows.append({"ts": row.get("ts") or row.get("time") or row.get("timestamp"), "value": value})
+    if not rows:
+        return []
+    df = pd.DataFrame(rows)
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["ts", "value"])
+    if df.empty:
+        return []
+    df = df.sort_values("ts").drop_duplicates(subset=["ts"], keep="last")
+    return [{"ts": ts.isoformat(), "value": float(value)} for ts, value in zip(df["ts"], df["value"])]
 
 
 def _merge_bars(*bar_groups: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    by_ts: Dict[str, Dict[str, Any]] = {}
+    rows: List[Dict[str, Any]] = []
     for group in bar_groups:
         for row in group:
-            ts = _to_iso(row.get("ts") or row.get("time") or row.get("timestamp"))
-            if not ts:
-                continue
             vals = {key: _safe_float(row.get(key)) for key in ("open", "high", "low", "close")}
             if any(vals[key] is None for key in vals):
                 continue
-            by_ts[ts] = {"ts": ts, **{key: float(vals[key]) for key in vals}}  # type: ignore[arg-type]
-    return sorted(by_ts.values(), key=lambda x: x["ts"])
+            rows.append({"ts": row.get("ts") or row.get("time") or row.get("timestamp"), **vals})
+    if not rows:
+        return []
+    df = pd.DataFrame(rows)
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    for key in ("open", "high", "low", "close"):
+        df[key] = pd.to_numeric(df[key], errors="coerce")
+    df = df.dropna(subset=["ts", "open", "high", "low", "close"])
+    if df.empty:
+        return []
+    finite = np.isfinite(df[["open", "high", "low", "close"]].to_numpy(dtype=float)).all(axis=1)
+    df = df.loc[finite].sort_values("ts").drop_duplicates(subset=["ts"], keep="last")
+    return [
+        {"ts": ts.isoformat(), "open": float(open_), "high": float(high), "low": float(low), "close": float(close)}
+        for ts, open_, high, low, close in zip(df["ts"], df["open"], df["high"], df["low"], df["close"])
+    ]
 
 
 def _bar_gaps(bars: List[Dict[str, Any]], min_missing_minutes: int = 1) -> List[Tuple[pd.Timestamp, pd.Timestamp, int]]:
+    if len(bars) < 2:
+        return []
+    ts = pd.to_datetime([row.get("ts") for row in bars], utc=True, errors="coerce")
+    ts = pd.Series(ts).dropna().dt.floor("min").sort_values().drop_duplicates()
+    if len(ts) < 2:
+        return []
+    prev = ts.shift(1)
+    delta_minutes = ((ts - prev).dt.total_seconds() // 60).astype("Int64")
+    mask = delta_minutes.gt(min_missing_minutes)
     gaps: List[Tuple[pd.Timestamp, pd.Timestamp, int]] = []
-    prev_ts: Optional[pd.Timestamp] = None
-    for row in bars:
-        row_ts = pd.to_datetime(row.get("ts"), utc=True, errors="coerce")
-        if pd.isna(row_ts):
+    for idx in ts[mask].index:
+        prev_ts = prev.loc[idx]
+        row_ts = ts.loc[idx]
+        if pd.isna(prev_ts) or pd.isna(row_ts):
             continue
-        if prev_ts is not None:
-            missing = int((row_ts.floor("min") - prev_ts.floor("min")).total_seconds() // 60) - 1
-            if missing >= min_missing_minutes:
-                gaps.append((prev_ts.floor("min") + pd.Timedelta(minutes=1), row_ts.floor("min") - pd.Timedelta(minutes=1), missing))
-        prev_ts = row_ts
+        missing = int(delta_minutes.loc[idx]) - 1
+        gaps.append((prev_ts + pd.Timedelta(minutes=1), row_ts - pd.Timedelta(minutes=1), missing))
     return gaps
 
 
@@ -377,46 +413,81 @@ def _downsample_points(points: List[Dict[str, Any]], max_points: int) -> List[Di
     return out[:max_points]
 
 
-def _downsample_bars(bars: List[Dict[str, Any]], max_points: int) -> List[Dict[str, Any]]:
+def _downsample_bars(
+    bars: List[Dict[str, Any]],
+    max_points: int,
+    required_minutes: Optional[Iterable[str]] = None,
+) -> List[Dict[str, Any]]:
     if len(bars) <= max_points:
         return bars
+    required = set(required_minutes or [])
+    source_by_minute: Dict[str, Dict[str, Any]] = {}
+    if required:
+        for row in bars:
+            ts = _to_iso(row.get("ts"))
+            if not ts:
+                continue
+            key = pd.to_datetime(ts, utc=True, errors="coerce")
+            if pd.isna(key):
+                continue
+            minute = key.floor("min").isoformat()
+            if minute in required:
+                source_by_minute[minute] = row
     step = int(np.ceil(len(bars) / max_points))
-    out: List[Dict[str, Any]] = []
+    by_ts: Dict[str, Dict[str, Any]] = {}
     for idx in range(0, len(bars), step):
         chunk = bars[idx : idx + step]
         if not chunk:
             continue
-        out.append(
-            {
-                "ts": chunk[0]["ts"],
-                "open": float(chunk[0]["open"]),
-                "high": float(max(float(row["high"]) for row in chunk)),
-                "low": float(min(float(row["low"]) for row in chunk)),
-                "close": float(chunk[-1]["close"]),
-            }
-        )
-    return out[:max_points]
+        row = {
+            "ts": chunk[0]["ts"],
+            "open": float(chunk[0]["open"]),
+            "high": float(max(float(row["high"]) for row in chunk)),
+            "low": float(min(float(row["low"]) for row in chunk)),
+            "close": float(chunk[-1]["close"]),
+        }
+        by_ts[row["ts"]] = row
+    for row in source_by_minute.values():
+        by_ts[row["ts"]] = {
+            "ts": row["ts"],
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+        }
+    if bars:
+        row = bars[-1]
+        by_ts[row["ts"]] = {
+            "ts": row["ts"],
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+        }
+    return sorted(by_ts.values(), key=lambda x: x["ts"])
 
 
 def _forward_fill_points_to_bars(points: List[Dict[str, Any]], bars: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
     if not points or not bars:
         return points, 0
-    by_ts: Dict[str, float] = {}
-    for row in points:
-        ts = _to_iso(row.get("ts") or row.get("time"))
-        value = _safe_float(row.get("value"))
-        if ts and value is not None:
-            by_ts[pd.to_datetime(ts, utc=True).floor("min").isoformat()] = float(value)
+    point_df = pd.DataFrame(
+        {
+            "ts": [row.get("ts") or row.get("time") or row.get("timestamp") for row in points],
+            "value": [row.get("value") for row in points],
+        }
+    )
+    point_df["ts"] = pd.to_datetime(point_df["ts"], utc=True, errors="coerce").dt.floor("min")
+    point_df["value"] = pd.to_numeric(point_df["value"], errors="coerce")
+    point_df = point_df.dropna(subset=["ts", "value"]).sort_values("ts").drop_duplicates(subset=["ts"], keep="last")
+    by_ts = {ts.isoformat(): float(value) for ts, value in zip(point_df["ts"], point_df["value"])}
     if not by_ts:
         return points, 0
+    bar_ts = pd.to_datetime([row.get("ts") for row in bars], utc=True, errors="coerce")
+    bar_keys = [ts.floor("min").isoformat() for ts in bar_ts if pd.notna(ts)]
     out: List[Dict[str, Any]] = []
     last_value: Optional[float] = None
     inserted = 0
-    for bar in bars:
-        ts = pd.to_datetime(bar.get("ts"), utc=True, errors="coerce")
-        if pd.isna(ts):
-            continue
-        key = ts.floor("min").isoformat()
+    for key in bar_keys:
         if key in by_ts:
             last_value = by_ts[key]
             out.append({"ts": key, "value": last_value})
@@ -440,10 +511,52 @@ def _subtract_point_series(total: List[Dict[str, Any]], realized: List[Dict[str,
     return out
 
 
-def _replay_order_floating_pnl(orders: List[Dict[str, Any]], bars: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
+def _sum_point_series(left: List[Dict[str, Any]], right: List[Dict[str, Any]], bars: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    left_full, _ = _forward_fill_points_to_bars(left, bars)
+    right_full, _ = _forward_fill_points_to_bars(right, bars)
+    left_by_ts = {row["ts"]: float(row["value"]) for row in left_full if row.get("ts") and _safe_float(row.get("value")) is not None}
+    right_by_ts = {row["ts"]: float(row["value"]) for row in right_full if row.get("ts") and _safe_float(row.get("value")) is not None}
+    out: List[Dict[str, Any]] = []
+    for bar in bars:
+        ts = pd.to_datetime(bar.get("ts"), utc=True, errors="coerce")
+        if pd.isna(ts):
+            continue
+        key = ts.floor("min").isoformat()
+        left_value = left_by_ts.get(key)
+        right_value = right_by_ts.get(key)
+        if left_value is None and right_value is None:
+            continue
+        out.append({"ts": key, "value": float((left_value or 0.0) + (right_value or 0.0))})
+    return out
+
+
+def _prepare_replay_bars(bars: List[Dict[str, Any]]) -> List[Tuple[pd.Timestamp, float]]:
+    prepared: List[Tuple[pd.Timestamp, float]] = []
+    for row in bars:
+        bar_ts = pd.to_datetime(row.get("ts"), utc=True, errors="coerce")
+        close = _safe_float(row.get("close"))
+        if pd.notna(bar_ts) and close is not None:
+            prepared.append((bar_ts.floor("min"), float(close)))
+    return prepared
+
+
+def _replay_order_group_pnl(
+    orders: List[Dict[str, Any]], bars: List[Dict[str, Any]], prepared_bars: Optional[List[Tuple[pd.Timestamp, float]]] = None
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
     if not orders or not bars:
         return [], [], 0
-    sorted_orders = sorted(orders, key=lambda row: _to_iso(row.get("ts_utc") or row.get("bar_time_utc")) or "")
+    prepared_orders: List[Tuple[pd.Timestamp, Dict[str, Any]]] = []
+    for row in orders:
+        order_ts = pd.to_datetime(row.get("ts_utc") or row.get("bar_time_utc"), utc=True, errors="coerce")
+        if pd.isna(order_ts):
+            continue
+        prepared_orders.append((order_ts.floor("min"), row))
+    if not prepared_orders:
+        return [], [], 0
+    prepared_orders.sort(key=lambda item: item[0])
+    prepared_bars = prepared_bars if prepared_bars is not None else _prepare_replay_bars(bars)
+    if not prepared_bars:
+        return [], [], 0
     order_idx = 0
     qty = 0.0
     cost = 0.0
@@ -451,15 +564,10 @@ def _replay_order_floating_pnl(orders: List[Dict[str, Any]], bars: List[Dict[str
     floating_rows: List[Dict[str, Any]] = []
     realized_rows: List[Dict[str, Any]] = []
     bars_seen = 0
-    for bar in bars:
-        bar_ts = pd.to_datetime(bar.get("ts"), utc=True, errors="coerce")
-        close = _safe_float(bar.get("close"))
-        if pd.isna(bar_ts) or close is None:
-            continue
-        while order_idx < len(sorted_orders):
-            order = sorted_orders[order_idx]
-            order_ts = pd.to_datetime(_to_iso(order.get("ts_utc") or order.get("bar_time_utc")), utc=True, errors="coerce")
-            if pd.isna(order_ts) or order_ts.floor("min") > bar_ts.floor("min"):
+    for bar_ts, close in prepared_bars:
+        while order_idx < len(prepared_orders):
+            order_ts, order = prepared_orders[order_idx]
+            if order_ts > bar_ts:
                 break
             order_idx += 1
             order_qty = _safe_float(order.get("qty")) or 0.0
@@ -478,11 +586,63 @@ def _replay_order_floating_pnl(orders: List[Dict[str, Any]], bars: List[Dict[str
             qty += order_qty
             cost += price * order_qty
         value = (close - (cost / qty)) * qty if qty > 0 else 0.0
-        ts = bar_ts.floor("min").isoformat()
+        ts = bar_ts.isoformat()
         floating_rows.append({"ts": ts, "value": float(value)})
         realized_rows.append({"ts": ts, "value": float(realized)})
         bars_seen += 1
     return floating_rows, realized_rows, bars_seen
+
+
+def _replay_order_floating_pnl(orders: List[Dict[str, Any]], bars: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int]:
+    if not orders or not bars:
+        return [], [], 0
+    prepared_bars = _prepare_replay_bars(bars)
+    by_group: Dict[str, List[Dict[str, Any]]] = {}
+    for row in orders:
+        group_key = str(row.get("source_session") or row.get("run_id") or row.get("symbol") or "default")
+        by_group.setdefault(group_key, []).append(row)
+    if len(by_group) <= 1:
+        return _replay_order_group_pnl(orders, bars, prepared_bars)
+
+    floating_groups: List[List[Dict[str, Any]]] = []
+    realized_groups: List[List[Dict[str, Any]]] = []
+    bars_seen = 0
+    for group_orders in by_group.values():
+        floating, realized, seen = _replay_order_group_pnl(group_orders, bars, prepared_bars)
+        if floating:
+            floating_groups.append(floating)
+        if realized:
+            realized_groups.append(realized)
+        bars_seen = max(bars_seen, seen)
+    return _sum_point_groups(floating_groups, bars), _sum_point_groups(realized_groups, bars), bars_seen
+
+
+def _sum_point_groups(groups: List[List[Dict[str, Any]]], bars: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not groups or not bars:
+        return []
+    bar_ts = pd.to_datetime([row.get("ts") for row in bars], utc=True, errors="coerce")
+    bar_keys = [ts.floor("min").isoformat() for ts in bar_ts if pd.notna(ts)]
+    filled_groups: List[Dict[str, float]] = []
+    for group in groups:
+        filled = group if len(group) >= len(bar_keys) else _forward_fill_points_to_bars(group, bars)[0]
+        filled_groups.append(
+            {
+                row["ts"]: float(row["value"])
+                for row in filled
+                if row.get("ts") and _safe_float(row.get("value")) is not None
+            }
+        )
+    out: List[Dict[str, Any]] = []
+    for key in bar_keys:
+        total = 0.0
+        present = False
+        for group in filled_groups:
+            if key in group:
+                total += group[key]
+                present = True
+        if present:
+            out.append({"ts": key, "value": float(total)})
+    return out
 
 
 def _fill_synthetic_flat_bar_gaps(bars: List[Dict[str, Any]], max_gap_minutes: int = 60 * 72) -> Tuple[List[Dict[str, Any]], int]:
@@ -882,7 +1042,7 @@ def build_consolidated_session(
         marker_groups.append(_read_event_csv(session_dir / "live_chart_events.csv"))
         orders = _read_filled_orders_from_sqlite(session_dir / "session.sqlite")
         for idx, row in enumerate(orders):
-            orders_by_id[str(row["order_id"])] = row
+            orders_by_id[f"{row.get('source_session') or session_dir.name}:{row['order_id']}"] = row
         marker_groups.append([m for idx, row in enumerate(orders) if (m := _order_marker(row, idx))])
         positions.extend(_read_open_positions_from_sqlite(session_dir / "session.sqlite"))
         if strategy_params is None and (session_dir / "live_strategy_params.json").exists():
@@ -943,8 +1103,10 @@ def build_consolidated_session(
     )
     if reconstructed_live_floating:
         live_floating_full = reconstructed_live_floating
-    if reconstructed_live_realized and not live_realized_full:
+    if reconstructed_live_realized:
         live_realized_full = reconstructed_live_realized
+    if reconstructed_live_floating and reconstructed_live_realized:
+        live_full = _sum_point_series(live_realized_full, live_floating_full, price_bars_full)
     if not backtest_floating_full and backtest_full:
         backtest_floating_full = _subtract_point_series(backtest_full, backtest_realized_full, price_bars_full)
     ffilled_counts: Dict[str, int] = {}
@@ -959,6 +1121,11 @@ def build_consolidated_session(
     markers = _merge_markers(*marker_groups)
     labels = _merge_labels(*label_groups)
     price_lines = _merge_price_lines(*price_line_groups)
+    marker_minutes = {
+        pd.to_datetime(row.get("time"), utc=True, errors="coerce").floor("min").isoformat()
+        for row in markers
+        if row.get("time") and not pd.isna(pd.to_datetime(row.get("time"), utc=True, errors="coerce"))
+    }
 
     chart_payload: Dict[str, Any] = {
         "schema": "hype_consolidated_chart_v1",
@@ -967,7 +1134,7 @@ def build_consolidated_session(
         "source_sessions": [p.name for p in source_dirs],
         "sources": {
             "snapshot": "chart.json",
-            "live": "live_equity.csv + source chart snapshots",
+            "live": "minute mark-to-market replay realized+floating from filled orders + recovered OHLCV",
             "live_floating": "minute mark-to-market replay from filled orders + recovered OHLCV",
             "backtest_floating": "backtest total minus backtest realized on recovered minute timeline",
             "price_bars": "live_candles.csv + telemetry + source OHLCV/chart snapshots + real OHLCV gap cache/fetch + residual synthetic flat gap fill",
@@ -1004,7 +1171,7 @@ def build_consolidated_session(
         "backtest_floating": _downsample_points(backtest_floating_full, max_points),
         "backtest_price": _downsample_points(backtest_price_full, max_points),
         "mark": _downsample_points(mark_full, max_points),
-        "price_bars": _downsample_bars(price_bars_full, max_points),
+        "price_bars": _downsample_bars(price_bars_full, max_points, marker_minutes),
     }
     for key, rows in series_plan.items():
         if rows:
@@ -1047,6 +1214,9 @@ def build_consolidated_session(
     }
     if downsampled:
         chart_payload["downsampled"] = {"max_points": max_points, "series": downsampled}
+        marker_bar_count = len(marker_minutes)
+        if marker_bar_count:
+            chart_payload["downsampled"]["preserved_marker_minutes"] = marker_bar_count
 
     _write_json(output / "chart.json", chart_payload)
     _write_csv(output / "live_equity.csv", chart_payload.get("live", []), ["ts", "value"])
