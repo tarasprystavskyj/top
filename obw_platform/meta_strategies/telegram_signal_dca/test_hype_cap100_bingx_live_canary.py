@@ -588,6 +588,83 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(events[0]["type"], "source_size_observed")
         self.assertEqual(events[1]["type"], "live_source_size_reduce")
 
+    def test_callme_amd_partial_close_25pct_follows_source_size_and_margin_fraction(self):
+        args = make_args(
+            symbol="*",
+            live_symbol="AMD/USDT:USDT",
+            source_size_sync_mode="ratio",
+            source_size_sync_interval_sec=0.0,
+            live_exchange="gateio",
+            position_mode="oneway",
+        )
+        state = {"equity": 253.8, "open_trades": {}}
+        trade = open_trade()
+        trade.update(
+            {
+                "key": "AMDUSDT:LONG",
+                "lead_position_id": "callme-amd-live",
+                "symbol": "AMDUSDT",
+                "side": "LONG",
+                "lead_entry_price": 508.26429,
+                "avg_entry": 60.0,
+                "qty": 2.0,
+                "notional": 120.0,
+                "fees_paid": 0.12,
+                "source_size_measure": 60.12,
+                "source_position_amount_abs": 60.12,
+                "source_notional_value_abs": 31141.48,
+                "lead_margin_balance_usdt": 24204.49,
+                "source_position_margin_usdt": 15548.93,
+                "source_position_margin_source": "page_margin",
+                "source_margin_fraction": 15548.93 / 24204.49,
+                "source_margin_fraction_reason": "ok",
+            }
+        )
+        state["open_trades"][trade["key"]] = trade
+        source_margin_after = 11661.70
+        source = {
+            trade["key"]: {
+                "symbol": "AMDUSDT",
+                "side": "LONG",
+                "position_amount": 45.09,
+                "notional_value": 23323.40,
+                "leverage": "2",
+                "lead_margin_balance_usdt": 24204.49,
+                "source_position_margin_usdt": source_margin_after,
+                "source_position_margin_source": "page_margin",
+                "source_margin_fraction": source_margin_after / 24204.49,
+                "source_margin_fraction_reason": "ok",
+            }
+        }
+        submitted = {
+            "ok": True,
+            "order": {"id": "amd-partial-close-25pct", "average": 60.0},
+            "qty": 0.5,
+            "fill_price": 60.0,
+            "fill_dt": NOW.isoformat(),
+            "ccxt_symbol": "AMD/USDT:USDT",
+            "exchange_order_id": "amd-partial-close-25pct",
+            "exchange_position_after": {"qty": 1.5, "entry": 60.0},
+        }
+
+        with patch.object(live, "submit_close", return_value=submitted) as submit_close:
+            events = live.apply_source_size_sync(state, state["open_trades"], source, 60.0, NOW, args)
+
+        self.assertEqual(submit_close.call_count, 1)
+        self.assertAlmostEqual(submit_close.call_args.args[3], 0.5)
+        self.assertAlmostEqual(events[0]["ratio"], 0.75)
+        self.assertAlmostEqual(events[0]["delta_notional"], -30.0)
+        self.assertEqual(events[1]["type"], "live_source_size_reduce")
+        self.assertAlmostEqual(events[1]["fill"]["requested_reduce_notional"], 30.0)
+        self.assertAlmostEqual(trade["qty"], 1.5)
+        self.assertAlmostEqual(trade["notional"], 90.0)
+        self.assertEqual(trade["next_level_idx"], 0)
+        self.assertIn(trade["key"], state["open_trades"])
+        self.assertAlmostEqual(trade["source_size_measure"], 45.09)
+        self.assertAlmostEqual(trade["source_position_margin_usdt"], source_margin_after)
+        self.assertAlmostEqual(trade["source_margin_fraction"], source_margin_after / 24204.49)
+        self.assertEqual(trade["source_margin_fraction_reason"], "ok")
+
     def test_ensure_symbol_leverage_bingx_hedge_is_side_specific_and_cached(self):
         args = make_args(live_exchange="bingx", position_mode="hedge")
         args._live_client = FakeClient()
