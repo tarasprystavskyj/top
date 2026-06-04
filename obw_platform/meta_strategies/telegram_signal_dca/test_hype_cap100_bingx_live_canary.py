@@ -68,7 +68,10 @@ def make_args(**overrides):
         order_error_backoff_sec=300.0,
         order_error_circuit_sec=1800.0,
         order_error_max_consecutive=3,
+        max_order_attempts_per_hour=20,
+        order_post_throttle_sec=2.0,
         entry_failure_cooldown_sec=3600.0,
+        mark_poll_interval_sec=0.0,
         source_leverage_mode="ignore",
         max_source_leverage=0.0,
         hot_restart_snapshot_path="",
@@ -619,7 +622,7 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertTrue(upsert.called)
 
     def test_live_add_fill_arms_backoff_and_entry_cooldown_after_rejected_entry(self):
-        args = make_args()
+        args = make_args(order_post_throttle_sec=0.0)
         state = {"open_trades": {}}
         trade = open_trade()
         with patch.object(live, "submit_open", return_value={"ok": False, "error": 'bingx {"code":109429,"msg":"temporary restricted"}'}) as submit_open, patch.object(
@@ -634,6 +637,35 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(submit_open.call_count, 1)
         self.assertIn("order_error_backoff", state)
         self.assertIn("entry_failures", state)
+        self.assertEqual(state["order_attempts"]["hourly"][NOW.strftime("%Y%m%dT%H")], 1)
+        self.assertIn("delay_sec", state["order_error_backoff"])
+        self.assertIn("jitter_sec", state["order_error_backoff"])
+
+    def test_live_add_fill_blocks_when_hourly_order_attempt_cap_reached(self):
+        args = make_args(max_order_attempts_per_hour=1, order_post_throttle_sec=0.0)
+        state = {"open_trades": {}}
+        trade = open_trade()
+        with patch.object(live, "submit_open", return_value={"ok": False, "error": "temporary restricted"}), patch.object(live, "record_session_order"):
+            first = live.live_add_fill(state, trade, now=NOW, expected_price=50.0, notional=10.0, fill_type="base", reason="test", mark=50.0, args=args)
+        state.pop("order_error_backoff", None)
+        state.pop("entry_failures", None)
+        with patch.object(live, "submit_open") as submit_open:
+            second = live.live_add_fill(state, trade, now=NOW, expected_price=50.0, notional=10.0, fill_type="base2", reason="test", mark=50.0, args=args)
+        self.assertEqual(first["type"], "live_entry_failed")
+        self.assertEqual(second["type"], "live_entry_blocked")
+        self.assertEqual(second["reason"], "max_order_attempts_per_hour")
+        submit_open.assert_not_called()
+
+    def test_live_add_fill_respects_post_order_throttle(self):
+        args = make_args(order_post_throttle_sec=10.0)
+        state = {"open_trades": {}}
+        trade = open_trade()
+        live.register_order_post_attempt(state, NOW, args, action="OPEN", symbol="HYPEUSDT", side="LONG")
+        with patch.object(live, "submit_open") as submit_open:
+            event = live.live_add_fill(state, trade, now=NOW, expected_price=50.0, notional=10.0, fill_type="base", reason="test", mark=50.0, args=args)
+        self.assertEqual(event["type"], "live_entry_blocked")
+        self.assertEqual(event["reason"], "order_post_throttle")
+        submit_open.assert_not_called()
 
     def test_live_add_fill_records_incremental_order_qty_but_reconciles_cumulative_position_qty(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1066,6 +1098,20 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             self.assertEqual(legacy_args.live_symbol, "HYPE-USDT")
             self.assertEqual(legacy_args.position_mode, "hedge")
             self.assertEqual(legacy_args.env_file, live.BINGX_LEGACY_ENV_FILE)
+            self.assertEqual(legacy_args.interval_sec, 60.0)
+
+    def test_bingx_live_config_applies_order_attempt_and_mark_throttle(self):
+        cfg = Path("obw_platform/meta_strategies/telegram_signal_dca/configs/bingx_veronika_hype_live_54.json")
+        args = live.build_arg_parser().parse_args(["--live-config", str(cfg)])
+        with tempfile.TemporaryDirectory() as td:
+            args.out_dir = td
+            live.normalize_paths(args)
+            live.validate_args(args)
+        self.assertEqual(args.live_exchange, "bingx")
+        self.assertGreaterEqual(args.interval_sec, 60.0)
+        self.assertEqual(args.max_order_attempts_per_hour, 6)
+        self.assertEqual(args.order_post_throttle_sec, 10)
+        self.assertEqual(args.mark_poll_interval_sec, 60)
 
     def test_record_and_upsert_session_helpers_are_noops_without_session_db_and_call_db_with_session_db(self):
         args = make_args(session_db="")
