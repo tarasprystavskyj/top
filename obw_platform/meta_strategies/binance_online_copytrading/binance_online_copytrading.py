@@ -23,6 +23,18 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import yaml
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = SCRIPT_DIR.parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from obw_platform.meta_strategies.telegram_signal_dca.paper_live_binance_copy_public_positions import (  # noqa: E402
+    annotate_positions_with_lead_margin_metadata,
+    fetch_lead_margin_balance,
+    parse_lead_margin_balance_usdt,
+    source_margin_allocation_metadata,
+)
+
 
 POSITIONS_URL = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-data/positions"
 POSITION_HISTORY_URL = "https://www.binance.com/bapi/futures/v1/public/future/copy-trade/lead-portfolio/position-history"
@@ -191,6 +203,7 @@ def fetch_open_positions(session: requests.Session, portfolio_id: str, timeout_s
                 "mark_price": finite_price(row.get("markPrice")),
                 "position_amount": amount,
                 "notional_value": parse_float(row.get("notionalValue"), 0.0),
+                "leverage": row.get("leverage"),
                 "raw": row,
             }
         )
@@ -1399,6 +1412,8 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
         delegated_capital = float(lead.get("delegated_capital_usdt") or delegated_default)
         v21_runtime = V21OneLegRuntime(v21_config, delegated_capital)
         open_positions = fetch_open_positions(session, portfolio_id, args.timeout_sec) if mode == "follow_open" else []
+        lead_page_meta = fetch_lead_margin_balance(session, portfolio_id, args.timeout_sec)
+        annotate_positions_with_lead_margin_metadata(open_positions, lead_page_meta)
         history = fetch_history(session, portfolio_id, args.timeout_sec, page_size=args.history_page_size, max_pages=args.history_pages)
         open_positions = filter_lead_symbols(lead, open_positions)
         history = filter_lead_symbols(lead, history)
@@ -1443,6 +1458,7 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
             "v21_config": v21_config,
             "delegated_capital_usdt": delegated_capital,
             "base_order_pct_eq": 5.0,
+            "lead_page": lead_page_meta,
         })
 
     state["last_poll"] = {"utc": iso(now), "paper_exchange": args.paper_exchange, "slippage_bp": slippage_bp, "ttl_hours": ttl_hours, "leads": lead_meta, "events": events}

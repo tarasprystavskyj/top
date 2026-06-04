@@ -2576,6 +2576,9 @@ def load_inputs_live(args: argparse.Namespace, state: Dict[str, Any], now: datet
             "cached_rows": len(positions),
             "last_positions_poll_utc": state.get("last_positions_poll_utc"),
         }
+    lead_page_meta = paper.fetch_lead_margin_balance(session, args.portfolio_id, args.timeout_sec)
+    state["last_lead_page_status"] = lead_page_meta
+    paper.annotate_positions_with_lead_margin_metadata(positions, lead_page_meta)
     mark_interval = float(getattr(args, "mark_poll_interval_sec", DEFAULT_MARK_POLL_INTERVAL_SEC) or 0.0)
     open_trades = state.get("open_trades") if isinstance(state.get("open_trades"), dict) else {}
     filtered_positions, _ = copy_signal_meta.filter_source_positions(positions, symbol=args.symbol, long_only=bool(args.long_only))
@@ -2677,7 +2680,7 @@ def load_inputs_live(args: argparse.Namespace, state: Dict[str, Any], now: datet
             "last_history_poll_utc": state.get("last_history_poll_utc"),
             "history_poll_interval_sec": history_interval,
         }
-    return positions, history, mark, {"positions": positions_meta, "history": history_meta, "market": mark_meta}
+    return positions, history, mark, {"positions": positions_meta, "history": history_meta, "market": mark_meta, "lead_page": lead_page_meta}
 
 
 def sleep_until_next_poll(interval_sec: float) -> None:
@@ -2745,6 +2748,11 @@ def source_size_snapshot(pos: Dict[str, Any]) -> Dict[str, Any]:
         "source_notional_value_abs": notional_abs,
         "source_size_measure": measure,
         "source_size_measure_field": measure_field,
+        "lead_margin_balance_usdt": pos.get("lead_margin_balance_usdt"),
+        "source_position_margin_usdt": pos.get("source_position_margin_usdt"),
+        "source_position_margin_source": pos.get("source_position_margin_source"),
+        "source_margin_fraction": pos.get("source_margin_fraction"),
+        "source_margin_fraction_reason": pos.get("source_margin_fraction_reason"),
     }
 
 
@@ -2753,6 +2761,15 @@ def update_trade_source_size_snapshot(trade: Dict[str, Any], snapshot: Dict[str,
     trade["source_notional_value_abs"] = float(snapshot.get("source_notional_value_abs") or 0.0)
     trade["source_size_measure"] = float(snapshot.get("source_size_measure") or 0.0)
     trade["source_size_measure_field"] = str(snapshot.get("source_size_measure_field") or "")
+    for field in (
+        "lead_margin_balance_usdt",
+        "source_position_margin_usdt",
+        "source_position_margin_source",
+        "source_margin_fraction",
+        "source_margin_fraction_reason",
+    ):
+        if field in snapshot:
+            trade[field] = snapshot.get(field)
     trade["source_size_last_sync_utc"] = paper.iso(now)
 
 
@@ -2779,6 +2796,11 @@ def source_size_observation_event(key: str, trade: Dict[str, Any], snapshot: Dic
         "source_notional_value_abs": snapshot.get("source_notional_value_abs"),
         "source_size_measure": snapshot.get("source_size_measure"),
         "source_size_measure_field": snapshot.get("source_size_measure_field"),
+        "lead_margin_balance_usdt": snapshot.get("lead_margin_balance_usdt"),
+        "source_position_margin_usdt": snapshot.get("source_position_margin_usdt"),
+        "source_position_margin_source": snapshot.get("source_position_margin_source"),
+        "source_margin_fraction": snapshot.get("source_margin_fraction"),
+        "source_margin_fraction_reason": snapshot.get("source_margin_fraction_reason"),
         "previous_source_size_measure": trade.get("source_size_measure"),
         "follower_notional": trade.get("notional"),
         "follower_qty": trade.get("qty"),
@@ -3315,6 +3337,11 @@ def live_add_fill(
         "effective_leverage": leverage_policy.get("effective_leverage"),
         "source_leverage_mode": leverage_policy.get("mode"),
         "source_margin_mode": leverage_policy.get("source_margin_mode"),
+        "lead_margin_balance_usdt": trade.get("lead_margin_balance_usdt"),
+        "source_position_margin_usdt": trade.get("source_position_margin_usdt"),
+        "source_position_margin_source": trade.get("source_position_margin_source"),
+        "source_margin_fraction": trade.get("source_margin_fraction"),
+        "source_margin_fraction_reason": trade.get("source_margin_fraction_reason"),
         "leverage_setup": leverage_setup,
         "post_attempt": post_attempt,
         "qty": qty,

@@ -22,11 +22,16 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from paper_live_binance_copy_public_positions import (  # noqa: E402
+    annotate_positions_with_lead_margin_metadata,
+    extract_lead_margin_balance_by_label,
     fetch_open_positions,
+    fetch_lead_margin_balance,
     fetch_position_history,
     iso,
     parse_float,
+    parse_lead_margin_balance_usdt,
     ret_for,
+    source_margin_allocation_metadata,
     utc_now,
 )
 try:
@@ -250,6 +255,11 @@ def add_fill(
         "paper_fill_price": paper_price,
         "notional": notional,
         "qty": qty,
+        "lead_margin_balance_usdt": trade.get("lead_margin_balance_usdt"),
+        "source_position_margin_usdt": trade.get("source_position_margin_usdt"),
+        "source_position_margin_source": trade.get("source_position_margin_source"),
+        "source_margin_fraction": trade.get("source_margin_fraction"),
+        "source_margin_fraction_reason": trade.get("source_margin_fraction_reason"),
         "paper_only": True,
     }
     state.setdefault("paper_orders", []).append(order)
@@ -328,7 +338,9 @@ def load_inputs(args: argparse.Namespace) -> Tuple[List[Dict[str, Any]], List[Di
     positions, positions_meta = fetch_open_positions(session, args.portfolio_id, args.timeout_sec)
     history, history_meta = fetch_position_history(session, args.portfolio_id, args.timeout_sec, page_size=args.history_page_size)
     mark, mark_meta = fetch_mark(session, args.symbol, args.timeout_sec)
-    return positions, history, mark, {"positions": positions_meta, "history": history_meta, "market": mark_meta}
+    lead_page_meta = fetch_lead_margin_balance(session, args.portfolio_id, args.timeout_sec)
+    annotate_positions_with_lead_margin_metadata(positions, lead_page_meta)
+    return positions, history, mark, {"positions": positions_meta, "history": history_meta, "market": mark_meta, "lead_page": lead_page_meta}
 
 
 def apply_snapshot(state: Dict[str, Any], positions: List[Dict[str, Any]], history: List[Dict[str, Any]], mark: Optional[float], now: datetime, args: argparse.Namespace) -> List[Dict[str, Any]]:
@@ -396,6 +408,11 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
                 "unrealized_pnl_usdt": upnl,
                 "fills": len(trade.get("fills") or []),
                 "next_level_idx": trade.get("next_level_idx"),
+                "lead_margin_balance_usdt": trade.get("lead_margin_balance_usdt"),
+                "source_position_margin_usdt": trade.get("source_position_margin_usdt"),
+                "source_position_margin_source": trade.get("source_position_margin_source"),
+                "source_margin_fraction": trade.get("source_margin_fraction"),
+                "source_margin_fraction_reason": trade.get("source_margin_fraction_reason"),
             }
         )
     return {

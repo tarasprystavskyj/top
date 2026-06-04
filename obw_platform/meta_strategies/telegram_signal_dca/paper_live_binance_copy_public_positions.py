@@ -7,8 +7,10 @@ orders and defaults to a single poll.
 """
 import argparse
 import copy
+import html as html_lib
 import json
 import math
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,9 +26,23 @@ DEFAULT_REPORT_DIR = (
 )
 POSITIONS_URL = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-data/positions"
 POSITION_HISTORY_URL = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/position-history"
+LEAD_DETAILS_URL_TMPL = "https://www.binance.info/uk-UA/copy-trading/lead-details/{portfolio_id}?timeRange=30D"
+LEAD_MARGIN_BALANCE_SELECTOR = (
+    r"#__APP > div.trader-detail-page.bg-BasicBg.md\:bg-BasicBg.text-PrimaryText.pb-\[16px\]."
+    r"lg\:pb-\[24px\].min-h-\[calc\(100vh-149px\)\] > div > div.futures-personal-info.relative."
+    r"my-\[16px\].md\:my-\[24px\].lg\:my-\[40px\] > div.portfolio-card.grid.grid-cols-1."
+    r"md\:grid-cols-2.lg\:grid-cols-3.gap-\[24px\] > div.col-span-1.row-start-2.md\:row-start-1."
+    r"lg\:row-start-2.card-outline > div > div.bn-flex.flex-col.mt-\[16px\] > div:nth-child(3) > "
+    r"div.bn-flex.t-subtitle2.items-center.gap-\[4px\]"
+)
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+LEAD_MARGIN_BALANCE_LABELS = (
+    "Маржинальний баланс провідного трейдера",
+    "Margin Balance",
+    "Lead Trader Margin Balance",
 )
 
 
@@ -62,6 +78,178 @@ def finite_pos(raw: Any) -> Optional[float]:
     if math.isfinite(val) and val > 0:
         return val
     return None
+
+
+def parse_lead_margin_balance_usdt(raw: Any) -> Tuple[Optional[float], str]:
+    text = str(raw or "").strip().replace("\xa0", " ")
+    if not text:
+        return None, "empty"
+    normalized = text.strip().lower()
+    if normalized in {"-", "--", "—", "–", "n/a", "na", "none", "null"}:
+        return None, "placeholder"
+    cleaned = re.sub(r"(?i)(usdt|usd|\$|≈|~)", "", text)
+    cleaned = re.sub(r"[^0-9,.\-\s]", "", cleaned).strip()
+    if not re.search(r"\d", cleaned):
+        return None, "no_numeric_text"
+    cleaned = re.sub(r"\s+", "", cleaned)
+    if "," in cleaned and "." in cleaned:
+        decimal_sep = "," if cleaned.rfind(",") > cleaned.rfind(".") else "."
+        thousands_sep = "." if decimal_sep == "," else ","
+        number = cleaned.replace(thousands_sep, "").replace(decimal_sep, ".")
+    elif "," in cleaned:
+        if cleaned.count(",") == 1 and 0 < len(cleaned.rsplit(",", 1)[1]) <= 2:
+            number = cleaned.replace(",", ".")
+        else:
+            number = cleaned.replace(",", "")
+    elif "." in cleaned:
+        if cleaned.count(".") == 1 and len(cleaned.rsplit(".", 1)[1]) == 3 and len(cleaned.split(".", 1)[0]) <= 3:
+            number = cleaned.replace(".", "")
+        else:
+            number = cleaned
+    else:
+        number = cleaned
+    try:
+        value = float(number)
+    except Exception:
+        return None, "parse_error"
+    if not math.isfinite(value) or value <= 0:
+        return None, "non_positive"
+    return value, "parsed"
+
+
+def lead_details_url(portfolio_id: str) -> str:
+    return LEAD_DETAILS_URL_TMPL.format(portfolio_id=str(portfolio_id))
+
+
+def _strip_html_tags(raw: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", raw or "")
+    return html_lib.unescape(re.sub(r"\s+", " ", text)).strip()
+
+
+def extract_lead_margin_balance_by_label(html: str) -> Dict[str, Any]:
+    text = html or ""
+    for label in LEAD_MARGIN_BALANCE_LABELS:
+        idx = text.find(label)
+        if idx < 0:
+            continue
+        window = text[idx : idx + 2500]
+        value_match = re.search(r"</div>\s*<div[^>]*>\s*(.*?)\s*</div>", window, flags=re.IGNORECASE | re.DOTALL)
+        if not value_match:
+            value_match = re.search(r"([+\-]?\s*[$]?\s*[0-9][0-9\s,.\u00a0]*\s*(?:USDT|USD)?)", _strip_html_tags(window), flags=re.IGNORECASE)
+        if not value_match:
+            return {"lead_margin_balance_usdt": None, "reason": "lead_margin_balance_value_missing", "label": label}
+        raw_text = _strip_html_tags(value_match.group(1))
+        value, reason = parse_lead_margin_balance_usdt(raw_text)
+        return {
+            "lead_margin_balance_usdt": value,
+            "reason": reason if value is None else "ok",
+            "raw_text": raw_text,
+            "label": label,
+            "extractor": "label_regex",
+        }
+    return {"lead_margin_balance_usdt": None, "reason": "lead_margin_balance_missing", "labels": list(LEAD_MARGIN_BALANCE_LABELS)}
+
+
+def extract_lead_margin_balance_from_html(html: str, *, selector: str = LEAD_MARGIN_BALANCE_SELECTOR) -> Dict[str, Any]:
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+    except Exception as exc:
+        meta = extract_lead_margin_balance_by_label(html)
+        if meta.get("lead_margin_balance_usdt") is None:
+            meta["bs4_error"] = str(exc)
+        return meta
+    soup = BeautifulSoup(html or "", "html.parser")
+    try:
+        node = soup.select_one(selector)
+    except Exception as exc:
+        meta = extract_lead_margin_balance_by_label(html)
+        if meta.get("lead_margin_balance_usdt") is None:
+            meta.update({"reason": "selector_error", "error": str(exc), "selector": selector})
+        return meta
+    if node is None:
+        meta = extract_lead_margin_balance_by_label(html)
+        if meta.get("lead_margin_balance_usdt") is None:
+            meta["selector"] = selector
+        return meta
+    raw_text = node.get_text(" ", strip=True)
+    value, reason = parse_lead_margin_balance_usdt(raw_text)
+    return {
+        "lead_margin_balance_usdt": value,
+        "reason": reason if value is None else "ok",
+        "raw_text": raw_text,
+        "selector": selector,
+        "extractor": "css_selector",
+    }
+
+
+def fetch_lead_margin_balance(session: requests.Session, portfolio_id: str, timeout_sec: float) -> Dict[str, Any]:
+    url = lead_details_url(portfolio_id)
+    headers = {
+        "Accept": "text/html,application/xhtml+xml",
+        "User-Agent": USER_AGENT,
+        "Referer": url,
+    }
+    try:
+        resp = session.get(url, headers=headers, timeout=timeout_sec)
+        resp.raise_for_status()
+    except Exception as exc:
+        return {"lead_margin_balance_usdt": None, "reason": "lead_page_fetch_failed", "error": str(exc), "url": url}
+    meta = extract_lead_margin_balance_from_html(resp.text)
+    meta["url"] = url
+    return meta
+
+
+SOURCE_POSITION_MARGIN_KEYS = (
+    "position_margin",
+    "positionMargin",
+    "positionInitialMargin",
+    "initialMargin",
+    "isolatedMargin",
+    "margin",
+)
+
+
+def source_margin_allocation_metadata(pos: Dict[str, Any], lead_margin_balance_usdt: Any) -> Dict[str, Any]:
+    lead_balance = finite_pos(lead_margin_balance_usdt)
+    margin_value = None
+    margin_source = ""
+    raw = pos.get("raw") if isinstance(pos.get("raw"), dict) else {}
+    for key in SOURCE_POSITION_MARGIN_KEYS:
+        margin_value = finite_pos(pos.get(key))
+        if margin_value is not None:
+            margin_source = key
+            break
+        margin_value = finite_pos(raw.get(key))
+        if margin_value is not None:
+            margin_source = f"raw.{key}"
+            break
+    if margin_value is None:
+        notional = finite_pos(abs(parse_float(pos.get("notional_value"), 0.0)))
+        leverage = finite_pos(pos.get("leverage"))
+        if notional is not None and leverage is not None:
+            margin_value = notional / leverage
+            margin_source = "notional_value_div_leverage"
+    reason = "ok"
+    fraction = None
+    if lead_balance is None:
+        reason = "lead_margin_balance_missing"
+    elif margin_value is None:
+        reason = "source_position_margin_missing"
+    else:
+        fraction = margin_value / lead_balance
+    return {
+        "lead_margin_balance_usdt": lead_balance,
+        "source_position_margin_usdt": margin_value,
+        "source_position_margin_source": margin_source,
+        "source_margin_fraction": fraction,
+        "source_margin_fraction_reason": reason,
+    }
+
+
+def annotate_positions_with_lead_margin_metadata(positions: List[Dict[str, Any]], lead_page_meta: Dict[str, Any]) -> None:
+    balance = (lead_page_meta or {}).get("lead_margin_balance_usdt")
+    for pos in positions:
+        pos.update(source_margin_allocation_metadata(pos, balance))
 
 
 def normalize_side(raw: Any, amount: float = 0.0) -> str:
@@ -300,6 +488,14 @@ def apply_snapshot(
             state_open[key]["last_seen_utc"] = iso(now)
             state_open[key]["last_mark_price"] = pos.get("mark_price")
             state_open[key]["last_raw_position"] = pos.get("raw")
+            for field in (
+                "lead_margin_balance_usdt",
+                "source_position_margin_usdt",
+                "source_position_margin_source",
+                "source_margin_fraction",
+                "source_margin_fraction_reason",
+            ):
+                state_open[key][field] = pos.get(field)
             continue
         trade = {
             "key": key,
@@ -314,6 +510,11 @@ def apply_snapshot(
             "lead_position_amount": pos.get("position_amount"),
             "lead_notional_value": pos.get("notional_value"),
             "lead_leverage": pos.get("leverage"),
+            "lead_margin_balance_usdt": pos.get("lead_margin_balance_usdt"),
+            "source_position_margin_usdt": pos.get("source_position_margin_usdt"),
+            "source_position_margin_source": pos.get("source_position_margin_source"),
+            "source_margin_fraction": pos.get("source_margin_fraction"),
+            "source_margin_fraction_reason": pos.get("source_margin_fraction_reason"),
             "last_mark_price": pos.get("mark_price"),
             "last_seen_utc": iso(now),
             "raw_entry_position": pos.get("raw"),
@@ -372,6 +573,8 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
     open_positions, positions_meta = fetch_open_positions(session, args.portfolio_id, args.timeout_sec)
+    lead_page_meta = fetch_lead_margin_balance(session, args.portfolio_id, args.timeout_sec)
+    annotate_positions_with_lead_margin_metadata(open_positions, lead_page_meta)
     history, history_meta = fetch_position_history(
         session,
         args.portfolio_id,
@@ -384,6 +587,7 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     state["last_poll"] = {
         "utc": iso(now),
         "positions": positions_meta,
+        "lead_page": lead_page_meta,
         "position_history": history_meta,
         "events": events,
         "endpoint_fields": endpoint_fields(open_positions, history),
@@ -402,6 +606,7 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
         "open_paper_positions_before": len(before.get("open_positions", {})),
         "open_paper_positions_after": len(state.get("open_positions", {})),
         "closed_paper_trades_after": len(state.get("closed_trades", [])),
+        "lead_page": lead_page_meta,
         "endpoint_fields": state["last_poll"]["endpoint_fields"],
     }
 

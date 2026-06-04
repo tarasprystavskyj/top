@@ -474,6 +474,49 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         )
         self.assertEqual(fixed_capped["effective_leverage"], 2.0)
 
+    def test_lead_margin_balance_parser_handles_localized_numbers(self):
+        cases = [
+            ("$1,234.56", 1234.56),
+            ("1 234,56 USDT", 1234.56),
+            ("1,234.56 USDT", 1234.56),
+        ]
+        for raw, expected in cases:
+            value, reason = live.paper.parse_lead_margin_balance_usdt(raw)
+            self.assertEqual(reason, "parsed")
+            self.assertAlmostEqual(value, expected)
+
+        value, reason = live.paper.parse_lead_margin_balance_usdt("--")
+        self.assertIsNone(value)
+        self.assertEqual(reason, "placeholder")
+
+    def test_lead_margin_balance_extracts_from_rendered_label_without_bs4(self):
+        html = (
+            '<div class="bn-flex justify-between py-[8px]">'
+            '<div class="t-body3">Маржинальний баланс провідного трейдера</div>'
+            '<div class="bn-flex t-subtitle2 items-center gap-[4px]">24,743.09 USDT</div>'
+            "</div>"
+        )
+        meta = live.paper.extract_lead_margin_balance_by_label(html)
+        self.assertEqual(meta["reason"], "ok")
+        self.assertEqual(meta["extractor"], "label_regex")
+        self.assertAlmostEqual(meta["lead_margin_balance_usdt"], 24743.09)
+
+    def test_source_margin_allocation_metadata_uses_direct_or_derived_margin(self):
+        derived = live.paper.source_margin_allocation_metadata({"notional_value": "500", "leverage": "5"}, "1000")
+        self.assertAlmostEqual(derived["source_position_margin_usdt"], 100.0)
+        self.assertEqual(derived["source_position_margin_source"], "notional_value_div_leverage")
+        self.assertAlmostEqual(derived["source_margin_fraction"], 0.1)
+        self.assertEqual(derived["source_margin_fraction_reason"], "ok")
+
+        direct = live.paper.source_margin_allocation_metadata({"raw": {"positionMargin": "25"}, "notional_value": "500", "leverage": "5"}, "1000")
+        self.assertAlmostEqual(direct["source_position_margin_usdt"], 25.0)
+        self.assertEqual(direct["source_position_margin_source"], "raw.positionMargin")
+        self.assertAlmostEqual(direct["source_margin_fraction"], 0.025)
+
+        missing = live.paper.source_margin_allocation_metadata({"notional_value": "500", "leverage": "5"}, None)
+        self.assertIsNone(missing["source_margin_fraction"])
+        self.assertEqual(missing["source_margin_fraction_reason"], "lead_margin_balance_missing")
+
     def test_source_size_sync_increase_scales_current_notional_without_advancing_dca(self):
         args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0)
         state = {"equity": 30.0, "open_trades": {}}
@@ -635,15 +678,18 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             "last_history_poll_ts": NOW.timestamp(),
             "last_history_poll_utc": "old",
         }
+        lead_page = {"lead_margin_balance_usdt": None, "reason": "lead_margin_balance_missing"}
         with patch.object(live.paper, "fetch_open_positions", side_effect=RuntimeError("positions down")), patch.object(
             live.paper, "fetch_mark", side_effect=RuntimeError("mark down")
-        ), patch.object(live.paper, "fetch_position_history") as fetch_history:
+        ), patch.object(live.paper, "fetch_lead_margin_balance", return_value=lead_page), patch.object(live.paper, "fetch_position_history") as fetch_history:
             positions, history, mark, meta = live.load_inputs_live(args, state, NOW)
-        self.assertEqual(positions, [lead_long()])
+        self.assertEqual(positions[0]["key"], lead_long()["key"])
+        self.assertEqual(positions[0]["source_margin_fraction_reason"], "lead_margin_balance_missing")
         self.assertEqual(history, [{"id": "hist"}])
         self.assertEqual(mark, 49.5)
         self.assertFalse(fetch_history.called)
         self.assertEqual(meta["positions"]["cached_rows"], 1)
+        self.assertEqual(meta["lead_page"], lead_page)
         self.assertTrue(meta["history"]["skipped"])
         self.assertEqual(meta["market"]["cached_mark"], 49.5)
 

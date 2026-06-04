@@ -184,6 +184,15 @@ def build_strategy_intents(
                 source_leverage = None
             trade["source_leverage"] = source_leverage if source_leverage and source_leverage > 0 else None
             trade["source_margin_mode"] = str(pos.get("isolated") or pos.get("margin_mode") or trade.get("source_margin_mode") or "").strip()
+            for field in (
+                "lead_margin_balance_usdt",
+                "source_position_margin_usdt",
+                "source_position_margin_source",
+                "source_margin_fraction",
+                "source_margin_fraction_reason",
+            ):
+                if field in pos:
+                    trade[field] = pos.get(field)
             intents.extend(dca.dca_entry_intents(trade, mark=pos_mark, allow_dca=allow_dca))
 
     keys_to_close = set(open_trades) - set(current)
