@@ -1,0 +1,169 @@
+{
+  "schema": "callme_meta_strategy_config_v1",
+  "name": "callme_meta_strategy_live",
+  "lead": {
+    "lead_trader_name": "Callme",
+    "portfolio_id": "4512404768792222208",
+    "mode": "follow_open",
+    "symbol_scope": "multi_symbol_dynamic"
+  },
+  "runtime": {
+    "current_multi_symbol_runner": "shadow_only",
+    "live_executor_status": "todo_multi_symbol_live_adapter",
+    "notes": "Callme is a multi-symbol meta-strategy. Do not bind the strategy identity to the first live canary symbol."
+  },
+  "allocation": {
+    "split_pct": 45.0,
+    "default_exchange_margin_usdt": 54.0,
+    "default_max_notional_usdt": 54.0,
+    "max_one_symbol_notional_pct": 100.0
+  },
+  "default_symbol_config": {
+    "baseline_source": "Veronika HYPE candidate-189 guarded DCA baseline until Callme-specific multi-symbol tuning is available.",
+    "assumption": "New symbols selected by this lead are expected to share a similar trading style with prior symbols until proven otherwise.",
+    "sizing": {
+      "base_order_policy": "candidate_189_fresh_base_pct_28",
+      "base_order_pct_eq": 28.0,
+      "dca_add_mode": "multiplier",
+      "dca_add_notional_usdt": 2.0,
+      "dca_min_order_usdt": 2.0,
+      "dca_profile": "default",
+      "fresh_callback_percent": 0.45,
+      "fresh_tp_percent": 1.4,
+      "normal_base_pct": 10.0,
+      "max_position_cost_pct": 100.0,
+      "dca_eval_interval_sec": 60.0
+    },
+    "source_leverage": {
+      "mode": "copy",
+      "max_source_leverage": 0.0
+    },
+    "safety": {
+      "max_orders_per_hour": 10,
+      "max_order_attempts_per_hour": 6,
+      "order_post_throttle_sec": 10,
+      "order_error_backoff_sec": 300,
+      "order_error_circuit_sec": 1800,
+      "order_error_max_consecutive": 2,
+      "entry_failure_cooldown_sec": 3600,
+      "poll_sec": 60
+    },
+    "protection": {
+      "account_loss_stop_pct_of_equity": 35.0,
+      "floating_pnl_stop_pct_of_equity": 35.0,
+      "emergency_account_loss_pct_of_equity": 45.0,
+      "stale_market_sec": 300,
+      "auto_stop_new_orders": true,
+      "action_on_breach": "stop_new_orders_only",
+      "existing_positions_policy": "do_not_flatten; existing exposure remains until source close, manual action, or exchange-side close"
+    },
+    "todo": "Optimize/tune this default baseline on all historical Callme signals, then replace the HYPE-derived placeholder with the averaged Callme-specific configuration for new symbols."
+  },
+  "exchanges": {
+    "gateio": {
+      "enabled": true,
+      "exchange_profile": "gateio_current",
+      "position_mode": "oneway",
+      "env": {
+        "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+        "api_key_env": "GATEIO_KEY",
+        "api_secret_env": "GATEIO_SECRET"
+      },
+      "live_ack_env": "CALLME_META_GATEIO_LIVE_ACK",
+      "live_ack_value": "I_ACCEPT_REAL_GATEIO_ORDERS",
+      "default_contract_code_format": "{BASE}_USDT"
+    },
+    "htx": {
+      "enabled": true,
+      "exchange_profile": "htx_current",
+      "position_mode": "oneway",
+      "env": {
+        "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+        "api_key_env": "HTX_MAKSYM_KEY",
+        "api_secret_env": "HTX_MAKSYM_SECRET"
+      },
+      "live_ack_env": "CALLME_META_HTX_LIVE_ACK",
+      "live_ack_value": "I_ACCEPT_REAL_HTX_ORDERS",
+      "default_contract_code_format": "{BASE}-USDT"
+    },
+    "bingx": {
+      "enabled": true,
+      "exchange_profile": "bingx_legacy",
+      "position_mode": "hedge",
+      "env": {
+        "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+        "api_key_env": "BINGX_SUBACCOUNT_KEY",
+        "api_secret_env": "BINGX_SUBACCOUNT_SECRET"
+      },
+      "live_ack_env": "CALLME_META_BINGX_LIVE_ACK",
+      "live_ack_value": "I_ACCEPT_REAL_BINGX_ORDERS",
+      "default_contract_code_format": "{BASE}-USDT",
+      "notes": "BingX currently lacks canonical AMDUSDT and AVGOUSDT swap markets; watcher remains useful for future symbols."
+    }
+  },
+  "symbols": {
+    "AMDUSDT": {
+      "status": "known_callme_symbol",
+      "exchange_symbols": {
+        "gateio": {
+          "available": true,
+          "live_symbol": "AMD/USDT:USDT",
+          "contract_code": "AMD_USDT",
+          "contract_size_coin": 0.01,
+          "min_contracts": 1.0,
+          "min_coin_qty": 0.01
+        },
+        "htx": {
+          "available": true,
+          "live_symbol": "AMD/USDT:USDT",
+          "contract_code": "AMD-USDT",
+          "contract_size_coin": 0.01,
+          "min_contracts": 1.0,
+          "min_coin_qty": 0.01
+        },
+        "bingx": {
+          "available": false,
+          "reason": "canonical AMD/USDT:USDT swap market not present in current BingX metadata"
+        },
+        "mexc": {
+          "available": false,
+          "reason": "canonical AMD/USDT:USDT swap market not present in current MEXC metadata"
+        }
+      }
+    },
+    "AVGOUSDT": {
+      "status": "known_callme_symbol",
+      "exchange_symbols": {
+        "gateio": {
+          "available": true,
+          "live_symbol": "AVGO/USDT:USDT",
+          "contract_code": "AVGO_USDT",
+          "contract_size_coin": 0.01,
+          "min_contracts": 1.0,
+          "min_coin_qty": 0.01
+        },
+        "htx": {
+          "available": true,
+          "live_symbol": "AVGO/USDT:USDT",
+          "contract_code": "AVGO-USDT",
+          "contract_size_coin": 0.01,
+          "min_contracts": 0.01,
+          "min_coin_qty": 0.0001
+        },
+        "bingx": {
+          "available": false,
+          "reason": "canonical AVGO/USDT:USDT swap market not present in current BingX metadata"
+        },
+        "mexc": {
+          "available": false,
+          "reason": "canonical AVGO/USDT:USDT swap market not present in current MEXC metadata"
+        }
+      }
+    },
+    "*": {
+      "status": "new_symbol_default",
+      "config_source": "default_symbol_config",
+      "exchange_symbol_resolution": "derive {BASE}/USDT:USDT and confirm in exchange metadata before live order eligibility"
+    }
+  }
+}

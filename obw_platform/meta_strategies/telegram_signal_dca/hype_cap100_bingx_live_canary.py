@@ -1508,12 +1508,14 @@ def map_live_credential_aliases(args: argparse.Namespace) -> Dict[str, Any]:
         "key_mapped": False,
         "secret_mapped": False,
     }
-    if key_env and target_key and os.environ.get(key_env) and not os.environ.get(target_key):
-        os.environ[target_key] = os.environ[key_env]
-        out["key_mapped"] = True
-    if secret_env and target_secret and os.environ.get(secret_env) and not os.environ.get(target_secret):
-        os.environ[target_secret] = os.environ[secret_env]
-        out["secret_mapped"] = True
+    if key_env and target_key and os.environ.get(key_env):
+        if os.environ.get(target_key) != os.environ.get(key_env):
+            os.environ[target_key] = os.environ[key_env]
+            out["key_mapped"] = True
+    if secret_env and target_secret and os.environ.get(secret_env):
+        if os.environ.get(target_secret) != os.environ.get(secret_env):
+            os.environ[target_secret] = os.environ[secret_env]
+            out["secret_mapped"] = True
     return out
 
 

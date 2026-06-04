@@ -6,7 +6,7 @@
   "live_symbol": "HYPE-USDT",
   "position_mode": "hedge",
   "env": {
-    "file": "/var/www/vps2.happyuser.info/top/top_1/.env",
+    "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
     "api_key_env": "BINGX_SUBACCOUNT_KEY",
     "api_secret_env": "BINGX_SUBACCOUNT_SECRET"
   },
@@ -73,6 +73,6 @@
     "portfolio_id": "4512404768792222208",
     "split_pct": 45.0,
     "margin_usdt": 44.1,
-    "reason": "AMD/USDT:USDT is not available on current BingX swap metadata"
+    "reason": "Callme current source symbols require per-symbol availability checks; unavailable BingX symbols remain reserved rather than forced into this Veronika HYPE runner."
   }
 }

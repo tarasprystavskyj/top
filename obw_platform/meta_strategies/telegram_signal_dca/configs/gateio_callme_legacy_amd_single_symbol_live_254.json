@@ -1,6 +1,6 @@
 {
   "schema": "telegram_signal_dca_live_config_v1",
-  "name": "gateio_callme_amd_live_254",
+  "name": "gateio_callme_legacy_amd_single_symbol_live_254",
   "exchange": "gateio",
   "exchange_profile": "gateio_current",
   "live_symbol": "AMD/USDT:USDT",
@@ -26,8 +26,9 @@
   },
   "sizing": {
     "base_order_policy": "candidate_189_fresh_base_pct_28_scaled_from_253p8_usdt",
+    "base_order_pct_eq": 28.0,
     "initial_base_order_usdt": 71.064,
-    "dca_scaling": "Scale DCA plan from delegated GateIO 253.8 USDT margin allocation through the guarded canary path.",
+    "dca_scaling": "Scale DCA plan from delegated GateIO 253.8 USDT margin allocation through candidate-189 guarded canary path.",
     "dca_eval_interval_sec": 60.0
   },
   "source_leverage": {
@@ -51,10 +52,12 @@
     "emergency_account_loss_pct_of_equity": 45.0,
     "stale_market_sec": 300,
     "auto_stop_new_orders": true,
-    "notes": "Provisional wide AMD threshold; AMD-specific historical MAE artifact was not available locally."
+    "action_on_breach": "stop_new_orders_only",
+    "existing_positions_policy": "do_not_flatten; existing exposure remains until source close, manual action, or exchange-side close",
+    "notes": "Legacy single-symbol AMD canary threshold; do not treat this as Callme portfolio scope."
   },
   "live_orders_enabled": true,
-  "live_ack_env": "CALLME_AMD_GATEIO_LIVE_ACK",
+  "live_ack_env": "CALLME_LEGACY_AMD_SINGLE_SYMBOL_GATEIO_LIVE_ACK",
   "live_ack_value": "I_ACCEPT_REAL_GATEIO_ORDERS",
   "symbol_market_constraints": {
     "AMDUSDT": {

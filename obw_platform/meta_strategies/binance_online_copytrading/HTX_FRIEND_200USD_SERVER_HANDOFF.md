@@ -66,11 +66,11 @@ Live config:
 obw_platform/meta_strategies/telegram_signal_dca/configs/htx_veronika_hype_live_110.json
 ```
 
-Callme multi-symbol HTX must run shadow first. The current live canary is per-symbol, so do not start an AMD-only live process after the owner clarified that Callme is multi-symbol.
+Callme must be treated as a multi-symbol meta-strategy. Do not use an existing coin-specific canary name as evidence that Callme is single-symbol.
 
 ```bash
 cd /var/www/vps2.happyuser.info/top/top_1
 bash obw_platform/meta_strategies/binance_online_copytrading/run_callme_multi_htx_shadow.sh
 ```
 
-If Callme live is required, first implement a multi-symbol live adapter or explicit per-symbol allowlist based on current Callme open positions and HTX symbol availability.
+If Callme live is required, implement a multi-symbol live adapter that reads `obw_platform/meta_strategies/telegram_signal_dca/configs/callme_meta_strategy_live.json`. New symbols should use that config's `default_symbol_config` until Callme-specific all-signal tuning replaces the placeholder baseline.
