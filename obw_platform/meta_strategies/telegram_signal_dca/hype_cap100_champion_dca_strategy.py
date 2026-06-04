@@ -24,18 +24,93 @@ CHAMPION_PARAMS = {
 }
 DCA_DROPS_PCT = (0.25, 0.35, 0.55, 3.00)
 DCA_MULTIPLIERS = (1.0, 1.5, 2.75, 1.5)
+V21_STRICT_LONG = {
+    "base_order_pct_eq": 1.5,
+    "equity_for_sizing_usdt": 208.0,
+    "min_order_usdt": 2.0,
+    "steps": (0.3, 0.35, 0.6, 0.8, 0.8),
+    "multipliers": (1.2, 1.0, 1.5, 3.5),
+}
+V21_STRICT_SHORT = {
+    "base_order_pct_eq": 1.388859,
+    "equity_for_sizing_usdt": 214.0,
+    "min_order_usdt": 2.0,
+    "steps": (0.1, 0.4, 0.6, 0.8, 0.8),
+    "multipliers": (2.272696, 1.0, 2.0, 3.5),
+}
 
 
-def dca_levels(entry_price: float) -> List[float]:
+def dca_levels(entry_price: float, side: str = "LONG") -> List[float]:
     levels: List[float] = []
     last = entry_price
     for drop in DCA_DROPS_PCT:
-        last *= 1.0 - drop / 100.0
+        last *= 1.0 - drop / 100.0 if str(side).upper() == "LONG" else 1.0 + drop / 100.0
         levels.append(last)
     return levels
 
 
-def build_plan_for_target(target: float, entry_price: float) -> Dict[str, Any]:
+def _v21_side_params(side: str) -> Dict[str, Any]:
+    return V21_STRICT_LONG if str(side).upper() == "LONG" else V21_STRICT_SHORT
+
+
+def _v21_selected_dca_count(sizing: Optional[Dict[str, Any]]) -> int:
+    if not isinstance(sizing, dict):
+        return -1
+    raw = sizing.get("selected_dca_count")
+    if raw is None:
+        raw = sizing.get("dca_count")
+    if raw is None:
+        profile = str(sizing.get("dca_profile") or "")
+        if "dca" in profile.lower():
+            tail = profile.lower().rsplit("dca", 1)[-1]
+            digits = "".join(ch for ch in tail if ch.isdigit())
+            raw = digits if digits else None
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return -1
+
+
+def _build_v21_same_max_plan_for_target(target: float, entry_price: float, *, side: str, sizing: Dict[str, Any]) -> Dict[str, Any]:
+    target = max(float(target or 0.0), 0.0)
+    dca_count = min(_v21_selected_dca_count(sizing), 5)
+    params = _v21_side_params(side)
+    min_order = float(params["min_order_usdt"])
+    raw_base = max(min_order, float(params["equity_for_sizing_usdt"]) * float(params["base_order_pct_eq"]) / 100.0)
+    steps = [float(x) for x in params["steps"][:dca_count]]
+    multipliers = [float(x) for x in params["multipliers"][:dca_count]]
+    if dca_count <= 0:
+        base = target
+        adds: List[float] = []
+    else:
+        raw_adds = [max(min_order, raw_base * mult) for mult in multipliers]
+        planned = raw_base + sum(raw_adds)
+        scale = target / max(planned, 1e-12)
+        base = raw_base * scale
+        adds = [x * scale for x in raw_adds]
+    levels: List[float] = []
+    last = entry_price
+    for step in steps:
+        last *= 1.0 - step / 100.0 if str(side).upper() == "LONG" else 1.0 + step / 100.0
+        levels.append(last)
+    return {
+        "target_notional": target,
+        "base_notional": base,
+        "add_notionals": adds,
+        "dca_add_mode": "v21_same_max",
+        "min_order_notional": min_order,
+        "levels": levels,
+        "candidate_index": CHAMPION_CANDIDATE_INDEX,
+        "box_config_class": "V21StrictTrendStableBoxConfig",
+        "dca_profile": sizing.get("dca_profile") or f"v21_same_max_dca{dca_count}",
+        "selected_dca_count": dca_count,
+        "base_order_policy": sizing.get("base_order_policy"),
+    }
+
+
+def build_plan_for_target(target: float, entry_price: float, side: str = "LONG", sizing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if isinstance(sizing, dict) and str(sizing.get("dca_profile") or "").startswith("v21_same_max"):
+        return _build_v21_same_max_plan_for_target(target, entry_price, side=side, sizing=sizing)
     target = max(float(target or 0.0), 0.0)
     base = min(target * CHAMPION_PARAMS["fresh_base_pct"] / 100.0, target)
     remaining = max(target - base, 0.0)
@@ -57,17 +132,27 @@ def build_plan_for_target(target: float, entry_price: float) -> Dict[str, Any]:
         "add_notionals": add_notionals,
         "dca_add_mode": dca_mode,
         "min_order_notional": 0.0,
-        "levels": dca_levels(entry_price),
+        "levels": dca_levels(entry_price, side),
         "candidate_index": CHAMPION_CANDIDATE_INDEX,
+        "box_config_class": "Candidate189BoxConfig",
     }
 
 
-def build_plan(equity: float, args: Any, entry_price: float) -> Dict[str, Any]:
+def build_plan(equity: float, args: Any, entry_price: float, side: str = "LONG", sizing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     target = min(float(args.initial_target_notional), float(args.max_gross_notional_usdt), max(equity, 0.0))
-    return build_plan_for_target(target, entry_price)
+    return build_plan_for_target(target, entry_price, side=side, sizing=sizing)
 
 
-def resize_trade_plan(trade: Dict[str, Any], target: float, *, now: datetime, iso_fn, reason: str, basis: str) -> Optional[Dict[str, Any]]:
+def resize_trade_plan(
+    trade: Dict[str, Any],
+    target: float,
+    *,
+    now: datetime,
+    iso_fn,
+    reason: str,
+    basis: str,
+    sizing: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     old_target = float(trade.get("target_notional") or 0.0)
     new_target = max(float(target or 0.0), 0.0)
     if new_target <= 0:
@@ -77,7 +162,7 @@ def resize_trade_plan(trade: Dict[str, Any], target: float, *, now: datetime, is
     entry = float(trade.get("lead_entry_price") or trade.get("avg_entry") or 0.0)
     if entry <= 0:
         return None
-    plan = build_plan_for_target(new_target, entry)
+    plan = build_plan_for_target(new_target, entry, side=str(trade.get("side") or "LONG"), sizing=sizing or trade.get("strategy_sizing"))
     initial_target = float(trade.get("source_box_initial_target_notional") or old_target or new_target)
     trade["source_box_initial_target_notional"] = initial_target
     trade["source_box_previous_target_notional"] = old_target
@@ -91,6 +176,10 @@ def resize_trade_plan(trade: Dict[str, Any], target: float, *, now: datetime, is
     trade["levels"] = plan["levels"]
     trade["dca_add_mode"] = plan["dca_add_mode"]
     trade["min_order_notional"] = plan["min_order_notional"]
+    trade["box_config_class"] = plan.get("box_config_class")
+    trade["dca_profile"] = plan.get("dca_profile")
+    trade["selected_dca_count"] = plan.get("selected_dca_count")
+    trade["base_order_policy"] = plan.get("base_order_policy")
     return {
         "type": "source_box_resized",
         "key": trade.get("key"),
@@ -103,6 +192,9 @@ def resize_trade_plan(trade: Dict[str, Any], target: float, *, now: datetime, is
         "next_level_idx": trade.get("next_level_idx"),
         "base_notional": trade.get("base_notional"),
         "add_notionals": list(trade.get("add_notionals") or []),
+        "box_config_class": trade.get("box_config_class"),
+        "dca_profile": trade.get("dca_profile"),
+        "selected_dca_count": trade.get("selected_dca_count"),
     }
 
 
@@ -148,6 +240,12 @@ def build_trade_from_source(pos: Dict[str, Any], plan: Dict[str, Any], *, now: d
         "base_notional": plan["base_notional"],
         "add_notionals": plan["add_notionals"],
         "levels": plan["levels"],
+        "strategy_sizing": pos.get("strategy_sizing"),
+        "strategy_config_source": pos.get("strategy_config_source"),
+        "box_config_class": plan.get("box_config_class"),
+        "dca_profile": plan.get("dca_profile"),
+        "selected_dca_count": plan.get("selected_dca_count"),
+        "base_order_policy": plan.get("base_order_policy"),
         "next_level_idx": 0,
         "qty": 0.0,
         "notional": 0.0,
@@ -183,7 +281,12 @@ def dca_entry_intents(trade: Dict[str, Any], *, mark: Optional[float], allow_dca
     add_notionals = list(trade.get("add_notionals") or [])
     while idx < len(levels):
         level = float(levels[idx])
-        if mark is None or mark > level:
+        side = str(trade.get("side") or "LONG").upper()
+        if mark is None:
+            break
+        if side == "LONG" and mark > level:
+            break
+        if side == "SHORT" and mark < level:
             break
         intents.append(
             {

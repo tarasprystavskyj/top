@@ -592,6 +592,46 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertLess(trade["target_notional"], args.max_gross_notional_usdt)
         self.assertAlmostEqual(trade["base_notional"], expected_notional_box * 0.28)
 
+    def test_v21_box_default_and_symbol_override_are_resolved_from_live_config(self):
+        args = make_args()
+        args._live_config = {
+            "sizing": {
+                "box_config_class": "V21StrictTrendStableBoxConfig",
+                "base_order_policy": "callme_pooled_public_history_v21_same_max_plain_ignore",
+                "dca_profile": "v21_same_max_dca0",
+                "selected_dca_count": 0,
+            },
+            "callme_meta_symbols": {
+                "BTCUSDT": {
+                    "strategy_override": {
+                        "override_fields": {
+                            "sizing": {
+                                "base_order_policy": "callme_symbol_public_history_v21_same_max_btcusdt_dca2_ignore",
+                                "dca_profile": "v21_same_max_dca2",
+                                "selected_dca_count": 2,
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        default_sizing, default_source = live.copy_signal_meta.strategy_sizing_for_symbol(args, "ETHUSDT")
+        btc_sizing, btc_source = live.copy_signal_meta.strategy_sizing_for_symbol(args, "BTCUSDT")
+        default_plan = live.copy_signal_meta.dca.build_plan_for_target(54.0, 100.0, side="SHORT", sizing=default_sizing)
+        btc_plan = live.copy_signal_meta.dca.build_plan_for_target(54.0, 100.0, side="SHORT", sizing=btc_sizing)
+
+        self.assertEqual(default_source, "default_symbol_config")
+        self.assertEqual(default_plan["box_config_class"], "V21StrictTrendStableBoxConfig")
+        self.assertEqual(default_plan["selected_dca_count"], 0)
+        self.assertEqual(default_plan["base_notional"], 54.0)
+        self.assertEqual(default_plan["add_notionals"], [])
+        self.assertEqual(btc_source, "symbol_override_sparse")
+        self.assertEqual(btc_plan["selected_dca_count"], 2)
+        self.assertEqual(len(btc_plan["add_notionals"]), 2)
+        self.assertGreater(btc_plan["levels"][0], 100.0)
+        self.assertAlmostEqual(btc_plan["base_notional"] + sum(btc_plan["add_notionals"]), 54.0)
+
     def test_source_box_guard_args_expands_static_caps_to_active_box(self):
         args = make_args(max_gross_notional_usdt=30.0, max_one_side_notional_usdt=30.0)
         trade = open_trade()

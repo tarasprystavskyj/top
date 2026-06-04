@@ -2836,6 +2836,7 @@ def resize_trade_source_box(
         iso_fn=paper.iso,
         reason=reason,
         basis=str(meta.get("basis") or "source_box"),
+        sizing=trade.get("strategy_sizing") if isinstance(trade.get("strategy_sizing"), dict) else None,
     )
     trade["source_box_target_meta"] = meta
     if event is not None:
@@ -3221,7 +3222,17 @@ def seed_open_trades_from_exchange(
         entry = float((ex_pos or {}).get("entry") or 0.0)
         if qty <= 0 or entry <= 0:
             continue
-        plan = copy_signal_meta.dca.build_plan(float(state.get("equity") or args.initial_equity), args, float(pos["entry_price"]))
+        strategy_sizing, strategy_source = copy_signal_meta.strategy_sizing_for_symbol(args, pos.get("symbol"))
+        if strategy_sizing:
+            pos["strategy_sizing"] = strategy_sizing
+            pos["strategy_config_source"] = strategy_source
+        plan = copy_signal_meta.dca.build_plan(
+            float(state.get("equity") or args.initial_equity),
+            args,
+            float(pos["entry_price"]),
+            side=str(pos.get("side") or "LONG"),
+            sizing=strategy_sizing,
+        )
         pos_mark = copy_signal_meta.mark_for_symbol(args, mark, pos.get("symbol"))
         trade = copy_signal_meta.dca.build_trade_from_source(pos, plan, now=now, mark=pos_mark, iso_fn=paper.iso)
         resize_event = resize_trade_source_box(trade, source_size_snapshot(pos), now, args, reason="exchange_seed_source_box")

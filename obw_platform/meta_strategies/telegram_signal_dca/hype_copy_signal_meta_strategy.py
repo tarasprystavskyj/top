@@ -6,6 +6,7 @@ intents. Execution wrappers should submit orders only from these intents.
 """
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
+import copy
 
 try:
     from . import hype_cap100_champion_dca_strategy as dca
@@ -150,6 +151,24 @@ def filter_source_positions(positions: List[Dict[str, Any]], *, symbol: str, lon
     return {source_key(p): p for p in filtered}, events
 
 
+def strategy_sizing_for_symbol(args: Any, symbol: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+    cfg = getattr(args, "_live_config", {}) if isinstance(getattr(args, "_live_config", {}), dict) else {}
+    base = cfg.get("sizing") if isinstance(cfg.get("sizing"), dict) else None
+    if not base:
+        return None, ""
+    sizing = copy.deepcopy(base)
+    source = "default_symbol_config"
+    symbols = cfg.get("callme_meta_symbols") if isinstance(cfg.get("callme_meta_symbols"), dict) else {}
+    symbol_cfg = symbols.get(_normalize_symbol(symbol)) if isinstance(symbols.get(_normalize_symbol(symbol)), dict) else {}
+    override = symbol_cfg.get("strategy_override") if isinstance(symbol_cfg.get("strategy_override"), dict) else {}
+    fields = override.get("override_fields") if isinstance(override.get("override_fields"), dict) else {}
+    override_sizing = fields.get("sizing") if isinstance(fields.get("sizing"), dict) else {}
+    if override_sizing:
+        sizing.update(override_sizing)
+        source = "symbol_override_sparse"
+    return sizing, source
+
+
 def build_strategy_intents(
     state: Dict[str, Any],
     positions: List[Dict[str, Any]],
@@ -167,14 +186,21 @@ def build_strategy_intents(
 
     for key, pos in sorted(current.items()):
         pos_mark = mark_for_symbol(args, mark, pos.get("symbol"))
+        strategy_sizing, strategy_source = strategy_sizing_for_symbol(args, pos.get("symbol"))
+        if strategy_sizing:
+            pos["strategy_sizing"] = strategy_sizing
+            pos["strategy_config_source"] = strategy_source
         if key not in open_trades:
             entry = float(pos["entry_price"])
-            plan = dca.build_plan(float(state.get("equity") or args.initial_equity), args, entry)
+            plan = dca.build_plan(float(state.get("equity") or args.initial_equity), args, entry, side=str(pos.get("side") or "LONG"), sizing=strategy_sizing)
             trade = dca.build_trade_from_source(pos, plan, now=now, mark=pos_mark, iso_fn=iso_fn)
             intents.append(dca.base_entry_intent(trade, expected_price=entry))
             intents.extend(dca.dca_entry_intents(trade, mark=pos_mark, allow_dca=allow_dca))
         else:
             trade = open_trades[key]
+            if strategy_sizing:
+                trade["strategy_sizing"] = strategy_sizing
+                trade["strategy_config_source"] = strategy_source
             trade["last_seen_utc"] = iso_fn(now)
             trade["last_mark"] = pos_mark
             trade["source_leverage_raw"] = pos.get("leverage")

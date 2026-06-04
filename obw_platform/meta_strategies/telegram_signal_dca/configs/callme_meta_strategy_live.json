@@ -19,20 +19,25 @@
     "max_one_symbol_notional_pct": 100.0
   },
   "default_symbol_config": {
-    "baseline_source": "Veronika HYPE candidate-189 guarded DCA baseline until Callme-specific multi-symbol tuning is available.",
+    "baseline_source": "Callme pooled public-history V21 box baseline selected on 2026-06-04; supersedes the earlier Veronika HYPE candidate-189 placeholder for Callme sizing metadata.",
     "assumption": "New symbols selected by this lead are expected to share a similar trading style with prior symbols until proven otherwise.",
     "sizing": {
-      "base_order_policy": "candidate_189_fresh_base_pct_28",
-      "base_order_pct_eq": 28.0,
+      "box_config_class": "V21StrictTrendStableBoxConfig",
+      "base_order_policy": "callme_pooled_public_history_v21_same_max_plain_ignore",
+      "base_order_pct_eq": 5.0,
       "dca_add_mode": "multiplier",
       "dca_add_notional_usdt": 2.0,
       "dca_min_order_usdt": 2.0,
-      "dca_profile": "default",
+      "dca_profile": "v21_same_max_dca0",
+      "selected_dca_count": 0,
       "fresh_callback_percent": 0.45,
       "fresh_tp_percent": 1.4,
       "normal_base_pct": 10.0,
       "max_position_cost_pct": 100.0,
-      "dca_eval_interval_sec": 60.0
+      "dca_eval_interval_sec": 60.0,
+      "v21_config": "obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml",
+      "target_max_notional_usdt": 54.0,
+      "leverage_mode": "ignore_source_leverage_for_research_selection"
     },
     "source_leverage": {
       "mode": "copy_div2",
@@ -44,7 +49,7 @@
       "interval_sec": 60.0,
       "min_change_pct": 0.0,
       "min_adjust_notional_usdt": 2.0,
-      "notes": "Every poll, compare public source position amount against the last synced amount. If the lead increases/reduces size, proportionally add/reduce the follower position without changing the DCA ladder."
+      "notes": "Every poll, compare public source position amount against the last synced amount. If the lead increases/reduces size, proportionally add/reduce the follower position and resize the future DCA box ladder."
     },
     "safety": {
       "max_orders_per_hour": 10,
@@ -65,7 +70,11 @@
       "action_on_breach": "stop_new_orders_only",
       "existing_positions_policy": "do_not_flatten; existing exposure remains until source close, manual action, or exchange-side close"
     },
-    "todo": "Optimize/tune this default baseline on all historical Callme signals, then replace the HYPE-derived placeholder with the averaged Callme-specific configuration for new symbols."
+    "config_role": "pooled_default",
+    "tune_scope": "pooled_callme_universe",
+    "tune_status": "complete_research",
+    "selected_backtest_variant": "plain_ignore",
+    "validation_gate": "single public-history sample; overfit risk remains and paper/shadow validation required before production-live."
   },
   "exchanges": {
     "gateio": {
@@ -125,6 +134,110 @@
     }
   },
   "symbols": {
+    "BTCUSDT": {
+      "status": "known_callme_symbol_candidate",
+      "strategy_override": {
+        "inherits": "default_symbol_config",
+        "tune_scope": "symbol_only",
+        "tune_status": "complete_research_gate7",
+        "closed_trade_count": 20,
+        "overfit_risk": "medium",
+        "override_fields": {
+          "sizing": {
+            "base_order_policy": "callme_symbol_public_history_v21_same_max_btcusdt_dca2_ignore",
+            "dca_profile": "v21_same_max_dca2",
+            "selected_dca_count": 2,
+            "dca_eval_interval_sec": 60.0
+          }
+        },
+        "metrics": {
+          "baseline_label": "plain_ignore",
+          "baseline_net_pct": 6.84269694130727,
+          "selected_label": "dca2_ignore",
+          "selected_net_pct": 7.909095213666863,
+          "selected_max_mtm_dd_pct": -1.6454438821998412,
+          "selection_improvement_pct_vs_plain_ignore": 18.192027930145414,
+          "liq_touch_count": 0
+        }
+      },
+      "strategy_config_source": "symbol_override_sparse"
+    },
+    "ETHUSDT": {
+      "status": "known_callme_symbol_candidate",
+      "strategy_override": {
+        "inherits": "default_symbol_config",
+        "tune_scope": "symbol_only",
+        "tune_status": "complete_research_gate7_no_improvement",
+        "closed_trade_count": 7,
+        "overfit_risk": "high",
+        "override_fields": {},
+        "metrics": {
+          "baseline_label": "plain_ignore",
+          "baseline_net_pct": 12.80213410262879,
+          "selected_label": "plain_ignore",
+          "selected_net_pct": 12.80213410262879,
+          "selection_improvement_pct_vs_plain_ignore": 0.0,
+          "liq_touch_count": 0
+        }
+      },
+      "strategy_config_source": "default_symbol_config"
+    },
+    "MSTRUSDT": {
+      "status": "known_callme_symbol_candidate",
+      "strategy_override": {
+        "inherits": "default_symbol_config",
+        "tune_scope": "symbol_only",
+        "tune_status": "complete_research_gate7",
+        "closed_trade_count": 7,
+        "overfit_risk": "high",
+        "override_fields": {
+          "sizing": {
+            "base_order_policy": "callme_symbol_public_history_v21_same_max_mstrusdt_dca3_ignore",
+            "dca_profile": "v21_same_max_dca3",
+            "selected_dca_count": 3,
+            "dca_eval_interval_sec": 60.0
+          }
+        },
+        "metrics": {
+          "baseline_label": "plain_ignore",
+          "baseline_net_pct": 8.4223192140608,
+          "selected_label": "dca3_ignore",
+          "selected_net_pct": 8.857530073367025,
+          "selected_max_mtm_dd_pct": -1.095628510494251,
+          "selection_improvement_pct_vs_plain_ignore": 5.445686161090733,
+          "liq_touch_count": 0
+        }
+      },
+      "strategy_config_source": "symbol_override_sparse"
+    },
+    "SOLUSDT": {
+      "status": "known_callme_symbol_candidate",
+      "strategy_override": {
+        "inherits": "default_symbol_config",
+        "tune_scope": "symbol_only",
+        "tune_status": "complete_research_gate7",
+        "closed_trade_count": 8,
+        "overfit_risk": "high",
+        "override_fields": {
+          "sizing": {
+            "base_order_policy": "callme_symbol_public_history_v21_same_max_solusdt_dca3_ignore",
+            "dca_profile": "v21_same_max_dca3",
+            "selected_dca_count": 3,
+            "dca_eval_interval_sec": 60.0
+          }
+        },
+        "metrics": {
+          "baseline_label": "plain_ignore",
+          "baseline_net_pct": 0.19097626223837003,
+          "selected_label": "dca3_ignore",
+          "selected_net_pct": 2.5362317921813484,
+          "selected_max_mtm_dd_pct": -13.372167560112638,
+          "selection_improvement_pct_vs_plain_ignore": 75.2348392329452,
+          "liq_touch_count": 0
+        }
+      },
+      "strategy_config_source": "symbol_override_sparse"
+    },
     "AMDUSDT": {
       "status": "known_callme_symbol",
       "exchange_symbols": {
