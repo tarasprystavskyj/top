@@ -547,8 +547,63 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(trade["next_level_idx"], 0)
         self.assertAlmostEqual(trade["notional"], 15.0)
         self.assertAlmostEqual(trade["source_size_measure"], 7.5)
+        self.assertAlmostEqual(trade["target_notional"], 45.0)
+        self.assertAlmostEqual(trade["base_notional"], 12.6)
+        self.assertGreater(trade["add_notionals"][0], 1.0)
+        self.assertAlmostEqual(trade["source_box_ratio"], 1.5)
         self.assertEqual(events[0]["type"], "source_size_observed")
-        self.assertEqual(events[1]["type"], "live_fill")
+        self.assertEqual(events[1]["type"], "source_box_resized")
+        self.assertEqual(events[2]["type"], "live_fill")
+
+    def test_callme_avgo_margin_fraction_sets_source_box_from_follower_margin_pool(self):
+        args = make_args(
+            initial_equity=247.5,
+            initial_target_notional=247.5,
+            max_gross_notional_usdt=247.5,
+            source_leverage_mode="copy_div2",
+            source_size_sync_mode="ratio",
+            source_size_sync_interval_sec=0.0,
+        )
+        trade = open_trade()
+        trade.update(
+            {
+                "key": "AVGOUSDT:LONG",
+                "symbol": "AVGOUSDT",
+                "source_leverage_raw": "20",
+                "source_leverage": 20.0,
+                "source_margin_mode": "Cross",
+                "source_margin_fraction": 376.41 / 24204.49,
+            }
+        )
+        snapshot = {
+            "lead_margin_balance_usdt": 24204.49,
+            "source_position_margin_usdt": 376.41,
+            "source_margin_fraction": 376.41 / 24204.49,
+            "source_margin_fraction_reason": "ok",
+        }
+
+        event = live.resize_trade_source_box(trade, snapshot, NOW, args, reason="test_callme_avgo_source_box")
+
+        expected_margin_box = 247.5 * (376.41 / 24204.49)
+        expected_notional_box = expected_margin_box * 10.0
+        self.assertIsNotNone(event)
+        self.assertAlmostEqual(trade["source_box_target_meta"]["source_box_margin_usdt"], expected_margin_box)
+        self.assertAlmostEqual(trade["target_notional"], expected_notional_box)
+        self.assertLess(trade["target_notional"], args.max_gross_notional_usdt)
+        self.assertAlmostEqual(trade["base_notional"], expected_notional_box * 0.28)
+
+    def test_source_box_guard_args_expands_static_caps_to_active_box(self):
+        args = make_args(max_gross_notional_usdt=30.0, max_one_side_notional_usdt=30.0)
+        trade = open_trade()
+        trade["source_box_current_target_notional"] = 45.0
+        state = {"open_trades": {trade["key"]: trade}}
+
+        guard_args, meta = live.source_box_guard_args(state, trade, args)
+
+        self.assertTrue(meta["changed"])
+        self.assertAlmostEqual(guard_args.max_gross_notional_usdt, 45.0 * live.SOURCE_BOX_GUARD_HEADROOM)
+        self.assertAlmostEqual(guard_args.max_one_side_notional_usdt, 45.0 * live.SOURCE_BOX_GUARD_HEADROOM)
+        self.assertEqual(args.max_gross_notional_usdt, 30.0)
 
     def test_source_size_sync_reduce_is_partial_and_keeps_trade_open(self):
         args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0)
@@ -586,7 +641,8 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertGreater(state["equity"], 30.0)
         self.assertIn(trade["key"], state["open_trades"])
         self.assertEqual(events[0]["type"], "source_size_observed")
-        self.assertEqual(events[1]["type"], "live_source_size_reduce")
+        self.assertEqual(events[1]["type"], "source_box_resized")
+        self.assertEqual(events[2]["type"], "live_source_size_reduce")
 
     def test_callme_amd_partial_close_25pct_follows_source_size_and_margin_fraction(self):
         args = make_args(
@@ -654,8 +710,9 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertAlmostEqual(submit_close.call_args.args[3], 0.5)
         self.assertAlmostEqual(events[0]["ratio"], 0.75)
         self.assertAlmostEqual(events[0]["delta_notional"], -30.0)
-        self.assertEqual(events[1]["type"], "live_source_size_reduce")
-        self.assertAlmostEqual(events[1]["fill"]["requested_reduce_notional"], 30.0)
+        self.assertEqual(events[1]["type"], "source_box_resized")
+        self.assertEqual(events[2]["type"], "live_source_size_reduce")
+        self.assertAlmostEqual(events[2]["fill"]["requested_reduce_notional"], 30.0)
         self.assertAlmostEqual(trade["qty"], 1.5)
         self.assertAlmostEqual(trade["notional"], 90.0)
         self.assertEqual(trade["next_level_idx"], 0)

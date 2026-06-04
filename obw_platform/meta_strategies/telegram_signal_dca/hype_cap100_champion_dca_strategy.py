@@ -35,8 +35,8 @@ def dca_levels(entry_price: float) -> List[float]:
     return levels
 
 
-def build_plan(equity: float, args: Any, entry_price: float) -> Dict[str, Any]:
-    target = min(float(args.initial_target_notional), float(args.max_gross_notional_usdt), max(equity, 0.0))
+def build_plan_for_target(target: float, entry_price: float) -> Dict[str, Any]:
+    target = max(float(target or 0.0), 0.0)
     base = min(target * CHAMPION_PARAMS["fresh_base_pct"] / 100.0, target)
     remaining = max(target - base, 0.0)
     dca_mode = str(CHAMPION_PARAMS.get("dca_add_mode") or "multiplier").strip().lower()
@@ -59,6 +59,50 @@ def build_plan(equity: float, args: Any, entry_price: float) -> Dict[str, Any]:
         "min_order_notional": 0.0,
         "levels": dca_levels(entry_price),
         "candidate_index": CHAMPION_CANDIDATE_INDEX,
+    }
+
+
+def build_plan(equity: float, args: Any, entry_price: float) -> Dict[str, Any]:
+    target = min(float(args.initial_target_notional), float(args.max_gross_notional_usdt), max(equity, 0.0))
+    return build_plan_for_target(target, entry_price)
+
+
+def resize_trade_plan(trade: Dict[str, Any], target: float, *, now: datetime, iso_fn, reason: str, basis: str) -> Optional[Dict[str, Any]]:
+    old_target = float(trade.get("target_notional") or 0.0)
+    new_target = max(float(target or 0.0), 0.0)
+    if new_target <= 0:
+        return None
+    if old_target > 0 and abs(new_target - old_target) <= max(old_target, 1.0) * 1e-9:
+        return None
+    entry = float(trade.get("lead_entry_price") or trade.get("avg_entry") or 0.0)
+    if entry <= 0:
+        return None
+    plan = build_plan_for_target(new_target, entry)
+    initial_target = float(trade.get("source_box_initial_target_notional") or old_target or new_target)
+    trade["source_box_initial_target_notional"] = initial_target
+    trade["source_box_previous_target_notional"] = old_target
+    trade["source_box_current_target_notional"] = new_target
+    trade["source_box_ratio"] = new_target / max(initial_target, 1e-12)
+    trade["source_box_target_basis"] = basis
+    trade["source_box_last_resize_utc"] = iso_fn(now)
+    trade["target_notional"] = plan["target_notional"]
+    trade["base_notional"] = plan["base_notional"]
+    trade["add_notionals"] = plan["add_notionals"]
+    trade["levels"] = plan["levels"]
+    trade["dca_add_mode"] = plan["dca_add_mode"]
+    trade["min_order_notional"] = plan["min_order_notional"]
+    return {
+        "type": "source_box_resized",
+        "key": trade.get("key"),
+        "utc": iso_fn(now),
+        "reason": reason,
+        "basis": basis,
+        "old_target_notional": old_target,
+        "new_target_notional": new_target,
+        "source_box_ratio": trade["source_box_ratio"],
+        "next_level_idx": trade.get("next_level_idx"),
+        "base_notional": trade.get("base_notional"),
+        "add_notionals": list(trade.get("add_notionals") or []),
     }
 
 

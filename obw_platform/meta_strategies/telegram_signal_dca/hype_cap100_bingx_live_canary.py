@@ -266,6 +266,7 @@ DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR = 20
 DEFAULT_ORDER_POST_THROTTLE_SEC = 2.0
 DEFAULT_MARK_POLL_INTERVAL_SEC = 0.0
 DEFAULT_SOURCE_SIZE_SYNC_INTERVAL_SEC = 60.0
+SOURCE_BOX_GUARD_HEADROOM = 1.02
 
 
 def stable_client_order_id(*parts: Any) -> str:
@@ -2756,6 +2757,143 @@ def source_size_snapshot(pos: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _positive_float(raw: Any) -> Optional[float]:
+    try:
+        value = float(raw)
+    except Exception:
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
+
+
+def source_box_target_notional(
+    args: argparse.Namespace,
+    trade: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]] = None,
+    *,
+    ratio_fallback: Optional[float] = None,
+) -> Tuple[Optional[float], Dict[str, Any]]:
+    data = snapshot if isinstance(snapshot, dict) else trade
+    margin_fraction = _positive_float(data.get("source_margin_fraction"))
+    margin_pool = _positive_float(getattr(args, "initial_equity", None))
+    leverage_policy = effective_source_leverage(args, trade)
+    effective_leverage = _positive_float(leverage_policy.get("effective_leverage")) or 1.0
+    cap = _positive_float(getattr(args, "max_gross_notional_usdt", None))
+    if margin_fraction is not None and margin_pool is not None:
+        source_box_margin = margin_pool * margin_fraction
+        target = source_box_margin * effective_leverage
+        capped_target = min(target, cap) if cap is not None else target
+        return capped_target, {
+            "basis": "source_margin_fraction_x_follower_margin_pool_x_effective_leverage",
+            "source_margin_fraction": margin_fraction,
+            "follower_margin_pool_usdt": margin_pool,
+            "source_box_margin_usdt": source_box_margin,
+            "effective_leverage": effective_leverage,
+            "uncapped_target_notional": target,
+            "cap_notional": cap,
+            "leverage_policy": leverage_policy,
+        }
+    ratio = _positive_float(ratio_fallback)
+    old_target = _positive_float(trade.get("target_notional"))
+    if ratio is not None and old_target is not None:
+        target = old_target * ratio
+        return target, {
+            "basis": "source_position_amount_ratio_x_previous_box",
+            "ratio": ratio,
+            "previous_target_notional": old_target,
+            "uncapped_target_notional": target,
+            "cap_notional": cap,
+            "leverage_policy": leverage_policy,
+        }
+    return None, {
+        "basis": "unavailable",
+        "reason": "missing_source_margin_fraction_and_ratio",
+        "source_margin_fraction": data.get("source_margin_fraction"),
+        "ratio": ratio_fallback,
+        "leverage_policy": leverage_policy,
+    }
+
+
+def resize_trade_source_box(
+    trade: Dict[str, Any],
+    snapshot: Optional[Dict[str, Any]],
+    now: datetime,
+    args: argparse.Namespace,
+    *,
+    reason: str,
+    ratio_fallback: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    target, meta = source_box_target_notional(args, trade, snapshot, ratio_fallback=ratio_fallback)
+    if target is None:
+        trade["source_box_target_basis"] = meta.get("basis")
+        trade["source_box_last_resize_skip"] = meta
+        return None
+    event = copy_signal_meta.dca.resize_trade_plan(
+        trade,
+        target,
+        now=now,
+        iso_fn=paper.iso,
+        reason=reason,
+        basis=str(meta.get("basis") or "source_box"),
+    )
+    trade["source_box_target_meta"] = meta
+    if event is not None:
+        event["source_box"] = meta
+    return event
+
+
+def source_box_guard_args(state: Dict[str, Any], trade: Dict[str, Any], args: argparse.Namespace) -> Tuple[argparse.Namespace, Dict[str, Any]]:
+    open_trades = state.get("open_trades") if isinstance(state.get("open_trades"), dict) else {}
+    box_total = 0.0
+    side_totals: Dict[str, float] = {}
+    current_key = str(trade.get("key") or "")
+    has_current_box = _positive_float(trade.get("source_box_current_target_notional")) is not None
+    for key, item in open_trades.items():
+        target = _positive_float(item.get("source_box_current_target_notional"))
+        if target is None:
+            continue
+        box_total += target
+        side = str(item.get("side") or "").upper()
+        side_totals[side] = side_totals.get(side, 0.0) + target
+    if current_key not in open_trades and has_current_box:
+        target = float(trade.get("source_box_current_target_notional") or 0.0)
+        box_total += target
+        side = str(trade.get("side") or "").upper()
+        side_totals[side] = side_totals.get(side, 0.0) + target
+    if box_total <= 0:
+        return args, {"enabled": False, "reason": "no_source_box_targets"}
+    static_gross = float(getattr(args, "max_gross_notional_usdt", 0.0) or 0.0)
+    static_side = float(getattr(args, "max_one_side_notional_usdt", 0.0) or 0.0)
+    side = str(trade.get("side") or "").upper()
+    dynamic_gross = max(static_gross, box_total * SOURCE_BOX_GUARD_HEADROOM)
+    dynamic_side = max(static_side, side_totals.get(side, 0.0) * SOURCE_BOX_GUARD_HEADROOM)
+    if dynamic_gross <= static_gross + 1e-9 and dynamic_side <= static_side + 1e-9:
+        return args, {
+            "enabled": True,
+            "changed": False,
+            "box_total_notional": box_total,
+            "box_side_notional": side_totals.get(side, 0.0),
+            "headroom": SOURCE_BOX_GUARD_HEADROOM,
+            "max_gross_notional_usdt": static_gross,
+            "max_one_side_notional_usdt": static_side,
+        }
+    guard_args = argparse.Namespace(**vars(args))
+    guard_args.max_gross_notional_usdt = dynamic_gross
+    guard_args.max_one_side_notional_usdt = dynamic_side
+    return guard_args, {
+        "enabled": True,
+        "changed": True,
+        "box_total_notional": box_total,
+        "box_side_notional": side_totals.get(side, 0.0),
+        "headroom": SOURCE_BOX_GUARD_HEADROOM,
+        "static_max_gross_notional_usdt": static_gross,
+        "static_max_one_side_notional_usdt": static_side,
+        "dynamic_max_gross_notional_usdt": dynamic_gross,
+        "dynamic_max_one_side_notional_usdt": dynamic_side,
+    }
+
+
 def update_trade_source_size_snapshot(trade: Dict[str, Any], snapshot: Dict[str, Any], now: datetime) -> None:
     trade["source_position_amount_abs"] = float(snapshot.get("source_position_amount_abs") or 0.0)
     trade["source_notional_value_abs"] = float(snapshot.get("source_notional_value_abs") or 0.0)
@@ -2989,6 +3127,9 @@ def apply_source_size_sync(
             observation["reason"] = "source_size_seed_or_missing"
             record_source_size_observation(state, observation)
             events.append(observation)
+            resize_event = resize_trade_source_box(trade, snapshot, now, args, reason="source_size_seed_or_missing")
+            if resize_event:
+                events.append(resize_event)
             update_trade_source_size_snapshot(trade, snapshot, now)
             continue
         ratio = current / previous
@@ -2998,6 +3139,9 @@ def apply_source_size_sync(
         observation["change_pct"] = change_pct
         record_source_size_observation(state, observation)
         events.append(observation)
+        resize_event = resize_trade_source_box(trade, snapshot, now, args, reason="source_size_sync", ratio_fallback=ratio)
+        if resize_event:
+            events.append(resize_event)
         if not changed or change_pct < min_change_pct:
             if changed:
                 observation["action"] = "source_size_change_below_min_change_pct"
@@ -3080,6 +3224,7 @@ def seed_open_trades_from_exchange(
         plan = copy_signal_meta.dca.build_plan(float(state.get("equity") or args.initial_equity), args, float(pos["entry_price"]))
         pos_mark = copy_signal_meta.mark_for_symbol(args, mark, pos.get("symbol"))
         trade = copy_signal_meta.dca.build_trade_from_source(pos, plan, now=now, mark=pos_mark, iso_fn=paper.iso)
+        resize_event = resize_trade_source_box(trade, source_size_snapshot(pos), now, args, reason="exchange_seed_source_box")
         trade["qty"] = qty
         trade["notional"] = qty * entry
         trade["avg_entry"] = entry
@@ -3100,6 +3245,8 @@ def seed_open_trades_from_exchange(
             leverage_setup["policy"] = leverage_policy
         open_trades[key] = trade
         upsert_session_position(args, trade, status="OPEN", now=now, exchange_order_id=str(trade.get("exchange_order_id") or ""))
+        if resize_event:
+            events.append(resize_event)
         events.append({"type": "exchange_position_seeded", "key": key, "qty": qty, "entry": entry, "notional": trade["notional"], "ccxt_symbol": ccxt_symbol, "leverage_setup": leverage_setup})
     return events
 
@@ -3169,9 +3316,11 @@ def live_add_fill(
             "requested_notional": notional,
         }
     order_notional = max(float(notional or 0.0), float(preflight.get("normalized_notional") or 0.0))
+    guard_args, source_box_guard = source_box_guard_args(state, trade, args)
     ok, guard_reason, guard_detail = paper.guard_new_entry(
-        state, side=str(trade["side"]), add_notional=order_notional, mark=mark, now=now, args=args
+        state, side=str(trade["side"]), add_notional=order_notional, mark=mark, now=now, args=guard_args
     )
+    guard_detail["source_box_guard"] = source_box_guard
     if not ok:
         return {
             "type": "live_entry_blocked",
@@ -3570,12 +3719,25 @@ def apply_live_snapshot(
                 events.append({"type": "live_entry_blocked", "key": key, "fill_type": intent.get("fill_type"), "reason": "strategy_intent_without_open_trade"})
                 dca_blocked_keys.add(key)
                 continue
+            source_pos = current_source.get(key)
+            if source_pos:
+                resize_event = resize_trade_source_box(trade, source_size_snapshot(source_pos), now, args, reason=str(intent.get("intent_type") or "strategy_intent"))
+                if resize_event:
+                    events.append(resize_event)
+            intent_notional = float(intent["notional"])
+            if intent.get("intent_type") == "open_entry":
+                intent_notional = float(trade.get("base_notional") or intent_notional)
+            elif intent.get("intent_type") == "dca_entry":
+                level_idx = int(intent.get("level_idx") or 0)
+                add_notionals = list(trade.get("add_notionals") or [])
+                if 0 <= level_idx < len(add_notionals):
+                    intent_notional = float(add_notionals[level_idx])
             event = live_add_fill(
                 state,
                 trade,
                 now=now,
                 expected_price=float(intent["expected_price"]),
-                notional=float(intent["notional"]),
+                notional=intent_notional,
                 fill_type=str(intent["fill_type"]),
                 reason=str(intent["reason"]),
                 mark=mark,
@@ -3641,6 +3803,25 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
         "min_change_pct": getattr(args, "source_size_sync_min_change_pct", 0.0),
         "min_adjust_notional_usdt": getattr(args, "source_size_sync_min_adjust_notional_usdt", 0.0),
         "recent_observations": (state.get("source_size_observations") or [])[-20:] if isinstance(state.get("source_size_observations"), list) else [],
+    }
+    open_trades = state.get("open_trades") if isinstance(state.get("open_trades"), dict) else {}
+    payload["source_box"] = {
+        key: {
+            "symbol": trade.get("symbol"),
+            "side": trade.get("side"),
+            "source_margin_fraction": trade.get("source_margin_fraction"),
+            "source_position_margin_usdt": trade.get("source_position_margin_usdt"),
+            "lead_margin_balance_usdt": trade.get("lead_margin_balance_usdt"),
+            "target_notional": trade.get("target_notional"),
+            "base_notional": trade.get("base_notional"),
+            "add_notionals": trade.get("add_notionals"),
+            "source_box_margin_usdt": ((trade.get("source_box_target_meta") or {}).get("source_box_margin_usdt") if isinstance(trade.get("source_box_target_meta"), dict) else None),
+            "source_box_ratio": trade.get("source_box_ratio"),
+            "source_box_target_basis": trade.get("source_box_target_basis"),
+            "source_box_current_target_notional": trade.get("source_box_current_target_notional"),
+            "source_box_last_resize_utc": trade.get("source_box_last_resize_utc"),
+        }
+        for key, trade in sorted(open_trades.items())
     }
     payload["auth_probe"] = getattr(args, "_auth_probe", {})
     payload["exchange_switch_reset"] = getattr(args, "_exchange_switch_reset", {})
