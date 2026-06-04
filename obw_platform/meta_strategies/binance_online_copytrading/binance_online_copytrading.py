@@ -23,6 +23,15 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import yaml
 
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from obw_platform.meta_strategies.telegram_signal_dca.callme_meta_strategy_config import (
+    load_callme_meta_strategy_config,
+    resolve_symbol_strategy_config,
+)
+
 
 POSITIONS_URL = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-data/positions"
 POSITION_HISTORY_URL = "https://www.binance.com/bapi/futures/v1/public/future/copy-trade/lead-portfolio/position-history"
@@ -416,7 +425,15 @@ class MarkProvider:
 
 
 def default_state() -> Dict[str, Any]:
-    return {"open_positions": {}, "closed_trades": [], "seen_history_ids": {}, "events": [], "lead_traders": {}, "last_poll": None}
+    return {
+        "open_positions": {},
+        "closed_trades": [],
+        "seen_history_ids": {},
+        "seen_open_position_ids": {},
+        "events": [],
+        "lead_traders": {},
+        "last_poll": None,
+    }
 
 
 def load_state(path: Path) -> Dict[str, Any]:
@@ -427,6 +444,7 @@ def load_state(path: Path) -> Dict[str, Any]:
     state.setdefault("open_positions", {})
     state.setdefault("closed_trades", [])
     state.setdefault("seen_history_ids", {})
+    state.setdefault("seen_open_position_ids", {})
     state.setdefault("events", [])
     state.setdefault("lead_traders", {})
     return state
@@ -459,6 +477,96 @@ def filter_lead_symbols(lead: Dict[str, Any], rows: List[Dict[str, Any]]) -> Lis
             continue
         out.append(row)
     return out
+
+
+def source_notional(pos: Dict[str, Any]) -> float:
+    val = abs(parse_float(pos.get("notional_value"), 0.0))
+    if val > 0:
+        return val
+    amount = abs(parse_float(pos.get("position_amount"), 0.0))
+    entry = finite_price(pos.get("entry_price")) or finite_price(pos.get("mark_price")) or 0.0
+    return amount * entry
+
+
+def allocation_weight(pos: Dict[str, Any], positions: List[Dict[str, Any]]) -> float:
+    total = sum(source_notional(row) for row in positions)
+    if total <= 0:
+        return 1.0 / max(1, len(positions))
+    return source_notional(pos) / total
+
+
+def callme_budget_notional(cfg: Dict[str, Any], meta_config: Optional[Dict[str, Any]], lead: Dict[str, Any], delegated_default: float) -> float:
+    if isinstance(meta_config, dict):
+        allocation = meta_config.get("allocation") if isinstance(meta_config.get("allocation"), dict) else {}
+        for key in ("default_max_notional_usdt", "default_exchange_margin_usdt"):
+            val = parse_float(allocation.get(key), 0.0)
+            if val > 0:
+                return val
+    for raw in (lead.get("delegated_capital_usdt"), cfg.get("paper_notional_usdt"), delegated_default):
+        val = parse_float(raw, 0.0)
+        if val > 0:
+            return val
+    return 0.0
+
+
+def exchange_eligibility(
+    *,
+    cfg: Dict[str, Any],
+    meta_config: Optional[Dict[str, Any]],
+    exchange: str,
+    symbol: str,
+) -> Dict[str, Any]:
+    symbol_key = _normalize_copy_symbol(symbol)
+    exchange = str(exchange or "").lower()
+    if isinstance(meta_config, dict):
+        symbols = meta_config.get("symbols") if isinstance(meta_config.get("symbols"), dict) else {}
+        entry = symbols.get(symbol_key) if isinstance(symbols.get(symbol_key), dict) else {}
+        exchange_symbols = entry.get("exchange_symbols") if isinstance(entry.get("exchange_symbols"), dict) else {}
+        ex_meta = exchange_symbols.get(exchange) if isinstance(exchange_symbols.get(exchange), dict) else None
+        if isinstance(ex_meta, dict):
+            if not ex_meta.get("available", False):
+                return {
+                    "eligible": False,
+                    "reason": "exchange_symbol_unavailable",
+                    "exchange": exchange,
+                    "symbol": symbol_key,
+                    "details": ex_meta.get("reason") or "meta_config_available_false",
+                }
+            return {
+                "eligible": True,
+                "reason": "exchange_symbol_available",
+                "exchange": exchange,
+                "symbol": symbol_key,
+                "live_symbol": ex_meta.get("live_symbol") or MarkProvider.market_symbol(symbol_key),
+                "details": ex_meta,
+            }
+    constraints = cfg.get("symbol_market_constraints") if isinstance(cfg.get("symbol_market_constraints"), dict) else {}
+    legacy = constraints.get(symbol_key) if isinstance(constraints.get(symbol_key), dict) else None
+    if isinstance(legacy, dict):
+        if not legacy.get("available", False):
+            return {
+                "eligible": False,
+                "reason": "exchange_symbol_unavailable",
+                "exchange": exchange,
+                "symbol": symbol_key,
+                "details": legacy.get("reason") or "legacy_config_available_false",
+            }
+        return {
+            "eligible": True,
+            "reason": "exchange_symbol_available",
+            "exchange": exchange,
+            "symbol": symbol_key,
+            "live_symbol": legacy.get("live_symbol") or MarkProvider.market_symbol(symbol_key),
+            "details": legacy,
+        }
+    return {
+        "eligible": True,
+        "reason": "exchange_symbol_unverified_default_shadow_only",
+        "exchange": exchange,
+        "symbol": symbol_key,
+        "live_symbol": MarkProvider.market_symbol(symbol_key),
+        "details": "No explicit exchange metadata; allowed only for shadow/paper simulation.",
+    }
 
 
 def enrich_existing_trades_with_lead_name(state: Dict[str, Any], lead: Dict[str, Any]) -> None:
@@ -800,6 +908,7 @@ def open_paper(
 def apply_follow_open(
     state: Dict[str, Any],
     *,
+    cfg: Optional[Dict[str, Any]] = None,
     lead: Dict[str, Any],
     open_positions: List[Dict[str, Any]],
     history: List[Dict[str, Any]],
@@ -809,16 +918,65 @@ def apply_follow_open(
     now: datetime,
     slippage_bp: float,
     ttl_hours: float,
+    paper_exchange: str = "",
+    meta_config: Optional[Dict[str, Any]] = None,
+    delegated_capital: float = 0.0,
+    enter_existing_positions: bool = False,
+    allocation_method: str = "source_notional_weight_v1",
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     current_keys = set()
+    cfg = cfg or {}
+    meta_mode = isinstance(meta_config, dict)
+    seen_ids = state.setdefault("seen_open_position_ids", {}).setdefault(lead["name"], [])
+    seen_set = set(seen_ids)
+    seed_initial_existing = not enter_existing_positions and not seen_set
+    reallocate_skipped_notional = bool(cfg.get("reallocate_skipped_notional", False))
+    eligible_for_allocation = [
+        row
+        for row in open_positions
+        if exchange_eligibility(cfg=cfg, meta_config=meta_config, exchange=paper_exchange, symbol=str(row.get("symbol") or "")).get("eligible")
+    ]
+    allocation_pool = eligible_for_allocation if reallocate_skipped_notional else open_positions
+    budget = callme_budget_notional(cfg, meta_config, lead, delegated_capital)
     for pos in open_positions:
         signal_id = str(pos.get("id") or f"{pos['symbol']}:{pos['side']}")
         key = f"{lead['name']}:{signal_id}:{pos['symbol']}:{pos['side']}"
         current_keys.add(key)
+        source_notional_value = source_notional(pos)
+        mark, source, mark_context = mark_provider.context(session, pos["symbol"], pos.get("mark_price") or pos.get("entry_price"))
+        eligibility = exchange_eligibility(cfg=cfg, meta_config=meta_config, exchange=paper_exchange, symbol=pos["symbol"])
+        weight = allocation_weight(pos, allocation_pool) if eligibility.get("eligible") and allocation_pool else 0.0
+        target_notional = budget * weight
+        resolved_strategy = resolve_symbol_strategy_config(meta_config, pos["symbol"]) if meta_mode else {
+            "config_source": "legacy_copytrading_config",
+            "strategy_config": {},
+        }
+        decision_event: Dict[str, Any] = {
+            "type": "source_position_evaluated",
+            "strategy": lead["name"],
+            "lead_trader_name": lead_trader_name(lead),
+            "symbol": pos["symbol"],
+            "side": pos["side"],
+            "source_signal_id": signal_id,
+            "source_notional": source_notional_value,
+            "source_mark": mark,
+            "mark_source": source,
+            "eligibility": eligibility,
+            "strategy_config_source": resolved_strategy.get("config_source"),
+            "allocation_method": allocation_method,
+            "reallocate_skipped_notional": reallocate_skipped_notional,
+            "allocation_weight": weight,
+            "target_notional": target_notional,
+            "live_orders_enabled": False,
+        }
         if key in state["open_positions"]:
             state["open_positions"][key]["last_seen_utc"] = iso(now)
-            mark, source, mark_context = mark_provider.context(session, pos["symbol"], pos.get("mark_price") or pos.get("entry_price"))
+            state["open_positions"][key]["source_notional"] = source_notional_value
+            state["open_positions"][key]["allocation_weight"] = weight
+            state["open_positions"][key]["target_notional_usdt"] = target_notional
+            decision_event.update({"decision": "already_open_manage", "key": key})
+            events.append(decision_event)
             if mark:
                 event, closed = manage_v21_trade(
                     state["open_positions"][key],
@@ -836,35 +994,91 @@ def apply_follow_open(
                     del state["open_positions"][key]
                     events.append({"type": "paper_exit", "key": key, "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"], "reason": closed["exit_reason"], "pnl": closed["paper_pnl_usdt"]})
             continue
+        if not enter_existing_positions and (seed_initial_existing or signal_id in seen_set):
+            decision_event.update({"decision": "would_skip", "reason": "existing_position_not_entered_enter_existing_positions_false"})
+            events.append(decision_event)
+            seen_set.add(signal_id)
+            continue
         if has_open_source_symbol(state, lead["name"], pos["symbol"]):
+            decision_event.update({"decision": "would_skip", "reason": "source_symbol_already_active"})
+            events.append(decision_event)
             events.append({"type": "skip_signal", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"], "side": pos["side"], "reason": "source_symbol_already_active"})
             continue
-        mark, source, mark_context = mark_provider.context(session, pos["symbol"], pos.get("mark_price") or pos.get("entry_price"))
-        if not mark:
-            events.append({"type": "missing_mark", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"]})
+        if not eligibility.get("eligible"):
+            decision_event.update({"decision": "would_skip", "reason": eligibility.get("reason")})
+            events.append(decision_event)
+            events.append({"type": "skip_signal", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"], "side": pos["side"], "reason": eligibility.get("reason"), "eligibility": eligibility})
+            seen_set.add(signal_id)
             continue
-        trade, skip_reason = open_v21_paper(
-            runtime=v21_runtime,
-            strategy_name=lead["name"],
-            lead_name=lead_trader_name(lead),
-            portfolio_id=lead["portfolio_id"],
-            mode="follow_open",
-            signal_id=signal_id,
-            symbol=pos["symbol"],
-            side=pos["side"],
-            mark=mark,
-            mark_source=source,
-            mark_context=mark_context,
-            now=now,
-            slippage_bp=slippage_bp,
-            ttl_hours=ttl_hours,
-            raw_signal=pos,
-        )
+        if not mark:
+            decision_event.update({"decision": "would_skip", "reason": "missing_mark"})
+            events.append(decision_event)
+            events.append({"type": "missing_mark", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"]})
+            seen_set.add(signal_id)
+            continue
+        if meta_mode:
+            trade = open_paper(
+                strategy_name=lead["name"],
+                lead_name=lead_trader_name(lead),
+                portfolio_id=lead["portfolio_id"],
+                mode="follow_open",
+                signal_id=signal_id,
+                symbol=pos["symbol"],
+                side=pos["side"],
+                mark=mark,
+                mark_source=source,
+                mark_context=mark_context,
+                now=now,
+                notional=target_notional,
+                slippage_bp=slippage_bp,
+                ttl_hours=ttl_hours,
+                raw_signal=pos,
+            )
+            trade["qty"] = _qty_from_notional(target_notional, float(trade["entry_exec_price"]))
+            trade["callme_meta"] = {
+                "config_path": meta_config.get("_config_path"),
+                "strategy_config_source": resolved_strategy.get("config_source"),
+                "strategy_config": resolved_strategy.get("strategy_config"),
+                "allocation_method": allocation_method,
+                "reallocate_skipped_notional": reallocate_skipped_notional,
+                "allocation_weight": weight,
+                "source_notional": source_notional_value,
+                "target_notional_usdt": target_notional,
+                "eligibility": eligibility,
+                "enter_existing_positions": enter_existing_positions,
+            }
+            skip_reason = None
+        else:
+            trade, skip_reason = open_v21_paper(
+                runtime=v21_runtime,
+                strategy_name=lead["name"],
+                lead_name=lead_trader_name(lead),
+                portfolio_id=lead["portfolio_id"],
+                mode="follow_open",
+                signal_id=signal_id,
+                symbol=pos["symbol"],
+                side=pos["side"],
+                mark=mark,
+                mark_source=source,
+                mark_context=mark_context,
+                now=now,
+                slippage_bp=slippage_bp,
+                ttl_hours=ttl_hours,
+                raw_signal=pos,
+            )
         if trade is None:
+            decision_event.update({"decision": "would_skip", "reason": skip_reason})
+            events.append(decision_event)
             events.append({"type": "skip_signal", "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"], "side": pos["side"], "reason": skip_reason})
+            seen_set.add(signal_id)
             continue
         state["open_positions"][key] = trade
-        events.append({"type": "paper_entry", "key": key, "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"], "side": pos["side"], "mark": mark})
+        decision_event.update({"decision": "would_enter", "reason": "paper_entry", "key": key})
+        events.append(decision_event)
+        events.append({"type": "paper_entry", "key": key, "strategy": lead["name"], "lead_trader_name": lead_trader_name(lead), "symbol": pos["symbol"], "side": pos["side"], "mark": mark, "target_notional": target_notional, "strategy_config_source": resolved_strategy.get("config_source")})
+        seen_set.add(signal_id)
+
+    state["seen_open_position_ids"][lead["name"]] = list(seen_set)[-1000:]
 
     for key, trade in list(state["open_positions"].items()):
         if trade.get("strategy_name") != lead["name"] or trade.get("mode") != "follow_open" or key in current_keys:
@@ -1374,6 +1588,8 @@ def write_observability(
 
 def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    meta_config_path = str(args.callme_meta_config or cfg.get("callme_meta_config") or "").strip()
+    meta_config = load_callme_meta_strategy_config(meta_config_path) if meta_config_path else None
     state_path = Path(args.state_path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state = load_state(state_path)
@@ -1386,6 +1602,8 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     slippage_bp = float(args.slippage_bp if args.slippage_bp is not None else cfg.get("slippage_bp", 9.38))
     ttl_hours = float(args.ttl_hours or cfg.get("ttl_hours", 72.0))
     v21_config = str(args.v21_config or cfg.get("v21_config") or DEFAULT_V21_CONFIG)
+    allocation_method = str(cfg.get("allocation_method") or "source_notional_weight_v1")
+    enter_existing_positions = bool(args.enter_existing_positions or cfg.get("enter_existing_positions", False))
     exit_on_reversal = bool(cfg.get("exit_on_reversal", True))
     if args.no_exit_on_reversal:
         exit_on_reversal = False
@@ -1405,6 +1623,7 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
         if mode == "follow_open":
             lead_events = apply_follow_open(
                 state,
+                cfg=cfg,
                 lead=lead,
                 open_positions=open_positions,
                 history=history,
@@ -1414,6 +1633,11 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
                 now=now,
                 slippage_bp=slippage_bp,
                 ttl_hours=ttl_hours,
+                paper_exchange=args.paper_exchange,
+                meta_config=meta_config,
+                delegated_capital=delegated_capital,
+                enter_existing_positions=enter_existing_positions,
+                allocation_method=allocation_method,
             )
         elif mode == "contrarian_on_close":
             lead_events = apply_contrarian_on_close(
@@ -1443,6 +1667,11 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
             "v21_config": v21_config,
             "delegated_capital_usdt": delegated_capital,
             "base_order_pct_eq": 5.0,
+            "callme_meta_config": meta_config_path,
+            "callme_budget_notional": callme_budget_notional(cfg, meta_config, lead, delegated_capital),
+            "allocation_method": allocation_method,
+            "enter_existing_positions": enter_existing_positions,
+            "live_orders_enabled": bool(cfg.get("live_orders_enabled", False)),
         })
 
     state["last_poll"] = {"utc": iso(now), "paper_exchange": args.paper_exchange, "slippage_bp": slippage_bp, "ttl_hours": ttl_hours, "leads": lead_meta, "events": events}
@@ -1475,9 +1704,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Paper-live Binance online copytrading meta-strategy.")
     ap.add_argument("--config", default=DEFAULT_CONFIG)
     ap.add_argument("--state-path", default=DEFAULT_STATE)
-    ap.add_argument("--paper-exchange", default="bingx", choices=["bingx", "binance", "htx"])
+    ap.add_argument("--paper-exchange", default="bingx", choices=["bingx", "binance", "gateio", "htx"])
     ap.add_argument("--notional-usdt", type=float, default=0.0)
     ap.add_argument("--v21-config", default=DEFAULT_V21_CONFIG)
+    ap.add_argument("--callme-meta-config", default="")
     ap.add_argument("--slippage-bp", type=float, default=None)
     ap.add_argument("--ttl-hours", type=float, default=0.0)
     ap.add_argument("--history-page-size", type=int, default=50)
@@ -1489,6 +1719,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--run-id", default="")
     ap.add_argument("--no-exit-on-reversal", action="store_true")
     ap.add_argument("--trade-existing-history", action="store_true", help="On first run, trade already visible history rows instead of seeding them as seen.")
+    ap.add_argument("--enter-existing-positions", action="store_true", help="Follow current open source positions instead of seeding them as already seen.")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true")
     mode.add_argument("--loop", action="store_true")

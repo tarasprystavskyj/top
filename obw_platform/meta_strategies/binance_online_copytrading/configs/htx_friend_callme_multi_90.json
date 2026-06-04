@@ -11,6 +11,10 @@
     "api_secret_env": "HTX_MAKSYM_SECRET"
   },
   "v21_config": "obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml",
+  "callme_meta_config": "obw_platform/meta_strategies/telegram_signal_dca/configs/callme_meta_strategy_live.json",
+  "enter_existing_positions": true,
+  "allocation_method": "source_notional_weight_v1",
+  "reallocate_skipped_notional": false,
   "base_order_pct_eq": 5.0,
   "slippage_bp": 10.0,
   "ttl_hours": 72.0,

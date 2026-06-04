@@ -19,13 +19,25 @@ For a newly observed Callme symbol:
 1. Resolve the canonical `BASE/USDT:USDT` market on each exchange.
 2. If the symbol has no explicit entry in `symbols`, apply
    `default_symbol_config`.
-3. Treat that default as a placeholder derived from the HYPE/candidate-189
-   guarded DCA baseline.
-4. Replace the placeholder after tuning on all historical Callme signals.
+3. If `symbols.<SYMBOL>.strategy_override.override_fields` exists, deep-merge
+   those fields over `default_symbol_config`.
+4. Keep exchange metadata under `exchange_symbols`; do not mix it into DCA/v21
+   policy.
 
-TODO: optimize/tune across all historical Callme signals to obtain an averaged
-Callme-specific default configuration for new symbols. The working assumption is
-that this lead chooses new symbols in a similar style to prior symbols.
+The current default is a pooled Callme public-history research default selected
+from visible Binance copy-trading history on 2026-06-04. It is not a production
+live approval: the sample is one public-history window, per-symbol overrides are
+skipped until each symbol clears the min-trade gate, and the multi-symbol live
+adapter still must read this meta-strategy config directly before real order
+eligibility.
+
+Per-symbol override rule:
+
+1. Start with the pooled default.
+2. Tune a symbol-only candidate only when the symbol has enough closed trades.
+3. Allow only small DCA/v21 override fields.
+4. Reject an override if it worsens max MTM drawdown, liquidation touches, or
+   max notional versus the pooled default.
 
 Legacy files with `legacy_amd_single_symbol` in the name are compatibility
 canaries for the old AMD-only live process. They are not the Callme strategy.

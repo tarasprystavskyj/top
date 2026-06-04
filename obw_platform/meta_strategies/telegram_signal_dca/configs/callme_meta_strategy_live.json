@@ -19,24 +19,29 @@
     "max_one_symbol_notional_pct": 100.0
   },
   "default_symbol_config": {
-    "baseline_source": "Veronika HYPE candidate-189 guarded DCA baseline until Callme-specific multi-symbol tuning is available.",
+    "baseline_source": "Callme pooled public-history research default selected on 2026-06-04; earlier Veronika HYPE candidate-189 placeholder is superseded for default sizing metadata.",
     "assumption": "New symbols selected by this lead are expected to share a similar trading style with prior symbols until proven otherwise.",
     "sizing": {
-      "base_order_policy": "candidate_189_fresh_base_pct_28",
-      "base_order_pct_eq": 28.0,
+      "base_order_policy": "callme_pooled_public_history_v21_same_max_plain_ignore",
+      "base_order_pct_eq": 5.0,
       "dca_add_mode": "multiplier",
       "dca_add_notional_usdt": 2.0,
       "dca_min_order_usdt": 2.0,
-      "dca_profile": "default",
+      "dca_profile": "v21_same_max_dca0",
       "fresh_callback_percent": 0.45,
       "fresh_tp_percent": 1.4,
       "normal_base_pct": 10.0,
       "max_position_cost_pct": 100.0,
-      "dca_eval_interval_sec": 60.0
+      "dca_eval_interval_sec": 60.0,
+      "v21_config": "obw_platform/configs/V21_strict_trend_stable_live_static9p38.yaml",
+      "target_max_notional_usdt": 54.0,
+      "selected_dca_count": 0,
+      "leverage_mode": "ignore_source_leverage_for_risk_gate"
     },
     "source_leverage": {
-      "mode": "copy",
-      "max_source_leverage": 0.0
+      "mode": "ignore_for_pooled_research",
+      "max_source_leverage": 0.0,
+      "notes": "The pooled risk gate excluded source-leverage-copy variants; production leverage handling requires explicit live-adapter review."
     },
     "safety": {
       "max_orders_per_hour": 10,
@@ -57,7 +62,15 @@
       "action_on_breach": "stop_new_orders_only",
       "existing_positions_policy": "do_not_flatten; existing exposure remains until source close, manual action, or exchange-side close"
     },
-    "todo": "Optimize/tune this default baseline on all historical Callme signals, then replace the HYPE-derived placeholder with the averaged Callme-specific configuration for new symbols."
+    "todo": "Run paper/shadow validation and future walk-forward refreshes before production-live eligibility.",
+    "config_role": "pooled_default",
+    "tune_scope": "pooled_callme_universe",
+    "tune_status": "complete_research",
+    "baseline_quality": "callme_public_history_pooled_backtest",
+    "artifact_kind": "callme_pooled_backtest_summary",
+    "pooled_tune_source": "_reports\\callme_prod_pipeline_ops2_20260604\\pooled_backtest\\summary.json",
+    "selected_backtest_variant": "plain_ignore",
+    "validation_gate": "single 365D public-history sample; overfit risk remains and paper/shadow validation required before production-live."
   },
   "exchanges": {
     "gateio": {
@@ -129,7 +142,16 @@
           "available": false,
           "reason": "canonical AMD/USDT:USDT swap market not present in current MEXC metadata"
         }
-      }
+      },
+      "strategy_override": {
+        "inherits": "default_symbol_config",
+        "tune_scope": "symbol_only",
+        "tune_status": "skipped_min_trade_gate",
+        "closed_trade_count": 1,
+        "overfit_risk": "high",
+        "override_fields": {}
+      },
+      "strategy_config_source": "default_symbol_config"
     },
     "AVGOUSDT": {
       "status": "known_callme_symbol",
@@ -158,12 +180,45 @@
           "available": false,
           "reason": "canonical AVGO/USDT:USDT swap market not present in current MEXC metadata"
         }
-      }
+      },
+      "strategy_override": {
+        "inherits": "default_symbol_config",
+        "tune_scope": "symbol_only",
+        "tune_status": "skipped_min_trade_gate",
+        "closed_trade_count": 0,
+        "overfit_risk": "high",
+        "override_fields": {}
+      },
+      "strategy_config_source": "default_symbol_config"
     },
     "*": {
       "status": "new_symbol_default",
       "config_source": "default_symbol_config",
-      "exchange_symbol_resolution": "derive {BASE}/USDT:USDT and confirm in exchange metadata before live order eligibility"
+      "exchange_symbol_resolution": "derive {BASE}/USDT:USDT and confirm in exchange metadata before live order eligibility",
+      "strategy_config_resolution": "Use default_symbol_config unless a concrete symbols.<SYMBOL>.strategy_override.override_fields exists."
     }
+  },
+  "tuning": {
+    "tune_status": "complete_research",
+    "artifact_search_date": "2026-06-04",
+    "public_history_source": "_reports\\callme_prod_pipeline_ops2_20260604\\callme_public_position_history_normalized.csv",
+    "pooled_default_config": "plain_ignore",
+    "pooled_backtest_summary": "_reports\\callme_prod_pipeline_ops2_20260604\\pooled_backtest\\summary.json",
+    "per_symbol_tuned_configs": "skipped_by_min_trade_gate",
+    "min_trade_count_gate": 12,
+    "override_allowlist": [
+      "sizing.base_order_policy",
+      "sizing.base_order_pct_eq",
+      "sizing.dca_profile",
+      "sizing.dca_eval_interval_sec"
+    ],
+    "shrinkage_rule": "Per-symbol override stays empty unless closed trade count >= min_trade_count_gate and its candidate improves pooled selection score by >= 5% without worsening max MTM drawdown, liquidation touches, or max notional.",
+    "risk_gate": "Selection excludes source-leverage-copy variants, liquidation touches, and max_notional above allocation.default_max_notional_usdt.",
+    "strategy_config_resolution_order": [
+      "symbols.<SYMBOL>.strategy_override.override_fields",
+      "symbols.<SYMBOL>.strategy_config",
+      "default_symbol_config"
+    ],
+    "symbol_policy_boundary": "DCA/v21 policy belongs in default_symbol_config or strategy_override.override_fields; exchange_symbols only describes exchange market availability and contract metadata."
   }
 }
