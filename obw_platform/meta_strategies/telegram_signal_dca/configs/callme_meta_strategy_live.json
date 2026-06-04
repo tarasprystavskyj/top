@@ -35,7 +35,8 @@
       "dca_eval_interval_sec": 60.0
     },
     "source_leverage": {
-      "mode": "copy",
+      "mode": "copy_div2",
+      "margin_mode_override": "cross",
       "max_source_leverage": 0.0
     },
     "safety": {

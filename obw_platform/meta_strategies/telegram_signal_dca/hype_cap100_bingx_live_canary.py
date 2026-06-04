@@ -1537,6 +1537,7 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
         "mark_poll_interval_sec": cfg.get("mark_poll_interval_sec") or safety.get("mark_poll_interval_sec"),
         "source_leverage_mode": cfg.get("source_leverage_mode") or (cfg.get("source_leverage") if isinstance(cfg.get("source_leverage"), str) else None) or ((cfg.get("source_leverage") or {}).get("mode") if isinstance(cfg.get("source_leverage"), dict) else None),
         "max_source_leverage": cfg.get("max_source_leverage") or ((cfg.get("source_leverage") or {}).get("max_source_leverage") if isinstance(cfg.get("source_leverage"), dict) else None),
+        "source_margin_mode_override": cfg.get("source_margin_mode_override") or ((cfg.get("source_leverage") or {}).get("margin_mode_override") if isinstance(cfg.get("source_leverage"), dict) else None),
         "protection_account_loss_stop_usdt": protection_usdt("account_loss_stop_usdt", "account_loss_stop_pct_of_equity"),
         "protection_floating_pnl_stop_usdt": protection_usdt("floating_pnl_stop_usdt", "floating_pnl_stop_pct_of_equity"),
         "protection_emergency_account_loss_usdt": protection_usdt("emergency_account_loss_usdt", "emergency_account_loss_pct_of_equity"),
@@ -1757,7 +1758,7 @@ def effective_source_leverage(args: argparse.Namespace, trade: Dict[str, Any]) -
     source = parse_source_leverage(trade.get("source_leverage"))
     if source is None:
         source = parse_source_leverage(raw)
-    margin_mode = normalize_source_margin_mode(trade.get("source_margin_mode"))
+    margin_mode = normalize_source_margin_mode(getattr(args, "source_margin_mode_override", "") or trade.get("source_margin_mode"))
     out = {
         "mode": mode,
         "source_leverage_raw": raw,
@@ -3345,6 +3346,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--entry-failure-cooldown-sec", type=float, default=DEFAULT_ENTRY_FAILURE_COOLDOWN_SEC, help="Cooldown for the same symbol/lead/fill-level after rejected entry.")
     ap.add_argument("--source-leverage-mode", choices=SUPPORTED_SOURCE_LEVERAGE_MODES, default="ignore", help="How to apply Binance copy-source leverage before follower opens/DCA legs.")
     ap.add_argument("--max-source-leverage", type=float, default=0.0, help="Optional cap for effective source leverage; 0 means uncapped.")
+    ap.add_argument("--source-margin-mode-override", choices=("", "cross", "isolated"), default="", help="Optional forced margin mode for follower leverage setup.")
     ap.add_argument("--hot-restart-snapshot-path", default="", help="Where HOT_STOP writes a restart snapshot. Defaults to out-dir/HOT_RESTART_SNAPSHOT.json.")
     ap.add_argument("--resume-snapshot", default="", help="Load state from a HOT_STOP snapshot before starting.")
     ap.add_argument("--resume-snapshot-overwrite", action="store_true", help="Allow --resume-snapshot to replace an existing state-path.")

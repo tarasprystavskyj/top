@@ -74,6 +74,7 @@ def make_args(**overrides):
         mark_poll_interval_sec=0.0,
         source_leverage_mode="ignore",
         max_source_leverage=0.0,
+        source_margin_mode_override="",
         hot_restart_snapshot_path="",
         resume_snapshot="",
         resume_snapshot_overwrite=False,
@@ -457,6 +458,9 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(copy["effective_leverage"], 6.0)
         div2 = live.effective_source_leverage(make_args(source_leverage_mode="copy_div2"), trade)
         self.assertEqual(div2["effective_leverage"], 3.0)
+        forced_cross = live.effective_source_leverage(make_args(source_leverage_mode="copy_div2", source_margin_mode_override="cross"), {**trade, "source_margin_mode": "isolated"})
+        self.assertEqual(forced_cross["effective_leverage"], 3.0)
+        self.assertEqual(forced_cross["source_margin_mode"], "cross")
 
     def test_ensure_symbol_leverage_bingx_hedge_is_side_specific_and_cached(self):
         args = make_args(live_exchange="bingx", position_mode="hedge")
