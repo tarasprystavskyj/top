@@ -8,9 +8,9 @@
     "symbol_scope": "multi_symbol_dynamic"
   },
   "runtime": {
-    "current_multi_symbol_runner": "shadow_only",
-    "live_executor_status": "todo_multi_symbol_live_adapter",
-    "notes": "Callme is a multi-symbol meta-strategy. Do not bind the strategy identity to the first live canary symbol."
+    "current_multi_symbol_runner": "live_capable_canary_and_shadow",
+    "live_executor_status": "multi_symbol_live_adapter_available",
+    "notes": "Callme is a multi-symbol meta-strategy. Live execution requires per-symbol exchange market resolution before any order is eligible."
   },
   "allocation": {
     "split_pct": 45.0,
