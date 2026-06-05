@@ -976,9 +976,59 @@ def _chart_event_text(row: Dict[str, Any], extra: Dict[str, Any]) -> str:
     return " | ".join(bits)
 
 
+def _read_source_margin_chart_events(args: argparse.Namespace) -> List[Dict[str, Any]]:
+    state_path = str(getattr(args, "state_path", "") or "")
+    if not state_path or not Path(state_path).exists():
+        return []
+    try:
+        with Path(state_path).open("r", encoding="utf-8") as fh:
+            state = json.load(fh)
+    except Exception:
+        return []
+    observations = state.get("source_size_observations") if isinstance(state, dict) else []
+    if not isinstance(observations, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for idx, item in enumerate(observations):
+        if not isinstance(item, dict) or item.get("type") != "source_margin_add_not_followed":
+            continue
+        ts = str(item.get("utc") or item.get("ts") or "")
+        if not ts:
+            continue
+        delta = item.get("source_margin_delta_usdt")
+        change_pct = item.get("source_margin_change_pct")
+        text_bits = ["TRADER ADDED MARGIN; FOLLOWER DID NOT"]
+        if delta not in (None, ""):
+            text_bits.append(f"delta={_fmt_float(delta)} USDT")
+        if change_pct not in (None, ""):
+            text_bits.append(f"change={_fmt_float(change_pct)}%")
+        reason = str(item.get("reason") or "")
+        if reason:
+            text_bits.append(reason)
+        out.append(
+            {
+                "ts": ts,
+                "type": "source_margin_add_not_followed",
+                "side": item.get("side") or "",
+                "symbol": item.get("symbol") or args.live_symbol or DEFAULT_LIVE_SYMBOL,
+                "price": _fmt_float(item.get("price") or 0.0),
+                "qty": "",
+                "order_id": f"source-margin-missed-{idx}",
+                "position_id": item.get("key") or "",
+                "pnl": "",
+                "status": "OBSERVED",
+                "text": " | ".join(text_bits),
+                "color": "#EF4444",
+                "label_color": "#EF4444",
+            }
+        )
+    return out[-10000:]
+
+
 def export_live_chart_events(args: argparse.Namespace) -> Dict[str, Optional[str]]:
     rows = _read_session_orders_for_artifacts(str(args.session_db or ""), str(args.run_id or ""))
-    if not rows:
+    source_margin_events = _read_source_margin_chart_events(args)
+    if not rows and not source_margin_events:
         return {"live_chart_events_jsonl": None, "live_chart_events_csv": None}
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1002,8 +1052,12 @@ def export_live_chart_events(args: argparse.Namespace) -> Dict[str, Optional[str
                 "pnl": _chart_event_pnl(extra),
                 "status": row.get("status") or "",
                 "text": _chart_event_text(row, extra),
+                "color": "",
+                "label_color": "",
             }
         )
+    events.extend(source_margin_events)
+    events.sort(key=lambda item: str(item.get("ts") or ""))
     jsonl_path = out_dir / "live_chart_events.jsonl"
     csv_path = out_dir / "live_chart_events.csv"
     with jsonl_path.open("w", encoding="utf-8") as fh:
@@ -1012,7 +1066,7 @@ def export_live_chart_events(args: argparse.Namespace) -> Dict[str, Optional[str
     with csv_path.open("w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(
             fh,
-            fieldnames=["ts", "type", "side", "symbol", "price", "qty", "order_id", "position_id", "pnl", "status", "text"],
+            fieldnames=["ts", "type", "side", "symbol", "price", "qty", "order_id", "position_id", "pnl", "status", "text", "color", "label_color"],
         )
         writer.writeheader()
         writer.writerows(events[-10000:])
@@ -2946,6 +3000,90 @@ def source_size_observation_event(key: str, trade: Dict[str, Any], snapshot: Dic
     }
 
 
+def source_margin_increase_meta(trade: Dict[str, Any], snapshot: Dict[str, Any], *, min_change_pct: float = 0.0) -> Optional[Dict[str, Any]]:
+    previous_margin = _positive_float(trade.get("source_position_margin_usdt"))
+    current_margin = _positive_float(snapshot.get("source_position_margin_usdt"))
+    previous_fraction = _positive_float(trade.get("source_margin_fraction"))
+    current_fraction = _positive_float(snapshot.get("source_margin_fraction"))
+    if current_margin is None or previous_margin is None:
+        return None
+    delta_margin = current_margin - previous_margin
+    if delta_margin <= 1e-9:
+        return None
+    change_pct = (delta_margin / max(previous_margin, 1e-12)) * 100.0
+    if change_pct + 1e-9 < max(float(min_change_pct or 0.0), 0.0):
+        return None
+    delta_fraction = None
+    if current_fraction is not None and previous_fraction is not None:
+        delta_fraction = current_fraction - previous_fraction
+    return {
+        "previous_source_position_margin_usdt": previous_margin,
+        "source_position_margin_usdt": current_margin,
+        "source_margin_delta_usdt": delta_margin,
+        "source_margin_change_pct": change_pct,
+        "previous_source_margin_fraction": previous_fraction,
+        "source_margin_fraction": current_fraction,
+        "source_margin_fraction_delta": delta_fraction,
+        "source_position_margin_source": snapshot.get("source_position_margin_source"),
+        "source_margin_fraction_reason": snapshot.get("source_margin_fraction_reason"),
+    }
+
+
+def source_margin_add_not_followed_event(
+    key: str,
+    trade: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    now: datetime,
+    *,
+    mark: Optional[float],
+    reason: str,
+    margin_meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    price = None
+    try:
+        price = copy_signal_meta.mark_for_symbol(None, mark, trade.get("symbol")) if mark is not None else None
+    except Exception:
+        price = None
+    if price is None:
+        price = trade.get("last_mark") or trade.get("avg_entry") or trade.get("lead_entry_price")
+    return {
+        "type": "source_margin_add_not_followed",
+        "key": key,
+        "utc": paper.iso(now),
+        "symbol": trade.get("symbol"),
+        "side": trade.get("side"),
+        "price": price,
+        "reason": reason,
+        "action": "source_margin_add_not_followed",
+        "text": "Source margin increased; follower did not add isolated margin or notional",
+        "source_position_amount_abs": snapshot.get("source_position_amount_abs"),
+        "source_notional_value_abs": snapshot.get("source_notional_value_abs"),
+        "source_size_measure": snapshot.get("source_size_measure"),
+        "follower_notional": trade.get("notional"),
+        "follower_qty": trade.get("qty"),
+        **margin_meta,
+    }
+
+
+def append_source_margin_add_not_followed(
+    state: Dict[str, Any],
+    events: List[Dict[str, Any]],
+    key: str,
+    trade: Dict[str, Any],
+    snapshot: Dict[str, Any],
+    now: datetime,
+    *,
+    mark: Optional[float],
+    reason: str,
+    margin_meta: Optional[Dict[str, Any]],
+) -> None:
+    if not margin_meta:
+        return
+    event = source_margin_add_not_followed_event(key, trade, snapshot, now, mark=mark, reason=reason, margin_meta=margin_meta)
+    record_source_size_observation(state, event)
+    events.append(event)
+
+
 def record_source_size_observation(state: Dict[str, Any], event: Dict[str, Any]) -> None:
     state.setdefault("source_size_observations", []).append(event)
     state["source_size_observations"] = state["source_size_observations"][-5000:]
@@ -3123,6 +3261,7 @@ def apply_source_size_sync(
         trade["source_size_last_checked_utc"] = paper.iso(now)
         previous = float(trade.get("source_size_measure") or trade.get("source_position_amount_abs") or trade.get("source_notional_value_abs") or 0.0)
         current = float(snapshot.get("source_size_measure") or 0.0)
+        margin_increase = source_margin_increase_meta(trade, snapshot, min_change_pct=min_change_pct)
         if previous <= 0 or current <= 0:
             observation = source_size_observation_event(key, trade, snapshot, now, changed=False, ratio=None)
             observation["reason"] = "source_size_seed_or_missing"
@@ -3131,6 +3270,17 @@ def apply_source_size_sync(
             resize_event = resize_trade_source_box(trade, snapshot, now, args, reason="source_size_seed_or_missing")
             if resize_event:
                 events.append(resize_event)
+            append_source_margin_add_not_followed(
+                state,
+                events,
+                key,
+                trade,
+                snapshot,
+                now,
+                mark=mark,
+                reason="source_size_seed_or_missing",
+                margin_meta=margin_increase,
+            )
             update_trade_source_size_snapshot(trade, snapshot, now)
             continue
         ratio = current / previous
@@ -3146,6 +3296,17 @@ def apply_source_size_sync(
         if not changed or change_pct < min_change_pct:
             if changed:
                 observation["action"] = "source_size_change_below_min_change_pct"
+            append_source_margin_add_not_followed(
+                state,
+                events,
+                key,
+                trade,
+                snapshot,
+                now,
+                mark=mark,
+                reason="source_position_margin_increased_without_followed_size_change",
+                margin_meta=margin_increase,
+            )
             update_trade_source_size_snapshot(trade, snapshot, now)
             continue
         current_notional = float(trade.get("notional") or 0.0)
@@ -3156,11 +3317,33 @@ def apply_source_size_sync(
         observation["delta_notional"] = delta_notional
         if abs_delta < min_adjust_notional:
             observation["action"] = "source_size_change_below_min_adjust_notional"
+            append_source_margin_add_not_followed(
+                state,
+                events,
+                key,
+                trade,
+                snapshot,
+                now,
+                mark=mark,
+                reason="source_margin_increase_below_min_adjust_notional",
+                margin_meta=margin_increase,
+            )
             update_trade_source_size_snapshot(trade, snapshot, now)
             continue
         expected_price = float(copy_signal_meta.mark_for_symbol(args, mark, trade.get("symbol")) or trade.get("last_mark") or trade.get("avg_entry") or trade.get("lead_entry_price") or 0.0)
         if expected_price <= 0:
             observation["action"] = "source_size_sync_skipped_missing_price"
+            append_source_margin_add_not_followed(
+                state,
+                events,
+                key,
+                trade,
+                snapshot,
+                now,
+                mark=mark,
+                reason="source_margin_increase_missing_price",
+                margin_meta=margin_increase,
+            )
             continue
         if delta_notional > 0:
             event = live_add_fill(
@@ -3177,8 +3360,31 @@ def apply_source_size_sync(
             event["source_size_sync"] = {**snapshot, "previous_measure": previous, "ratio": ratio, "delta_notional": delta_notional}
             if event.get("type") == "live_fill":
                 update_trade_source_size_snapshot(trade, snapshot, now)
+            else:
+                append_source_margin_add_not_followed(
+                    state,
+                    events,
+                    key,
+                    trade,
+                    snapshot,
+                    now,
+                    mark=mark,
+                    reason=str(event.get("reason") or event.get("type") or "source_size_increase_not_filled"),
+                    margin_meta=margin_increase,
+                )
             events.append(event)
             continue
+        append_source_margin_add_not_followed(
+            state,
+            events,
+            key,
+            trade,
+            snapshot,
+            now,
+            mark=mark,
+            reason="source_margin_increased_while_source_size_ratio_requested_reduce",
+            margin_meta=margin_increase,
+        )
         event = live_reduce_for_source_size(
             state,
             trade,

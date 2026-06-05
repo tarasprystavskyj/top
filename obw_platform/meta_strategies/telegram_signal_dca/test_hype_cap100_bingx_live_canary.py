@@ -555,6 +555,46 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(events[1]["type"], "source_box_resized")
         self.assertEqual(events[2]["type"], "live_fill")
 
+    def test_source_margin_add_without_size_change_emits_not_followed_event(self):
+        args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0)
+        state = {"equity": 30.0, "open_trades": {}}
+        trade = open_trade()
+        trade.update(
+            {
+                "source_size_measure": 5.0,
+                "source_position_amount_abs": 5.0,
+                "lead_margin_balance_usdt": 1000.0,
+                "source_position_margin_usdt": 100.0,
+                "source_margin_fraction": 0.10,
+                "source_margin_fraction_reason": "ok",
+            }
+        )
+        state["open_trades"][trade["key"]] = trade
+        source = {
+            trade["key"]: {
+                "symbol": "HYPEUSDT",
+                "side": "LONG",
+                "position_amount": 5.0,
+                "notional_value": 250.0,
+                "lead_margin_balance_usdt": 1000.0,
+                "source_position_margin_usdt": 150.0,
+                "source_position_margin_source": "page_margin",
+                "source_margin_fraction": 0.15,
+                "source_margin_fraction_reason": "ok",
+            }
+        }
+
+        with patch.object(live, "live_add_fill") as add_fill:
+            events = live.apply_source_size_sync(state, state["open_trades"], source, 50.0, NOW, args)
+
+        self.assertFalse(add_fill.called)
+        missed = [event for event in events if event["type"] == "source_margin_add_not_followed"]
+        self.assertEqual(len(missed), 1)
+        self.assertEqual(missed[0]["reason"], "source_position_margin_increased_without_followed_size_change")
+        self.assertAlmostEqual(missed[0]["source_margin_delta_usdt"], 50.0)
+        self.assertAlmostEqual(trade["source_position_margin_usdt"], 150.0)
+        self.assertEqual(state["source_size_observations"][-1]["type"], "source_margin_add_not_followed")
+
     def test_callme_avgo_margin_fraction_sets_source_box_from_follower_margin_pool(self):
         args = make_args(
             initial_equity=247.5,
@@ -1645,6 +1685,39 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             finally:
                 con.close()
             self.assertEqual(db_row, (31.25, 10.05, 1.25))
+
+    def test_live_chart_events_export_includes_red_source_margin_missed_label(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "source_size_observations": [
+                            {
+                                "type": "source_margin_add_not_followed",
+                                "utc": live.paper.iso(NOW),
+                                "key": "HYPEUSDT:LONG",
+                                "symbol": "HYPEUSDT",
+                                "side": "LONG",
+                                "price": 50.0,
+                                "reason": "source_position_margin_increased_without_followed_size_change",
+                                "source_margin_delta_usdt": 50.0,
+                                "source_margin_change_pct": 50.0,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = make_args(out_dir=td, state_path=str(state_path))
+
+            artifacts = live.export_live_chart_events(args)
+
+            with open(artifacts["live_chart_events_csv"], newline="", encoding="utf-8-sig") as fh:
+                rows = list(csv.DictReader(fh))
+            self.assertEqual(rows[-1]["type"], "source_margin_add_not_followed")
+            self.assertEqual(rows[-1]["color"], "#EF4444")
+            self.assertIn("TRADER ADDED MARGIN", rows[-1]["text"])
 
     def test_active_pointers_are_atomic_and_match_status_paths(self):
         with tempfile.TemporaryDirectory() as td:
