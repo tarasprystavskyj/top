@@ -266,6 +266,7 @@ DEFAULT_MAX_ORDER_ATTEMPTS_PER_HOUR = 20
 DEFAULT_ORDER_POST_THROTTLE_SEC = 2.0
 DEFAULT_MARK_POLL_INTERVAL_SEC = 0.0
 DEFAULT_SOURCE_SIZE_SYNC_INTERVAL_SEC = 60.0
+DEFAULT_SOURCE_SIZE_CLAMP_TELEMETRY_SEC = 300.0
 SOURCE_BOX_GUARD_HEADROOM = 1.02
 
 
@@ -990,30 +991,43 @@ def _read_source_margin_chart_events(args: argparse.Namespace) -> List[Dict[str,
         return []
     out: List[Dict[str, Any]] = []
     for idx, item in enumerate(observations):
-        if not isinstance(item, dict) or item.get("type") != "source_margin_add_not_followed":
+        if not isinstance(item, dict):
+            continue
+        event_type = str(item.get("type") or "")
+        if event_type not in {"source_margin_add_not_followed", "source_size_increase_clamped"}:
             continue
         ts = str(item.get("utc") or item.get("ts") or "")
         if not ts:
             continue
-        delta = item.get("source_margin_delta_usdt")
-        change_pct = item.get("source_margin_change_pct")
-        text_bits = ["TRADER ADDED MARGIN; FOLLOWER DID NOT"]
-        if delta not in (None, ""):
-            text_bits.append(f"delta={_fmt_float(delta)} USDT")
-        if change_pct not in (None, ""):
-            text_bits.append(f"change={_fmt_float(change_pct)}%")
+        if event_type == "source_size_increase_clamped":
+            sync = item.get("source_size_sync") if isinstance(item.get("source_size_sync"), dict) else {}
+            requested = item.get("requested_notional") or sync.get("requested_delta_notional") or sync.get("delta_notional")
+            clamped = item.get("clamped_notional") or sync.get("clamped_delta_notional")
+            text_bits = ["SOURCE SIZE ADD BLOCKED"]
+            if requested not in (None, ""):
+                text_bits.append(f"requested={_fmt_float(requested)} USDT")
+            if clamped not in (None, ""):
+                text_bits.append(f"allowed={_fmt_float(clamped)} USDT")
+        else:
+            delta = item.get("source_margin_delta_usdt")
+            change_pct = item.get("source_margin_change_pct")
+            text_bits = ["TRADER ADDED MARGIN; FOLLOWER DID NOT"]
+            if delta not in (None, ""):
+                text_bits.append(f"delta={_fmt_float(delta)} USDT")
+            if change_pct not in (None, ""):
+                text_bits.append(f"change={_fmt_float(change_pct)}%")
         reason = str(item.get("reason") or "")
         if reason:
             text_bits.append(reason)
         out.append(
             {
                 "ts": ts,
-                "type": "source_margin_add_not_followed",
+                "type": event_type,
                 "side": item.get("side") or "",
                 "symbol": item.get("symbol") or args.live_symbol or DEFAULT_LIVE_SYMBOL,
                 "price": _fmt_float(item.get("price") or 0.0),
                 "qty": "",
-                "order_id": f"source-margin-missed-{idx}",
+                "order_id": f"source-follow-missed-{idx}",
                 "position_id": item.get("key") or "",
                 "pnl": "",
                 "status": "OBSERVED",
@@ -2852,11 +2866,13 @@ def source_box_target_notional(
     old_target = _positive_float(trade.get("target_notional"))
     if ratio is not None and old_target is not None:
         target = old_target * ratio
-        return target, {
+        capped_target = min(target, cap) if cap is not None else target
+        return capped_target, {
             "basis": "source_position_amount_ratio_x_previous_box",
             "ratio": ratio,
             "previous_target_notional": old_target,
             "uncapped_target_notional": target,
+            "capped": capped_target < target - 1e-9,
             "cap_notional": cap,
             "leverage_policy": leverage_policy,
         }
@@ -2947,6 +2963,154 @@ def source_box_guard_args(state: Dict[str, Any], trade: Dict[str, Any], args: ar
         "dynamic_max_gross_notional_usdt": dynamic_gross,
         "dynamic_max_one_side_notional_usdt": dynamic_side,
     }
+
+
+def _open_notional_headroom(state: Dict[str, Any], trade: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    open_trades = state.get("open_trades") if isinstance(state.get("open_trades"), dict) else {}
+    side = str(trade.get("side") or "").upper()
+    gross = 0.0
+    side_total = 0.0
+    for item in open_trades.values():
+        try:
+            notional = abs(float(item.get("notional") or 0.0))
+        except Exception:
+            notional = 0.0
+        gross += notional
+        if str(item.get("side") or "").upper() == side:
+            side_total += notional
+    static_gross = _positive_float(getattr(args, "max_gross_notional_usdt", None))
+    static_side = _positive_float(getattr(args, "max_one_side_notional_usdt", None))
+    gross_headroom = math.inf if static_gross is None else max(static_gross - gross, 0.0)
+    side_headroom = math.inf if static_side is None else max(static_side - side_total, 0.0)
+    return {
+        "gross_open_notional": gross,
+        "one_side_open_notional": side_total,
+        "gross_headroom": gross_headroom,
+        "one_side_headroom": side_headroom,
+        "max_gross_notional_usdt": static_gross,
+        "max_one_side_notional_usdt": static_side,
+    }
+
+
+def _source_box_trade_headroom(trade: Dict[str, Any]) -> Dict[str, Any]:
+    target = _positive_float(trade.get("source_box_current_target_notional")) or _positive_float(trade.get("target_notional"))
+    try:
+        current_notional = abs(float(trade.get("notional") or 0.0))
+    except Exception:
+        current_notional = 0.0
+    if target is None:
+        headroom = math.inf
+    else:
+        headroom = max((target * SOURCE_BOX_GUARD_HEADROOM) - current_notional, 0.0)
+    return {
+        "source_box_target_notional": target,
+        "source_box_headroom": headroom,
+        "source_box_headroom_multiplier": SOURCE_BOX_GUARD_HEADROOM,
+        "current_trade_notional": current_notional,
+    }
+
+
+def _source_size_clamp_min_order_notional(
+    trade: Dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    expected_price: float,
+    min_adjust_notional: float,
+) -> float:
+    minimum = max(float(min_adjust_notional or 0.0), 0.0)
+    trade_min = _positive_float(trade.get("min_order_notional"))
+    if trade_min is not None:
+        minimum = max(minimum, trade_min)
+    client = getattr(args, "_live_client", None)
+    if client is not None and expected_price > 0:
+        ccxt_symbol, _resolution = resolve_live_trade_symbol(args, client, str(trade.get("symbol") or ""))
+        if ccxt_symbol:
+            min_base_qty, _source = configured_min_base_qty(args, str(trade.get("symbol") or ""), ccxt_symbol)
+            if min_base_qty > 0:
+                minimum = max(minimum, min_base_qty * expected_price)
+    return minimum
+
+
+def _source_size_clamp_event_allowed(trade: Dict[str, Any], now: datetime, reason: str) -> bool:
+    last = trade.get("source_size_increase_clamp_last")
+    throttle = DEFAULT_SOURCE_SIZE_CLAMP_TELEMETRY_SEC
+    if isinstance(last, dict):
+        last_reason = str(last.get("reason") or "")
+        last_utc = str(last.get("utc") or "")
+        try:
+            last_dt = datetime.fromisoformat(last_utc.replace("Z", "+00:00"))
+        except Exception:
+            last_dt = None
+        if last_reason == reason and last_dt is not None and (now - last_dt).total_seconds() < throttle:
+            return False
+    trade["source_size_increase_clamp_last"] = {"utc": paper.iso(now), "reason": reason}
+    return True
+
+
+def clamp_source_size_increase_notional(
+    state: Dict[str, Any],
+    trade: Dict[str, Any],
+    *,
+    requested_notional: float,
+    expected_price: float,
+    min_adjust_notional: float,
+    now: datetime,
+    args: argparse.Namespace,
+) -> Tuple[float, Optional[Dict[str, Any]]]:
+    requested = max(float(requested_notional or 0.0), 0.0)
+    cap_headroom = _open_notional_headroom(state, trade, args)
+    box_headroom = _source_box_trade_headroom(trade)
+    allowed_headroom = min(
+        requested,
+        float(cap_headroom["gross_headroom"]),
+        float(cap_headroom["one_side_headroom"]),
+        float(box_headroom["source_box_headroom"]),
+    )
+    allowed = max(allowed_headroom, 0.0)
+    min_order_notional = _source_size_clamp_min_order_notional(
+        trade,
+        args,
+        expected_price=expected_price,
+        min_adjust_notional=min_adjust_notional,
+    )
+    preflight: Optional[Dict[str, Any]] = None
+    effective_order_notional = allowed
+    if allowed > 0:
+        preflight = live_open_order_preflight(args, str(trade.get("symbol") or ""), expected_price, allowed)
+        effective_order_notional = max(allowed, float(preflight.get("normalized_notional") or 0.0))
+    reason = ""
+    if allowed <= 1e-9:
+        reason = "source_size_increase_no_headroom"
+    elif min_order_notional > 0 and allowed + 1e-9 < min_order_notional:
+        reason = "source_size_increase_headroom_below_min_order"
+    elif effective_order_notional > allowed + 1e-9:
+        reason = "source_size_increase_normalized_order_exceeds_headroom"
+    elif allowed < requested - 1e-9:
+        reason = "source_size_increase_clamped_to_headroom"
+
+    if not reason:
+        return allowed, None
+
+    event = {
+        "type": "source_size_increase_clamped",
+        "key": trade.get("key"),
+        "utc": paper.iso(now),
+        "fill_type": "source_size_increase",
+        "reason": reason,
+        "requested_notional": requested,
+        "clamped_notional": allowed if reason == "source_size_increase_clamped_to_headroom" else 0.0,
+        "effective_order_notional": effective_order_notional,
+        "min_order_notional": min_order_notional,
+        "cap_headroom": cap_headroom,
+        "source_box_headroom": box_headroom,
+    }
+    if preflight is not None:
+        event["exchange_preflight"] = preflight
+    if not _source_size_clamp_event_allowed(trade, now, reason):
+        event["telemetry_suppressed"] = True
+    if reason != "source_size_increase_clamped_to_headroom":
+        return 0.0, event
+    return allowed, event
 
 
 def update_trade_source_size_snapshot(trade: Dict[str, Any], snapshot: Dict[str, Any], now: datetime) -> None:
@@ -3346,19 +3510,62 @@ def apply_source_size_sync(
             )
             continue
         if delta_notional > 0:
+            clamped_notional, clamp_event = clamp_source_size_increase_notional(
+                state,
+                trade,
+                requested_notional=delta_notional,
+                expected_price=expected_price,
+                min_adjust_notional=min_adjust_notional,
+                now=now,
+                args=args,
+            )
+            if clamp_event is not None:
+                clamp_event["source_size_sync"] = {
+                    **snapshot,
+                    "previous_measure": previous,
+                    "ratio": ratio,
+                    "delta_notional": delta_notional,
+                    "requested_delta_notional": delta_notional,
+                    "clamped_delta_notional": clamped_notional,
+                }
+                observation["action"] = str(clamp_event.get("reason") or "source_size_increase_clamped")
+                if not clamp_event.get("telemetry_suppressed"):
+                    record_source_size_observation(state, clamp_event)
+                    events.append(clamp_event)
+            if clamped_notional <= 0:
+                if clamp_event is not None and not clamp_event.get("telemetry_suppressed"):
+                    append_source_margin_add_not_followed(
+                        state,
+                        events,
+                        key,
+                        trade,
+                        snapshot,
+                        now,
+                        mark=mark,
+                        reason=str(clamp_event.get("reason") or "source_size_increase_clamped"),
+                        margin_meta=margin_increase,
+                    )
+                continue
             event = live_add_fill(
                 state,
                 trade,
                 now=now,
                 expected_price=expected_price,
-                notional=delta_notional,
+                notional=clamped_notional,
                 fill_type="source_size_increase",
                 reason="source_position_amount_increased",
                 mark=mark,
                 args=args,
             )
-            event["source_size_sync"] = {**snapshot, "previous_measure": previous, "ratio": ratio, "delta_notional": delta_notional}
-            if event.get("type") == "live_fill":
+            event["source_size_sync"] = {
+                **snapshot,
+                "previous_measure": previous,
+                "ratio": ratio,
+                "delta_notional": clamped_notional,
+                "requested_delta_notional": delta_notional,
+                "clamped_delta_notional": clamped_notional,
+            }
+            if event.get("type") == "live_fill" and clamped_notional >= delta_notional - 1e-9:
                 update_trade_source_size_snapshot(trade, snapshot, now)
             else:
                 append_source_margin_add_not_followed(

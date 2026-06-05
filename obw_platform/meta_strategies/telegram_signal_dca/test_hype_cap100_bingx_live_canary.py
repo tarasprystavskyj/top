@@ -547,13 +547,110 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(trade["next_level_idx"], 0)
         self.assertAlmostEqual(trade["notional"], 15.0)
         self.assertAlmostEqual(trade["source_size_measure"], 7.5)
-        self.assertAlmostEqual(trade["target_notional"], 45.0)
-        self.assertAlmostEqual(trade["base_notional"], 12.6)
-        self.assertGreater(trade["add_notionals"][0], 1.0)
-        self.assertAlmostEqual(trade["source_box_ratio"], 1.5)
+        self.assertAlmostEqual(trade["target_notional"], 30.0)
+        self.assertAlmostEqual(trade["base_notional"], 8.4)
+        self.assertAlmostEqual(trade["add_notionals"][0], 1.0)
         self.assertEqual(events[0]["type"], "source_size_observed")
-        self.assertEqual(events[1]["type"], "source_box_resized")
+        self.assertEqual(events[1]["type"], "live_fill")
+
+    def test_source_box_ratio_fallback_caps_to_max_gross_notional(self):
+        args = make_args(max_gross_notional_usdt=30.0)
+        trade = open_trade()
+
+        target, meta = live.source_box_target_notional(args, trade, {}, ratio_fallback=13.0)
+
+        self.assertAlmostEqual(target, 30.0)
+        self.assertAlmostEqual(meta["uncapped_target_notional"], 390.0)
+        self.assertTrue(meta["capped"])
+        self.assertEqual(meta["cap_notional"], 30.0)
+
+    def test_source_size_sync_increase_headroom_exhausted_skips_live_add_without_block_noise(self):
+        args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0)
+        state = {"equity": 30.0, "open_trades": {}}
+        trade = open_trade()
+        trade.update(
+            {
+                "notional": 29.0,
+                "source_box_current_target_notional": 20.0,
+                "source_size_measure": 2.0,
+                "source_position_amount_abs": 2.0,
+                "min_order_notional": 2.0,
+            }
+        )
+        state["open_trades"][trade["key"]] = trade
+        source = {trade["key"]: {"symbol": "HYPEUSDT", "side": "LONG", "position_amount": 28.0, "notional_value": 1400.0}}
+
+        with patch.object(live, "live_add_fill") as add_fill:
+            events = live.apply_source_size_sync(state, state["open_trades"], source, 50.0, NOW, args)
+
+        self.assertEqual(add_fill.call_count, 0)
+        self.assertEqual(events[0]["type"], "source_size_observed")
+        self.assertEqual(events[1]["type"], "source_size_increase_clamped")
+        self.assertEqual(events[1]["reason"], "source_size_increase_no_headroom")
+        self.assertEqual(events[1]["clamped_notional"], 0.0)
+        self.assertNotIn("order_error_backoff", state)
+        self.assertNotIn("entry_failures", state)
+        self.assertAlmostEqual(trade["source_size_measure"], 2.0)
+
+    def test_source_size_sync_increase_clamps_to_delegated_headroom(self):
+        args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0, max_gross_notional_usdt=30.0)
+        state = {"equity": 30.0, "open_trades": {}}
+        trade = open_trade()
+        trade.update(
+            {
+                "notional": 20.0,
+                "qty": 0.4,
+                "source_box_current_target_notional": 25.0,
+                "source_size_measure": 2.0,
+                "source_position_amount_abs": 2.0,
+                "min_order_notional": 2.0,
+            }
+        )
+        state["open_trades"][trade["key"]] = trade
+        source = {trade["key"]: {"symbol": "HYPEUSDT", "side": "LONG", "position_amount": 4.0, "notional_value": 200.0}}
+
+        def fake_add_fill(_state, got_trade, **kwargs):
+            got_trade["notional"] = float(got_trade["notional"]) + float(kwargs["notional"])
+            got_trade["qty"] = float(got_trade["qty"]) + float(kwargs["notional"]) / float(kwargs["expected_price"])
+            return {"type": "live_fill", "key": got_trade["key"], "fill": {"effective_order_notional": kwargs["notional"]}}
+
+        with patch.object(live, "live_add_fill", side_effect=fake_add_fill) as add_fill:
+            events = live.apply_source_size_sync(state, state["open_trades"], source, 50.0, NOW, args)
+
+        self.assertEqual(add_fill.call_count, 1)
+        self.assertAlmostEqual(add_fill.call_args.kwargs["notional"], 5.5)
+        self.assertEqual(events[1]["type"], "source_size_increase_clamped")
+        self.assertEqual(events[1]["reason"], "source_size_increase_clamped_to_headroom")
+        self.assertAlmostEqual(events[1]["clamped_notional"], 5.5)
         self.assertEqual(events[2]["type"], "live_fill")
+        self.assertAlmostEqual(trade["notional"], 25.5)
+        self.assertAlmostEqual(trade["source_size_measure"], 2.0)
+        self.assertEqual(trade["next_level_idx"], 0)
+
+    def test_source_size_sync_increase_below_min_order_after_clamp_skips_submit(self):
+        args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0, max_gross_notional_usdt=30.0)
+        state = {"equity": 30.0, "open_trades": {}}
+        trade = open_trade()
+        trade.update(
+            {
+                "notional": 10.0,
+                "source_box_current_target_notional": 10.5,
+                "source_size_measure": 2.0,
+                "source_position_amount_abs": 2.0,
+                "min_order_notional": 2.0,
+            }
+        )
+        state["open_trades"][trade["key"]] = trade
+        source = {trade["key"]: {"symbol": "HYPEUSDT", "side": "LONG", "position_amount": 4.0, "notional_value": 200.0}}
+
+        with patch.object(live, "live_add_fill") as add_fill:
+            events = live.apply_source_size_sync(state, state["open_trades"], source, 50.0, NOW, args)
+
+        self.assertEqual(add_fill.call_count, 0)
+        self.assertEqual(events[1]["type"], "source_size_increase_clamped")
+        self.assertEqual(events[1]["reason"], "source_size_increase_headroom_below_min_order")
+        self.assertEqual(events[1]["clamped_notional"], 0.0)
+        self.assertNotIn("order_error_backoff", state)
 
     def test_source_margin_add_without_size_change_emits_not_followed_event(self):
         args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0)
@@ -1718,6 +1815,42 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             self.assertEqual(rows[-1]["type"], "source_margin_add_not_followed")
             self.assertEqual(rows[-1]["color"], "#EF4444")
             self.assertIn("TRADER ADDED MARGIN", rows[-1]["text"])
+
+    def test_live_chart_events_export_includes_red_blocked_source_size_add_label(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "source_size_observations": [
+                            {
+                                "type": "source_size_increase_clamped",
+                                "utc": live.paper.iso(NOW),
+                                "key": "HYPEUSDT:LONG",
+                                "symbol": "HYPEUSDT",
+                                "side": "LONG",
+                                "price": 50.0,
+                                "reason": "gross_notional_guard",
+                                "requested_notional": 3072.0,
+                                "clamped_notional": 0.0,
+                                "source_size_sync": {"requested_delta_notional": 3072.0, "clamped_delta_notional": 0.0},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = make_args(out_dir=td, state_path=str(state_path))
+
+            artifacts = live.export_live_chart_events(args)
+
+            with open(artifacts["live_chart_events_csv"], newline="", encoding="utf-8-sig") as fh:
+                rows = list(csv.DictReader(fh))
+            self.assertEqual(rows[-1]["type"], "source_size_increase_clamped")
+            self.assertEqual(rows[-1]["color"], "#EF4444")
+            self.assertIn("SOURCE SIZE ADD BLOCKED", rows[-1]["text"])
+            self.assertIn("requested=3072", rows[-1]["text"])
+            self.assertIn("gross_notional_guard", rows[-1]["text"])
 
     def test_active_pointers_are_atomic_and_match_status_paths(self):
         with tempfile.TemporaryDirectory() as td:
