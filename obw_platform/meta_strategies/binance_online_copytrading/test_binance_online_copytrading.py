@@ -152,6 +152,49 @@ class BinanceOnlineCopytradingTest(unittest.TestCase):
         self.assertAlmostEqual(decisions[1]["target_notional"], 16.2)
         self.assertEqual(len(state["open_positions"]), 1)
 
+    def test_callme_meta_follow_open_unknown_symbol_is_shadow_only_default(self):
+        now = datetime(2026, 6, 6, 5, 38, tzinfo=timezone.utc)
+        lead = {"name": "lead", "portfolio_id": "4512404768792222208", "lead_trader_name": "Callme"}
+        meta_config = {
+            "_config_path": "callme_meta_strategy_live.json",
+            "schema": "callme_meta_strategy_config_v1",
+            "allocation": {"default_max_notional_usdt": 54.0},
+            "default_symbol_config": {"sizing": {"base_order_pct_eq": 5.0}},
+            "symbols": {
+                "AMDUSDT": {"exchange_symbols": {"htx": {"available": True, "live_symbol": "AMD/USDT:USDT"}}},
+                "*": {"config_source": "default_symbol_config"},
+            },
+        }
+        state = mod.default_state()
+
+        events = mod.apply_follow_open(
+            state,
+            cfg={"live_orders_enabled": False},
+            lead=lead,
+            open_positions=[
+                {"id": "mu-open", "symbol": "MUUSDT", "side": "LONG", "entry_price": 840.0, "notional_value": 25070.0},
+            ],
+            history=[],
+            mark_provider=FixedMarkProvider(),
+            session=None,
+            v21_runtime=None,
+            now=now,
+            slippage_bp=0.0,
+            ttl_hours=72.0,
+            paper_exchange="htx",
+            meta_config=meta_config,
+            delegated_capital=90.0,
+            enter_existing_positions=True,
+        )
+
+        decisions = [event for event in events if event["type"] == "source_position_evaluated"]
+        self.assertEqual(decisions[0]["decision"], "would_enter")
+        self.assertEqual(decisions[0]["eligibility"]["reason"], "exchange_symbol_unverified_default_shadow_only")
+        self.assertAlmostEqual(decisions[0]["target_notional"], 54.0)
+        trade = next(iter(state["open_positions"].values()))
+        self.assertEqual(trade["callme_meta"]["strategy_config_source"], "default_symbol_config")
+        self.assertEqual(trade["callme_meta"]["eligibility"]["details"], "No explicit exchange metadata; allowed only for shadow/paper simulation.")
+
     def test_callme_meta_follow_open_seeds_existing_when_disabled(self):
         now = datetime(2026, 6, 4, 8, 0, tzinfo=timezone.utc)
         lead = {"name": "lead", "portfolio_id": "4512404768792222208", "lead_trader_name": "Callme"}

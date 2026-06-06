@@ -307,6 +307,12 @@ def write_reports(
     selected = synthesis.get("selected") or {}
     cfg = synthesis.get("config") or {}
     symbols = (cfg.get("symbols") or {}) if isinstance(cfg.get("symbols"), dict) else {}
+    shadow_status_path = report_dir / "SHADOW_RUN_STATUS.md"
+    live_adapter_plan_path = report_dir / "LIVE_ADAPTER_PLAN.md"
+    htx_fresh_state_path = report_dir / "shadow_or_paper_htx_fresh_state.json"
+    bingx_skip_state_path = report_dir / "shadow_or_paper_bingx_skip_state.json"
+    gateio_state_path = report_dir / "shadow_or_paper_gateio_state.json"
+    has_shadow_evidence = shadow_status_path.exists()
 
     gates = {
         "generated_utc": utc_now(),
@@ -315,10 +321,35 @@ def write_reports(
         "pooled_default_tune": {"status": "closed" if selected else "blocked", "selected_variant": selected.get("label", "")},
         "per_symbol_tune": {"status": "skipped_by_min_trade_gate", "min_trade_count_gate": min_trade_count_gate},
         "config_synthesis": {"status": "closed", "evidence": str(CONFIG_PATH)},
+        "config_loader_semantics": {"status": "closed", "evidence": "callme_meta_strategy_config.py resolves default_symbol_config plus strategy_override.override_fields"},
+        "multi_symbol_meta_adapter_shadow": {
+            "status": "closed_shadow_only" if has_shadow_evidence else "planned",
+            "evidence": str(live_adapter_plan_path) if live_adapter_plan_path.exists() else "binance_online_copytrading.py supports callme_meta_config",
+        },
+        "portfolio_proportional_allocation": {
+            "status": "closed_shadow_only" if htx_fresh_state_path.exists() or gateio_state_path.exists() else "planned",
+            "method": "source_notional_weight_v1",
+            "evidence": str(htx_fresh_state_path if htx_fresh_state_path.exists() else gateio_state_path if gateio_state_path.exists() else ""),
+        },
+        "enter_existing_positions": {
+            "status": "closed_shadow_only" if has_shadow_evidence else "planned",
+            "evidence": "shadow/paper run status records current-open-position handling" if has_shadow_evidence else "tests cover disabled seeding and enabled entry",
+        },
+        "unavailable_symbol_skip": {
+            "status": "closed_shadow_only" if bingx_skip_state_path.exists() else "planned",
+            "evidence": str(bingx_skip_state_path) if bingx_skip_state_path.exists() else "structured exchange_symbol_unavailable skip path",
+        },
+        "current_open_shadow_cycle": {
+            "status": "closed" if has_shadow_evidence else "planned",
+            "evidence": str(shadow_status_path) if has_shadow_evidence else "",
+        },
         "backtest_metrics_table": {"status": "closed" if backtest_summary_path else "blocked", "evidence": str(backtest_summary_path or "")},
         "overfit_risk_labels": {"status": "closed", "evidence": "symbols.*.strategy_override.overfit_risk"},
-        "paper_shadow_runner_plan": {"status": "closed", "evidence": "existing shadow configs remain live_orders_enabled=false"},
-        "production_live_adapter_gap": {"status": "open_blocker", "evidence": "runtime.live_executor_status=todo_multi_symbol_live_adapter; no real order path enabled"},
+        "paper_shadow_runner_plan": {"status": "closed", "evidence": "shadow configs and local runs keep live_orders_enabled=false"},
+        "real_live_restart": {
+            "status": "open_blocker",
+            "evidence": "No real order path enabled; requires explicit human approval, live ack, state/log backup, and live adapter hardening review.",
+        },
     }
     (report_dir / "GATES.json").write_text(json.dumps(gates, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -339,9 +370,13 @@ def write_reports(
         inv.append("- No Callme-specific artifacts found.")
     inv.append("")
     inv.append("## Tune Artifact Conclusion")
-    inv.append("- Existing personal/per-symbol tuned configs for `AMDUSDT`: none found in this branch inventory.")
-    inv.append("- Existing personal/per-symbol tuned configs for `AVGOUSDT`: none found in this branch inventory.")
-    inv.append("- Pooled Callme tune artifact before this run: none found.")
+    inv.append("- Existing personal/per-symbol tuned configs for `AMDUSDT`: none found outside the Ops2 synthesized inherited default path.")
+    inv.append("- Existing personal/per-symbol tuned configs for `AVGOUSDT`: none found outside the Ops2 synthesized inherited default path.")
+    if backtest_summary_path:
+        inv.append(f"- Current pooled Callme research summary: `{backtest_summary_path}`.")
+    else:
+        inv.append("- Current pooled Callme research summary: absent; pooled tune remains blocked.")
+    inv.append("- Per-symbol overrides stay empty until each symbol clears the min-trade and shrinkage gates.")
     (report_dir / "TUNE_INVENTORY.md").write_text("\n".join(inv) + "\n", encoding="utf-8")
 
     plan = ["# Callme Hierarchical Tune Plan", ""]
@@ -370,13 +405,21 @@ def write_reports(
     else:
         status.append("- Pooled default tune remains blocked because no risk-eligible backtest variant was available.")
     status.append("- Per-symbol overrides remain empty/skipped by min-trade gate.")
-    status.append("- Production-live remains blocked on the multi-symbol live adapter and explicit human approval.")
+    if live_adapter_plan_path.exists():
+        status.append("- Shadow/paper multi-symbol adapter reads `callme_meta_strategy_live.json`, resolves inherited per-symbol config, applies exchange eligibility, and uses `source_notional_weight_v1` allocation.")
+    if has_shadow_evidence:
+        status.append("- Shadow/paper evidence exists for current Callme open-position handling; see `SHADOW_RUN_STATUS.md`.")
+    status.append("- Production-live remains blocked on explicit human approval, live ack, secrets/runtime deployment review, and real-order adapter enablement.")
     status.append("")
     status.append("## Evidence")
     status.append(f"- Public data inventory: `{report_dir / 'DATA_INVENTORY.json'}`")
     status.append(f"- Backtest summary: `{backtest_summary_path or ''}`")
     status.append(f"- Config: `{CONFIG_PATH}`")
     status.append(f"- Gates: `{report_dir / 'GATES.json'}`")
+    if live_adapter_plan_path.exists():
+        status.append(f"- Live adapter plan: `{live_adapter_plan_path}`")
+    if has_shadow_evidence:
+        status.append(f"- Shadow run status: `{shadow_status_path}`")
     (report_dir / "PIPELINE_STATUS.md").write_text("\n".join(status) + "\n", encoding="utf-8")
 
     graph = ["# Callme Pipeline Graph Update", ""]
