@@ -185,7 +185,7 @@
         "inherits": "default_symbol_config",
         "tune_scope": "symbol_only",
         "tune_status": "skipped_min_trade_gate",
-        "closed_trade_count": 0,
+        "closed_trade_count": 1,
         "overfit_risk": "high",
         "override_fields": {}
       },

@@ -187,6 +187,41 @@ def load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def collect_shadow_evidence(report_dir: Path) -> Dict[str, Any]:
+    states = []
+    observed_symbols = set()
+    for path in sorted(report_dir.glob("shadow_or_paper_*_state.json")):
+        try:
+            state = load_json(path)
+        except Exception:
+            continue
+        last_poll = state.get("last_poll") if isinstance(state.get("last_poll"), dict) else {}
+        events = state.get("events") if isinstance(state.get("events"), list) else []
+        source_events = [row for row in events if isinstance(row, dict) and row.get("type") == "source_position_evaluated"]
+        for row in source_events:
+            if row.get("symbol"):
+                observed_symbols.add(str(row.get("symbol")).upper())
+        states.append(
+            {
+                "path": str(path),
+                "utc": str(last_poll.get("utc") or ""),
+                "paper_exchange": str(last_poll.get("paper_exchange") or ""),
+                "open_rows": last_poll.get("open_rows"),
+                "history_rows": last_poll.get("history_rows"),
+                "symbols": sorted({str(row.get("symbol")).upper() for row in source_events if row.get("symbol")}),
+                "decisions": dict(Counter(str(row.get("decision") or "unknown") for row in source_events)),
+                "live_orders_enabled": any(bool(row.get("live_orders_enabled")) for row in source_events),
+            }
+        )
+    latest = sorted(states, key=lambda row: row.get("utc") or "")[-1] if states else {}
+    return {
+        "state_files": states,
+        "latest": latest,
+        "observed_symbols": sorted(observed_symbols),
+        "all_live_orders_disabled": not any(row.get("live_orders_enabled") for row in states),
+    }
+
+
 def choose_pooled_variant(summary: Dict[str, Any], max_notional: float) -> Optional[Dict[str, Any]]:
     candidates = []
     for label, row in summary.items():
@@ -300,6 +335,7 @@ def write_reports(
     report_dir: Path,
     artifacts: List[Dict[str, Any]],
     data_summary: Dict[str, Any],
+    shadow_evidence: Dict[str, Any],
     synthesis: Dict[str, Any],
     backtest_summary_path: Optional[Path],
     min_trade_count_gate: int,
@@ -313,6 +349,8 @@ def write_reports(
     bingx_skip_state_path = report_dir / "shadow_or_paper_bingx_skip_state.json"
     gateio_state_path = report_dir / "shadow_or_paper_gateio_state.json"
     has_shadow_evidence = shadow_status_path.exists()
+    latest_shadow = shadow_evidence.get("latest") if isinstance(shadow_evidence.get("latest"), dict) else {}
+    observed_shadow_symbols = set(shadow_evidence.get("observed_symbols") or [])
 
     gates = {
         "generated_utc": utc_now(),
@@ -358,9 +396,20 @@ def write_reports(
     inv.append("")
     inv.append("## Public History")
     inv.append(f"- Portfolio: `{data_summary.get('portfolio_id')}`")
-    inv.append(f"- Closed rows: `{data_summary.get('history_rows')}`")
-    inv.append(f"- Current open rows: `{data_summary.get('open_rows')}`")
-    inv.append(f"- Closed symbols: `{json.dumps(data_summary.get('symbols', {}), sort_keys=True)}`")
+    inv.append(f"- Current Ops2 normalized closed rows: `{data_summary.get('history_rows')}`")
+    inv.append(f"- Current public open rows from last inventory fetch: `{data_summary.get('open_rows')}`")
+    inv.append(f"- Public open symbols from last inventory fetch: `{json.dumps(data_summary.get('open_symbols', []), sort_keys=True)}`")
+    inv.append(f"- Closed symbols in Ops2 public-history sample: `{json.dumps(data_summary.get('symbols', {}), sort_keys=True)}`")
+    if latest_shadow:
+        inv.append(f"- Latest shadow/open-position evidence: `{latest_shadow.get('utc')}` `{latest_shadow.get('paper_exchange')}` symbols `{json.dumps(latest_shadow.get('symbols', []), sort_keys=True)}` decisions `{json.dumps(latest_shadow.get('decisions', {}), sort_keys=True)}`.")
+    inv.append("")
+    inv.append("## Current Ops2 Tune Artifacts")
+    if backtest_summary_path:
+        inv.append(f"- Pooled backtest summary: `{backtest_summary_path}`")
+        inv.append(f"- Pooled selected variant: `{selected.get('label', '')}`")
+        inv.append(f"- Pooled trades tables: `plain_*`, `dca1_*`, `dca2_*`, `dca3_*` under `{backtest_summary_path.parent}`")
+    inv.append(f"- Hierarchical config: `{CONFIG_PATH}`")
+    inv.append("- Per-symbol override status: inherited pooled default unless the min-trade and shrinkage gates are cleared.")
     inv.append("")
     inv.append("## Existing Artifacts")
     if artifacts:
@@ -370,8 +419,11 @@ def write_reports(
         inv.append("- No Callme-specific artifacts found.")
     inv.append("")
     inv.append("## Tune Artifact Conclusion")
-    inv.append("- Existing personal/per-symbol tuned configs for `AMDUSDT`: none found outside the Ops2 synthesized inherited default path.")
-    inv.append("- Existing personal/per-symbol tuned configs for `AVGOUSDT`: none found outside the Ops2 synthesized inherited default path.")
+    inv.append("- Existing AMD-only artifacts exist, but they are legacy/single-symbol compatibility or earlier branch material, not justified Callme per-symbol overrides for this meta-strategy.")
+    inv.append("- Existing personal/per-symbol tuned configs for `AMDUSDT`: no production-ready inherited override found; Ops2 keeps `override_fields` empty.")
+    inv.append("- Existing personal/per-symbol tuned configs for `AVGOUSDT`: none found; Ops2 keeps `override_fields` empty.")
+    for symbol in sorted(observed_shadow_symbols - set(symbols.keys())):
+        inv.append(f"- Existing `{symbol}` per-symbol tune: none found; wildcard/default inheritance is shadow-only until closed-history and market-data gates can be rerun for `{symbol}`.")
     if backtest_summary_path:
         inv.append(f"- Current pooled Callme research summary: `{backtest_summary_path}`.")
     else:
@@ -393,6 +445,12 @@ def write_reports(
             continue
         override = entry.get("strategy_override") or {}
         plan.append(f"- `{symbol}`: `{override.get('tune_status')}`, closed trades `{override.get('closed_trade_count')}`, overrides `{override.get('override_fields')}`")
+    for symbol in sorted(observed_shadow_symbols - set(symbols.keys())):
+        plan.append(f"- `{symbol}`: observed in shadow/open-position evidence; no closed-history tune yet, no explicit config entry, inherits `default_symbol_config` through wildcard/default resolution for shadow only.")
+    closed_symbols = set((data_summary.get("symbols") or {}).keys())
+    pooled_only = sorted(closed_symbols - {symbol for symbol in symbols if symbol != "*"})
+    if pooled_only:
+        plan.append(f"- Other closed-history symbols in pooled sample (`{', '.join(pooled_only)}`) remain pooled-evidence inputs, not production per-symbol overrides, until each clears the min-trade and shrinkage gates.")
     (report_dir / "CALLME_HIERARCHICAL_TUNE_PLAN.md").write_text("\n".join(plan) + "\n", encoding="utf-8")
 
     status = ["# Callme Production Pipeline Ops2 Status", ""]
@@ -409,6 +467,8 @@ def write_reports(
         status.append("- Shadow/paper multi-symbol adapter reads `callme_meta_strategy_live.json`, resolves inherited per-symbol config, applies exchange eligibility, and uses `source_notional_weight_v1` allocation.")
     if has_shadow_evidence:
         status.append("- Shadow/paper evidence exists for current Callme open-position handling; see `SHADOW_RUN_STATUS.md`.")
+    if latest_shadow:
+        status.append(f"- Latest local shadow evidence: `{latest_shadow.get('utc')}` on `{latest_shadow.get('paper_exchange')}` for symbols `{json.dumps(latest_shadow.get('symbols', []), sort_keys=True)}` with all real orders disabled `{shadow_evidence.get('all_live_orders_disabled')}`.")
     status.append("- Production-live remains blocked on explicit human approval, live ack, secrets/runtime deployment review, and real-order adapter enablement.")
     status.append("")
     status.append("## Evidence")
@@ -450,11 +510,12 @@ def main() -> int:
     ap.add_argument("--backtest-summary", default="")
     ap.add_argument("--min-trade-count-gate", type=int, default=12)
     ap.add_argument("--inventory-root", action="append", default=[])
+    ap.add_argument("--refresh-public-history", action="store_true")
     args = ap.parse_args()
 
     report_dir = Path(args.report_dir)
     data_summary_path = report_dir / "DATA_INVENTORY.json"
-    if data_summary_path.exists():
+    if data_summary_path.exists() and not args.refresh_public_history:
         data_summary = load_json(data_summary_path)
     else:
         data_summary = fetch_public_history(report_dir, args.portfolio_id, args.history_page_size, args.history_pages, args.timeout_sec)
@@ -465,8 +526,9 @@ def main() -> int:
     artifacts = inventory_artifacts(report_dir, roots)
 
     backtest_summary = Path(args.backtest_summary) if args.backtest_summary else None
+    shadow_evidence = collect_shadow_evidence(report_dir)
     synthesis = update_config(Path(args.config), report_dir, data_summary, backtest_summary, args.min_trade_count_gate)
-    write_reports(report_dir, artifacts, data_summary, synthesis, backtest_summary, args.min_trade_count_gate)
+    write_reports(report_dir, artifacts, data_summary, shadow_evidence, synthesis, backtest_summary, args.min_trade_count_gate)
     print(json.dumps({"report_dir": str(report_dir), "selected": synthesis.get("selected")}, ensure_ascii=False, indent=2))
     return 0
 
