@@ -7,7 +7,7 @@ should consume its plans/intents instead of embedding DCA levels or notionals.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 CHAMPION_CANDIDATE_INDEX = 189
@@ -45,7 +45,7 @@ V21_STRICT_SHORT = {
 }
 
 
-def _float_sequence(raw: Any, fallback: Tuple[float, ...]) -> List[float]:
+def _float_sequence(raw: Any, fallback: tuple[float, ...]) -> List[float]:
     if raw is None:
         return [float(x) for x in fallback]
     if isinstance(raw, str):
