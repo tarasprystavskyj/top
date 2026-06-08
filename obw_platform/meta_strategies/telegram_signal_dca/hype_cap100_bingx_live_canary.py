@@ -229,6 +229,9 @@ DEFAULT_LIVE_SYMBOL = "HYPE-USDT"
 SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio", "htx", "mexc")
 SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy", "htx_current", "mexc_current")
 SUPPORTED_SOURCE_LEVERAGE_MODES = ("ignore", "copy", "copy_div2", "fixed")
+DEFAULT_UNSUPPORTED_LIVE_SYMBOLS_BY_EXCHANGE: Dict[str, Tuple[str, ...]] = {
+    "bingx": ("AMDUSDT", "AVGOUSDT"),
+}
 LIVE_EXCHANGE_PROFILES = {
     "gateio_current": {
         "live_exchange": "gateio",
@@ -1579,6 +1582,67 @@ def _compact_symbol_key(value: Any) -> str:
     return text.replace("/", "").replace("-", "").replace(":", "")
 
 
+def _config_symbol_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return []
+
+
+def unsupported_live_symbols_for_exchange(args: argparse.Namespace) -> Dict[str, Any]:
+    exchange = str(getattr(args, "live_exchange", "") or "").lower().strip()
+    cfg = getattr(args, "_live_config", {}) or {}
+    symbols: List[str] = list(DEFAULT_UNSUPPORTED_LIVE_SYMBOLS_BY_EXCHANGE.get(exchange, ()))
+    sources = ["builtin_default"] if symbols else []
+    if isinstance(cfg, dict):
+        universe = cfg.get("exchange_universe") if isinstance(cfg.get("exchange_universe"), dict) else {}
+        for key in ("unsupported_symbols", "unsupported_live_symbols"):
+            extra = _config_symbol_list(universe.get(key))
+            if extra:
+                symbols.extend(extra)
+                sources.append(f"exchange_universe.{key}")
+        exchanges = cfg.get("exchanges") if isinstance(cfg.get("exchanges"), dict) else {}
+        exchange_cfg = exchanges.get(exchange) if isinstance(exchanges.get(exchange), dict) else {}
+        for key in ("unsupported_symbols", "unsupported_live_symbols"):
+            extra = _config_symbol_list(exchange_cfg.get(key))
+            if extra:
+                symbols.extend(extra)
+                sources.append(f"exchanges.{exchange}.{key}")
+    cli_extra = _config_symbol_list(getattr(args, "unsupported_live_symbols", ""))
+    if cli_extra:
+        symbols.extend(cli_extra)
+        sources.append("cli.unsupported_live_symbols")
+    compact_symbols = sorted({_compact_symbol_key(symbol) for symbol in symbols if _compact_symbol_key(symbol)})
+    return {
+        "exchange": exchange,
+        "unsupported_symbols": compact_symbols,
+        "sources": sources,
+        "policy": f"{exchange}_unsupported_live_symbols" if exchange else "unsupported_live_symbols",
+    }
+
+
+def exchange_universe_preflight(args: argparse.Namespace, symbol: Any) -> Dict[str, Any]:
+    policy = unsupported_live_symbols_for_exchange(args)
+    unsupported = set(policy.get("unsupported_symbols") or [])
+    requested = str(symbol or "").strip()
+    requested_compact = _compact_symbol_key(requested)
+    candidates = [requested, getattr(args, "live_symbol", "")]
+    matched = next((_compact_symbol_key(candidate) for candidate in candidates if _compact_symbol_key(candidate) in unsupported), "")
+    out = {
+        "ok": not bool(matched),
+        **policy,
+        "requested_symbol": requested,
+        "requested_symbol_compact": requested_compact,
+        "matched_symbol": matched,
+    }
+    if matched:
+        out["reason"] = "exchange_symbol_unsupported"
+    return out
+
+
 def configured_symbol_market_constraint(args: argparse.Namespace, symbol: str, ccxt_symbol: str) -> Dict[str, Any]:
     cfg = getattr(args, "_live_config", {}) or {}
     constraints = cfg.get("symbol_market_constraints") or cfg.get("market_constraints") or {}
@@ -2357,6 +2421,16 @@ def live_open_order_preflight(args: argparse.Namespace, symbol: str, expected_pr
     expected_price = float(expected_price or 0.0)
     if client is None or expected_price <= 0 or requested_notional <= 0:
         return {"ok": True, "available": False, "requested_notional": requested_notional, "normalized_notional": requested_notional}
+    universe = exchange_universe_preflight(args, symbol)
+    if not universe.get("ok", True):
+        return {
+            "ok": False,
+            "available": True,
+            "reason": str(universe.get("reason") or "exchange_symbol_unsupported"),
+            "exchange_universe_policy": universe,
+            "requested_notional": requested_notional,
+            "normalized_notional": requested_notional,
+        }
     ccxt_symbol, symbol_resolution = resolve_live_trade_symbol(args, client, symbol)
     if not ccxt_symbol:
         return {
@@ -2895,6 +2969,27 @@ def source_box_guard_args(state: Dict[str, Any], trade: Dict[str, Any], args: ar
     }
 
 
+def live_entry_notional_headroom(state: Dict[str, Any], trade: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    side = str(trade.get("side") or "").upper()
+    side_notionals = paper.open_notional_by_side(state.get("open_trades", {}))
+    gross = sum(side_notionals.values())
+    side_open = side_notionals.get(side, 0.0)
+    max_gross = float(getattr(args, "max_gross_notional_usdt", 0.0) or 0.0)
+    max_side = float(getattr(args, "max_one_side_notional_usdt", 0.0) or 0.0)
+    gross_headroom = max(0.0, max_gross - gross)
+    side_headroom = max(0.0, max_side - side_open)
+    return {
+        "side": side,
+        "gross_open_notional": gross,
+        "side_open_notional": side_open,
+        "max_gross_notional_usdt": max_gross,
+        "max_one_side_notional_usdt": max_side,
+        "gross_headroom": gross_headroom,
+        "side_headroom": side_headroom,
+        "available_headroom": min(gross_headroom, side_headroom),
+    }
+
+
 def update_trade_source_size_snapshot(trade: Dict[str, Any], snapshot: Dict[str, Any], now: datetime) -> None:
     trade["source_position_amount_abs"] = float(snapshot.get("source_position_amount_abs") or 0.0)
     trade["source_notional_value_abs"] = float(snapshot.get("source_notional_value_abs") or 0.0)
@@ -3316,7 +3411,34 @@ def live_add_fill(
             "failure": failure,
             "requested_notional": notional,
         }
-    preflight = live_open_order_preflight(args, trade["symbol"], expected_price, notional)
+    requested_notional = float(notional or 0.0)
+    submit_notional = requested_notional
+    source_size_headroom: Dict[str, Any] = {}
+    guard_args, source_box_guard = source_box_guard_args(state, trade, args)
+    if str(fill_type or "") == "source_size_increase":
+        source_size_headroom = live_entry_notional_headroom(state, trade, guard_args)
+        available = float(source_size_headroom.get("available_headroom") or 0.0)
+        source_size_headroom["requested_notional"] = requested_notional
+        if available <= 1e-9:
+            return {
+                "type": "live_entry_blocked",
+                "key": trade.get("key"),
+                "fill_type": fill_type,
+                "reason": "source_size_headroom_exhausted",
+                "requested_notional": requested_notional,
+                "source_size_headroom": source_size_headroom,
+                "source_box_guard": source_box_guard,
+            }
+        if requested_notional > available + 1e-9:
+            submit_notional = available
+            source_size_headroom["clamped"] = True
+            source_size_headroom["clamped_notional"] = submit_notional
+            source_size_headroom["dropped_notional"] = max(0.0, requested_notional - submit_notional)
+        else:
+            source_size_headroom["clamped"] = False
+            source_size_headroom["clamped_notional"] = submit_notional
+            source_size_headroom["dropped_notional"] = 0.0
+    preflight = live_open_order_preflight(args, trade["symbol"], expected_price, submit_notional)
     if not preflight.get("ok", True):
         return {
             "type": "live_entry_blocked",
@@ -3324,14 +3446,33 @@ def live_add_fill(
             "fill_type": fill_type,
             "reason": str(preflight.get("reason") or "exchange_open_preflight_failed"),
             "exchange_preflight": preflight,
-            "requested_notional": notional,
+            "requested_notional": requested_notional,
+            "submitted_notional": submit_notional,
+            "source_size_headroom": source_size_headroom,
         }
-    order_notional = max(float(notional or 0.0), float(preflight.get("normalized_notional") or 0.0))
-    guard_args, source_box_guard = source_box_guard_args(state, trade, args)
+    order_notional = max(submit_notional, float(preflight.get("normalized_notional") or 0.0))
+    if source_size_headroom:
+        source_size_headroom["guard_notional"] = order_notional
+        available = float(source_size_headroom.get("available_headroom") or 0.0)
+        if order_notional > available + 1e-9:
+            return {
+                "type": "live_entry_blocked",
+                "key": trade.get("key"),
+                "fill_type": fill_type,
+                "reason": "source_size_headroom_below_exchange_min",
+                "exchange_preflight": preflight,
+                "requested_notional": requested_notional,
+                "submitted_notional": submit_notional,
+                "effective_order_notional": order_notional,
+                "source_size_headroom": source_size_headroom,
+                "source_box_guard": source_box_guard,
+            }
     ok, guard_reason, guard_detail = paper.guard_new_entry(
         state, side=str(trade["side"]), add_notional=order_notional, mark=mark, now=now, args=guard_args
     )
     guard_detail["source_box_guard"] = source_box_guard
+    if source_size_headroom:
+        guard_detail["source_size_headroom"] = source_size_headroom
     if not ok:
         return {
             "type": "live_entry_blocked",
@@ -3340,7 +3481,8 @@ def live_add_fill(
             "reason": guard_reason,
             "guard": guard_detail,
             "exchange_preflight": preflight,
-            "requested_notional": notional,
+            "requested_notional": requested_notional,
+            "submitted_notional": submit_notional,
             "effective_order_notional": order_notional,
         }
     leverage_policy = effective_source_leverage(args, trade)
@@ -3359,7 +3501,8 @@ def live_add_fill(
                 "error": error_text,
                 "leverage": leverage_policy,
                 "exchange_preflight": preflight,
-                "requested_notional": notional,
+                "requested_notional": requested_notional,
+                "submitted_notional": submit_notional,
                 "effective_order_notional": order_notional,
                 "attempt_key": attempt_key,
                 "entry_failure": failure_payload,
@@ -3398,7 +3541,8 @@ def live_add_fill(
                 "error": error_text,
                 "leverage_setup": leverage_setup,
                 "exchange_preflight": preflight,
-                "requested_notional": notional,
+                "requested_notional": requested_notional,
+                "submitted_notional": submit_notional,
                 "effective_order_notional": order_notional,
                 "attempt_key": attempt_key,
                 "backoff": backoff_payload,
@@ -3421,12 +3565,14 @@ def live_add_fill(
             "fill_type": fill_type,
             "reason": str(attempt_guard.get("reason") or "order_attempt_guard"),
             "order_attempt_guard": attempt_guard,
-            "requested_notional": notional,
+            "requested_notional": requested_notional,
+            "submitted_notional": submit_notional,
             "effective_order_notional": order_notional,
             "attempt_key": attempt_key,
         }
     post_attempt = register_order_post_attempt(state, now, args, action="OPEN", symbol=trade["symbol"], side=str(trade["side"]))
-    submitted = submit_open(args, trade["symbol"], str(trade["side"]), expected_price, order_notional, client_order_id)
+    live_submit_notional = submit_notional if source_size_headroom else order_notional
+    submitted = submit_open(args, trade["symbol"], str(trade["side"]), expected_price, live_submit_notional, client_order_id)
     if not submitted.get("ok"):
         error_text = str(submitted.get("error") or "unknown_order_error")
         backoff_payload = register_order_error_backoff(state, error_text, now, args)
@@ -3453,7 +3599,8 @@ def live_add_fill(
             "guard": guard_detail,
             "exchange_preflight": preflight,
             "leverage_setup": leverage_setup,
-            "requested_notional": notional,
+            "requested_notional": requested_notional,
+            "submitted_notional": live_submit_notional,
             "effective_order_notional": order_notional,
             "attempt_key": attempt_key,
             "backoff": backoff_payload,
@@ -3489,8 +3636,10 @@ def live_add_fill(
         "reason": reason,
         "expected_price": expected_price,
         "live_fill_price": fill_price,
-        "requested_notional": notional,
+        "requested_notional": requested_notional,
+        "submitted_notional": live_submit_notional,
         "effective_order_notional": order_notional,
+        "source_size_headroom": source_size_headroom,
         "live_notional": live_notional,
         "source_leverage": leverage_policy.get("source_leverage"),
         "source_leverage_raw": leverage_policy.get("source_leverage_raw"),
@@ -3800,6 +3949,7 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     payload["symbol_filter"] = args.symbol
     payload["symbol_marks"] = getattr(args, "_symbol_marks", {})
     payload["callme_meta_strategy"] = (getattr(args, "_live_config", {}) or {}).get("_meta_strategy")
+    payload["exchange_universe_policy"] = unsupported_live_symbols_for_exchange(args)
     payload["live_exchange_profile"] = args.live_exchange_profile
     payload["position_mode"] = args.position_mode
     payload["source_leverage_policy"] = {
@@ -3904,6 +4054,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--env-file", default=None)
     ap.add_argument("--live-exchange", default=None, choices=SUPPORTED_LIVE_EXCHANGES)
     ap.add_argument("--live-symbol", default=None)
+    ap.add_argument("--unsupported-live-symbols", default="", help="Comma-separated compact symbols to block before live exchange order preflight; BingX also defaults AMDUSDT,AVGOUSDT to unsupported.")
     ap.add_argument("--live-api-key-env", default="", help="Env var name containing the exchange API key; value is never printed.")
     ap.add_argument("--live-api-secret-env", default="", help="Env var name containing the exchange API secret; value is never printed.")
     ap.add_argument("--position-mode", choices=["oneway", "hedge"], default=None)

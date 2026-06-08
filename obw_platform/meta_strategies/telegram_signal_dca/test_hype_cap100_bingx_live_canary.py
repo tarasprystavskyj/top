@@ -435,6 +435,51 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(event["error"], "synthetic_submit_reject")
         self.assertTrue(submit_open.called)
 
+    def test_source_size_increase_clamps_to_available_headroom_before_submit(self):
+        args = make_args(max_gross_notional_usdt=30.0, max_one_side_notional_usdt=30.0, order_post_throttle_sec=0.0)
+        args._live_client = FakeClient()
+        trade = {**open_trade(), "notional": 29.0, "qty": 0.58}
+        state = {"open_trades": {trade["key"]: trade}}
+        with patch.object(live, "submit_open", return_value={"ok": False, "error": "synthetic_submit_reject"}) as submit_open:
+            event = live.live_add_fill(
+                state,
+                trade,
+                now=NOW,
+                expected_price=50.0,
+                notional=1644.0,
+                fill_type="source_size_increase",
+                reason="source_position_amount_increased",
+                mark=50.0,
+                args=args,
+            )
+        self.assertEqual(event["type"], "live_entry_failed")
+        self.assertNotEqual(event.get("reason"), "gross_notional_guard")
+        self.assertAlmostEqual(event["submitted_notional"], 1.0)
+        self.assertAlmostEqual(event["effective_order_notional"], 1.0)
+        self.assertTrue(event["guard"]["source_size_headroom"]["clamped"])
+        self.assertAlmostEqual(submit_open.call_args.args[4], 1.0)
+
+    def test_source_size_increase_blocks_when_no_headroom_without_submit(self):
+        args = make_args(max_gross_notional_usdt=30.0, max_one_side_notional_usdt=30.0, order_post_throttle_sec=0.0)
+        args._live_client = FakeClient()
+        trade = {**open_trade(), "notional": 30.0, "qty": 0.6}
+        state = {"open_trades": {trade["key"]: trade}}
+        with patch.object(live, "submit_open", return_value={"ok": False, "error": "should_not_submit"}) as submit_open:
+            event = live.live_add_fill(
+                state,
+                trade,
+                now=NOW,
+                expected_price=50.0,
+                notional=298.0,
+                fill_type="source_size_increase",
+                reason="source_position_amount_increased",
+                mark=50.0,
+                args=args,
+            )
+        self.assertEqual(event["type"], "live_entry_blocked")
+        self.assertEqual(event["reason"], "source_size_headroom_exhausted")
+        self.assertFalse(submit_open.called)
+
     def test_submit_open_normalizes_qty_fetches_fill_and_reconciles_position(self):
         args = make_args()
         args._live_client = FakeClient(FakeExchange(orders=[{"id": "open-1", "filled": 0.25, "average": 50.0}]))
@@ -895,8 +940,16 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         args._live_client = StrictFakeClient({"HYPE-USDT": "HYPE/USDT:USDT"})
         preflight = live.live_open_order_preflight(args, "AVGOUSDT", expected_price=600.0, notional=10.0)
         self.assertFalse(preflight["ok"])
-        self.assertEqual(preflight["reason"], "live_symbol_unresolved")
-        self.assertEqual(preflight["symbol_resolution"]["requested_symbol"], "AVGOUSDT")
+        self.assertEqual(preflight["reason"], "exchange_symbol_unsupported")
+        self.assertEqual(preflight["exchange_universe_policy"]["matched_symbol"], "AVGOUSDT")
+
+    def test_bingx_exchange_universe_marks_amd_unsupported(self):
+        args = make_args(symbol="*", live_symbol="HYPE-USDT", live_exchange="bingx")
+        args._live_client = FakeClient()
+        preflight = live.live_open_order_preflight(args, "AMDUSDT", expected_price=180.0, notional=10.0)
+        self.assertFalse(preflight["ok"])
+        self.assertEqual(preflight["reason"], "exchange_symbol_unsupported")
+        self.assertIn("AMDUSDT", preflight["exchange_universe_policy"]["unsupported_symbols"])
 
     def test_callme_meta_config_uses_exchange_allocation_override(self):
         args = make_args(live_exchange="gateio")
@@ -1484,7 +1537,7 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertEqual(args.order_post_throttle_sec, 10)
         self.assertEqual(args.mark_poll_interval_sec, 60)
 
-    def test_veronika_hype_configs_enable_source_box_ratio_without_switching_from_candidate189(self):
+    def test_veronika_hype_configs_enable_source_box_ratio_with_liquid_base_scaled_box(self):
         configs = [
             "bingx_veronika_hype_live_54.json",
             "gateio_veronika_hype_live_310.json",
@@ -1500,9 +1553,9 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             self.assertEqual(args.source_size_sync_mode, "ratio", name)
             self.assertEqual(args.source_size_sync_interval_sec, 60.0, name)
             self.assertEqual(args.source_size_sync_min_adjust_notional_usdt, 2.0, name)
-            self.assertEqual(sizing["box_config_class"], "Candidate189BoxConfig", name)
-            self.assertEqual(sizing["dca_profile"], "candidate_189_guarded_dca4", name)
-            self.assertEqual(sizing["selected_dca_count"], 4, name)
+            self.assertEqual(sizing["box_config_class"], "LiquidBaseScaledBoxConfig", name)
+            self.assertEqual(sizing["dca_profile"], "liquid_base_scaled_dca8", name)
+            self.assertEqual(sizing["selected_dca_count"], 8, name)
 
             plan = live.copy_signal_meta.dca.build_plan(
                 args.initial_equity,
@@ -1511,8 +1564,8 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
                 side="LONG",
                 sizing=sizing,
             )
-            self.assertEqual(plan["box_config_class"], "Candidate189BoxConfig", name)
-            self.assertEqual(len(plan["add_notionals"]), 4, name)
+            self.assertEqual(plan["box_config_class"], "LiquidBaseScaledBoxConfig", name)
+            self.assertEqual(len(plan["add_notionals"]), 8, name)
 
     def test_record_and_upsert_session_helpers_are_noops_without_session_db_and_call_db_with_session_db(self):
         args = make_args(session_db="")

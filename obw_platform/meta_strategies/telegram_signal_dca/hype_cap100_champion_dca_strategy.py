@@ -5,7 +5,7 @@ This module is the trader policy for candidate 189. Paper and live wrappers
 should consume its plans/intents instead of embedding DCA levels or notionals.
 """
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 CHAMPION_CANDIDATE_INDEX = 189
@@ -43,7 +43,7 @@ V21_STRICT_SHORT = {
 }
 
 
-def _float_sequence(raw: Any, fallback: tuple[float, ...]) -> List[float]:
+def _float_sequence(raw: Any, fallback: Tuple[float, ...]) -> List[float]:
     if raw is None:
         return [float(x) for x in fallback]
     if isinstance(raw, str):
