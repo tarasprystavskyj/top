@@ -4,6 +4,8 @@
 This module is the trader policy for candidate 189. Paper and live wrappers
 should consume its plans/intents instead of embedding DCA levels or notionals.
 """
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
