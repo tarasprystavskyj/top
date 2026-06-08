@@ -70,6 +70,28 @@ class HypeStrategyRunnerSplitTest(unittest.TestCase):
         self.assertAlmostEqual(plan["levels"][0], 50.0 * (1.0 - 0.25 / 100.0))
         self.assertGreaterEqual(min(plan["add_notionals"]), champion.CHAMPION_PARAMS["dca_min_order_usdt"])
 
+    def test_liquid_base_scaled_policy_uses_safe_ridge_weights(self):
+        args = make_args(initial_equity=310.2, initial_target_notional=310.2, max_gross_notional_usdt=310.2, max_one_side_notional_usdt=310.2)
+        sizing = {
+            "box_config_class": "LiquidBaseScaledBoxConfig",
+            "base_order_pct_eq": 9.4,
+            "dca_profile": "liquid_base_scaled_dca8",
+            "selected_dca_count": 8,
+            "dca_steps_pct": [2.159927, 0.700485, 0.541293, 0.458814, 0.406087, 0.368628, 0.340242, 0.317771],
+            "dca_add_weights": [0.408249, 0.461742, 0.666465, 0.949181, 1.040554, 1.370149, 2.040652, 2.627936],
+            "dca_min_order_usdt": 2.0,
+        }
+        plan = champion.build_plan(310.2, args, 50.0, sizing=sizing)
+        self.assertEqual(plan["box_config_class"], "LiquidBaseScaledBoxConfig")
+        self.assertEqual(plan["dca_add_mode"], "base_scaled_weights")
+        self.assertEqual(len(plan["levels"]), 8)
+        self.assertEqual(len(plan["add_notionals"]), 8)
+        self.assertAlmostEqual(plan["base_notional"], 29.1588)
+        self.assertAlmostEqual(plan["add_notionals"][0], 29.1588 * 0.408249)
+        self.assertLess(sum(plan["add_notionals"]) + plan["base_notional"], 310.2)
+        self.assertGreater(sum(plan["add_notionals"]) + plan["base_notional"], 308.0)
+        self.assertAlmostEqual(plan["levels"][0], 50.0 * (1.0 - 2.159927 / 100.0))
+
     def test_meta_strategy_emits_source_close_policy_as_explicit_intent(self):
         args = make_args()
         trade = open_trade()

@@ -25,13 +25,16 @@
     "initial_target_notional_usdt": 310.2
   },
   "sizing": {
-    "box_config_class": "Candidate189BoxConfig",
-    "base_order_policy": "candidate_189_fresh_base_pct_28_scaled_from_310p2_usdt",
-    "base_order_pct_eq": 28.0,
-    "dca_profile": "candidate_189_guarded_dca4",
-    "selected_dca_count": 4,
-    "initial_base_order_usdt": 86.856,
-    "dca_scaling": "Scale from delegated GateIO 310.2 USDT margin allocation through candidate-189 guarded canary path.",
+    "box_config_class": "LiquidBaseScaledBoxConfig",
+    "base_order_policy": "liquid_base_scaled_safe_ridge_base_pct_9p40_from_310p2_usdt",
+    "base_order_pct_eq": 9.4,
+    "dca_profile": "liquid_base_scaled_dca8",
+    "selected_dca_count": 8,
+    "initial_base_order_usdt": 29.1588,
+    "dca_steps_pct": [2.159927, 0.700485, 0.541293, 0.458814, 0.406087, 0.368628, 0.340242, 0.317771],
+    "dca_add_weights": [0.408249, 0.461742, 0.666465, 0.949181, 1.040554, 1.370149, 2.040652, 2.627936],
+    "dca_min_order_usdt": 2.0,
+    "dca_scaling": "Base order is 9.4% of current Veronika box equity; each DCA add is base_notional multiplied by the configured add weight. This is the live-safe ridge near the 9.46518% base-order sweep champion, leaving cap headroom for exchange rounding.",
     "dca_eval_interval_sec": 60.0,
     "target_max_notional_usdt": 310.2,
     "max_position_cost_pct": 100.0
@@ -48,7 +51,7 @@
     "interval_sec": 60.0,
     "min_change_pct": 0.0,
     "min_adjust_notional_usdt": 2.0,
-    "notes": "Every poll, compare public source position amount/margin fraction against the last synced amount. If the lead increases/reduces size, proportionally add/reduce the follower position and resize the future candidate-189 DCA box ladder."
+    "notes": "Every poll, compare public source position amount against the last synced amount. If the lead increases/reduces size, proportionally add/reduce the follower position and resize the future liquid-base-scaled DCA box ladder."
   },
   "safety": {
     "max_daily_loss_usdt": 31.02,

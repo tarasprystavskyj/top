@@ -24,6 +24,9 @@ CHAMPION_PARAMS = {
 }
 DCA_DROPS_PCT = (0.25, 0.35, 0.55, 3.00)
 DCA_MULTIPLIERS = (1.0, 1.5, 2.75, 1.5)
+LIQUID_BASE_SCALED_DROPS_PCT = (2.159927, 0.700485, 0.541293, 0.458814, 0.406087, 0.368628, 0.340242, 0.317771)
+LIQUID_BASE_SCALED_ADD_WEIGHTS = (0.408249, 0.461742, 0.666465, 0.949181, 1.040554, 1.370149, 2.040652, 2.627936)
+LIQUID_BASE_SCALED_DEFAULT_BASE_PCT = 9.40
 V21_STRICT_LONG = {
     "base_order_pct_eq": 1.5,
     "equity_for_sizing_usdt": 208.0,
@@ -40,13 +43,36 @@ V21_STRICT_SHORT = {
 }
 
 
-def dca_levels(entry_price: float, side: str = "LONG") -> List[float]:
+def _float_sequence(raw: Any, fallback: tuple[float, ...]) -> List[float]:
+    if raw is None:
+        return [float(x) for x in fallback]
+    if isinstance(raw, str):
+        parts = [x.strip() for x in raw.replace(";", ",").split(",") if x.strip()]
+    else:
+        try:
+            parts = list(raw)
+        except Exception:
+            return [float(x) for x in fallback]
+    out: List[float] = []
+    for item in parts:
+        try:
+            out.append(float(item))
+        except Exception:
+            continue
+    return out or [float(x) for x in fallback]
+
+
+def _levels_from_steps(entry_price: float, side: str, steps_pct: List[float]) -> List[float]:
     levels: List[float] = []
     last = entry_price
-    for drop in DCA_DROPS_PCT:
+    for drop in steps_pct:
         last *= 1.0 - drop / 100.0 if str(side).upper() == "LONG" else 1.0 + drop / 100.0
         levels.append(last)
     return levels
+
+
+def dca_levels(entry_price: float, side: str = "LONG") -> List[float]:
+    return _levels_from_steps(entry_price, side, [float(x) for x in DCA_DROPS_PCT])
 
 
 def _v21_side_params(side: str) -> Dict[str, Any]:
@@ -108,9 +134,48 @@ def _build_v21_same_max_plan_for_target(target: float, entry_price: float, *, si
     }
 
 
+def _build_liquid_base_scaled_plan_for_target(target: float, entry_price: float, *, side: str, sizing: Dict[str, Any]) -> Dict[str, Any]:
+    target = max(float(target or 0.0), 0.0)
+    base_pct = float(sizing.get("base_order_pct_eq") or LIQUID_BASE_SCALED_DEFAULT_BASE_PCT)
+    base = min(target * base_pct / 100.0, target)
+    steps = _float_sequence(sizing.get("dca_steps_pct") or sizing.get("steps_pct"), LIQUID_BASE_SCALED_DROPS_PCT)
+    weights = _float_sequence(sizing.get("dca_add_weights") or sizing.get("add_weights"), LIQUID_BASE_SCALED_ADD_WEIGHTS)
+    selected = _v21_selected_dca_count(sizing)
+    if selected >= 0:
+        steps = steps[:selected]
+        weights = weights[:selected]
+    count = min(len(steps), len(weights))
+    add_notionals: List[float] = []
+    planned = base
+    for weight in weights[:count]:
+        add = base * float(weight)
+        if planned + add > target + 1e-9:
+            break
+        add_notionals.append(add)
+        planned += add
+    levels = _levels_from_steps(entry_price, side, steps[: len(add_notionals)])
+    return {
+        "target_notional": target,
+        "base_notional": base,
+        "add_notionals": add_notionals,
+        "dca_add_mode": "base_scaled_weights",
+        "min_order_notional": float(sizing.get("dca_min_order_usdt") or sizing.get("min_order_usdt") or CHAMPION_PARAMS["dca_min_order_usdt"]),
+        "levels": levels,
+        "candidate_index": CHAMPION_CANDIDATE_INDEX,
+        "box_config_class": sizing.get("box_config_class") or "LiquidBaseScaledBoxConfig",
+        "dca_profile": sizing.get("dca_profile") or "liquid_base_scaled_dca8",
+        "selected_dca_count": len(add_notionals),
+        "base_order_policy": sizing.get("base_order_policy"),
+        "planned_total_notional": planned,
+        "base_order_pct_eq": base_pct,
+    }
+
+
 def build_plan_for_target(target: float, entry_price: float, side: str = "LONG", sizing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if isinstance(sizing, dict) and str(sizing.get("dca_profile") or "").startswith("v21_same_max"):
         return _build_v21_same_max_plan_for_target(target, entry_price, side=side, sizing=sizing)
+    if isinstance(sizing, dict) and str(sizing.get("dca_profile") or "").startswith("liquid_base_scaled"):
+        return _build_liquid_base_scaled_plan_for_target(target, entry_price, side=side, sizing=sizing)
     target = max(float(target or 0.0), 0.0)
     base = min(target * CHAMPION_PARAMS["fresh_base_pct"] / 100.0, target)
     remaining = max(target - base, 0.0)
