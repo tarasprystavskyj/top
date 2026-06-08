@@ -1567,6 +1567,26 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             self.assertEqual(plan["box_config_class"], "LiquidBaseScaledBoxConfig", name)
             self.assertEqual(len(plan["add_notionals"]), 8, name)
 
+    def test_veronika_hype_live_configs_use_cross_margin_fixed_3x(self):
+        configs = [
+            "bingx_veronika_hype_live_54.json",
+            "gateio_veronika_hype_live_310.json",
+            "htx_veronika_hype_live_110.json",
+            "mexc_veronika_hype_live_90.json",
+        ]
+        for name in configs:
+            cfg = Path("obw_platform/meta_strategies/telegram_signal_dca/configs") / name
+            args = live.build_arg_parser().parse_args(["--live-config", str(cfg)])
+            with tempfile.TemporaryDirectory() as td:
+                args.out_dir = td
+                live.normalize_paths(args)
+                live.validate_args(args)
+
+            self.assertEqual(args.source_leverage_mode, "fixed", name)
+            self.assertEqual(args.source_margin_mode_override, "cross", name)
+            self.assertEqual(args.fixed_source_leverage, 3.0, name)
+            self.assertEqual(args.max_source_leverage, 3.0, name)
+
     def test_record_and_upsert_session_helpers_are_noops_without_session_db_and_call_db_with_session_db(self):
         args = make_args(session_db="")
         live.record_session_order(args, now=NOW, symbol="HYPE-USDT", side="LONG", type_="OPEN", price=50.0, qty=0.1, status="FILLED", reason="test")

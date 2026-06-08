@@ -36,10 +36,10 @@
   },
   "source_leverage": {
     "mode": "fixed",
-    "fixed_leverage": 2.0,
-    "margin_mode": "isolated",
-    "max_source_leverage": 2.0,
-    "notes": "Use fixed 2x follower leverage before MEXC HYPE live open/DCA legs; do not copy higher source leverage."
+    "fixed_leverage": 3.0,
+    "margin_mode": "cross",
+    "max_source_leverage": 3.0,
+    "notes": "Use fixed 3x follower leverage before MEXC HYPE live open/DCA legs; do not copy higher source leverage."
   },
   "source_size_sync": {
     "mode": "ratio",
