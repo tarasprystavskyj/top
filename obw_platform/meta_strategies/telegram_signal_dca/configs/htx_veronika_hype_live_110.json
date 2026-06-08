@@ -24,15 +24,30 @@
     "initial_target_notional_usdt": 110.0
   },
   "sizing": {
-    "base_order_pct_eq": 5.0,
-    "initial_base_order_usdt": 5.5,
-    "dca_scaling": "Scale from delegated 110 USDT through the same HYPE cap100 DCA path.",
+    "base_order_pct_eq": 28.0,
+    "base_order_policy": "candidate_189_fresh_base_pct_28_scaled_from_110_usdt",
+    "box_config_class": "Candidate189BoxConfig",
+    "dca_profile": "candidate_189_guarded_dca4",
+    "selected_dca_count": 4,
+    "target_max_notional_usdt": 110.0,
+    "max_position_cost_pct": 100.0,
+    "initial_base_order_usdt": 30.8,
+    "dca_scaling": "Scale from delegated HTX 110 USDT margin allocation through candidate-189 guarded canary path.",
     "dca_eval_interval_sec": 60.0
   },
   "source_leverage": {
-    "mode": "copy",
-    "max_source_leverage": 0.0,
-    "notes": "Copy source Binance follower leverage before HTX live open/DCA legs."
+    "mode": "fixed",
+    "fixed_leverage": 2.0,
+    "margin_mode": "isolated",
+    "max_source_leverage": 2.0,
+    "notes": "Use fixed 2x follower leverage before HTX HYPE live open/DCA legs; do not copy higher source leverage."
+  },
+  "source_size_sync": {
+    "mode": "ratio",
+    "interval_sec": 60.0,
+    "min_change_pct": 0.0,
+    "min_adjust_notional_usdt": 2.0,
+    "notes": "Every poll, compare public source position amount/margin fraction against the last synced amount. If the lead increases/reduces size, proportionally add/reduce the follower position and resize the future candidate-189 DCA box ladder."
   },
   "safety": {
     "max_daily_loss_usdt": 5.5,
