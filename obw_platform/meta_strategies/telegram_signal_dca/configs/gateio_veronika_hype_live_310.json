@@ -26,6 +26,7 @@
   },
   "sizing": {
     "box_config_class": "LiquidBaseScaledBoxConfig",
+    "source_box_target_basis": "lead_margin_balance_fraction_base_anchor",
     "base_order_policy": "liquid_base_scaled_safe_ridge_base_pct_9p40_from_310p2_usdt",
     "base_order_pct_eq": 9.4,
     "dca_profile": "liquid_base_scaled_dca8",
@@ -34,7 +35,7 @@
     "dca_steps_pct": [2.159927, 0.700485, 0.541293, 0.458814, 0.406087, 0.368628, 0.340242, 0.317771],
     "dca_add_weights": [0.408249, 0.461742, 0.666465, 0.949181, 1.040554, 1.370149, 2.040652, 2.627936],
     "dca_min_order_usdt": 2.0,
-    "dca_scaling": "Base order is 9.4% of current Veronika box equity; each DCA add is base_notional multiplied by the configured add weight. This is the live-safe ridge near the 9.46518% base-order sweep champion, leaving cap headroom for exchange rounding.",
+    "dca_scaling": "Anchor first buy from lead position margin / lead margin balance, then scale the liquid-base DCA ladder from that base. Base order is 9.4% of current Veronika box equity; each DCA add is base_notional multiplied by the configured add weight.",
     "dca_eval_interval_sec": 60.0,
     "target_max_notional_usdt": 310.2,
     "max_position_cost_pct": 100.0
@@ -44,14 +45,14 @@
     "margin_mode": "cross",
     "fixed_leverage": 3.0,
     "max_source_leverage": 3.0,
-    "notes": "Use fixed 3x follower leverage before GateIO HYPE live open/DCA legs; do not copy higher source leverage."
+    "notes": "Use fixed 3x follower leverage in cross margin. Lead margin fraction anchors the first buy; DCA ladder scales from that base."
   },
   "source_size_sync": {
     "mode": "ratio",
     "interval_sec": 60.0,
     "min_change_pct": 0.0,
     "min_adjust_notional_usdt": 2.0,
-    "notes": "Every poll, compare public source position amount against the last synced amount. If the lead increases/reduces size, proportionally add/reduce the follower position and resize the future liquid-base-scaled DCA box ladder."
+    "notes": "Every poll, compare public source position amount/margin fraction against the last synced amount. Resize the liquid-base first buy from lead position margin / lead margin balance, rebuild the DCA ladder from that base, then add/reduce only the delta to that follower target."
   },
   "safety": {
     "max_daily_loss_usdt": 31.02,

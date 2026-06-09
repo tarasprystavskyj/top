@@ -76,6 +76,7 @@ def make_args(**overrides):
         source_margin_mode_override="",
         fixed_source_leverage=0.0,
         max_source_leverage=0.0,
+        source_box_target_basis="auto",
         source_size_sync_mode="off",
         source_size_sync_interval_sec=60.0,
         source_size_sync_min_change_pct=0.0,
@@ -637,6 +638,139 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertLess(trade["target_notional"], args.max_gross_notional_usdt)
         self.assertAlmostEqual(trade["base_notional"], expected_notional_box * 0.28)
 
+    def test_veronika_hype_margin_balance_fraction_sizes_small_initial_box(self):
+        args = make_args(
+            initial_equity=55.0,
+            initial_target_notional=55.0,
+            max_gross_notional_usdt=55.0,
+            source_box_target_basis="lead_margin_balance_fraction",
+            source_leverage_mode="fixed",
+            fixed_source_leverage=6.0,
+            max_source_leverage=6.0,
+        )
+        trade = open_trade()
+        trade.update(
+            {
+                "source_leverage_raw": "6",
+                "source_leverage": 6.0,
+                "source_margin_mode": "Cross",
+            }
+        )
+        lead_margin_balance = 1102.13
+        lead_notional = 2.18 * 60.549
+        lead_position_margin = lead_notional / 6.0
+        snapshot = {
+            "lead_margin_balance_usdt": lead_margin_balance,
+            "source_position_margin_usdt": lead_position_margin,
+            "source_margin_fraction": lead_position_margin / lead_margin_balance,
+            "source_margin_fraction_reason": "ok",
+        }
+
+        target, meta = live.source_box_target_notional(args, trade, snapshot)
+
+        expected_margin = 55.0 * (lead_position_margin / lead_margin_balance)
+        self.assertAlmostEqual(target, expected_margin * 6.0)
+        self.assertAlmostEqual(meta["source_box_margin_usdt"], expected_margin)
+        self.assertEqual(meta["basis"], "lead_margin_balance_fraction")
+        self.assertFalse(meta["capped"])
+
+    def test_veronika_hype_margin_balance_fraction_base_anchor_sizes_first_buy(self):
+        args = make_args(
+            initial_equity=310.2,
+            initial_target_notional=310.2,
+            max_gross_notional_usdt=310.2,
+            source_box_target_basis="lead_margin_balance_fraction_base_anchor",
+            source_leverage_mode="fixed",
+            fixed_source_leverage=3.0,
+            max_source_leverage=3.0,
+        )
+        trade = open_trade()
+        trade.update({"source_leverage": 6.0, "source_margin_mode": "Cross"})
+        lead_margin_balance = 1101.95
+        lead_position_margin = 21.55
+        snapshot = {
+            "lead_margin_balance_usdt": lead_margin_balance,
+            "source_position_margin_usdt": lead_position_margin,
+            "source_margin_fraction": lead_position_margin / lead_margin_balance,
+            "source_margin_fraction_reason": "ok",
+        }
+
+        target, meta = live.source_box_target_notional(args, trade, snapshot)
+
+        expected_base_margin = 310.2 * (lead_position_margin / lead_margin_balance)
+        expected_base_notional = expected_base_margin * 3.0
+        self.assertAlmostEqual(meta["source_base_notional_usdt"], expected_base_notional)
+        self.assertAlmostEqual(target, expected_base_notional / 0.28)
+        event = live.resize_trade_source_box(trade, snapshot, NOW, args, reason="test_base_anchor")
+        self.assertIsNotNone(event)
+        self.assertAlmostEqual(trade["base_notional"], expected_base_notional)
+        self.assertAlmostEqual(trade["target_notional"], expected_base_notional / 0.28)
+
+    def test_veronika_hype_source_size_increase_uses_recalculated_box_delta(self):
+        args = make_args(
+            initial_equity=55.0,
+            initial_target_notional=55.0,
+            max_gross_notional_usdt=55.0,
+            source_box_target_basis="lead_margin_balance_fraction",
+            source_leverage_mode="fixed",
+            fixed_source_leverage=6.0,
+            max_source_leverage=6.0,
+            source_size_sync_mode="ratio",
+            source_size_sync_interval_sec=0.0,
+            source_size_sync_min_adjust_notional_usdt=0.0,
+        )
+        state = {"equity": 55.0, "open_trades": {}}
+        trade = open_trade()
+        lead_margin_balance = 1102.13
+        lead_position_margin_before = (2.18 * 60.549) / 6.0
+        lead_position_margin_after = (4.36 * 60.549) / 6.0
+        trade.update(
+            {
+                "notional": 5.0,
+                "qty": 5.0 / 60.549,
+                "avg_entry": 60.549,
+                "lead_entry_price": 60.549,
+                "source_size_measure": 2.18,
+                "source_position_amount_abs": 2.18,
+                "lead_margin_balance_usdt": lead_margin_balance,
+                "source_position_margin_usdt": lead_position_margin_before,
+                "source_margin_fraction": lead_position_margin_before / lead_margin_balance,
+                "source_margin_fraction_reason": "ok",
+            }
+        )
+        state["open_trades"][trade["key"]] = trade
+        source = {
+            trade["key"]: {
+                "symbol": "HYPEUSDT",
+                "side": "LONG",
+                "position_amount": 4.36,
+                "notional_value": 4.36 * 60.549,
+                "leverage": "6",
+                "lead_margin_balance_usdt": lead_margin_balance,
+                "source_position_margin_usdt": lead_position_margin_after,
+                "source_position_margin_source": "notional_value_div_leverage",
+                "source_margin_fraction": lead_position_margin_after / lead_margin_balance,
+                "source_margin_fraction_reason": "ok",
+            }
+        }
+        expected_target = 55.0 * (lead_position_margin_after / lead_margin_balance) * 6.0
+
+        def fake_add_fill(_state, got_trade, **kwargs):
+            got_trade["notional"] = float(got_trade["notional"]) + float(kwargs["notional"])
+            got_trade["qty"] = float(got_trade["qty"]) + float(kwargs["notional"]) / float(kwargs["expected_price"])
+            return {"type": "live_fill", "key": got_trade["key"], "fill": {"effective_order_notional": kwargs["notional"]}}
+
+        with patch.object(live, "live_add_fill", side_effect=fake_add_fill) as add_fill:
+            events = live.apply_source_size_sync(state, state["open_trades"], source, 60.549, NOW, args)
+
+        self.assertEqual(add_fill.call_count, 1)
+        self.assertAlmostEqual(add_fill.call_args.kwargs["notional"], expected_target - 5.0)
+        self.assertAlmostEqual(events[0]["desired_follower_notional"], expected_target)
+        self.assertEqual(events[0]["desired_notional_basis"], "lead_margin_balance_fraction_box_target")
+        self.assertEqual(events[1]["type"], "source_box_resized")
+        self.assertEqual(events[2]["type"], "live_fill")
+        self.assertAlmostEqual(trade["notional"], expected_target)
+
     def test_v21_box_default_and_symbol_override_are_resolved_from_live_config(self):
         args = make_args()
         args._live_config = {
@@ -689,6 +823,23 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         self.assertAlmostEqual(guard_args.max_gross_notional_usdt, 45.0 * live.SOURCE_BOX_GUARD_HEADROOM)
         self.assertAlmostEqual(guard_args.max_one_side_notional_usdt, 45.0 * live.SOURCE_BOX_GUARD_HEADROOM)
         self.assertEqual(args.max_gross_notional_usdt, 30.0)
+
+    def test_lead_margin_balance_fraction_source_box_keeps_static_caps_hard(self):
+        args = make_args(
+            max_gross_notional_usdt=30.0,
+            max_one_side_notional_usdt=30.0,
+            source_box_target_basis="lead_margin_balance_fraction",
+        )
+        trade = open_trade()
+        trade["source_box_current_target_notional"] = 45.0
+        state = {"open_trades": {trade["key"]: trade}}
+
+        guard_args, meta = live.source_box_guard_args(state, trade, args)
+
+        self.assertFalse(meta["changed"])
+        self.assertTrue(meta["hard_static_cap"])
+        self.assertEqual(guard_args.max_gross_notional_usdt, 30.0)
+        self.assertEqual(guard_args.max_one_side_notional_usdt, 30.0)
 
     def test_source_size_sync_reduce_is_partial_and_keeps_trade_open(self):
         args = make_args(source_size_sync_mode="ratio", source_size_sync_interval_sec=0.0)
@@ -1551,6 +1702,10 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
                 live.validate_args(args)
             sizing = args._live_config["sizing"]
             self.assertEqual(args.source_size_sync_mode, "ratio", name)
+            self.assertEqual(args.source_box_target_basis, "lead_margin_balance_fraction_base_anchor", name)
+            self.assertEqual(args.source_margin_mode_override, "cross", name)
+            self.assertEqual(args.fixed_source_leverage, 3.0, name)
+            self.assertEqual(args.max_source_leverage, 3.0, name)
             self.assertEqual(args.source_size_sync_interval_sec, 60.0, name)
             self.assertEqual(args.source_size_sync_min_adjust_notional_usdt, 2.0, name)
             self.assertEqual(sizing["box_config_class"], "LiquidBaseScaledBoxConfig", name)
@@ -1586,6 +1741,23 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
             self.assertEqual(args.source_margin_mode_override, "cross", name)
             self.assertEqual(args.fixed_source_leverage, 3.0, name)
             self.assertEqual(args.max_source_leverage, 3.0, name)
+
+    def test_mexc_veronika_hype_config_uses_margin_fraction_source_sync(self):
+        cfg = Path("obw_platform/meta_strategies/telegram_signal_dca/configs/mexc_veronika_hype_live_90.json")
+        args = live.build_arg_parser().parse_args(["--live-config", str(cfg)])
+        with tempfile.TemporaryDirectory() as td:
+            args.out_dir = td
+            live.normalize_paths(args)
+            live.validate_args(args)
+        self.assertEqual(args.live_exchange, "mexc")
+        self.assertEqual(args.source_box_target_basis, "lead_margin_balance_fraction_base_anchor")
+        self.assertEqual(args.source_margin_mode_override, "cross")
+        self.assertEqual(args.source_leverage_mode, "fixed")
+        self.assertEqual(args.fixed_source_leverage, 3.0)
+        self.assertEqual(args.max_source_leverage, 3.0)
+        self.assertEqual(args.source_size_sync_mode, "ratio")
+        self.assertEqual(args.source_size_sync_interval_sec, 60.0)
+        self.assertEqual(args.source_size_sync_min_adjust_notional_usdt, 2.0)
 
     def test_record_and_upsert_session_helpers_are_noops_without_session_db_and_call_db_with_session_db(self):
         args = make_args(session_db="")

@@ -37,6 +37,7 @@ DEFAULT_REPORT_DIR = (
 DEFAULT_POSITIONS = DEFAULT_REPORT_DIR / "wave_002" / "position_refresh" / "position_history_normalized.csv"
 DEFAULT_NPZ = DEFAULT_REPORT_DIR / "binance_4300516091842181632_hype_universe_1m_20250524_20260524.npz"
 MIN_ORDER_USD = 2.0
+MIN_ORDER_COIN_QTY = 0.0
 STRICT_FILL_MODE = "close_beyond_skip_boundary"
 CANONICAL_RESEARCH_CHAMPION = "t500_b16_s0p25-0p35-0p55_w0p8-1p2-2p2"
 GROUNDING_TOL = 1e-8
@@ -207,15 +208,44 @@ def level_crossed(side: str, *, low: float, high: float, close: float, level: fl
     return low <= level if side == "LONG" else high >= level
 
 
-def min_order_ok(candidate: Candidate) -> tuple[bool, float]:
+def exchange_min_order_notional(price: float) -> float:
+    coin_floor = max(float(MIN_ORDER_COIN_QTY), 0.0) * max(float(price or 0.0), 0.0)
+    return max(float(MIN_ORDER_USD), coin_floor)
+
+
+def min_order_ok(candidate: Candidate, *, side: str = "LONG", entry: float | None = None, execution_mode: str = "gate") -> tuple[bool, float]:
     base, adds = allocations(candidate)
     legs = [base, *adds]
     min_leg = min(legs) if legs else 0.0
-    return min_leg >= MIN_ORDER_USD, min_leg
+    if entry is None:
+        return min_leg >= MIN_ORDER_USD, min_leg
+    base_threshold = exchange_min_order_notional(float(entry))
+    if execution_mode in {"accumulate", "upsize"}:
+        return base > 0.0, min_leg
+    levels = dca_levels(side, float(entry), candidate.steps_pct[: len(adds)])
+    thresholds = [base_threshold, *[exchange_min_order_notional(level) for level in levels]]
+    ok = all(float(leg) + GROUNDING_TOL >= float(threshold) for leg, threshold in zip(legs, thresholds))
+    return ok, min_leg
+
+
+def execute_dca_fill(
+    *,
+    avg_entry: float,
+    notional: float,
+    add_notional: float,
+    fill_price: float,
+) -> tuple[float, float]:
+    old_qty = notional / max(avg_entry, 1e-12)
+    add_qty = add_notional / max(fill_price, 1e-12)
+    new_notional = notional + add_notional
+    new_avg_entry = new_notional / max(old_qty + add_qty, 1e-12)
+    return new_avg_entry, new_notional
 
 
 def research_label(candidate: Candidate, *, position_sizing_mode: str, max_target_notional: float | None) -> str:
     base_name = candidate.name.split("__prot_", 1)[0]
+    if position_sizing_mode in {"lead_margin_fraction", "lead_margin_fraction_base_anchor"}:
+        return "lead_margin_fraction_candidate"
     if base_name == CANONICAL_RESEARCH_CHAMPION and position_sizing_mode == "compound":
         return "grounded_compound_champion"
     if position_sizing_mode == "compound" and (max_target_notional is None or max_target_notional <= 500.0):
@@ -232,6 +262,7 @@ def simulate_position(
     *,
     fill_mode: str = "touch",
     protection_reference_usd: float | None = None,
+    min_order_execution_mode: str = "gate",
 ) -> Dict[str, Any] | None:
     t = arrays["t"]
     start = int(np.searchsorted(t, ms(pos.opened), side="left"))
@@ -243,16 +274,27 @@ def simulate_position(
     close = arrays["close"][start:end]
     ts = t[start:end]
 
-    base_notional, adds = allocations(candidate)
+    requested_base_notional, adds = allocations(candidate)
+    base_min_order_notional = exchange_min_order_notional(float(pos.entry))
+    base_notional = float(requested_base_notional)
+    base_min_order_upsize = 0.0
+    if min_order_execution_mode in {"accumulate", "upsize"} and 0.0 < base_notional + GROUNDING_TOL < base_min_order_notional:
+        base_min_order_upsize = base_min_order_notional - base_notional
+        base_notional = base_min_order_notional
     levels = dca_levels(pos.side, pos.entry, candidate.steps_pct[: len(adds)])
     avg_entry = float(pos.entry)
     notional = float(base_notional)
     fills = 0
+    logical_fills = 0
+    pending_dca_notional = 0.0
+    pending_dca_levels = 0
+    deferred_dca_count = 0
+    debt_execution_count = 0
     fill_rows: List[Dict[str, Any]] = []
     min_mtm = 0.0
     min_mtm_pct_on_notional = 0.0
     skip_boundary = fill_mode in {"touch_skip_boundary", "close_beyond_skip_boundary"}
-    min_ok, min_leg = min_order_ok(candidate)
+    min_ok, min_leg = min_order_ok(candidate, side=pos.side, entry=pos.entry, execution_mode=min_order_execution_mode)
     protection_ref = float(protection_reference_usd if protection_reference_usd is not None else candidate.target_notional)
     protection_pct = protection_threshold_pct(candidate)
     protection_loss_limit = -abs(protection_pct) * protection_ref / 100.0 if protection_pct > 0.0 else 0.0
@@ -289,7 +331,7 @@ def simulate_position(
         can_fill = not (skip_boundary and (i == 0 or i == len(close) - 1))
         if protection_triggered and can_fill:
             probe_this_candle = 0
-            blocked_probe_fill = max(blocked_probe_fill, fills)
+            blocked_probe_fill = max(blocked_probe_fill, logical_fills)
             while blocked_probe_fill < len(levels):
                 touched = level_crossed(
                     pos.side,
@@ -309,26 +351,94 @@ def simulate_position(
                 probe_this_candle += 1
             can_fill = False
         fills_this_candle = 0
-        while can_fill and fills < len(levels):
+        while can_fill and logical_fills < len(levels):
             touched = level_crossed(
                 pos.side,
                 low=float(low[i]),
                 high=float(high[i]),
                 close=float(close[i]),
-                level=float(levels[fills]),
+                level=float(levels[logical_fills]),
                 fill_mode=fill_mode,
             )
             if not touched:
                 break
             if fills_this_candle >= 1 and skip_boundary:
                 break
-            add_notional = float(adds[fills])
-            old_qty = notional / max(avg_entry, 1e-12)
-            add_qty = add_notional / max(levels[fills], 1e-12)
-            notional += add_notional
-            avg_entry = notional / max(old_qty + add_qty, 1e-12)
-            fill_rows.append({"level": levels[fills], "notional": add_notional, "t": int(ts[i])})
-            fills += 1
+            add_notional = float(adds[logical_fills])
+            fill_price = float(levels[logical_fills])
+            min_exec_notional = exchange_min_order_notional(fill_price)
+            if min_order_execution_mode == "upsize":
+                execution_notional = max(add_notional, min_exec_notional)
+                avg_entry, notional = execute_dca_fill(
+                    avg_entry=avg_entry,
+                    notional=notional,
+                    add_notional=execution_notional,
+                    fill_price=fill_price,
+                )
+                fill_rows.append(
+                    {
+                        "level": fill_price,
+                        "notional": execution_notional,
+                        "requested_notional": add_notional,
+                        "t": int(ts[i]),
+                        "min_order_execution_mode": min_order_execution_mode,
+                        "merged_dca_levels": 1,
+                        "min_order_notional": min_exec_notional,
+                    }
+                )
+                fills += 1
+            elif min_order_execution_mode == "accumulate" and add_notional + GROUNDING_TOL < min_exec_notional:
+                pending_dca_notional += add_notional
+                pending_dca_levels += 1
+                deferred_dca_count += 1
+                if pending_dca_notional + GROUNDING_TOL >= min_exec_notional:
+                    avg_entry, notional = execute_dca_fill(
+                        avg_entry=avg_entry,
+                        notional=notional,
+                        add_notional=pending_dca_notional,
+                        fill_price=fill_price,
+                    )
+                    fill_rows.append(
+                        {
+                            "level": fill_price,
+                            "notional": pending_dca_notional,
+                            "t": int(ts[i]),
+                            "min_order_execution_mode": min_order_execution_mode,
+                            "merged_dca_levels": pending_dca_levels,
+                            "min_order_notional": min_exec_notional,
+                        }
+                    )
+                    pending_dca_notional = 0.0
+                    pending_dca_levels = 0
+                    debt_execution_count += 1
+                    fills += 1
+            else:
+                execution_notional = add_notional
+                merged_levels = 1
+                if min_order_execution_mode == "accumulate" and pending_dca_notional > 0.0:
+                    execution_notional += pending_dca_notional
+                    merged_levels += pending_dca_levels
+                    pending_dca_notional = 0.0
+                    pending_dca_levels = 0
+                    debt_execution_count += 1
+                avg_entry, notional = execute_dca_fill(
+                    avg_entry=avg_entry,
+                    notional=notional,
+                    add_notional=execution_notional,
+                    fill_price=fill_price,
+                )
+                fill_rows.append(
+                    {
+                        "level": fill_price,
+                        "notional": execution_notional,
+                        "t": int(ts[i]),
+                        "min_order_execution_mode": min_order_execution_mode,
+                        "merged_dca_levels": merged_levels,
+                        "min_order_notional": min_exec_notional,
+                    }
+                )
+                fills += 1
+            logical_fills += 1
             fills_this_candle += 1
         if skip_boundary and (i == 0 or i == len(close) - 1):
             continue
@@ -355,12 +465,22 @@ def simulate_position(
         "exit": pos.exit,
         "avg_entry": avg_entry,
         "notional": notional,
+        "requested_base_notional": requested_base_notional,
+        "base_min_order_notional": base_min_order_notional,
+        "base_min_order_upsize": base_min_order_upsize,
         "dca_fills": fills,
+        "logical_dca_fills": logical_fills,
+        "deferred_dca_count": deferred_dca_count,
+        "min_order_debt_execution_count": debt_execution_count,
+        "pending_dca_notional_exit": pending_dca_notional,
         "pnl": pnl,
         "min_mtm": min_mtm,
         "min_mtm_pct_equity": 0.0,
         "min_mtm_pct_on_notional": min_mtm_pct_on_notional,
         "min_order_usd": min_leg,
+        "min_order_gate_usd": MIN_ORDER_USD,
+        "min_order_coin_qty": MIN_ORDER_COIN_QTY,
+        "min_order_execution_mode": min_order_execution_mode,
         "min_order_ok": min_ok,
         "protection_reference_usd": protection_ref,
         "protection_account_loss_stop_pct_of_margin": candidate.protection_account_loss_stop_pct_of_margin,
@@ -458,6 +578,12 @@ def summarize(rows: Sequence[Dict[str, Any]], initial_equity: float) -> Dict[str
         "gross_profit": gross_profit,
         "gross_loss": gross_loss,
         "avg_dca_fills": sum(float(r["dca_fills"]) for r in rows) / max(1, len(rows)),
+        "avg_logical_dca_fills": sum(float(r.get("logical_dca_fills", r["dca_fills"])) for r in rows) / max(1, len(rows)),
+        "deferred_dca_count": sum(int(r.get("deferred_dca_count", 0)) for r in rows),
+        "min_order_debt_execution_count": sum(int(r.get("min_order_debt_execution_count", 0)) for r in rows),
+        "pending_dca_notional_exit": sum(float(r.get("pending_dca_notional_exit", 0.0)) for r in rows),
+        "base_min_order_upsize_count": sum(1 for r in rows if float(r.get("base_min_order_upsize", 0.0)) > GROUNDING_TOL),
+        "base_min_order_upsize_notional": sum(float(r.get("base_min_order_upsize", 0.0)) for r in rows),
         "avg_notional": sum(float(r["notional"]) for r in rows) / max(1, len(rows)),
         "max_notional": max((float(r["notional"]) for r in rows), default=0.0),
         "min_order_usd": min((float(r.get("min_order_usd", 0.0)) for r in rows), default=0.0),
@@ -514,6 +640,15 @@ def candidate_grid(target_scale: float, random_candidates: int, seed: int, max_t
                         "-".join(str(x).replace(".", "p") for x in weights),
                     )
                     out.append(Candidate(name, scaled_target, base_frac, steps, weights))
+        out.append(
+            Candidate(
+                f"candidate189_live_dca4_t{int(scaled_target)}",
+                scaled_target,
+                0.28,
+                (0.25, 0.35, 0.55, 3.0),
+                (1.0, 1.5, 2.75, 1.5),
+            )
+        )
     rng = random.Random(seed)
     random_targets = tuple(x for x in (100.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 650.0, 800.0, 1000.0, 1200.0, 1500.0) if max_target_notional is None or x * target_scale <= max_target_notional)
     if not random_targets:
@@ -581,16 +716,38 @@ def simulate_candidate_rows(
     initial_equity: float,
     position_sizing_mode: str,
     leverage: float = 1.0,
+    min_order_execution_mode: str = "gate",
+    lead_margin_balance_usdt: float = 0.0,
+    source_margin_allocation_usdt: float = 0.0,
+    max_target_notional: float | None = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     equity = float(initial_equity)
     initial_target = float(candidate.target_notional)
     target_frac = initial_target / max(initial_equity, 1e-12)
     leverage = max(float(leverage), 1.0)
+    lead_margin_balance_usdt = max(float(lead_margin_balance_usdt or 0.0), 0.0)
+    source_margin_allocation_usdt = max(float(source_margin_allocation_usdt or 0.0), 0.0)
     for pos in positions:
         effective = candidate
+        source_position_margin = 0.0
+        source_margin_fraction = 0.0
         if position_sizing_mode == "compound":
             effective_target = min(equity * leverage, equity * target_frac)
+            effective = replace(candidate, target_notional=max(effective_target, 0.0))
+        elif position_sizing_mode in {"lead_margin_fraction", "lead_margin_fraction_base_anchor"}:
+            source_notional = max(float(getattr(pos, "max_open_interest", 0.0) or 0.0), 0.0) * max(float(pos.entry or 0.0), 0.0)
+            source_leverage = max(float(pos.leverage or 0.0), 1.0)
+            source_position_margin = source_notional / source_leverage
+            if lead_margin_balance_usdt > 0.0:
+                source_margin_fraction = source_position_margin / lead_margin_balance_usdt
+            source_scaled_notional = source_margin_allocation_usdt * source_margin_fraction * leverage
+            if position_sizing_mode == "lead_margin_fraction_base_anchor":
+                effective_target = source_scaled_notional / max(float(candidate.base_frac), 1e-12)
+            else:
+                effective_target = source_scaled_notional
+            if max_target_notional is not None:
+                effective_target = min(effective_target, float(max_target_notional))
             effective = replace(candidate, target_notional=max(effective_target, 0.0))
         protection_reference_usd = effective.target_notional / leverage
         row = simulate_position(
@@ -599,11 +756,16 @@ def simulate_candidate_rows(
             arrays,
             fill_mode=fill_mode,
             protection_reference_usd=protection_reference_usd,
+            min_order_execution_mode=min_order_execution_mode,
         )
         if row is None:
             continue
         row["initial_target_notional"] = initial_target
         row["effective_target_notional"] = effective.target_notional
+        row["source_position_margin_usdt"] = source_position_margin
+        row["source_margin_fraction"] = source_margin_fraction
+        row["lead_margin_balance_usdt"] = lead_margin_balance_usdt
+        row["source_margin_allocation_usdt"] = source_margin_allocation_usdt
         row["equity_before"] = equity
         margin_used = float(row["notional"]) / leverage
         row["leverage"] = leverage
@@ -632,10 +794,19 @@ def main() -> None:
         help="Entry anchor. avgCost is historical lead average cost; bar anchors are public OHLC approximations.",
     )
     ap.add_argument("--min-order-usd", type=float, default=MIN_ORDER_USD, help="Minimum allowed base/add leg notional for eligibility gates.")
+    ap.add_argument("--min-order-coin-qty", type=float, default=MIN_ORDER_COIN_QTY, help="Optional exchange minimum coin quantity; effective min notional is max(min-order-usd, coin_qty * execution_price).")
+    ap.add_argument(
+        "--min-order-execution-mode",
+        choices=("gate", "upsize", "accumulate"),
+        default="gate",
+        help="gate rejects candidates with below-min logical legs; upsize lifts each below-min leg to the exchange floor; accumulate upsizes base but merges below-min DCA legs into virtual debt until the exchange minimum is reached.",
+    )
     ap.add_argument("--target-scale", type=float, default=1.0)
     ap.add_argument("--max-target-notional", type=float, default=500.0)
-    ap.add_argument("--position-sizing-mode", choices=("fixed", "compound"), default="compound")
+    ap.add_argument("--position-sizing-mode", choices=("fixed", "compound", "lead_margin_fraction", "lead_margin_fraction_base_anchor"), default="compound")
     ap.add_argument("--leverage", type=float, default=1.0)
+    ap.add_argument("--lead-margin-balance-usdt", type=float, default=0.0, help="Lead margin balance denominator for lead_margin_fraction sizing.")
+    ap.add_argument("--source-margin-allocation-usdt", type=float, default=0.0, help="Follower margin allocation used by lead_margin_fraction sizing; defaults to initial equity when omitted.")
     ap.add_argument("--candidate-filter", default="")
     ap.add_argument("--random-candidates", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1)
@@ -663,6 +834,7 @@ def main() -> None:
     args = ap.parse_args()
 
     globals()["MIN_ORDER_USD"] = float(args.min_order_usd)
+    globals()["MIN_ORDER_COIN_QTY"] = float(args.min_order_coin_qty)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -685,6 +857,8 @@ def main() -> None:
         if missing:
             raise SystemExit(f"candidate_filter not found: {sorted(missing)}")
     candidates = expand_protection_grid(candidates, args.protection_grid)
+    if args.position_sizing_mode == "lead_margin_fraction" and args.source_margin_allocation_usdt <= 0:
+        args.source_margin_allocation_usdt = float(args.initial_equity)
 
     for candidate in candidates:
         rows = simulate_candidate_rows(
@@ -695,6 +869,10 @@ def main() -> None:
             initial_equity=args.initial_equity,
             position_sizing_mode=args.position_sizing_mode,
             leverage=args.leverage,
+            min_order_execution_mode=args.min_order_execution_mode,
+            lead_margin_balance_usdt=args.lead_margin_balance_usdt,
+            source_margin_allocation_usdt=args.source_margin_allocation_usdt,
+            max_target_notional=args.max_target_notional,
         )
         if args.strict_fill_mode == args.fill_mode:
             strict_rows = [dict(r) for r in rows]
@@ -707,6 +885,10 @@ def main() -> None:
                 initial_equity=args.initial_equity,
                 position_sizing_mode=args.position_sizing_mode,
                 leverage=args.leverage,
+                min_order_execution_mode=args.min_order_execution_mode,
+                lead_margin_balance_usdt=args.lead_margin_balance_usdt,
+                source_margin_allocation_usdt=args.source_margin_allocation_usdt,
+                max_target_notional=args.max_target_notional,
             )
         annotate_trade_equity_metrics(rows, args.initial_equity)
         annotate_trade_equity_metrics(strict_rows, args.initial_equity)
@@ -720,6 +902,8 @@ def main() -> None:
                 "add_weights": json.dumps(candidate.add_weights),
                 "fill_mode": args.fill_mode,
                 "position_sizing_mode": args.position_sizing_mode,
+                "lead_margin_balance_usdt": args.lead_margin_balance_usdt,
+                "source_margin_allocation_usdt": args.source_margin_allocation_usdt,
                 "entry_source": args.entry_source,
                 "slippage_bp_per_side": (candidate.slippage * 10000.0),
                 "protection_account_loss_stop_pct_of_margin": candidate.protection_account_loss_stop_pct_of_margin,
@@ -729,6 +913,8 @@ def main() -> None:
                 "protection_trigger_pct_of_margin": protection_threshold_pct(candidate),
                 "protection_scale_reference": "margin_allocation_usd",
                 "min_order_gate_usd": MIN_ORDER_USD,
+                "min_order_coin_qty": MIN_ORDER_COIN_QTY,
+                "min_order_execution_mode": args.min_order_execution_mode,
                 "mtm_gate_ok": float(s["max_mtm_dd_pct"]) >= -abs(args.max_mtm_dd_pct),
                 "strict_trade_mtm_gate_ok": float(s["min_trade_mtm_pct_equity"]) >= float(args.min_trade_mtm_pct),
                 "min_order_gate_ok": bool(s["min_order_ok"]),
@@ -752,6 +938,8 @@ def main() -> None:
                 "add_weights": json.dumps(candidate.add_weights),
                 "fill_mode": args.strict_fill_mode,
                 "position_sizing_mode": args.position_sizing_mode,
+                "lead_margin_balance_usdt": args.lead_margin_balance_usdt,
+                "source_margin_allocation_usdt": args.source_margin_allocation_usdt,
                 "entry_source": args.entry_source,
                 "slippage_bp_per_side": (candidate.slippage * 10000.0),
                 "protection_account_loss_stop_pct_of_margin": candidate.protection_account_loss_stop_pct_of_margin,
@@ -761,6 +949,8 @@ def main() -> None:
                 "protection_trigger_pct_of_margin": protection_threshold_pct(candidate),
                 "protection_scale_reference": "margin_allocation_usd",
                 "min_order_gate_usd": MIN_ORDER_USD,
+                "min_order_coin_qty": MIN_ORDER_COIN_QTY,
+                "min_order_execution_mode": args.min_order_execution_mode,
                 "mtm_gate_ok": float(strict_s["max_mtm_dd_pct"]) >= -abs(args.max_mtm_dd_pct),
                 "strict_trade_mtm_gate_ok": float(strict_s["min_trade_mtm_pct_equity"]) >= float(args.min_trade_mtm_pct),
                 "min_order_gate_ok": bool(strict_s["min_order_ok"]),
@@ -833,6 +1023,10 @@ def main() -> None:
                 initial_equity=args.initial_equity,
                 position_sizing_mode=args.position_sizing_mode,
                 leverage=args.leverage,
+                min_order_execution_mode=args.min_order_execution_mode,
+                lead_margin_balance_usdt=args.lead_margin_balance_usdt,
+                source_margin_allocation_usdt=args.source_margin_allocation_usdt,
+                max_target_notional=args.max_target_notional,
             )
             annotate_trade_equity_metrics(stressed_rows, args.initial_equity)
             ss = summarize(stressed_rows, args.initial_equity)
@@ -850,6 +1044,9 @@ def main() -> None:
                     "protection_scale_reference": "margin_allocation_usd",
                     "fill_mode": args.strict_fill_mode,
                     "position_sizing_mode": args.position_sizing_mode,
+                    "lead_margin_balance_usdt": args.lead_margin_balance_usdt,
+                    "source_margin_allocation_usdt": args.source_margin_allocation_usdt,
+                    "min_order_execution_mode": args.min_order_execution_mode,
                     "entry_source": args.entry_source,
                     "mtm_gate_ok": float(ss["max_mtm_dd_pct"]) >= -abs(args.max_mtm_dd_pct),
                     "strict_trade_mtm_gate_ok": float(ss["min_trade_mtm_pct_equity"]) >= float(args.min_trade_mtm_pct),
@@ -868,26 +1065,28 @@ def main() -> None:
         f"Initial equity: {args.initial_equity:.2f}. Target scale: {args.target_scale:.4g}.",
         f"Max target notional: {args.max_target_notional}.",
         f"Position sizing mode: `{args.position_sizing_mode}`.",
+        f"Lead margin balance denominator: `{args.lead_margin_balance_usdt:g}`. Source margin allocation: `{args.source_margin_allocation_usdt:g}`.",
         f"Entry source: `{args.entry_source}`.",
         f"Slippage per side: `{(args.slippage_bp if args.slippage_bp is not None else Candidate('tmp',0,0,(),()).slippage*10000.0):.6g} bp`.",
         f"Leverage diagnostic: `{args.leverage:g}x`; margin_used = notional / leverage, margin_call when intratrade MTM loss >= margin_used.",
         "Target notional is planned max position notional, not account equity.",
         f"Baseline fill mode: `{args.fill_mode}`. Strict output fill mode: `{args.strict_fill_mode}`.",
-        f"Minimum order gate: every base/add leg must be >= ${MIN_ORDER_USD:.2f}.",
+        f"Minimum order floor: max(${MIN_ORDER_USD:.2f}, {MIN_ORDER_COIN_QTY:g} coin * execution price).",
+        f"Minimum order execution mode: `{args.min_order_execution_mode}`.",
         f"Protection grid: `{args.protection_grid}` as account/floating/emergency pct of margin allocation; trigger blocks future DCA fills, it does not force-close.",
         f"Random candidates: {args.random_candidates}. Seed: {args.seed}.",
         f"Canonical research champion: `{CANONICAL_RESEARCH_CHAMPION}` as `grounded_compound_champion`.",
         "Reporting labels: `grounded_compound_champion`, `static_500_cap`, and rejected `high_notional_illusion`.",
         "",
-        "| rank | label | candidate | protection a/f/e | confirm | target notional | net % | max MTM DD % | min trade MTM % eq | prot hits | blocked DCA | margin calls | PF | avg/max notional | double? |",
-        "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| rank | label | candidate | protection a/f/e | confirm | target notional | net % | max MTM DD % | min trade MTM % eq | debt def/exe | margin calls | PF | avg/max notional | double? |",
+        "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for i, row in enumerate(ranked[: args.topn], 1):
         md.append(
             f"| {i} | {row['research_label']} | {row['candidate']} | "
             f"{row['protection_account_loss_stop_pct_of_margin']:.1f}/{row['protection_floating_pnl_stop_pct_of_margin']:.1f}/{row['protection_emergency_account_loss_pct_of_margin']:.1f} | "
             f"{row['protection_confirm_bars']} | {row['target_notional']:.1f} | {row['net_pct']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
-            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['protection_trigger_count']} | {row['protection_blocked_dca_fills']} | "
+            f"{row['min_trade_mtm_pct_equity']:.2f} | {row['deferred_dca_count']}/{row['min_order_debt_execution_count']} | "
             f"{row['margin_call_count']} | {row['pf']:.2f} | {row['avg_notional']:.1f}/{row['max_notional']:.1f} | {row['target_double_hit']} |"
         )
     md.extend(
@@ -895,7 +1094,7 @@ def main() -> None:
             "",
             "## Strict Trade MTM Top",
             "",
-            "| rank | label | candidate | protection a/f/e | confirm | target notional | net % | max MTM DD % | min trade MTM % eq | prot hits | winners hit | blocked DCA | max recovery after hit | margin calls | PF |",
+            "| rank | label | candidate | protection a/f/e | confirm | target notional | net % | max MTM DD % | min trade MTM % eq | prot hits | winners hit | debt def/exe | pending debt | margin calls | PF |",
             "|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
@@ -905,7 +1104,7 @@ def main() -> None:
             f"{row['protection_account_loss_stop_pct_of_margin']:.1f}/{row['protection_floating_pnl_stop_pct_of_margin']:.1f}/{row['protection_emergency_account_loss_pct_of_margin']:.1f} | "
             f"{row['protection_confirm_bars']} | {row['target_notional']:.1f} | {row['net_pct']:.2f} | {row['max_mtm_dd_pct']:.2f} | "
             f"{row['min_trade_mtm_pct_equity']:.2f} | {row['protection_trigger_count']} | {row['protection_triggered_winner_count']} | "
-            f"{row['protection_blocked_dca_fills']} | {row['protection_max_post_trigger_recovery_usd']:.2f} | {row['margin_call_count']} | {row['pf']:.2f} |"
+            f"{row['deferred_dca_count']}/{row['min_order_debt_execution_count']} | {row['pending_dca_notional_exit']:.2f} | {row['margin_call_count']} | {row['pf']:.2f} |"
         )
     md.extend(
         [
@@ -933,6 +1132,7 @@ def main() -> None:
             "- `candidate_summary_strict_trade_mtm.csv` is generated from the strict fill mode and must pass both portfolio MTM DD and min trade MTM gates.",
             "- `candidate_summary_protection_no_trigger.csv` lists variants where the protection grid did not trip in closed-position replay.",
             "- `stress_slippage.csv` reruns strict top candidates at 1x/2x/3x slippage.",
+            "- In `upsize` mode, every below-min base/DCA leg is lifted to the exchange floor. In `accumulate` mode, base is lifted to the floor but below-min DCA levels advance logical DCA state and accumulate virtual order debt; a real DCA fill is added only when pending notional reaches the exchange floor.",
             "- Grounded compound candidates cannot pass strict ranking if final trade notional exceeds equity before the trade, beyond floating tolerance.",
             "- High-notional fixed-cap results are labeled as `high_notional_illusion` and are not promotion-grade.",
             "- This is closed-position replay; open-position companion risk is still required before promotion.",

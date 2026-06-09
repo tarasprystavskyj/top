@@ -47,6 +47,7 @@ class CopyPosition:
     lead_roi: float
     leverage: float
     margin_mode: str
+    max_open_interest: float = 0.0
 
 
 def parse_dt(raw: Any) -> datetime:
@@ -90,6 +91,7 @@ def read_positions(path: Path) -> List[CopyPosition]:
                     lead_roi=parse_float(row.get("roi"), 0.0),
                     leverage=parse_float(row.get("leverage"), 1.0),
                     margin_mode=str(row.get("isolated") or row.get("margin_mode") or "").strip(),
+                    max_open_interest=parse_float(row.get("maxOpenInterest"), 0.0),
                 )
             )
     return sorted(out, key=lambda p: p.opened)

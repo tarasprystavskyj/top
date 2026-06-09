@@ -229,6 +229,7 @@ DEFAULT_LIVE_SYMBOL = "HYPE-USDT"
 SUPPORTED_LIVE_EXCHANGES = ("bingx", "gateio", "htx", "mexc")
 SUPPORTED_LIVE_EXCHANGE_PROFILES = ("gateio_current", "bingx_legacy", "htx_current", "mexc_current")
 SUPPORTED_SOURCE_LEVERAGE_MODES = ("ignore", "copy", "copy_div2", "fixed")
+SUPPORTED_SOURCE_BOX_TARGET_BASES = ("auto", "lead_margin_balance_fraction", "lead_margin_balance_fraction_base_anchor", "source_position_amount_ratio")
 DEFAULT_UNSUPPORTED_LIVE_SYMBOLS_BY_EXCHANGE: Dict[str, Tuple[str, ...]] = {
     "bingx": ("AMDUSDT", "AVGOUSDT"),
 }
@@ -1557,6 +1558,7 @@ def apply_live_config(args: argparse.Namespace) -> Dict[str, Any]:
         "source_size_sync_interval_sec": cfg.get("source_size_sync_interval_sec") or source_size_sync.get("interval_sec"),
         "source_size_sync_min_change_pct": cfg.get("source_size_sync_min_change_pct") or source_size_sync.get("min_change_pct"),
         "source_size_sync_min_adjust_notional_usdt": cfg.get("source_size_sync_min_adjust_notional_usdt") or source_size_sync.get("min_adjust_notional_usdt"),
+        "source_box_target_basis": cfg.get("source_box_target_basis") or sizing.get("source_box_target_basis") or source_size_sync.get("source_box_target_basis"),
         "protection_account_loss_stop_usdt": protection_usdt("account_loss_stop_usdt", "account_loss_stop_pct_of_equity"),
         "protection_floating_pnl_stop_usdt": protection_usdt("floating_pnl_stop_usdt", "floating_pnl_stop_pct_of_equity"),
         "protection_emergency_account_loss_usdt": protection_usdt("emergency_account_loss_usdt", "emergency_account_loss_pct_of_equity"),
@@ -2805,6 +2807,23 @@ def source_size_sync_enabled(args: argparse.Namespace) -> bool:
     return str(getattr(args, "source_size_sync_mode", "off") or "off").strip().lower() == "ratio"
 
 
+def source_box_target_basis(args: argparse.Namespace) -> str:
+    raw = str(getattr(args, "source_box_target_basis", "auto") or "auto").strip().lower()
+    aliases = {
+        "": "auto",
+        "source_margin_fraction": "lead_margin_balance_fraction",
+        "source_margin_fraction_x_follower_margin_pool_x_effective_leverage": "lead_margin_balance_fraction",
+        "lead_margin_balance": "lead_margin_balance_fraction",
+        "margin_balance_fraction": "lead_margin_balance_fraction",
+        "lead_margin_base_anchor": "lead_margin_balance_fraction_base_anchor",
+        "margin_balance_fraction_base_anchor": "lead_margin_balance_fraction_base_anchor",
+        "source_margin_fraction_base_anchor": "lead_margin_balance_fraction_base_anchor",
+        "ratio": "source_position_amount_ratio",
+        "source_ratio": "source_position_amount_ratio",
+    }
+    return aliases.get(raw, raw)
+
+
 def source_size_snapshot(pos: Dict[str, Any]) -> Dict[str, Any]:
     amount_abs = 0.0
     notional_abs = 0.0
@@ -2841,6 +2860,21 @@ def _positive_float(raw: Any) -> Optional[float]:
     return value
 
 
+def source_box_base_anchor_fraction(args: argparse.Namespace, trade: Dict[str, Any]) -> float:
+    sizing: Dict[str, Any] = {}
+    if isinstance(trade.get("strategy_sizing"), dict):
+        sizing = trade["strategy_sizing"]
+    else:
+        cfg = getattr(args, "_live_config", {}) or {}
+        cfg_sizing = cfg.get("sizing") if isinstance(cfg, dict) else None
+        if isinstance(cfg_sizing, dict):
+            sizing = cfg_sizing
+    base_pct = _positive_float(sizing.get("base_order_pct_eq"))
+    if base_pct is None:
+        base_pct = _positive_float(getattr(copy_signal_meta.dca, "CHAMPION_PARAMS", {}).get("fresh_base_pct"))
+    return max((base_pct if base_pct is not None else 28.0) / 100.0, 1e-12)
+
+
 def source_box_target_notional(
     args: argparse.Namespace,
     trade: Dict[str, Any],
@@ -2849,31 +2883,54 @@ def source_box_target_notional(
     ratio_fallback: Optional[float] = None,
 ) -> Tuple[Optional[float], Dict[str, Any]]:
     data = snapshot if isinstance(snapshot, dict) else trade
+    basis_mode = source_box_target_basis(args)
     margin_fraction = _positive_float(data.get("source_margin_fraction"))
     margin_pool = _positive_float(getattr(args, "initial_equity", None))
     leverage_policy = effective_source_leverage(args, trade)
     effective_leverage = _positive_float(leverage_policy.get("effective_leverage")) or 1.0
     cap = _positive_float(getattr(args, "max_gross_notional_usdt", None))
-    if margin_fraction is not None and margin_pool is not None:
+    if basis_mode in {"auto", "lead_margin_balance_fraction", "lead_margin_balance_fraction_base_anchor"} and margin_fraction is not None and margin_pool is not None:
         source_box_margin = margin_pool * margin_fraction
-        target = source_box_margin * effective_leverage
+        source_scaled_notional = source_box_margin * effective_leverage
+        if basis_mode == "lead_margin_balance_fraction_base_anchor":
+            base_frac = source_box_base_anchor_fraction(args, trade)
+            target = source_scaled_notional / base_frac
+        else:
+            base_frac = None
+            target = source_scaled_notional
         capped_target = min(target, cap) if cap is not None else target
-        return capped_target, {
-            "basis": "source_margin_fraction_x_follower_margin_pool_x_effective_leverage",
+        meta = {
+            "basis": basis_mode if basis_mode in {"lead_margin_balance_fraction", "lead_margin_balance_fraction_base_anchor"} else "source_margin_fraction_x_follower_margin_pool_x_effective_leverage",
+            "basis_mode": basis_mode,
             "source_margin_fraction": margin_fraction,
             "follower_margin_pool_usdt": margin_pool,
             "source_box_margin_usdt": source_box_margin,
+            "source_base_notional_usdt": source_scaled_notional,
             "effective_leverage": effective_leverage,
             "uncapped_target_notional": target,
+            "capped": capped_target < target - 1e-9,
             "cap_notional": cap,
+            "leverage_policy": leverage_policy,
+        }
+        if base_frac is not None:
+            meta["base_anchor_frac"] = base_frac
+        return capped_target, meta
+    if basis_mode in {"lead_margin_balance_fraction", "lead_margin_balance_fraction_base_anchor"}:
+        return None, {
+            "basis": basis_mode,
+            "basis_mode": basis_mode,
+            "reason": "missing_source_margin_fraction_or_follower_margin_pool",
+            "source_margin_fraction": data.get("source_margin_fraction"),
+            "follower_margin_pool_usdt": margin_pool,
             "leverage_policy": leverage_policy,
         }
     ratio = _positive_float(ratio_fallback)
     old_target = _positive_float(trade.get("target_notional"))
-    if ratio is not None and old_target is not None:
+    if basis_mode in {"auto", "source_position_amount_ratio"} and ratio is not None and old_target is not None:
         target = old_target * ratio
         return target, {
             "basis": "source_position_amount_ratio_x_previous_box",
+            "basis_mode": basis_mode,
             "ratio": ratio,
             "previous_target_notional": old_target,
             "uncapped_target_notional": target,
@@ -2882,6 +2939,7 @@ def source_box_target_notional(
         }
     return None, {
         "basis": "unavailable",
+        "basis_mode": basis_mode,
         "reason": "missing_source_margin_fraction_and_ratio",
         "source_margin_fraction": data.get("source_margin_fraction"),
         "ratio": ratio_fallback,
@@ -2918,6 +2976,15 @@ def resize_trade_source_box(
     return event
 
 
+def source_size_sync_desired_notional(trade: Dict[str, Any], current_notional: float, ratio: float, args: argparse.Namespace) -> Tuple[float, str]:
+    basis_mode = source_box_target_basis(args)
+    if basis_mode in {"lead_margin_balance_fraction", "lead_margin_balance_fraction_base_anchor"}:
+        box_target = _positive_float(trade.get("source_box_current_target_notional"))
+        if box_target is not None:
+            return box_target, f"{basis_mode}_box_target"
+    return current_notional * ratio, "source_position_amount_ratio_x_current_notional"
+
+
 def source_box_guard_args(state: Dict[str, Any], trade: Dict[str, Any], args: argparse.Namespace) -> Tuple[argparse.Namespace, Dict[str, Any]]:
     open_trades = state.get("open_trades") if isinstance(state.get("open_trades"), dict) else {}
     box_total = 0.0
@@ -2941,12 +3008,18 @@ def source_box_guard_args(state: Dict[str, Any], trade: Dict[str, Any], args: ar
     static_gross = float(getattr(args, "max_gross_notional_usdt", 0.0) or 0.0)
     static_side = float(getattr(args, "max_one_side_notional_usdt", 0.0) or 0.0)
     side = str(trade.get("side") or "").upper()
-    dynamic_gross = max(static_gross, box_total * SOURCE_BOX_GUARD_HEADROOM)
-    dynamic_side = max(static_side, side_totals.get(side, 0.0) * SOURCE_BOX_GUARD_HEADROOM)
+    hard_static_cap = source_box_target_basis(args) in {"lead_margin_balance_fraction", "lead_margin_balance_fraction_base_anchor"}
+    if hard_static_cap:
+        dynamic_gross = static_gross
+        dynamic_side = static_side
+    else:
+        dynamic_gross = max(static_gross, box_total * SOURCE_BOX_GUARD_HEADROOM)
+        dynamic_side = max(static_side, side_totals.get(side, 0.0) * SOURCE_BOX_GUARD_HEADROOM)
     if dynamic_gross <= static_gross + 1e-9 and dynamic_side <= static_side + 1e-9:
         return args, {
             "enabled": True,
             "changed": False,
+            "hard_static_cap": hard_static_cap,
             "box_total_notional": box_total,
             "box_side_notional": side_totals.get(side, 0.0),
             "headroom": SOURCE_BOX_GUARD_HEADROOM,
@@ -2959,6 +3032,7 @@ def source_box_guard_args(state: Dict[str, Any], trade: Dict[str, Any], args: ar
     return guard_args, {
         "enabled": True,
         "changed": True,
+        "hard_static_cap": hard_static_cap,
         "box_total_notional": box_total,
         "box_side_notional": side_totals.get(side, 0.0),
         "headroom": SOURCE_BOX_GUARD_HEADROOM,
@@ -2988,6 +3062,126 @@ def live_entry_notional_headroom(state: Dict[str, Any], trade: Dict[str, Any], a
         "side_headroom": side_headroom,
         "available_headroom": min(gross_headroom, side_headroom),
     }
+
+def _source_box_trade_headroom(trade: Dict[str, Any]) -> Dict[str, Any]:
+    target = _positive_float(trade.get("source_box_current_target_notional")) or _positive_float(trade.get("target_notional"))
+    try:
+        current_notional = abs(float(trade.get("notional") or 0.0))
+    except Exception:
+        current_notional = 0.0
+    if target is None:
+        headroom = math.inf
+    else:
+        headroom = max((target * SOURCE_BOX_GUARD_HEADROOM) - current_notional, 0.0)
+    return {
+        "source_box_target_notional": target,
+        "source_box_headroom": headroom,
+        "source_box_headroom_multiplier": SOURCE_BOX_GUARD_HEADROOM,
+        "current_trade_notional": current_notional,
+    }
+
+
+def _source_size_clamp_min_order_notional(
+    trade: Dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    expected_price: float,
+    min_adjust_notional: float,
+) -> float:
+    minimum = max(float(min_adjust_notional or 0.0), 0.0)
+    trade_min = _positive_float(trade.get("min_order_notional"))
+    if trade_min is not None:
+        minimum = max(minimum, trade_min)
+    client = getattr(args, "_live_client", None)
+    if client is not None and expected_price > 0:
+        ccxt_symbol, _resolution = resolve_live_trade_symbol(args, client, str(trade.get("symbol") or ""))
+        if ccxt_symbol:
+            min_base_qty, _source = configured_min_base_qty(args, str(trade.get("symbol") or ""), ccxt_symbol)
+            if min_base_qty > 0:
+                minimum = max(minimum, min_base_qty * expected_price)
+    return minimum
+
+
+def _source_size_clamp_event_allowed(trade: Dict[str, Any], now: datetime, reason: str) -> bool:
+    last = trade.get("source_size_increase_clamp_last")
+    throttle = DEFAULT_SOURCE_SIZE_CLAMP_TELEMETRY_SEC
+    if isinstance(last, dict):
+        last_reason = str(last.get("reason") or "")
+        last_utc = str(last.get("utc") or "")
+        try:
+            last_dt = datetime.fromisoformat(last_utc.replace("Z", "+00:00"))
+        except Exception:
+            last_dt = None
+        if last_reason == reason and last_dt is not None and (now - last_dt).total_seconds() < throttle:
+            return False
+    trade["source_size_increase_clamp_last"] = {"utc": paper.iso(now), "reason": reason}
+    return True
+
+
+def clamp_source_size_increase_notional(
+    state: Dict[str, Any],
+    trade: Dict[str, Any],
+    *,
+    requested_notional: float,
+    expected_price: float,
+    min_adjust_notional: float,
+    now: datetime,
+    args: argparse.Namespace,
+) -> Tuple[float, Optional[Dict[str, Any]]]:
+    requested = max(float(requested_notional or 0.0), 0.0)
+    cap_headroom = live_entry_notional_headroom(state, trade, args)
+    box_headroom = _source_box_trade_headroom(trade)
+    max_headroom = min(
+        float(cap_headroom["gross_headroom"]),
+        float(cap_headroom["side_headroom"]),
+        float(box_headroom["source_box_headroom"]),
+    )
+    allowed = max(min(requested, max_headroom), 0.0)
+    min_order_notional = _source_size_clamp_min_order_notional(
+        trade,
+        args,
+        expected_price=expected_price,
+        min_adjust_notional=min_adjust_notional,
+    )
+    preflight: Optional[Dict[str, Any]] = None
+    effective_order_notional = allowed
+    if allowed > 0:
+        preflight = live_open_order_preflight(args, str(trade.get("symbol") or ""), expected_price, allowed)
+        effective_order_notional = max(allowed, float(preflight.get("normalized_notional") or 0.0))
+    reason = ""
+    if allowed <= 1e-9:
+        reason = "source_size_increase_no_headroom"
+    elif min_order_notional > 0 and allowed + 1e-9 < min_order_notional:
+        reason = "source_size_increase_headroom_below_min_order"
+    elif effective_order_notional > max_headroom + 1e-9:
+        reason = "source_size_increase_normalized_order_exceeds_headroom"
+    elif allowed < requested - 1e-9:
+        reason = "source_size_increase_clamped_to_headroom"
+
+    if not reason:
+        return allowed, None
+
+    event = {
+        "type": "source_size_increase_clamped",
+        "key": trade.get("key"),
+        "utc": paper.iso(now),
+        "fill_type": "source_size_increase",
+        "reason": reason,
+        "requested_notional": requested,
+        "clamped_notional": allowed if reason == "source_size_increase_clamped_to_headroom" else 0.0,
+        "effective_order_notional": effective_order_notional,
+        "max_effective_headroom": max_headroom,
+        "min_order_notional": min_order_notional,
+        "cap_headroom": cap_headroom,
+        "source_box_headroom": box_headroom,
+    }
+    if preflight is not None:
+        event["exchange_preflight"] = preflight
+    if not _source_size_clamp_event_allowed(trade, now, reason):
+        event["telemetry_suppressed"] = True
+    if reason != "source_size_increase_clamped_to_headroom":
+        return 0.0, event
+    return allowed, event
 
 
 def update_trade_source_size_snapshot(trade: Dict[str, Any], snapshot: Dict[str, Any], now: datetime) -> None:
@@ -3244,10 +3438,11 @@ def apply_source_size_sync(
             update_trade_source_size_snapshot(trade, snapshot, now)
             continue
         current_notional = float(trade.get("notional") or 0.0)
-        desired_notional = current_notional * ratio
+        desired_notional, desired_basis = source_size_sync_desired_notional(trade, current_notional, ratio, args)
         delta_notional = desired_notional - current_notional
         abs_delta = abs(delta_notional)
         observation["desired_follower_notional"] = desired_notional
+        observation["desired_notional_basis"] = desired_basis
         observation["delta_notional"] = delta_notional
         if abs_delta < min_adjust_notional:
             observation["action"] = "source_size_change_below_min_adjust_notional"
@@ -3960,6 +4155,7 @@ def status_payload(state: Dict[str, Any], mark: Optional[float], now: datetime, 
     }
     payload["source_size_sync"] = {
         "mode": getattr(args, "source_size_sync_mode", "off"),
+        "source_box_target_basis": getattr(args, "source_box_target_basis", "auto"),
         "interval_sec": getattr(args, "source_size_sync_interval_sec", DEFAULT_SOURCE_SIZE_SYNC_INTERVAL_SEC),
         "min_change_pct": getattr(args, "source_size_sync_min_change_pct", 0.0),
         "min_adjust_notional_usdt": getattr(args, "source_size_sync_min_adjust_notional_usdt", 0.0),
@@ -4077,6 +4273,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-source-leverage", type=float, default=0.0, help="Optional cap for effective source leverage; 0 means uncapped.")
     ap.add_argument("--source-margin-mode-override", choices=("", "cross", "isolated"), default="", help="Optional forced margin mode for follower leverage setup.")
     ap.add_argument("--source-size-sync-mode", choices=("off", "ratio"), default="off", help="Follow source position amount changes with proportional follower add/reduce orders.")
+    ap.add_argument("--source-box-target-basis", choices=SUPPORTED_SOURCE_BOX_TARGET_BASES, default="auto", help="How source-size sync computes the follower box target.")
     ap.add_argument("--source-size-sync-interval-sec", type=float, default=DEFAULT_SOURCE_SIZE_SYNC_INTERVAL_SEC, help="Minimum seconds between source size sync checks per open trade.")
     ap.add_argument("--source-size-sync-min-change-pct", type=float, default=0.0, help="Ignore source size ratio changes below this percent.")
     ap.add_argument("--source-size-sync-min-adjust-notional-usdt", type=float, default=0.0, help="Ignore proportional follower add/reduce deltas below this notional.")
