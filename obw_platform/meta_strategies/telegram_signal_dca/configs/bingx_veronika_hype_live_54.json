@@ -84,8 +84,9 @@
       "bingx_contract_code": "HYPE-USDT",
       "available": true,
       "contract_size_coin": 1.0,
-      "min_contracts": 0.01,
-      "min_coin_qty": 0.01
+      "min_contracts": 0.035,
+      "min_coin_qty": 0.035,
+      "notes": "Safety floor raised above observed BingX reject `minimum order amount is 0.0324 HYPE` to prevent undersized HYPE base/DCA submissions."
     }
   },
   "reserved_unavailable_allocation": {

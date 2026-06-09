@@ -1,0 +1,83 @@
+{
+  "schema": "telegram_signal_dca_live_config_v1",
+  "name": "mexc_veronika_hype_live_49p5",
+  "exchange": "mexc",
+  "exchange_profile": "mexc_current",
+  "live_symbol": "HYPE/USDT:USDT",
+  "position_mode": "oneway",
+  "env": {
+    "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+    "api_key_env": "MEXC_IGOR_KEY",
+    "api_secret_env": "MEXC_IGOR_SECRET"
+  },
+  "signal": {
+    "lead_trader_name": "Veronika",
+    "portfolio_id": "4300516091842181632",
+    "copy_symbol": "HYPEUSDT",
+    "mode": "follow_open"
+  },
+  "allocation": {
+    "split_pct": 55.0,
+    "exchange_margin_usdt": 90.0,
+    "initial_equity_usdt": 49.5,
+    "max_notional_usdt": 49.5,
+    "max_one_side_notional_usdt": 49.5,
+    "initial_target_notional_usdt": 49.5
+  },
+  "sizing": {
+    "base_order_policy": "candidate_189_fresh_base_pct_28_scaled_from_49p5_usdt",
+    "base_order_pct_eq": 28.0,
+    "box_config_class": "Candidate189BoxConfig",
+    "dca_profile": "candidate_189_guarded_dca4",
+    "selected_dca_count": 4,
+    "target_max_notional_usdt": 49.5,
+    "max_position_cost_pct": 100.0,
+    "initial_base_order_usdt": 13.86,
+    "dca_scaling": "Scale from delegated MEXC 49.5 USDT margin allocation through candidate-189 guarded canary path.",
+    "dca_eval_interval_sec": 60.0
+  },
+  "source_leverage": {
+    "mode": "fixed",
+    "fixed_leverage": 3.0,
+    "margin_mode": "cross",
+    "max_source_leverage": 3.0,
+    "notes": "Use fixed 3x follower leverage before MEXC HYPE live open/DCA legs; do not copy higher source leverage."
+  },
+  "source_size_sync": {
+    "mode": "ratio",
+    "interval_sec": 60.0,
+    "min_change_pct": 0.0,
+    "min_adjust_notional_usdt": 2.0,
+    "notes": "Every poll, compare public source position amount/margin fraction against the last synced amount. If the lead increases/reduces size, proportionally add/reduce the follower position and resize the future candidate-189 DCA box ladder."
+  },
+  "safety": {
+    "max_daily_loss_usdt": 2.475,
+    "max_orders_per_hour": 10,
+    "order_error_backoff_sec": 300,
+    "order_error_circuit_sec": 1800,
+    "order_error_max_consecutive": 2,
+    "entry_failure_cooldown_sec": 3600,
+    "poll_sec": 60
+  },
+  "protection": {
+    "scale_reference": "allocation.max_notional_usdt",
+    "account_loss_stop_pct_of_equity": 35.0,
+    "floating_pnl_stop_pct_of_equity": 35.0,
+    "emergency_account_loss_pct_of_equity": 45.0,
+    "stale_market_sec": 300,
+    "auto_stop_new_orders": true
+  },
+  "live_orders_enabled": true,
+  "live_ack_env": "VERONIKA_HYPE_MEXC_LIVE_ACK",
+  "live_ack_value": "I_ACCEPT_REAL_MEXC_ORDERS",
+  "symbol_market_constraints": {
+    "HYPEUSDT": {
+      "live_symbol": "HYPE/USDT:USDT",
+      "mexc_contract_code": "HYPE_USDT",
+      "available": true,
+      "contract_size_coin": 0.1,
+      "min_contracts": 1.0,
+      "min_coin_qty": 0.1
+    }
+  }
+}

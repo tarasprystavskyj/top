@@ -102,6 +102,14 @@
       "enabled": true,
       "exchange_profile": "htx_current",
       "position_mode": "oneway",
+      "allocation": {
+        "exchange_margin_usdt": 200.0,
+        "initial_equity_usdt": 90.0,
+        "initial_target_notional_usdt": 90.0,
+        "max_notional_usdt": 200.0,
+        "max_one_side_notional_usdt": 200.0,
+        "notes": "HTX Callme uses the same 45% split as GateIO: 90 USDT from the 200 USDT HTX margin bucket."
+      },
       "env": {
         "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
         "api_key_env": "HTX_MAKSYM_KEY",
@@ -131,6 +139,28 @@
       "live_ack_value": "I_ACCEPT_REAL_BINGX_ORDERS",
       "default_contract_code_format": "{BASE}-USDT",
       "notes": "BingX currently lacks canonical AMDUSDT and AVGOUSDT swap markets; watcher remains useful for future symbols."
+    },
+    "mexc": {
+      "enabled": true,
+      "exchange_profile": "mexc_current",
+      "position_mode": "oneway",
+      "allocation": {
+        "exchange_margin_usdt": 90.0,
+        "initial_equity_usdt": 40.5,
+        "initial_target_notional_usdt": 40.5,
+        "max_notional_usdt": 90.0,
+        "max_one_side_notional_usdt": 90.0,
+        "notes": "MEXC Callme uses the same 45% split as GateIO: 40.5 USDT from the 90 USDT MEXC margin bucket."
+      },
+      "env": {
+        "file": "/var/www/vps2.happyuser.info/top/top_1/obw_platform/.env",
+        "api_key_env": "MEXC_IGOR_KEY",
+        "api_secret_env": "MEXC_IGOR_SECRET"
+      },
+      "live_ack_env": "CALLME_META_MEXC_LIVE_ACK",
+      "live_ack_value": "I_ACCEPT_REAL_MEXC_ORDERS",
+      "default_contract_code_format": "{BASE}_USDT",
+      "notes": "MEXC currently lacks canonical AMDUSDT, AVGOUSDT, MSTRUSDT, and MUUSDT swap markets in public metadata; watcher remains useful for BTC/ETH/SOL/PAXG/HYPE style future symbols."
     }
   },
   "symbols": {
