@@ -426,6 +426,92 @@ def load_state(path: Path, portfolio_id: str, notional: float) -> Dict[str, Any]
     return state
 
 
+def position_price(pos: Dict[str, Any]) -> Optional[float]:
+    return finite_pos(pos.get("mark_price")) or finite_pos(pos.get("entry_price"))
+
+
+def target_notional_for_position(pos: Dict[str, Any], *, args: argparse.Namespace) -> Tuple[float, Dict[str, Any]]:
+    mode = str(getattr(args, "sizing_mode", "fixed_notional") or "fixed_notional").strip().lower()
+    if mode == "fixed_notional":
+        return float(args.notional_usdt), {"sizing_mode": mode}
+    if mode != "margin_fraction_mirror":
+        raise ValueError(f"unsupported sizing_mode={mode!r}")
+    fraction = finite_pos(pos.get("source_margin_fraction"))
+    allocation = finite_pos(getattr(args, "allocation_usdt", None)) or float(args.notional_usdt)
+    leverage = finite_pos(getattr(args, "effective_leverage", None)) or 1.0
+    max_notional = finite_pos(getattr(args, "max_notional_usdt", None))
+    raw_target = 0.0 if fraction is None else allocation * fraction * leverage
+    target = min(raw_target, max_notional) if max_notional is not None else raw_target
+    return target, {
+        "sizing_mode": mode,
+        "allocation_usdt": allocation,
+        "effective_leverage": leverage,
+        "max_notional_usdt": max_notional,
+        "source_margin_fraction": fraction,
+        "raw_target_notional_usdt": raw_target,
+        "target_notional_usdt": target,
+    }
+
+
+def ensure_qty_fields(trade: Dict[str, Any]) -> None:
+    notional = finite_pos(trade.get("paper_notional_usdt")) or 0.0
+    entry = finite_pos(trade.get("entry_price")) or 0.0
+    qty = finite_pos(trade.get("paper_qty_abs"))
+    if qty is None and notional > 0 and entry > 0:
+        trade["paper_qty_abs"] = notional / entry
+    trade.setdefault("realized_pnl_usdt", 0.0)
+    trade.setdefault("partial_closes", [])
+
+
+def resize_open_trade(
+    trade: Dict[str, Any],
+    pos: Dict[str, Any],
+    *,
+    target_notional: float,
+    min_adjust_notional: float,
+    now: datetime,
+) -> Optional[Dict[str, Any]]:
+    ensure_qty_fields(trade)
+    old_notional = finite_pos(trade.get("paper_notional_usdt")) or 0.0
+    price = position_price(pos)
+    if price is None or price <= 0:
+        return None
+    delta = target_notional - old_notional
+    if abs(delta) < max(float(min_adjust_notional), 0.0):
+        return None
+    side = str(trade.get("side") or pos.get("side") or "")
+    entry = finite_pos(trade.get("entry_price")) or finite_pos(pos.get("entry_price")) or price
+    qty = finite_pos(trade.get("paper_qty_abs")) or (old_notional / max(entry, 1e-12))
+    event_base = {
+        "key": trade.get("key"),
+        "symbol": trade.get("symbol"),
+        "side": side,
+        "price": price,
+        "old_notional_usdt": old_notional,
+        "target_notional_usdt": target_notional,
+        "delta_notional_usdt": delta,
+    }
+    if delta > 0:
+        add_qty = delta / price
+        new_qty = qty + add_qty
+        new_notional = old_notional + delta
+        trade["entry_price"] = new_notional / max(new_qty, 1e-12)
+        trade["paper_qty_abs"] = new_qty
+        trade["paper_notional_usdt"] = new_notional
+        trade.setdefault("fills", []).append({"utc": iso(now), "type": "add", "price": price, "notional_usdt": delta, "qty_abs": add_qty})
+        return {"type": "paper_resize_increase", **event_base, "new_avg_entry": trade["entry_price"]}
+    close_notional = min(old_notional, abs(delta))
+    pnl = ret_for(side, entry, price) * close_notional
+    remaining_notional = max(0.0, old_notional - close_notional)
+    remaining_qty = qty * (remaining_notional / old_notional) if old_notional > 0 else 0.0
+    trade["paper_notional_usdt"] = remaining_notional
+    trade["paper_qty_abs"] = remaining_qty
+    trade["realized_pnl_usdt"] = float(trade.get("realized_pnl_usdt") or 0.0) + pnl
+    partial = {"utc": iso(now), "type": "partial_close", "price": price, "notional_usdt": close_notional, "pnl_usdt": pnl}
+    trade.setdefault("partial_closes", []).append(partial)
+    return {"type": "paper_resize_decrease", **event_base, "closed_notional_usdt": close_notional, "partial_pnl_usdt": pnl}
+
+
 def find_history_exit(open_trade: Dict[str, Any], history: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     key = open_trade.get("key")
     detected_ms = open_trade.get("detected_at_ms") or 0
@@ -455,7 +541,7 @@ def close_trade(
     entry = float(open_trade["entry_price"])
     side = str(open_trade["side"])
     notional = float(open_trade["paper_notional_usdt"])
-    pnl = ret_for(side, entry, exit_price) * notional
+    pnl = float(open_trade.get("realized_pnl_usdt") or 0.0) + ret_for(side, entry, exit_price) * notional
     closed = copy.deepcopy(open_trade)
     closed.update(
         {
@@ -478,16 +564,21 @@ def apply_snapshot(
     *,
     now: datetime,
     notional: float,
+    args: argparse.Namespace,
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     current = {pos["key"]: pos for pos in open_snapshot}
     state_open: Dict[str, Dict[str, Any]] = state["open_positions"]
 
     for key, pos in sorted(current.items()):
+        target_notional, sizing_meta = target_notional_for_position(pos, args=args)
         if key in state_open:
             state_open[key]["last_seen_utc"] = iso(now)
             state_open[key]["last_mark_price"] = pos.get("mark_price")
             state_open[key]["last_raw_position"] = pos.get("raw")
+            state_open[key]["lead_position_amount"] = pos.get("position_amount")
+            state_open[key]["lead_notional_value"] = pos.get("notional_value")
+            state_open[key]["target_sizing"] = sizing_meta
             for field in (
                 "lead_margin_balance_usdt",
                 "source_position_margin_usdt",
@@ -496,6 +587,18 @@ def apply_snapshot(
                 "source_margin_fraction_reason",
             ):
                 state_open[key][field] = pos.get(field)
+            resize_event = resize_open_trade(
+                state_open[key],
+                pos,
+                target_notional=target_notional,
+                min_adjust_notional=float(getattr(args, "min_adjust_notional_usdt", 0.0) or 0.0),
+                now=now,
+            )
+            if resize_event:
+                events.append(resize_event)
+            continue
+        if target_notional <= 0:
+            events.append({"type": "paper_entry_skipped", "key": key, "symbol": pos["symbol"], "side": pos["side"], "reason": "non_positive_target_notional", "target_sizing": sizing_meta})
             continue
         trade = {
             "key": key,
@@ -506,7 +609,8 @@ def apply_snapshot(
             "detected_at_ms": int(now.timestamp() * 1000),
             "entry_price": pos["entry_price"],
             "entry_price_source": "positions.entryPrice",
-            "paper_notional_usdt": notional,
+            "paper_notional_usdt": target_notional,
+            "paper_qty_abs": target_notional / max(float(pos["entry_price"]), 1e-12),
             "lead_position_amount": pos.get("position_amount"),
             "lead_notional_value": pos.get("notional_value"),
             "lead_leverage": pos.get("leverage"),
@@ -517,10 +621,14 @@ def apply_snapshot(
             "source_margin_fraction_reason": pos.get("source_margin_fraction_reason"),
             "last_mark_price": pos.get("mark_price"),
             "last_seen_utc": iso(now),
+            "target_sizing": sizing_meta,
+            "realized_pnl_usdt": 0.0,
+            "partial_closes": [],
+            "fills": [{"utc": iso(now), "type": "entry", "price": pos["entry_price"], "notional_usdt": target_notional, "qty_abs": target_notional / max(float(pos["entry_price"]), 1e-12)}],
             "raw_entry_position": pos.get("raw"),
         }
         state_open[key] = trade
-        events.append({"type": "paper_entry", "key": key, "symbol": pos["symbol"], "side": pos["side"], "price": pos["entry_price"]})
+        events.append({"type": "paper_entry", "key": key, "symbol": pos["symbol"], "side": pos["side"], "price": pos["entry_price"], "target_notional_usdt": target_notional, "target_sizing": sizing_meta})
 
     keys_to_close = set(state_open) - set(current)
     for key in set(state_open) & set(current):
@@ -583,7 +691,11 @@ def poll_once(args: argparse.Namespace) -> Dict[str, Any]:
     )
     state = load_state(state_path, args.portfolio_id, args.notional_usdt)
     before = copy.deepcopy(state)
-    events = apply_snapshot(state, open_positions, history, now=now, notional=args.notional_usdt)
+    if args.symbol:
+        symbols = {str(x).upper().strip() for x in args.symbol.split(",") if str(x).strip()}
+        open_positions = [pos for pos in open_positions if pos.get("symbol") in symbols]
+        history = [row for row in history if row.get("symbol") in symbols]
+    events = apply_snapshot(state, open_positions, history, now=now, notional=args.notional_usdt, args=args)
     state["last_poll"] = {
         "utc": iso(now),
         "positions": positions_meta,
@@ -616,6 +728,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ap.add_argument("--portfolio-id", default=DEFAULT_PORTFOLIO_ID)
     ap.add_argument("--state-path", default=f"{DEFAULT_REPORT_DIR}/paper_live_state.json")
     ap.add_argument("--notional-usdt", type=float, default=100.0)
+    ap.add_argument("--sizing-mode", choices=("fixed_notional", "margin_fraction_mirror"), default="fixed_notional")
+    ap.add_argument("--allocation-usdt", type=float, default=0.0, help="Follower allocation used by margin_fraction_mirror sizing.")
+    ap.add_argument("--effective-leverage", type=float, default=1.0, help="Follower leverage used by margin_fraction_mirror sizing.")
+    ap.add_argument("--max-notional-usdt", type=float, default=0.0, help="Hard paper notional cap used by margin_fraction_mirror sizing; 0 disables it.")
+    ap.add_argument("--min-adjust-notional-usdt", type=float, default=0.0, help="Ignore paper resize deltas smaller than this notional.")
+    ap.add_argument("--symbol", default="", help="Optional comma-separated symbol filter, e.g. HYPEUSDT.")
     ap.add_argument("--history-page-size", type=int, default=20)
     ap.add_argument("--timeout-sec", type=float, default=20.0)
     ap.add_argument("--dry-run", action="store_true", help="Fetch and compute actions without writing state.")
@@ -633,6 +751,15 @@ def main() -> None:
         raise SystemExit("--interval-sec must be positive")
     if args.notional_usdt <= 0:
         raise SystemExit("--notional-usdt must be positive")
+    if args.sizing_mode == "margin_fraction_mirror":
+        if args.allocation_usdt <= 0:
+            raise SystemExit("--allocation-usdt must be positive for margin_fraction_mirror")
+        if args.effective_leverage <= 0:
+            raise SystemExit("--effective-leverage must be positive for margin_fraction_mirror")
+        if args.max_notional_usdt < 0:
+            raise SystemExit("--max-notional-usdt must be non-negative")
+    if args.min_adjust_notional_usdt < 0:
+        raise SystemExit("--min-adjust-notional-usdt must be non-negative")
 
     while True:
         result = poll_once(args)

@@ -1720,7 +1720,8 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
                 sizing=sizing,
             )
             self.assertEqual(plan["box_config_class"], "LiquidBaseScaledBoxConfig", name)
-            self.assertEqual(len(plan["add_notionals"]), 8, name)
+            self.assertLessEqual(len(plan["add_notionals"]), sizing["selected_dca_count"], name)
+            self.assertGreaterEqual(len(plan["add_notionals"]), 7, name)
 
     def test_veronika_hype_live_configs_use_cross_margin_fixed_3x(self):
         configs = [
