@@ -1692,6 +1692,8 @@ class HypeCap100BingXLiveCanaryTest(unittest.TestCase):
         configs = [
             "bingx_veronika_hype_live_54.json",
             "gateio_veronika_hype_live_310.json",
+            "htx_veronika_hype_live_110.json",
+            "mexc_veronika_hype_live_49p5.json",
         ]
         for name in configs:
             cfg = Path("obw_platform/meta_strategies/telegram_signal_dca/configs") / name
