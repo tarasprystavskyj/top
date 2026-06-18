@@ -3708,17 +3708,19 @@ def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
         fill_type = str(fill.get("fill_type") or "")
     reason_l = reason.lower()
     fill_l = fill_type.lower()
-    if order_type in {"CLOSE", "EXIT", "CLOSE_PARTIAL"}:
-        return "Meta strategy full close", "meta_close", "#F87171"
+    if order_type == "CLOSE_PARTIAL":
+        return "partial close", "meta_close_partial", "#FB923C"
+    if order_type in {"CLOSE", "EXIT"}:
+        return "full close", "meta_close", "#F87171"
     if "mark_crossed_dca_level" in reason_l or fill_l.startswith("dca_add"):
         return "DCA buy", "dca_buy", "#22C55E"
     if "lead_open_position_detected" in reason_l or fill_l == "base_entry":
-        return "Meta strategy open", "meta_open", "#38BDF8"
+        return "open", "meta_open", "#38BDF8"
     side = str(row.get("side") or "").upper()
     if order_type == "OPEN" and side in {"LONG", "BUY"}:
         return "DCA buy", "dca_buy", "#22C55E"
     if order_type == "OPEN":
-        return "Meta strategy open", "meta_open", "#38BDF8"
+        return "open", "meta_open", "#38BDF8"
     return "DCA sell", "dca_sell", "#F59E0B"
 
 
@@ -3737,10 +3739,45 @@ def _fill_price_from_order_row(row: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+_CLOSE_KINDS = {"meta_close", "meta_close_partial", "dca_sell"}
+
+
+def _sqlite_closed_positions(session_dir: str, limit: int = 10000) -> List[Dict[str, Any]]:
+    """Return CLOSED rows from open_positions (the helper used elsewhere filters them out)."""
+    db_path = _live_session_sqlite_path(session_dir)
+    if not db_path:
+        return []
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        con.row_factory = sqlite3.Row
+        try:
+            if "open_positions" not in set(_sqlite_table_names(db_path)):
+                return []
+            cols = [r[1] for r in con.execute('PRAGMA table_info("open_positions")').fetchall()]
+            if "status" not in cols:
+                return []
+            sql = "SELECT * FROM \"open_positions\" WHERE UPPER(status) = 'CLOSED'"
+            order_col = next((c for c in ("exit_fill_ts", "ts_close", "close_ts", "ts_open") if c in cols), None)
+            if order_col:
+                sql += f' ORDER BY "{order_col}" ASC'
+            sql += f" LIMIT {int(limit)}"
+            return [dict(row) for row in con.execute(sql).fetchall()]
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
 def _live_event_markers(session_dir: str) -> List[Dict[str, Any]]:
+    # The `orders` table (status='FILLED') is the authoritative record of what
+    # actually executed on the exchange: one row per real fill, with the fill
+    # price in extra.fill. We build markers solely from it so every marker maps
+    # 1:1 to an exchange fill. The position-level `open_positions` table is a
+    # derived view that re-states the same closes at slightly different
+    # timestamps/prices; mixing it in produced duplicate ("doubled") markers, so
+    # it is used only as a fallback when the session has no order fills at all.
     rows = _sqlite_live_order_rows(session_dir, limit=10000)
     out: List[Dict[str, Any]] = []
-    seen_close_buckets: set = set()
     for idx, row in enumerate(rows):
         ts = _to_iso_from_any(row.get("ts_utc") or row.get("bar_time_utc") or row.get("timestamp"))
         fill_price = _fill_price_from_order_row(row)
@@ -3748,11 +3785,7 @@ def _live_event_markers(session_dir: str) -> List[Dict[str, Any]]:
         if not ts or price <= 0:
             continue
         text, kind, color = _label_from_live_order(row)
-        is_close = kind in {"meta_close", "dca_sell"}
-        if is_close:
-            ts_sec = _iso_to_epoch_seconds_fast(ts)
-            bucket = int(ts_sec // 60) * 60 if ts_sec is not None else None
-            seen_close_buckets.add((bucket, round(float(price), 8)))
+        is_close = kind in _CLOSE_KINDS
         out.append(
             {
                 "id": str(row.get("order_id") or f"order-{idx}"),
@@ -3766,26 +3799,25 @@ def _live_event_markers(session_dir: str) -> List[Dict[str, Any]]:
                 "position": "atPriceTop" if is_close else "atPriceBottom",
             }
         )
-    closed_positions = _sqlite_rows_for_live_table(session_dir, "open_positions", limit=10000)
+    if out:
+        return sorted(out, key=lambda x: x["time"])
+
+    # Fallback: no order fills in this session — derive close markers from the
+    # position table so the chart is not empty. (_sqlite_rows_for_live_table
+    # excludes CLOSED rows, so query them directly here.)
+    closed_positions = _sqlite_closed_positions(session_dir, limit=10000)
     for idx, row in enumerate(closed_positions):
         status = str(row.get("status") or "").upper()
         ts = _to_iso_from_any(row.get("exit_fill_ts") or row.get("close_ts") or row.get("closed_at"))
         price = _safe_float(row.get("exit_fill") or row.get("exit") or row.get("close_price"))
         if status != "CLOSED" or not ts or price <= 0:
             continue
-        ts_sec = _iso_to_epoch_seconds_fast(ts)
-        close_bucket = int(ts_sec // 60) * 60 if ts_sec is not None else None
-        bucket_key = (close_bucket, round(float(price), 8))
-        if bucket_key in seen_close_buckets:
-            continue
-        seen_close_buckets.add(bucket_key)
-        marker_id = f"position-close-{idx}"
         out.append(
             {
-                "id": marker_id,
+                "id": f"position-close-{idx}",
                 "time": ts,
                 "price": float(price),
-                "text": "Meta strategy full close",
+                "text": "full close",
                 "kind": "meta_close",
                 "layer": "events",
                 "color": "#F87171",

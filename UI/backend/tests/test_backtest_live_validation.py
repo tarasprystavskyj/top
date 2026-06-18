@@ -485,7 +485,7 @@ def test_live_sessions_include_repo_reports_hype_canary(monkeypatch, tmp_path):
     assert chart_body["sources"]["live"] == "session.sqlite:orders"
     assert chart_body["approximate"] is True
     assert chart_body["mark"][-1]["value"] == 25.4
-    assert chart_body["markers"][0]["text"] in {"DCA buy", "Meta strategy open"}
+    assert chart_body["markers"][0]["text"] in {"DCA buy", "open"}
     assert any(item["layer"] == "parameters" for item in chart_body["labels"])
 
     generated_csv = tmp_path / "HYPE_USDT_trade_history_for_match.csv"
@@ -823,7 +823,7 @@ def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tm
     assert body["sources"]["price_bars"] == "live_hype_1m_ohlcv_full_session.npz"
     assert body["live_realized"][-1]["value"] == 0.25
     assert body["backtest_realized"][0]["value"] == 0.0
-    assert {m["text"] for m in body["markers"]} >= {"Meta strategy open", "DCA buy"}
+    assert {m["text"] for m in body["markers"]} >= {"open", "DCA buy"}
     assert any(label["text"].startswith("fresh_tp_percent") for label in body["labels"])
     assert {line["kind"] for line in body["price_lines"]} >= {"next_dca_buy", "dca_sell_target", "full_sell_tp"}
     assert any(line["text"] == "Next DCA buy" and line["price"] == 58.9 for line in body["price_lines"])
@@ -849,16 +849,18 @@ def test_live_session_chart_deduplicates_orders_and_open_positions_close_markers
         con.execute(
             "INSERT INTO orders VALUES ('order-open', '2026-06-16T14:29:00.123Z', 'HYPE-USDT', 'LONG', 'OPEN', 76.10, 1.0, 'FILLED')"
         )
-        # close order — slightly different milliseconds from exit_fill_ts in open_positions
+        # close order — exchange-confirmed close fill
         con.execute(
             "INSERT INTO orders VALUES ('order-close', '2026-06-16T14:30:00.037Z', 'HYPE-USDT', 'LONG', 'CLOSE', 76.50, 1.0, 'FILLED')"
         )
         con.execute(
             "CREATE TABLE open_positions (position_id TEXT, status TEXT, exit_fill REAL, exit_fill_ts TEXT)"
         )
-        # same close event at 500ms later (same minute bucket)
+        # same close re-stated by the position table ~500ms later AND at a slightly
+        # different price (76.52 vs 76.50) — the real-world case that defeated a
+        # (minute, price) bucket dedup and produced a doubled marker.
         con.execute(
-            "INSERT INTO open_positions VALUES ('pos-1', 'CLOSED', 76.50, '2026-06-16T14:30:00.537Z')"
+            "INSERT INTO open_positions VALUES ('pos-1', 'CLOSED', 76.52, '2026-06-16T14:30:00.537Z')"
         )
         con.commit()
     finally:
@@ -875,10 +877,47 @@ def test_live_session_chart_deduplicates_orders_and_open_positions_close_markers
     markers = chart.json()["markers"]
     close_markers = [m for m in markers if m["shape"] == "arrowDown"]
     assert len(close_markers) == 1, f"Expected 1 close marker, got {len(close_markers)}: {close_markers}"
+    # The surviving close marker must be the exchange order fill (76.50), not the
+    # position-table restatement (76.52).
+    assert close_markers[0]["price"] == pytest.approx(76.50)
 
 
-def test_live_session_chart_close_partial_labeled_as_meta_close(monkeypatch, tmp_path):
-    """CLOSE_PARTIAL order type must produce a meta_close (arrowDown) marker, not 'DCA sell'."""
+def test_live_session_chart_open_positions_fallback_when_no_orders(monkeypatch, tmp_path):
+    """When the orders table has no fills, close markers fall back to open_positions."""
+    live_root = tmp_path / "_reports" / "_live"
+    session = _create_valid_live_session(live_root, "hype_fallback_positions")
+    pd.DataFrame([{"ts": "2026-06-16T14:29:00Z", "value": 0.5}]).to_csv(session / "live_equity.csv", index=False)
+    con = sqlite3.connect(session / "session.sqlite")
+    try:
+        con.execute(
+            "CREATE TABLE orders (order_id TEXT, ts_utc TEXT, symbol TEXT, side TEXT, type TEXT, price REAL, qty REAL, status TEXT)"
+        )
+        con.execute(
+            "CREATE TABLE open_positions (position_id TEXT, status TEXT, exit_fill REAL, exit_fill_ts TEXT)"
+        )
+        con.execute(
+            "INSERT INTO open_positions VALUES ('pos-1', 'CLOSED', 76.52, '2026-06-16T14:30:00.537Z')"
+        )
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+
+    client = TestClient(api_main.app)
+    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session)})
+
+    assert chart.status_code == 200
+    markers = chart.json()["markers"]
+    assert len(markers) == 1
+    assert markers[0]["price"] == pytest.approx(76.52)
+    assert markers[0]["shape"] == "arrowDown"
+
+
+def test_live_session_chart_close_partial_labeled_as_partial_close(monkeypatch, tmp_path):
+    """CLOSE_PARTIAL order type must produce a partial-close (arrowDown) marker, not 'DCA sell'."""
     live_root = tmp_path / "_reports" / "_live"
     session = _create_valid_live_session(live_root, "hype_close_partial")
     pd.DataFrame([{"ts": "2026-06-16T14:29:00Z", "value": 0.5}]).to_csv(session / "live_equity.csv", index=False)
@@ -907,9 +946,10 @@ def test_live_session_chart_close_partial_labeled_as_meta_close(monkeypatch, tmp
 
     assert chart.status_code == 200
     markers = chart.json()["markers"]
-    cp_markers = [m for m in markers if m.get("kind") == "meta_close"]
-    assert len(cp_markers) == 1, f"Expected 1 meta_close marker from CLOSE_PARTIAL, got {len(cp_markers)}"
+    cp_markers = [m for m in markers if m.get("kind") == "meta_close_partial"]
+    assert len(cp_markers) == 1, f"Expected 1 meta_close_partial marker from CLOSE_PARTIAL, got {len(cp_markers)}"
     assert cp_markers[0]["shape"] == "arrowDown"
+    assert cp_markers[0]["text"] == "partial close"
 
 
 def test_live_session_chart_uses_fill_price_from_extra(monkeypatch, tmp_path):
