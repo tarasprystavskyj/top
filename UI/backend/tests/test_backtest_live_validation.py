@@ -985,6 +985,53 @@ def test_live_session_chart_uses_fill_price_from_extra(monkeypatch, tmp_path):
     assert markers[0]["price"] == pytest.approx(0.1094), f"Expected fill price 0.1094, got {markers[0]['price']}"
 
 
+def test_snapshot_chart_dedupes_cross_source_markers(monkeypatch, tmp_path):
+    """A consolidated chart.json snapshot must collapse the same logical event
+    emitted once per source session (different exchanges/snapshots), while
+    keeping distinct sides (long+short) and distinct events in the same minute."""
+    live_root = tmp_path / "_reports" / "_live"
+    session = live_root / "hype_consolidated"
+    session.mkdir(parents=True)
+    # events CSV provides side/symbol per order_id (the dedup join key source)
+    pd.DataFrame(
+        [
+            # same logical close mirrored on two exchanges -> must collapse to 1
+            {"ts": "2026-06-02T03:05:13.000359Z", "type": "meta_full_close", "price": 75.318, "source_session": "bingx_a", "side": "LONG", "symbol": "HYPE-USDT", "qty": 0.5, "order_id": "ev-close-1", "position_id": "HYPE-USDT:LONG", "status": "FILLED"},
+            {"ts": "2026-06-02T03:05:13.000450Z", "type": "meta_full_close", "price": 75.315, "source_session": "gateio_b", "side": "LONG", "symbol": "HYPE-USDT", "qty": 0.4, "order_id": "ev-close-2", "position_id": "HYPE-USDT:LONG", "status": "FILLED"},
+            # opposite side in same minute -> must be KEPT (both directions)
+            {"ts": "2026-06-02T03:05:20.000000Z", "type": "meta_open", "price": 75.30, "source_session": "bingx_a", "side": "SHORT", "symbol": "HYPE-USDT", "qty": 0.5, "order_id": "ev-open-short", "position_id": "HYPE-USDT:SHORT", "status": "FILLED"},
+            # distinct dca_buy in a different minute -> KEPT
+            {"ts": "2026-06-02T03:09:01.000000Z", "type": "dca_buy", "price": 74.9, "source_session": "bingx_a", "side": "LONG", "symbol": "HYPE-USDT", "qty": 0.2, "order_id": "ev-dca-1", "position_id": "HYPE-USDT:LONG", "status": "FILLED"},
+        ]
+    ).to_csv(session / "live_chart_events.csv", index=False, encoding="utf-8-sig")
+    # precomputed chart.json snapshot carries one marker per source event (the dups)
+    chart = {
+        "live": [{"ts": "2026-06-02T03:05:00Z", "value": 75.0}],
+        "markers": [
+            {"id": "ev-close-1", "time": "2026-06-02T03:05:13.000359+00:00", "price": 75.318, "kind": "meta_close", "shape": "arrowDown", "color": "#F87171", "text": "Meta strategy full close", "layer": "events", "position": "atPriceTop"},
+            {"id": "ev-close-2", "time": "2026-06-02T03:05:13.000450+00:00", "price": 75.315, "kind": "meta_close", "shape": "arrowDown", "color": "#F87171", "text": "Meta strategy full close", "layer": "events", "position": "atPriceTop"},
+            {"id": "ev-open-short", "time": "2026-06-02T03:05:20.000000+00:00", "price": 75.30, "kind": "meta_open", "shape": "arrowUp", "color": "#38BDF8", "text": "Meta strategy open", "layer": "events", "position": "atPriceBottom"},
+            {"id": "ev-dca-1", "time": "2026-06-02T03:09:01.000000+00:00", "price": 74.9, "kind": "dca_buy", "shape": "arrowUp", "color": "#22C55E", "text": "DCA buy", "layer": "events", "position": "atPriceBottom"},
+        ],
+    }
+    _write_json(session / "chart.json", chart)
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+
+    client = TestClient(api_main.app)
+    resp = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session)})
+    assert resp.status_code == 200
+    markers = resp.json()["markers"]
+    ids = sorted(m["id"] for m in markers)
+    # one of the two mirrored closes dropped; short open and dca kept
+    assert len(markers) == 3, f"expected 3 markers after dedup, got {len(markers)}: {ids}"
+    closes = [m for m in markers if m["kind"] == "meta_close"]
+    assert len(closes) == 1
+    assert {"ev-open-short", "ev-dca-1"} <= set(ids)
+
+
 def test_live_match_ready_prefers_runner_safe_symbol_csv(monkeypatch, tmp_path):
     live_root = tmp_path / "_reports" / "_live"
     session = live_root / "hype_canary_match_csv"

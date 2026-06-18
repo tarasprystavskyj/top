@@ -3944,6 +3944,69 @@ def _live_target_price_lines(session_dir: str) -> List[Dict[str, Any]]:
     return lines[:12]
 
 
+def _snapshot_marker_side_symbol_map(session_dir: str) -> Dict[str, Tuple[str, str]]:
+    """Map order_id -> (side, symbol) from live_chart_events.csv for marker dedup."""
+    full = os.path.join(session_dir, "live_chart_events.csv")
+    if not os.path.isfile(full):
+        return {}
+    try:
+        df = pd.read_csv(full)
+    except Exception:
+        return {}
+    if df.empty or "order_id" not in df.columns:
+        return {}
+    out: Dict[str, Tuple[str, str]] = {}
+    for _, row in df.iterrows():
+        oid = str(row.get("order_id") or "")
+        if not oid:
+            continue
+        side = str(row.get("side") or "").upper()
+        symbol = str(row.get("symbol") or "").upper()
+        out[oid] = (side, symbol)
+    return out
+
+
+def _dedupe_snapshot_markers(session_dir: str, markers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse cross-source duplicate markers in a consolidated snapshot.
+
+    A consolidated session merges chart events from many source sessions
+    (different exchanges and snapshots of the same live run), so a single
+    logical fill is emitted once per source -> multiple stacked markers on the
+    same candle ("doubled" markers). They are the same logical event when they
+    share (minute bucket, kind, side, symbol); side/symbol come from
+    live_chart_events.csv keyed by the marker id (== order_id). Keeping side in
+    the key preserves both legs of dual-direction (long+short) strategies.
+
+    Markers whose id is not present in the events CSV are left untouched, so
+    sessions without that artifact are unaffected.
+    """
+    if not isinstance(markers, list) or len(markers) < 2:
+        return markers
+    side_map = _snapshot_marker_side_symbol_map(session_dir)
+    if not side_map:
+        return markers
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    for marker in markers:
+        if not isinstance(marker, dict):
+            out.append(marker)
+            continue
+        mid = str(marker.get("id") or "")
+        side_symbol = side_map.get(mid)
+        ts = marker.get("time")
+        if side_symbol is None or not ts:
+            out.append(marker)
+            continue
+        ts_sec = _iso_to_epoch_seconds_fast(ts)
+        minute_bucket = int(ts_sec // 60) * 60 if ts_sec is not None else ts
+        key = (minute_bucket, str(marker.get("kind") or ""), side_symbol[0], side_symbol[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(marker)
+    return out
+
+
 def _live_snapshot_chart_payload(session_dir: str) -> Optional[Dict[str, Any]]:
     chart_path = os.path.join(session_dir, "chart.json")
     if not os.path.isfile(chart_path):
@@ -3967,6 +4030,8 @@ def _live_snapshot_chart_payload(session_dir: str) -> Optional[Dict[str, Any]]:
     if not any(isinstance(data.get(key), list) and data.get(key) for key in useful_keys):
         return None
     out = dict(data)
+    if isinstance(out.get("markers"), list):
+        out["markers"] = _dedupe_snapshot_markers(session_dir, out["markers"])
     sources = out.get("sources") if isinstance(out.get("sources"), dict) else {}
     sources = dict(sources)
     sources.setdefault("snapshot", "chart.json")
