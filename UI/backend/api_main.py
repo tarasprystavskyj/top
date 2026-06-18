@@ -3708,7 +3708,7 @@ def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
         fill_type = str(fill.get("fill_type") or "")
     reason_l = reason.lower()
     fill_l = fill_type.lower()
-    if order_type in {"CLOSE", "EXIT"}:
+    if order_type in {"CLOSE", "EXIT", "CLOSE_PARTIAL"}:
         return "Meta strategy full close", "meta_close", "#F87171"
     if "mark_crossed_dca_level" in reason_l or fill_l.startswith("dca_add"):
         return "DCA buy", "dca_buy", "#22C55E"
@@ -3722,13 +3722,29 @@ def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
     return "DCA sell", "dca_sell", "#F59E0B"
 
 
+def _fill_price_from_order_row(row: Dict[str, Any]) -> Optional[float]:
+    """Extract actual exchange fill price from orders.extra JSON field."""
+    extra = row.get("extra")
+    if isinstance(extra, str) and extra.strip():
+        try:
+            extra = json.loads(extra)
+        except Exception:
+            return None
+    if isinstance(extra, dict):
+        fill = extra.get("fill")
+        if isinstance(fill, (int, float)) and float(fill) > 0:
+            return float(fill)
+    return None
+
+
 def _live_event_markers(session_dir: str) -> List[Dict[str, Any]]:
     rows = _sqlite_live_order_rows(session_dir, limit=10000)
     out: List[Dict[str, Any]] = []
     seen_close_buckets: set = set()
     for idx, row in enumerate(rows):
         ts = _to_iso_from_any(row.get("ts_utc") or row.get("bar_time_utc") or row.get("timestamp"))
-        price = _safe_float(row.get("price"))
+        fill_price = _fill_price_from_order_row(row)
+        price = fill_price if fill_price else _safe_float(row.get("price"))
         if not ts or price <= 0:
             continue
         text, kind, color = _label_from_live_order(row)
