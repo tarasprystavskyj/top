@@ -3725,6 +3725,7 @@ def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
 def _live_event_markers(session_dir: str) -> List[Dict[str, Any]]:
     rows = _sqlite_live_order_rows(session_dir, limit=10000)
     out: List[Dict[str, Any]] = []
+    seen_close_buckets: set = set()
     for idx, row in enumerate(rows):
         ts = _to_iso_from_any(row.get("ts_utc") or row.get("bar_time_utc") or row.get("timestamp"))
         price = _safe_float(row.get("price"))
@@ -3732,6 +3733,10 @@ def _live_event_markers(session_dir: str) -> List[Dict[str, Any]]:
             continue
         text, kind, color = _label_from_live_order(row)
         is_close = kind in {"meta_close", "dca_sell"}
+        if is_close:
+            ts_sec = _iso_to_epoch_seconds_fast(ts)
+            bucket = int(ts_sec // 60) * 60 if ts_sec is not None else None
+            seen_close_buckets.add((bucket, round(float(price), 8)))
         out.append(
             {
                 "id": str(row.get("order_id") or f"order-{idx}"),
@@ -3752,9 +3757,13 @@ def _live_event_markers(session_dir: str) -> List[Dict[str, Any]]:
         price = _safe_float(row.get("exit_fill") or row.get("exit") or row.get("close_price"))
         if status != "CLOSED" or not ts or price <= 0:
             continue
-        marker_id = f"position-close-{idx}"
-        if any(m["time"] == ts and abs(float(m["price"]) - price) < 1e-9 for m in out):
+        ts_sec = _iso_to_epoch_seconds_fast(ts)
+        close_bucket = int(ts_sec // 60) * 60 if ts_sec is not None else None
+        bucket_key = (close_bucket, round(float(price), 8))
+        if bucket_key in seen_close_buckets:
             continue
+        seen_close_buckets.add(bucket_key)
+        marker_id = f"position-close-{idx}"
         out.append(
             {
                 "id": marker_id,

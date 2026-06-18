@@ -831,6 +831,52 @@ def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tm
     assert body["sources"]["backtest_price"] == "TradingView CSV:Price USDT"
 
 
+def test_live_session_chart_deduplicates_orders_and_open_positions_close_markers(monkeypatch, tmp_path):
+    """Close event in orders table must not produce a second marker from open_positions table."""
+    live_root = tmp_path / "_reports" / "_live"
+    session = _create_valid_live_session(live_root, "hype_cross_source_dupes")
+    pd.DataFrame(
+        [
+            {"ts": "2026-06-16T14:29:00Z", "value": 0.5},
+            {"ts": "2026-06-16T14:31:00Z", "value": 0.75},
+        ]
+    ).to_csv(session / "live_equity.csv", index=False)
+    con = sqlite3.connect(session / "session.sqlite")
+    try:
+        con.execute(
+            "CREATE TABLE orders (order_id TEXT, ts_utc TEXT, symbol TEXT, side TEXT, type TEXT, price REAL, qty REAL, status TEXT)"
+        )
+        con.execute(
+            "INSERT INTO orders VALUES ('order-open', '2026-06-16T14:29:00.123Z', 'HYPE-USDT', 'LONG', 'OPEN', 76.10, 1.0, 'FILLED')"
+        )
+        # close order — slightly different milliseconds from exit_fill_ts in open_positions
+        con.execute(
+            "INSERT INTO orders VALUES ('order-close', '2026-06-16T14:30:00.037Z', 'HYPE-USDT', 'LONG', 'CLOSE', 76.50, 1.0, 'FILLED')"
+        )
+        con.execute(
+            "CREATE TABLE open_positions (position_id TEXT, status TEXT, exit_fill REAL, exit_fill_ts TEXT)"
+        )
+        # same close event at 500ms later (same minute bucket)
+        con.execute(
+            "INSERT INTO open_positions VALUES ('pos-1', 'CLOSED', 76.50, '2026-06-16T14:30:00.537Z')"
+        )
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(api_main, "LIVE_RESULTS_DIR", str(live_root))
+    monkeypatch.setattr(api_main, "LIVE_TOP_REPORTS_DIR", str(tmp_path / "missing_top"))
+    monkeypatch.setattr(api_main, "LIVE_REPO_REPORTS_DIR", str(tmp_path / "missing_reports"))
+    monkeypatch.setattr(api_main, "LIVE_VERONIKA_REPORTS_DIR", str(tmp_path / "missing_veronika"))
+
+    client = TestClient(api_main.app)
+    chart = client.get("/api/backtest_live_validation/live_session/chart", params={"path": str(session)})
+
+    assert chart.status_code == 200
+    markers = chart.json()["markers"]
+    close_markers = [m for m in markers if m["shape"] == "arrowDown"]
+    assert len(close_markers) == 1, f"Expected 1 close marker, got {len(close_markers)}: {close_markers}"
+
+
 def test_live_match_ready_prefers_runner_safe_symbol_csv(monkeypatch, tmp_path):
     live_root = tmp_path / "_reports" / "_live"
     session = live_root / "hype_canary_match_csv"
