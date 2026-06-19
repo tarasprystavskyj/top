@@ -3711,16 +3711,16 @@ def _label_from_live_order(row: Dict[str, Any]) -> Tuple[str, str, str]:
     if order_type == "CLOSE_PARTIAL":
         return "partial close", "meta_close_partial", "#FB923C"
     if order_type in {"CLOSE", "EXIT"}:
-        return "full close", "meta_close", "#F87171"
+        return "фул клоуз", "meta_close", "#F87171"
     if "mark_crossed_dca_level" in reason_l or fill_l.startswith("dca_add"):
         return "DCA buy", "dca_buy", "#22C55E"
     if "lead_open_position_detected" in reason_l or fill_l == "base_entry":
-        return "open", "meta_open", "#38BDF8"
+        return "опен", "meta_open", "#38BDF8"
     side = str(row.get("side") or "").upper()
     if order_type == "OPEN" and side in {"LONG", "BUY"}:
         return "DCA buy", "dca_buy", "#22C55E"
     if order_type == "OPEN":
-        return "open", "meta_open", "#38BDF8"
+        return "опен", "meta_open", "#38BDF8"
     return "DCA sell", "dca_sell", "#F59E0B"
 
 
@@ -3740,6 +3740,14 @@ def _fill_price_from_order_row(row: Dict[str, Any]) -> Optional[float]:
 
 
 _CLOSE_KINDS = {"meta_close", "meta_close_partial", "dca_sell"}
+
+# Short display labels by marker kind. Applied to precomputed snapshot
+# (chart.json) markers, which otherwise carry verbose text like
+# "Meta strategy full close" / "Meta strategy open".
+_MARKER_LABELS_BY_KIND = {
+    "meta_open": "опен",
+    "meta_close": "фул клоуз",
+}
 
 
 def _sqlite_closed_positions(session_dir: str, limit: int = 10000) -> List[Dict[str, Any]]:
@@ -4031,7 +4039,15 @@ def _live_snapshot_chart_payload(session_dir: str) -> Optional[Dict[str, Any]]:
         return None
     out = dict(data)
     if isinstance(out.get("markers"), list):
-        out["markers"] = _dedupe_snapshot_markers(session_dir, out["markers"])
+        deduped = _dedupe_snapshot_markers(session_dir, out["markers"])
+        relabeled: List[Dict[str, Any]] = []
+        for marker in deduped:
+            if isinstance(marker, dict):
+                short = _MARKER_LABELS_BY_KIND.get(str(marker.get("kind") or ""))
+                if short:
+                    marker = {**marker, "text": short}
+            relabeled.append(marker)
+        out["markers"] = relabeled
     sources = out.get("sources") if isinstance(out.get("sources"), dict) else {}
     sources = dict(sources)
     sources.setdefault("snapshot", "chart.json")

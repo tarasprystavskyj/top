@@ -823,7 +823,7 @@ def test_live_session_chart_exposes_mark_events_and_param_labels(monkeypatch, tm
     assert body["sources"]["price_bars"] == "live_hype_1m_ohlcv_full_session.npz"
     assert body["live_realized"][-1]["value"] == 0.25
     assert body["backtest_realized"][0]["value"] == 0.0
-    assert {m["text"] for m in body["markers"]} >= {"open", "DCA buy"}
+    assert {m["text"] for m in body["markers"]} >= {"опен", "DCA buy"}
     assert any(label["text"].startswith("fresh_tp_percent") for label in body["labels"])
     assert {line["kind"] for line in body["price_lines"]} >= {"next_dca_buy", "dca_sell_target", "full_sell_tp"}
     assert any(line["text"] == "Next DCA buy" and line["price"] == 58.9 for line in body["price_lines"])
@@ -1030,6 +1030,9 @@ def test_snapshot_chart_dedupes_cross_source_markers(monkeypatch, tmp_path):
     closes = [m for m in markers if m["kind"] == "meta_close"]
     assert len(closes) == 1
     assert {"ev-open-short", "ev-dca-1"} <= set(ids)
+    # short labels applied to snapshot markers
+    assert closes[0]["text"] == "фул клоуз"
+    assert all(m["text"] == "опен" for m in markers if m["kind"] == "meta_open")
 
 
 def test_live_match_ready_prefers_runner_safe_symbol_csv(monkeypatch, tmp_path):
