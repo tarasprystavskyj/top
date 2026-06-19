@@ -452,6 +452,21 @@ def dedupe_chart_events(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]
     pre-sorted by ts ascending (merge_csv_file does this), so the earliest copy
     per key is the one kept.
     """
+    def _norm_symbol(value: Any) -> str:
+        # "HYPE-USDT" and "HYPE/USDT:USDT" both normalize to "HYPEUSDT".
+        text = str(value or "").upper()
+        toks: list[str] = []
+        cur = ""
+        for ch in text:
+            if ch.isalnum():
+                cur += ch
+            elif cur:
+                toks.append(cur)
+                cur = ""
+        if cur:
+            toks.append(cur)
+        return "".join(toks[:2])
+
     seen: set = set()
     out: list[dict[str, Any]] = []
     dropped = 0
@@ -460,7 +475,7 @@ def dedupe_chart_events(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]
         minute_bucket = int(dt.timestamp() // 60) if dt else None
         etype = str(row.get("type") or "")
         side = str(row.get("side") or "").upper()
-        symbol = str(row.get("symbol") or "").upper()
+        symbol = _norm_symbol(row.get("symbol"))
         if side or symbol:
             key: tuple[Any, ...] = (minute_bucket, etype, side, symbol)
         else:

@@ -3750,6 +3750,23 @@ _MARKER_LABELS_BY_KIND = {
 }
 
 
+def _norm_symbol(value: Any) -> str:
+    """Normalize a symbol to base+quote so different source notations match
+    (e.g. "HYPE-USDT" and "HYPE/USDT:USDT" both -> "HYPEUSDT")."""
+    text = str(value or "").upper()
+    tokens: List[str] = []
+    cur = ""
+    for ch in text:
+        if ch.isalnum():
+            cur += ch
+        elif cur:
+            tokens.append(cur)
+            cur = ""
+    if cur:
+        tokens.append(cur)
+    return "".join(tokens[:2])
+
+
 def _sqlite_closed_positions(session_dir: str, limit: int = 10000) -> List[Dict[str, Any]]:
     """Return CLOSED rows from open_positions (the helper used elsewhere filters them out)."""
     db_path = _live_session_sqlite_path(session_dir)
@@ -4007,7 +4024,7 @@ def _dedupe_snapshot_markers(session_dir: str, markers: List[Dict[str, Any]]) ->
             continue
         ts_sec = _iso_to_epoch_seconds_fast(ts)
         minute_bucket = int(ts_sec // 60) * 60 if ts_sec is not None else ts
-        key = (minute_bucket, str(marker.get("kind") or ""), side_symbol[0], side_symbol[1])
+        key = (minute_bucket, str(marker.get("kind") or ""), side_symbol[0], _norm_symbol(side_symbol[1]))
         if key in seen:
             continue
         seen.add(key)
