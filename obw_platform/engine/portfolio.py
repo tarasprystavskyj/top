@@ -69,7 +69,7 @@ class Portfolio:
     def open(self, symbol, signal, t, last_price) -> Position:
         slip = self.slippage_per_side
         tick = self.tick_pct
-        notional = float(self.cfg.get("position_notional", self.default_notional))
+        notional = float(signal.get("notional", self.cfg.get("position_notional", self.default_notional)))
         entry = round_tick(last_price * (1 - slip) if signal["side"]=="SHORT" else last_price * (1 + slip), tick)
         pos = Position(symbol=symbol, side=signal["side"], entry_time=t, entry_price=entry, notional=notional,
                        stop_price=signal.get("stop_price"), take_profit=signal.get("take_profit"),

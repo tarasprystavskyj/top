@@ -172,6 +172,7 @@ except Exception:
 
 
 DEBUG = False
+ARGS = argparse.Namespace(max_retries=8, sleep_sec=0.15)
 
 
 def _configure_stdio() -> None:
@@ -542,6 +543,24 @@ def df_from_ohlcv(ohlcv: Sequence[Sequence[float]]) -> pd.DataFrame:
     return df.set_index('datetime_utc')[['open', 'high', 'low', 'close', 'volume']].astype(float)
 
 
+def _datetime_index_epoch_s(index) -> np.ndarray:
+    raw = pd.to_datetime(index, utc=True).astype('int64').to_numpy()
+    if raw.size == 0:
+        return raw.astype(np.int64)
+    max_abs = int(np.nanmax(np.abs(raw)))
+    if max_abs > 10**17:   # nanoseconds
+        return (raw // 1_000_000_000).astype(np.int64)
+    if max_abs > 10**14:   # microseconds
+        return (raw // 1_000_000).astype(np.int64)
+    if max_abs > 10**11:   # milliseconds
+        return (raw // 1_000).astype(np.int64)
+    return raw.astype(np.int64)
+
+
+def _datetime_index_epoch_ms(index) -> np.ndarray:
+    return (_datetime_index_epoch_s(index) * 1000).astype(np.int64)
+
+
 def fetch_ohlcv_range(ex, market: str, timeframe: str, start_ms: int, end_ms: int) -> pd.DataFrame:
     tf_ms = timeframe_to_milliseconds(timeframe)
     if end_ms <= start_ms:
@@ -555,7 +574,24 @@ def fetch_ohlcv_range(ex, market: str, timeframe: str, start_ms: int, end_ms: in
         est_rem_bars = int(np.ceil(remaining_ms / max(tf_ms, 1)))
         limit = min(MAX_PER_REQUEST, max(1, est_rem_bars))
         log(f'[fetch ohlcv] {market} req={req_no} since={pd.to_datetime(cursor, unit="ms", utc=True)} limit={limit}')
-        ohlcv = ex.fetch_ohlcv(market, timeframe=timeframe, since=cursor, limit=limit)
+        ohlcv = None
+        for attempt in range(max(1, int(getattr(ARGS, 'max_retries', 1)))):
+            try:
+                ohlcv = ex.fetch_ohlcv(market, timeframe=timeframe, since=cursor, limit=limit)
+                break
+            except Exception as exc:
+                if ccxt is not None and not isinstance(exc, ccxt.BaseError):
+                    raise
+                wait_s = max(float(getattr(ARGS, 'sleep_sec', 0.15)), 0.1) * (2 ** min(attempt, 5))
+                info(
+                    f'[retry ohlcv] {market} req={req_no} attempt={attempt + 1}/{getattr(ARGS, "max_retries", 1)} '
+                    f'wait={wait_s:.2f}s error={type(exc).__name__}: {exc}',
+                    file=sys.stderr,
+                )
+                time.sleep(wait_s)
+        if ohlcv is None:
+            info(f'[fetch ohlcv] {market} failed after {getattr(ARGS, "max_retries", 1)} retries -> stop', file=sys.stderr)
+            break
         if not ohlcv:
             log(f'[fetch ohlcv] {market} empty_batch -> stop')
             break
@@ -570,13 +606,13 @@ def fetch_ohlcv_range(ex, market: str, timeframe: str, start_ms: int, end_ms: in
         if next_cursor <= cursor:
             break
         cursor = next_cursor
-        if len(df) < limit:
+        if next_cursor >= end_ms:
             break
     if not frames:
         return pd.DataFrame()
     out = pd.concat(frames).sort_index()
     out = out[~out.index.duplicated(keep='last')]
-    idx_ms = pd.to_datetime(out.index, utc=True).view('int64') // 10**6
+    idx_ms = _datetime_index_epoch_ms(out.index)
     mask = (idx_ms >= start_ms) & (idx_ms < end_ms)
     return out.loc[mask]
 
@@ -907,7 +943,7 @@ def df_to_rows(df: pd.DataFrame, symbol: str, include_trend_columns: bool) -> Li
 
 
 def append_npz_parts(parts: Dict[str, list], symbol: str, df: pd.DataFrame) -> None:
-    ts = pd.to_datetime(df.index, utc=True).astype('int64').to_numpy() // 1_000_000_000
+    ts = _datetime_index_epoch_s(df.index)
     parts['symbols'].append(symbol)
     parts['offsets'].append(parts['offsets'][-1] + len(df))
     parts['timestamp_s'].append(ts.astype(np.int64))
@@ -1044,6 +1080,7 @@ def build_local_ticks_outputs(args, tf: str, tf_seconds: int, npz_parts: Dict[st
 # -------- main --------
 
 def main() -> None:
+    global ARGS
     ap = argparse.ArgumentParser(description='Fetch/build standard SQLite DB and/or fast NPZ from OHLCV API, trade API, or local ticks')
     ap.add_argument('-i', '--input-csv', '--universe-file', dest='input_csv', default='')
     ap.add_argument('-t', '--timeframe', default='1m')
@@ -1058,6 +1095,7 @@ def main() -> None:
     ap.add_argument('--trade-limit-per-call', type=int, default=1000)
     ap.add_argument('--sleep-sec', type=float, default=0.15)
     ap.add_argument('--max-empty-tries', type=int, default=3)
+    ap.add_argument('--max-retries', type=int, default=8)
     ap.add_argument('--db-out', '--output', dest='db_out', default='')
     ap.add_argument('--npz-out', dest='npz_out', default='')
     ap.add_argument('--npz-only', action='store_true', help='Generate NPZ and skip SQLite DB entirely')
@@ -1084,6 +1122,7 @@ def main() -> None:
     ap.add_argument('--month-from', default='', help='Local ticks month lower bound inclusive, YYYY-MM')
     ap.add_argument('--month-to', default='', help='Local ticks month upper bound inclusive, YYYY-MM')
     args = ap.parse_args()
+    ARGS = args
 
     global DEBUG
     DEBUG = bool(args.debug)

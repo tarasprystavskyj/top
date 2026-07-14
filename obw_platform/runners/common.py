@@ -584,7 +584,7 @@ def write_config_snapshot(sess_path: str, run_id: str, cfg: dict):
     con = sqlite3.connect(sess_path)
     cur = con.cursor()
     cur.execute("INSERT OR REPLACE INTO config_snapshots(run_id, ts_utc, cfg_json) VALUES(?,?,?)",
-                (run_id, datetime.utcnow().isoformat(), json.dumps(cfg)))
+                (run_id, datetime.utcnow().isoformat(), json.dumps(cfg, default=str)))
     con.commit()
     con.close()
 

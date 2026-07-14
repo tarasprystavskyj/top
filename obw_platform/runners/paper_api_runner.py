@@ -125,6 +125,16 @@ def _normalize_sig(sig):
         pass
     return sig
 
+def _signal_notional(sig, default_notional: float) -> float:
+    for key in ("target_notional", "notional", "order_notional", "size"):
+        try:
+            val = getattr(sig, key, None)
+            if val is not None and float(val) > 0:
+                return float(val)
+        except Exception:
+            continue
+    return float(default_notional)
+
 def _call_entry_signal(strat, bar_close, sym, row, pf):
     """Try compatible signatures for entry_signal."""
     # Preferred: entry_signal(bar_close: bool, symbol, row, ctx={...})
@@ -317,12 +327,20 @@ def run_paper_api(cfg: Mapping[str, Any], args):
 
             equity = pf.mark_equity(price_map)
             position_notional = sum(p.notional for p in pf.positions)
-            notional = float(port_cfg.get('position_notional', pf.default_notional))
+            default_notional = float(port_cfg.get('position_notional', pf.default_notional))
             max_notional_frac = float(port_cfg.get('max_notional_frac', 0.5))
             initial_equity = float(port_cfg.get('initial_equity', pf.initial_equity))
 
             for sym in ranked:
                 curr_equity = float(equity) if equity else float(initial_equity)
+                row = md.get(sym)
+                if not row:
+                    continue
+                sig = _call_entry_signal(strat, bar_close, sym, row, pf)
+                if sig is None:
+                    continue
+                sig = _normalize_sig(sig)  # ensure .tags, .take_profit, .stop_price exist
+                notional = _signal_notional(sig, default_notional)
                 if position_notional + notional > max_notional_frac * curr_equity:
                     cprint(
                         '[skip]',
@@ -332,14 +350,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                         fg='yellow',
                         dim=True,
                     )
-                    break
-                row = md.get(sym)
-                if not row:
                     continue
-                sig = _call_entry_signal(strat, bar_close, sym, row, pf)
-                if sig is None:
-                    continue
-                sig = _normalize_sig(sig)  # ensure .tags, .take_profit, .stop_price exist
 
                 entry_px = float(row.get('close') or 0.0) * (1 + port_cfg['slippage_per_side'])
                 sig_map = {
@@ -347,6 +358,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     'take_profit': getattr(sig, 'take_profit', None),
                     'stop_price': getattr(sig, 'stop_price', None),
                     'reason': getattr(sig, 'reason', None),
+                    'notional': float(notional),
                 }
                 pos = pf.open(symbol=sym, signal=sig_map, t=bar_close, last_price=entry_px)
                 qty = getattr(pos, 'qty', None)
@@ -371,7 +383,7 @@ def run_paper_api(cfg: Mapping[str, Any], args):
                     'status': 'filled',
                     'reason': 'entry',
                     'run_id': run_id,
-                    'extra': json.dumps({'sim': True, 'tags': getattr(sig, 'tags', [])})
+                    'extra': json.dumps({'sim': True, 'tags': getattr(sig, 'tags', []), 'notional': float(notional)})
                 })
 
             # Equity snapshot (mark-to-market)

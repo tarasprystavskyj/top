@@ -8,7 +8,7 @@ import importlib.util
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
 try:
@@ -87,9 +87,19 @@ def _strategy_snapshot_paths(cfg: Dict[str, Any]) -> List[str]:
 def _load_yaml_or_json(path: str) -> Dict[str, Any]:
     if path.endswith('.json'):
         import json
-        return json.loads(_read_text(path))
+        return _json_safe(json.loads(_read_text(path)))
     import yaml
-    return yaml.safe_load(_read_text(path))
+    return _json_safe(yaml.safe_load(_read_text(path)))
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def _split_csv(s: str) -> List[str]:

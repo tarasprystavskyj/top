@@ -1,0 +1,115 @@
+live: false
+source: api
+timeframe: 1m
+
+strategy_class: strategies.liquid_money_btc_phase_portfolio_live_adapter.LiquidMoneyBTCPhasePortfolioLiveAdapter
+
+initial_equity: 300.0
+start_cash: 300.0
+notional: 2.5
+position_notional: 2.5
+max_notional_frac: 1.2
+fee_rate: 0.0005
+slippage_per_side: 0.000938
+funding_rate_hour: 0.0
+
+universe:
+  allow:
+    - "BTC/USDT:USDT"
+    - "PYTH/USDT:USDT"
+    - "HYPE/USDT:USDT"
+    - "SOL/USDT:USDT"
+    - "ENA/USDT:USDT"
+    - "UNI/USDT:USDT"
+
+btc_phase_allocator:
+  model: btc_phase_lb30_b4_cap0.6_sm0_equal
+  btc_symbol: "BTC/USDT:USDT"
+  history_daily_csv: "C:/python_scripts/top_1/obw_platform/_reports/btc_phase_dynamic_weights_20260714_v3_capfixed/daily_strategy_price_btc_features.csv"
+  lookback_days: 30
+  beta: 4.0
+  max_weight: 0.60
+  min_weight: 0.0
+  smooth: 0.0
+  base_mode: equal
+  min_same_phase_days: 7
+  bootstrap_weights:
+    "PYTH/USDT:USDT": 0.0003208236518299155
+    "HYPE/USDT:USDT": 0.0004394094846194692
+    "SOL/USDT:USDT": 0.0009183925125525153
+    "ENA/USDT:USDT": 0.49916068717549905
+    "UNI/USDT:USDT": 0.49916068717549905
+
+strategy_params:
+  min_order_notional_usdt: 2.5
+  exchange_min_notional_usdt: 2.5
+  min_sleeve_equity_usdt: 2.5
+  max_order_notional_usdt: 0.0
+  symbols:
+    "PYTH/USDT:USDT":
+      lookback: 60
+      fast_len: 7
+      slow_len: 240
+      interval_cap_pct: 90.0
+      min_step_notional_usdt: 2.5
+      gamma: 1.25
+      min_profit_pct: 0.12
+      max_hold_bars: 4320
+      loss_cut_mtm_pct: -35.0
+      leverage_long: 1.0
+      leverage_short: 1.0
+    "HYPE/USDT:USDT":
+      lookback: 120
+      fast_len: 12
+      slow_len: 45
+      interval_cap_pct: 90.0
+      min_step_notional_usdt: 2.5
+      gamma: 1.25
+      min_profit_pct: 0.18
+      max_hold_bars: 10080
+      loss_cut_mtm_pct: -35.0
+      leverage_long: 1.0
+      leverage_short: 1.0
+    "SOL/USDT:USDT":
+      lookback: 720
+      fast_len: 16
+      slow_len: 34
+      interval_cap_pct: 90.0
+      min_step_notional_usdt: 2.5
+      gamma: 2.0
+      min_profit_pct: 0.18
+      max_hold_bars: 2880
+      loss_cut_mtm_pct: -25.0
+      leverage_long: 1.0
+      leverage_short: 1.0
+    "ENA/USDT:USDT":
+      template_source: "HYPE/USDT:USDT"
+      lookback: 120
+      fast_len: 12
+      slow_len: 45
+      interval_cap_pct: 90.0
+      min_step_notional_usdt: 2.5
+      gamma: 1.25
+      min_profit_pct: 0.18
+      max_hold_bars: 10080
+      loss_cut_mtm_pct: -35.0
+      leverage_long: 1.0
+      leverage_short: 1.0
+    "UNI/USDT:USDT":
+      template_source: "SOL/USDT:USDT"
+      lookback: 720
+      fast_len: 16
+      slow_len: 34
+      interval_cap_pct: 90.0
+      min_step_notional_usdt: 2.5
+      gamma: 2.0
+      min_profit_pct: 0.18
+      max_hold_bars: 2880
+      loss_cut_mtm_pct: -25.0
+      leverage_long: 1.0
+      leverage_short: 1.0
+
+runner:
+  limit_klines: 1500
+  poll_sec: 10
+  bar_delay_sec: 2

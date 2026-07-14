@@ -26,6 +26,14 @@ from typing import Dict, Any, List, Optional
 import yaml
 import pandas as pd
 import datetime as _dt
+import numpy as np
+
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except Exception:
+    njit = None
+    NUMBA_AVAILABLE = False
 
 def import_by_path(path: str):
     mod_name, cls_name = path.rsplit(".", 1)
@@ -107,6 +115,118 @@ def _compute_unrealized(positions: Dict[str, Position], px_map: Dict[str, float]
 def _open_notional(positions: Dict[str, Position]) -> float:
     return float(sum(p.entry * p.qty for p in positions.values()))
 
+if NUMBA_AVAILABLE:
+    @njit(cache=True)
+    def _compute_unrealized_numba(side_arr, entry_arr, qty_arr, px_arr, fee, slippage):
+        unreal = 0.0
+        for i in range(entry_arr.size):
+            px = px_arr[i]
+            entry = entry_arr[i]
+            if not np.isfinite(px) or entry <= 1e-12:
+                continue
+            if side_arr[i] > 0:
+                gross_ret = (px - entry) / entry
+            else:
+                gross_ret = (entry - px) / entry
+            net_ret = gross_ret - 2.0 * slippage - 2.0 * fee
+            unreal += net_ret * (entry * qty_arr[i])
+        return float(unreal)
+
+    @njit(cache=True)
+    def _open_notional_numba(entry_arr, qty_arr):
+        total = 0.0
+        for i in range(entry_arr.size):
+            total += entry_arr[i] * qty_arr[i]
+        return float(total)
+
+    @njit(cache=True)
+    def _curve_stats_numba(eq_arr):
+        n = eq_arr.size
+        if n < 2:
+            return 0.0, 0.0, 0.0
+        peak = eq_arr[0]
+        max_dd_frac = 0.0
+        up = 0
+        down = 0
+        total_abs = 0.0
+        delta_sum = 0.0
+        prev = eq_arr[0]
+        for i in range(n):
+            v = eq_arr[i]
+            if v > peak:
+                peak = v
+            if peak > 1e-12:
+                dd = (v - peak) / peak
+                if dd < max_dd_frac:
+                    max_dd_frac = dd
+            if i > 0:
+                delta = v - prev
+                if delta > 0.0:
+                    up += 1
+                elif delta < 0.0:
+                    down += 1
+                if delta >= 0.0:
+                    total_abs += delta
+                else:
+                    total_abs -= delta
+                delta_sum += delta
+                prev = v
+        steps = max(1, n - 1)
+        mono_sign = (up - down) / steps
+        mono_mag = delta_sum / (total_abs + 1e-12)
+        return float(max_dd_frac), float(mono_sign), float(mono_mag)
+else:
+    _compute_unrealized_numba = None
+    _open_notional_numba = None
+    _curve_stats_numba = None
+
+def _positions_to_arrays(positions: Dict[str, Position], px_map: Dict[str, float]):
+    n = len(positions)
+    side_arr = np.empty(n, dtype=np.int8)
+    entry_arr = np.empty(n, dtype=np.float64)
+    qty_arr = np.empty(n, dtype=np.float64)
+    px_arr = np.empty(n, dtype=np.float64)
+    for i, (sym, pos) in enumerate(positions.items()):
+        side_arr[i] = 1 if pos.side == "LONG" else -1
+        entry_arr[i] = float(pos.entry)
+        qty_arr[i] = float(pos.qty)
+        px = px_map.get(sym)
+        px_arr[i] = float(px) if px is not None else np.nan
+    return side_arr, entry_arr, qty_arr, px_arr
+
+def _compute_unrealized_fast(positions: Dict[str, Position], px_map: Dict[str, float], fee: float, slippage: float, use_numba: bool) -> float:
+    if not positions:
+        return 0.0
+    if not use_numba or not NUMBA_AVAILABLE:
+        return _compute_unrealized(positions, px_map, fee, slippage)
+    side_arr, entry_arr, qty_arr, px_arr = _positions_to_arrays(positions, px_map)
+    return float(_compute_unrealized_numba(side_arr, entry_arr, qty_arr, px_arr, fee, slippage))
+
+def _open_notional_fast(positions: Dict[str, Position], use_numba: bool) -> float:
+    if not positions:
+        return 0.0
+    if not use_numba or not NUMBA_AVAILABLE:
+        return _open_notional(positions)
+    entry_arr = np.fromiter((float(p.entry) for p in positions.values()), dtype=np.float64, count=len(positions))
+    qty_arr = np.fromiter((float(p.qty) for p in positions.values()), dtype=np.float64, count=len(positions))
+    return float(_open_notional_numba(entry_arr, qty_arr))
+
+def _curve_stats(eq_curve_vals: List[float], use_numba: bool):
+    eq_arr = np.array(eq_curve_vals, dtype=np.float64)
+    if use_numba and NUMBA_AVAILABLE:
+        return _curve_stats_numba(eq_arr)
+    if eq_arr.size >= 2:
+        peaks = np.maximum.accumulate(eq_arr)
+        dd_arr = (eq_arr - peaks) / peaks
+        max_dd_frac = float(dd_arr.min())
+        deltas = np.diff(eq_arr)
+        up = int((deltas > 0).sum()); down = int((deltas < 0).sum()); steps = max(1, deltas.size)
+        mono_sign = float((up - down) / steps)
+        total_mov = float(np.abs(deltas).sum()) + 1e-12
+        mono_mag = float((deltas.sum()) / total_mov)
+        return max_dd_frac, mono_sign, mono_mag
+    return 0.0, 0.0, 0.0
+
 def main():
     ap = argparse.ArgumentParser(description="Thin backtester + realized/unrealized PnL accounting")
     ap.add_argument("--cfg", required=True)
@@ -119,10 +239,22 @@ def main():
     ap.add_argument("--symbols-file", dest="symbols_file")
     ap.add_argument("--deny-symbols", dest="deny_symbols")
     ap.add_argument("--cache_db", dest="cache_db")
+    ap.add_argument("--numba", action="store_true", help="Use optional numba-accelerated accounting helpers where possible")
+    ap.add_argument("--no-numba", action="store_true", help="Disable numba even if enabled in cfg")
     args = ap.parse_args()
 
     t0 = time.time()
     cfg = yaml.safe_load(open(args.cfg, "r"))
+    perf_cfg = cfg.get("performance", {}) or {}
+    use_numba = bool(args.numba or cfg.get("use_numba", False) or cfg.get("numba", False) or perf_cfg.get("use_numba", False))
+    if args.no_numba:
+        use_numba = False
+    if use_numba and not NUMBA_AVAILABLE:
+        print("[numba] requested but numba is not available; falling back to Python accounting")
+        use_numba = False
+    elif use_numba:
+        print("[numba] enabled for accounting helpers; strategy callbacks remain Python")
+
     cache_db = args.cache_db or cfg.get("cache_db") or cfg.get("cache_db_path")
     if not cache_db:
         raise KeyError("cfg must include cache_db or cache_db_path (or pass --cache_db)")
@@ -365,9 +497,9 @@ def main():
                         pos.qty -= qty_close
 
         # --- diagnostics after exits ---
-        unrealized = _compute_unrealized(positions, px_map, fee, slippage)
+        unrealized = _compute_unrealized_fast(positions, px_map, fee, slippage, use_numba)
         equity_mtm = equity_realized + unrealized
-        open_notional = _open_notional(positions)
+        open_notional = _open_notional_fast(positions, use_numba)
         equity_cap = max(0.0, equity_mtm)
         allowed_notional = max_notional_frac * equity_cap
         margin_call_excess = max(0.0, open_notional - allowed_notional)
@@ -401,7 +533,7 @@ def main():
         for sym in ranked_syms:
             if sym in positions:
                 continue
-            current_open = _open_notional(positions)
+            current_open = _open_notional_fast(positions, use_numba)
             if (current_open + pos_notional) > max_notional_frac * equity_mtm:
                 break
             row = md_map_open.get(sym)
@@ -504,19 +636,7 @@ def main():
         daily_ret = monthly_ret = yearly_ret = apr = 0.0
 
     # Metrics based on MTM curve (still useful for DD)
-    import numpy as _np
-    eq_arr = _np.array(eq_curve_vals, dtype=float)
-    if eq_arr.size >= 2:
-        peaks = _np.maximum.accumulate(eq_arr)
-        dd_arr = (eq_arr - peaks) / peaks
-        max_dd_frac = float(dd_arr.min())
-        deltas = _np.diff(eq_arr)
-        up = int((deltas > 0).sum()); down = int((deltas < 0).sum()); steps = max(1, deltas.size)
-        mono_sign = float((up - down) / steps)
-        total_mov = float(_np.abs(deltas).sum()) + 1e-12
-        mono_mag = float((deltas.sum()) / total_mov)
-    else:
-        max_dd_frac = 0.0; mono_sign = 0.0; mono_mag = 0.0
+    max_dd_frac, mono_sign, mono_mag = _curve_stats(eq_curve_vals, use_numba)
 
     summary_dict = {
         "equity_start": initial_equity,
@@ -539,6 +659,8 @@ def main():
         "yearly_return_%": float(yearly_ret * 100.0),
         "sub_trade_pnl_total": float(sub_pnl_cum),
         "margin_call_excess_max": float(max(margin_call_excess_list) if margin_call_excess_list else 0.0),
+        "numba_enabled": bool(use_numba),
+        "numba_available": bool(NUMBA_AVAILABLE),
     }
 
     cfg_name = os.path.splitext(os.path.basename(args.cfg))[0]
